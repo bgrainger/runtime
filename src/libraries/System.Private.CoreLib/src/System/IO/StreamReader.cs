@@ -868,65 +868,109 @@ namespace System.IO
             return new ValueTask<string?>(task);
         }
 
+        private char[]? _rlaiTmpCharBuffer;
+        private int _rlaiTmpCharLen;
+        private int _rlaiTmpCharPos;
+        private StringBuilder? _rlaiSb;
+        private string? _rlaiS;
+        private int _rlaiI;
+        private int _rlaiStep;
+        private char _rlaiCh;
         private async ValueTask<string?> ReadLineAsyncInternal(CancellationToken cancellationToken)
         {
-            if (_charPos == _charLen && (await ReadBufferAsync(cancellationToken).ConfigureAwait(false)) == 0)
+            if ((_rlaiStep == 0 && _charPos == _charLen) || _rlaiStep == 1)
             {
-                return null;
+                _rlaiStep = 1;
+                var tmp = await ReadBufferAsync(cancellationToken).ConfigureAwait(false);
+                _rlaiStep = 0;
+                if (tmp == 0)
+                    return null;
             }
 
-            StringBuilder? sb = null;
+            if (_rlaiStep == 0)
+                _rlaiSb = null;
 
+            bool repeatLoop;
             do
             {
-                char[] tmpCharBuffer = _charBuffer;
-                int tmpCharLen = _charLen;
-                int tmpCharPos = _charPos;
-                int i = tmpCharPos;
+                if (_rlaiStep == 4)
+                    _rlaiStep = 0;
+
+                if (_rlaiStep == 0)
+                {
+                    _rlaiTmpCharBuffer = _charBuffer;
+                    _rlaiTmpCharLen = _charLen;
+                    _rlaiTmpCharPos = _charPos;
+                    _rlaiI = _rlaiTmpCharPos;
+                }
 
                 do
                 {
-                    char ch = tmpCharBuffer[i];
+                    if (_rlaiStep == 0)
+                        _rlaiCh = _rlaiTmpCharBuffer![_rlaiI];
 
                     // Note the following common line feed chars:
                     // \n - UNIX   \r\n - DOS   \r - Mac
-                    if (ch == '\r' || ch == '\n')
+                    if (_rlaiStep == 2 || _rlaiCh == '\r' || _rlaiCh == '\n')
                     {
-                        string s;
-
-                        if (sb != null)
+                        if (_rlaiStep == 0)
                         {
-                            sb.Append(tmpCharBuffer, tmpCharPos, i - tmpCharPos);
-                            s = sb.ToString();
-                        }
-                        else
-                        {
-                            s = new string(tmpCharBuffer, tmpCharPos, i - tmpCharPos);
-                        }
-
-                        _charPos = tmpCharPos = i + 1;
-
-                        if (ch == '\r' && (tmpCharPos < tmpCharLen || (await ReadBufferAsync(cancellationToken).ConfigureAwait(false)) > 0))
-                        {
-                            tmpCharPos = _charPos;
-                            if (_charBuffer[tmpCharPos] == '\n')
+                            if (_rlaiSb != null)
                             {
-                                _charPos = ++tmpCharPos;
+                                _rlaiSb.Append(_rlaiTmpCharBuffer, _rlaiTmpCharPos, _rlaiI - _rlaiTmpCharPos);
+                                _rlaiS = _rlaiSb.ToString();
+                            }
+                            else
+                            {
+                                _rlaiS = new string(_rlaiTmpCharBuffer!, _rlaiTmpCharPos, _rlaiI - _rlaiTmpCharPos);
+                            }
+
+                            _charPos = _rlaiTmpCharPos = _rlaiI + 1;
+                        }
+
+                        if (_rlaiStep == 2 || _rlaiCh == '\r')
+                        {
+                            bool tmp;
+                            if (_rlaiStep == 0 && _rlaiTmpCharPos < _rlaiTmpCharLen)
+                            {
+                                tmp = true;
+                            }
+                            else
+                            {
+                                _rlaiStep = 2;
+                                tmp = await ReadBufferAsync(cancellationToken).ConfigureAwait(false) > 0;
+                            }
+
+                            if (tmp)
+                            {
+                                _rlaiTmpCharPos = _charPos;
+                                if (_charBuffer[_rlaiTmpCharPos] == '\n')
+                                {
+                                    _charPos = ++_rlaiTmpCharPos;
+                                }
                             }
                         }
 
-                        return s;
+                        _rlaiStep = 0;
+                        return _rlaiS;
                     }
 
-                    i++;
-                } while (i < tmpCharLen);
+                    _rlaiI++;
+                } while (_rlaiI < _rlaiTmpCharLen);
 
-                i = tmpCharLen - tmpCharPos;
-                sb ??= new StringBuilder(i + 80);
-                sb.Append(tmpCharBuffer, tmpCharPos, i);
-            } while (await ReadBufferAsync(cancellationToken).ConfigureAwait(false) > 0);
+                if (_rlaiStep is 0 or 2)
+                {
+                    _rlaiI = _rlaiTmpCharLen - _rlaiTmpCharPos;
+                    _rlaiSb ??= new StringBuilder(_rlaiI + 80);
+                    _rlaiSb.Append(_rlaiTmpCharBuffer, _rlaiTmpCharPos, _rlaiI);
+                    _rlaiStep = 3;
+                }
+                repeatLoop = await ReadBufferAsync(cancellationToken).ConfigureAwait(false) > 0;
+                _rlaiStep = 4;
+            } while (repeatLoop);
 
-            return sb.ToString();
+            _rlaiStep = 0;
+            return _rlaiSb!.ToString();
         }
 
         public override Task<string> ReadToEndAsync() => ReadToEndAsync(default);
@@ -1250,24 +1294,35 @@ namespace System.IO
             return new ValueTask<int>(t);
         }
 
+        private int _rbaStep;
+        private byte[]? _rbaTmpByteBuffer;
+        private Stream? _rbaTmpStream;
+        private int _rbaTmpBytePos;
         private async ValueTask<int> ReadBufferAsync(CancellationToken cancellationToken)
         {
-            _charLen = 0;
-            _charPos = 0;
-            byte[] tmpByteBuffer = _byteBuffer;
-            Stream tmpStream = _stream;
-
-            if (!_checkPreamble)
+            if (_rbaStep == 0)
             {
-                _byteLen = 0;
+                _charLen = 0;
+                _charPos = 0;
+                _rbaTmpByteBuffer = _byteBuffer;
+                _rbaTmpStream = _stream;
+
+                if (!_checkPreamble)
+                {
+                    _byteLen = 0;
+                }
             }
             do
             {
                 if (_checkPreamble)
                 {
-                    Debug.Assert(_bytePos <= _encoding.Preamble.Length, "possible bug in _compressPreamble. Are two threads using this StreamReader at the same time?");
-                    int tmpBytePos = _bytePos;
-                    int len = await tmpStream.ReadAsync(new Memory<byte>(tmpByteBuffer, tmpBytePos, tmpByteBuffer.Length - tmpBytePos), cancellationToken).ConfigureAwait(false);
+                    if (_rbaStep == 0)
+                    {
+                        Debug.Assert(_bytePos <= _encoding.Preamble.Length, "possible bug in _compressPreamble. Are two threads using this StreamReader at the same time?");
+                        _rbaTmpBytePos = _bytePos;
+                        _rbaStep = 1;
+                    }
+                    int len = await _rbaTmpStream!.ReadAsync(new Memory<byte>(_rbaTmpByteBuffer, _rbaTmpBytePos, _rbaTmpByteBuffer!.Length - _rbaTmpBytePos), cancellationToken).ConfigureAwait(false);
                     Debug.Assert(len >= 0, "Stream.Read returned a negative number!  This is a bug in your stream class.");
 
                     if (len == 0)
@@ -1276,11 +1331,12 @@ namespace System.IO
                         // attempt to detect preamble that needs to be decoded now
                         if (_byteLen > 0)
                         {
-                            _charLen += _decoder.GetChars(tmpByteBuffer, 0, _byteLen, _charBuffer, _charLen);
+                            _charLen += _decoder.GetChars(_rbaTmpByteBuffer, 0, _byteLen, _charBuffer, _charLen);
                             // Need to zero out the _byteLen after we consume these bytes so that we don't keep infinitely hitting this code path
                             _bytePos = 0; _byteLen = 0;
                         }
 
+                        _rbaStep = 0;
                         return _charLen;
                     }
 
@@ -1288,20 +1344,27 @@ namespace System.IO
                 }
                 else
                 {
-                    Debug.Assert(_bytePos == 0, "_bytePos can be non zero only when we are trying to _checkPreamble. Are two threads using this StreamReader at the same time?");
-                    _byteLen = await tmpStream.ReadAsync(new Memory<byte>(tmpByteBuffer), cancellationToken).ConfigureAwait(false);
+                    if (_rbaStep == 0)
+                    {
+                        Debug.Assert(_bytePos == 0, "_bytePos can be non zero only when we are trying to _checkPreamble. Are two threads using this StreamReader at the same time?");
+                        _rbaStep = 2;
+                    }
+                    _byteLen = await _rbaTmpStream!.ReadAsync(new Memory<byte>(_rbaTmpByteBuffer), cancellationToken).ConfigureAwait(false);
                     Debug.Assert(_byteLen >= 0, "Stream.Read returned a negative number!  Bug in stream class.");
 
                     if (_byteLen == 0)  // We're at EOF
                     {
+                        _rbaStep = 0;
                         return _charLen;
                     }
                 }
 
+                _rbaStep = 0;
+
                 // _isBlocked == whether we read fewer bytes than we asked for.
                 // Note we must check it here because CompressBuffer or
                 // DetectEncoding will change _byteLen.
-                _isBlocked = (_byteLen < tmpByteBuffer.Length);
+                _isBlocked = (_byteLen < _rbaTmpByteBuffer!.Length);
 
                 // Check for preamble before detect encoding. This is not to override the
                 // user supplied Encoding for the one we implicitly detect. The user could
@@ -1317,10 +1380,10 @@ namespace System.IO
                 {
                     DetectEncoding();
                 }
-
-                _charLen += _decoder.GetChars(tmpByteBuffer, 0, _byteLen, _charBuffer, _charLen);
+                _charLen += _decoder.GetChars(_rbaTmpByteBuffer, 0, _byteLen, _charBuffer, _charLen);
             } while (_charLen == 0);
 
+            _rbaStep = 0;
             return _charLen;
         }
 

@@ -359,6 +359,51 @@ namespace System.IO.Tests
             Assert.Equal((valueString.Substring(valueString.LastIndexOf('\n') + 1)), data);
         }
 
+        [Theory]
+        [MemberData(nameof(GetCancellationIndexes))]
+        public async Task RetryCanceledReadLineAsync(byte[] bytes, int offset)
+        {
+            // create a Stream that will respect cancellation at byte offset 'offset', and read from it
+            using var stream = new CancellationStream(bytes, offset);
+            using var reader = new StreamReader(stream);
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            // read all the lines, restarting after ReadLineAsync is cancelled
+            var lines = new List<string>();
+            while (true)
+            {
+                try
+                {
+                    var line = await reader.ReadLineAsync(cts.Token);
+                    if (line is null)
+                        break;
+                    lines.Add(line);
+                }
+                catch (OperationCanceledException)
+                {
+                    // ignore
+                }
+            }
+
+            Assert.Equal(new[] { "First line", "Second line" }, lines);
+        }
+
+        public static IEnumerable<object[]> GetCancellationIndexes()
+        {
+            var str = "First line\r\nSecond line\r\n";
+            foreach (var pair in new[]
+            {
+                (Encoding.UTF8.GetBytes(str), 0),
+                (Encoding.UTF8.GetBytes("\uFEFF" + str), 0),
+                (Encoding.Unicode.GetBytes("\uFEFF" + str), 2),
+            })
+            {
+                for (var offset = pair.Item2; offset <= pair.Item1.Length; offset++)
+                    yield return new object[] { pair.Item1, offset };
+            }
+        }
+
         [Fact]
         public async Task ContinuousNewLinesAndTabsAsync()
         {
@@ -689,6 +734,55 @@ namespace System.IO.Tests
                     Assert.Equal(Encoding.BigEndianUnicode, sr.CurrentEncoding);
                 }
                 Assert.False(tempStream.CanRead);
+            }
+        }
+
+        private sealed class CancellationStream : Stream
+        {
+            private readonly byte[] _buffer;
+            private int _cancellationByte;
+            private int _position;
+
+            public CancellationStream(byte[] buffer, int cancellationByte)
+            {
+                _buffer = buffer;
+                _cancellationByte = cancellationByte;
+            }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+
+            public override long Length => _buffer.Length;
+            public override long Position { get => _position; set => _position = checked((int) value); }
+
+            public override void Flush() => throw new NotImplementedException();
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotImplementedException();
+            public override void SetLength(long value) => throw new NotImplementedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotImplementedException();
+
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotImplementedException();
+            public override int Read(Span<byte> buffer) => throw new NotImplementedException();
+            public override int ReadByte() => throw new NotImplementedException();
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+                ReadAsync(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask();
+
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken)
+            {
+                if (_position == _cancellationByte)
+                {
+                    // if we're at the cancellation byte index, cancel the read
+                    _cancellationByte = -1;
+                    if (cancellationToken.IsCancellationRequested)
+                        return ValueTask.FromCanceled<int>(cancellationToken);
+                }
+
+                // read up to the cancellation byte index (if before it); otherwise, to the end of the buffer
+                var length = Math.Min(buffer.Length, _position < _cancellationByte ? (_cancellationByte - _position) : (_buffer.Length - _position));
+                _buffer.AsSpan(_position, length).CopyTo(buffer.Span);
+                _position += length;
+                return new ValueTask<int>(length);
             }
         }
     }
