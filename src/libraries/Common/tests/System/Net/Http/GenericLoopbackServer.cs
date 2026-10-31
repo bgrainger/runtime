@@ -8,9 +8,11 @@ using System.Threading.Tasks;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.IO;
+using System.Net.Security;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Threading;
+using System.Net.Http.Functional.Tests;
 
 namespace System.Net.Test.Common
 {
@@ -19,8 +21,12 @@ namespace System.Net.Test.Common
 
     public abstract class LoopbackServerFactory
     {
+        // Use a timeout that is a bit higher than PassingTestTimeout so that the client/server callbacks
+        // have a chance to report more specific exception information in case they use the same timeout value.
+        public const int LoopbackServerTimeoutMilliseconds = (int)(TestHelper.PassingTestTimeoutMilliseconds * 1.2);
+
         public abstract GenericLoopbackServer CreateServer(GenericLoopbackOptions options = null);
-        public abstract Task CreateServerAsync(Func<GenericLoopbackServer, Uri, Task> funcAsync, int millisecondsTimeout = 60_000, GenericLoopbackOptions options = null);
+        public abstract Task CreateServerAsync(Func<GenericLoopbackServer, Uri, Task> funcAsync, int millisecondsTimeout = LoopbackServerTimeoutMilliseconds, GenericLoopbackOptions options = null);
 
         public abstract Task<GenericLoopbackConnection> CreateConnectionAsync(SocketWrapper socket, Stream stream, GenericLoopbackOptions options = null);
 
@@ -28,7 +34,7 @@ namespace System.Net.Test.Common
 
         // Common helper methods
 
-        public Task CreateClientAndServerAsync(Func<Uri, Task> clientFunc, Func<GenericLoopbackServer, Task> serverFunc, int millisecondsTimeout = 60_000, GenericLoopbackOptions options = null)
+        public Task CreateClientAndServerAsync(Func<Uri, Task> clientFunc, Func<GenericLoopbackServer, Task> serverFunc, int millisecondsTimeout = LoopbackServerTimeoutMilliseconds, GenericLoopbackOptions options = null)
         {
             return CreateServerAsync(async (server, uri) =>
             {
@@ -42,6 +48,8 @@ namespace System.Net.Test.Common
 
     public abstract class GenericLoopbackServer : IDisposable
     {
+        public const int LoopbackServerTimeoutMilliseconds = LoopbackServerFactory.LoopbackServerTimeoutMilliseconds;
+
         public virtual Uri Address { get; }
 
         // Accept a new connection, process a single request and send the specified response, and gracefully close the connection.
@@ -80,19 +88,34 @@ namespace System.Net.Test.Common
             _socket?.Dispose();
             _websocket?.Dispose();
         }
-        public void Close()
+
+        public async Task CloseAsync()
         {
             _socket?.Close();
-            CloseWebSocket();
+            await CloseWebSocketAsync();
         }
 
-        public void Shutdown(SocketShutdown how)
+        public EndPoint? LocalEndPoint => _socket?.LocalEndPoint;
+        public EndPoint? RemoteEndPoint => _socket?.RemoteEndPoint;
+
+        public async Task WaitForCloseAsync(CancellationToken cancellationToken)
+        {
+            while (_websocket != null
+                    ? _websocket.State != WebSocketState.Closed
+                    : !(_socket.Poll(1, SelectMode.SelectRead) && _socket.Available == 0))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await Task.Delay(100);
+            }
+        }
+
+        public async Task ShutdownAsync(SocketShutdown how)
         {
             _socket?.Shutdown(how);
-            CloseWebSocket();
+            await CloseWebSocketAsync();
         }
 
-        private void CloseWebSocket()
+        private async Task CloseWebSocketAsync()
         {
             if (_websocket == null) return;
 
@@ -101,19 +124,18 @@ namespace System.Net.Test.Common
 
             try
             {
-                var task = _websocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "closing remoteLoop", CancellationToken.None);
-                // Block and wait for the task to complete synchronously
-                Task.WaitAll(task);
+                await _websocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "closing remoteLoop", CancellationToken.None);
             }
             catch (Exception)
             {
+                // Ignore exceptions during WebSocket close in test cleanup.
             }
         }
     }
 
-    public abstract class GenericLoopbackConnection : IDisposable
+    public abstract class GenericLoopbackConnection : IAsyncDisposable
     {
-        public abstract void Dispose();
+        public abstract ValueTask DisposeAsync();
 
         public abstract Task InitializeConnectionAsync();
 
@@ -126,7 +148,7 @@ namespace System.Net.Test.Common
         /// If isFinal is false, the body is not completed and you can call SendResponseBodyAsync to send more.</summary>
         public abstract Task SendResponseAsync(HttpStatusCode statusCode = HttpStatusCode.OK, IList<HttpHeaderData> headers = null, string content = "", bool isFinal = true);
         /// <summary>Sends response headers.</summary>
-        public abstract Task SendResponseHeadersAsync(HttpStatusCode statusCode = HttpStatusCode.OK, IList<HttpHeaderData> headers = null);
+        public abstract Task SendResponseHeadersAsync(HttpStatusCode statusCode = HttpStatusCode.OK, IList<HttpHeaderData> headers = null, bool isTrailingHeader = false);
         /// <summary>Sends valid but incomplete headers. Once called, there is no way to continue the response past this point.</summary>
         public abstract Task SendPartialResponseHeadersAsync(HttpStatusCode statusCode = HttpStatusCode.OK, IList<HttpHeaderData> headers = null);
         /// <summary>Sends Response body after SendResponse was called with isFinal: false.</summary>
@@ -138,10 +160,29 @@ namespace System.Net.Test.Common
         /// <summary>Waits for the client to signal cancellation.</summary>
         public abstract Task WaitForCancellationAsync(bool ignoreIncomingData = true);
 
+        /// <summary>Waits for the client to signal cancellation.</summary>
+        public abstract Task WaitForCloseAsync(CancellationToken cancellationToken);
+
+        /// <summary>Reset the connection's internal state so it can process further requests.</summary>
+        public virtual void CompleteRequestProcessing() { }
+
         /// <summary>Helper function to make it easier to convert old test with strings.</summary>
         public async Task SendResponseBodyAsync(string content, bool isFinal = true)
         {
             await SendResponseBodyAsync(String.IsNullOrEmpty(content) ? new byte[0] : Encoding.ASCII.GetBytes(content), isFinal);
+        }
+
+        internal static int AppendToBuffer(ref byte[] buffer, int length, ReadOnlySpan<byte> data)
+        {
+            const int ArrayMaxLength = 0X7FFFFFC7; // same as Array.MaxLength
+            int newLength = checked(length + data.Length);
+            if (newLength > buffer.Length)
+            {
+                Array.Resize(ref buffer, Math.Max(newLength, (int)Math.Min((long)buffer.Length * 2, ArrayMaxLength)));
+            }
+
+            data.CopyTo(buffer.AsSpan(length));
+            return newLength;
         }
     }
 
@@ -157,6 +198,9 @@ namespace System.Net.Test.Common
                 SslProtocols.Tls12;
 
         public int ListenBacklog { get; set; } = 1;
+#if !NETSTANDARD2_0 && !NETFRAMEWORK
+        public SslStreamCertificateContext? CertificateContext { get; set; }
+#endif
     }
 
     public struct HttpHeaderData
@@ -168,14 +212,16 @@ namespace System.Net.Test.Common
         public string Value { get; }
         public bool HuffmanEncoded { get; }
         public byte[] Raw { get; }
+        public int RawValueStart { get; }
         public Encoding ValueEncoding { get; }
 
-        public HttpHeaderData(string name, string value, bool huffmanEncoded = false, byte[] raw = null, Encoding valueEncoding = null)
+        public HttpHeaderData(string name, string value, bool huffmanEncoded = false, byte[] raw = null, int rawValueStart = 0, Encoding valueEncoding = null)
         {
             Name = name;
             Value = value;
             HuffmanEncoded = huffmanEncoded;
             Raw = raw;
+            RawValueStart = rawValueStart;
             ValueEncoding = valueEncoding;
         }
 
@@ -225,6 +271,24 @@ namespace System.Net.Test.Common
             }
 
             return result;
+        }
+
+        public HttpHeaderData[] GetHeaderData(string headerName)
+        {
+            return Headers.Where(h => h.Name.Equals(headerName, StringComparison.OrdinalIgnoreCase)).ToArray();
+        }
+
+        public HttpHeaderData GetSingleHeaderData(string headerName)
+        {
+            HttpHeaderData[] data = GetHeaderData(headerName);
+            if (data.Length != 1)
+            {
+                throw new Exception(
+                    $"Expected single value for {headerName} header, actual count: {data.Length}{Environment.NewLine}" +
+                    $"{"\t"}{string.Join(Environment.NewLine + "\t", data)}");
+            }
+
+            return data[0];
         }
 
         public string[] GetHeaderValues(string headerName)

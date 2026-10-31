@@ -3,11 +3,6 @@
 
 // ---------------------------------------------------------------------------
 // EEContract.cpp
-//
-
-// ! I am the owner for issues in the contract *infrastructure*, not for every
-// ! CONTRACT_VIOLATION dialog that comes up. If you interrupt my work for a routine
-// ! CONTRACT_VIOLATION, you will become the new owner of this file.
 // ---------------------------------------------------------------------------
 
 
@@ -22,13 +17,8 @@ void EEContract::Disable()
     BaseContract::Disable();
 }
 
-void EEContract::DoChecks(UINT testmask, __in_z const char *szFunction, __in_z const char *szFile, int lineNum)
+void EEContract::DoChecks(UINT testmask, _In_z_ const char *szFunction, _In_z_ const char *szFile, int lineNum)
 {
-    SCAN_IGNORE_THROW;      // Tell the static contract analyzer to ignore contract violations
-    SCAN_IGNORE_FAULT;      // due to the contract checking logic itself.
-    SCAN_IGNORE_TRIGGER;
-    SCAN_IGNORE_LOCK;
-
     // Many of the checks below result in calls to GetThread()
     // that work just fine if GetThread() returns NULL, so temporarily
     // allow such calls.
@@ -49,7 +39,7 @@ void EEContract::DoChecks(UINT testmask, __in_z const char *szFunction, __in_z c
             {
                 //
                 // Check if this is the debugger helper thread and has the runtime
-                // stoppped.  If both of these things are true, then we do not care
+                // stopped.  If both of these things are true, then we do not care
                 // whether we are in COOP mode or not.
                 //
                 if ((g_pDebugInterface != NULL) &&
@@ -153,45 +143,6 @@ void EEContract::DoChecks(UINT testmask, __in_z const char *szFunction, __in_z c
             break;
 
         case GC_Disabled:
-            // Nothing
-            break;
-
-        default:
-            UNREACHABLE();
-    }
-
-    // Host Triggers check
-    switch (testmask & HOST_Mask)
-    {
-        case HOST_Calls:
-            {
-                if (!m_pClrDebugState->IsHostCaller())
-                {
-                    if (!( (HostViolation|BadDebugState) & m_pClrDebugState->ViolationMask()))
-                    {
-                        // Avoid infinite recursion by temporarily allowing HOST_CALLS
-                        // violations so that we don't get contract asserts in anything
-                        // called downstream of CONTRACT_ASSERT. If we unwind out of
-                        // here, our dtor will reset our state to what it was on entry.
-                        CONTRACT_VIOLATION(HostViolation);
-                        CONTRACT_ASSERT("HOST_CALLS  encountered in a HOST_NOCALLS scope",
-                                        Contract::HOST_NoCalls,
-                                        Contract::HOST_Mask,
-                                        m_contractStackRecord.m_szFunction,
-                                        m_contractStackRecord.m_szFile,
-                                        m_contractStackRecord.m_lineNum
-                                        );
-                    }
-                }
-            }
-            break;
-
-        case HOST_NoCalls:
-           //  m_pClrDebugState->ViolationMaskReset( HostViolation );
-            m_pClrDebugState->ResetHostCaller();
-            break;
-
-        case HOST_Disabled:
             // Nothing
             break;
 

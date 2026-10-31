@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using Xunit;
 namespace NetClient
 {
     using System;
@@ -13,13 +14,13 @@ namespace NetClient
     using Server.Contract.Servers;
     using Server.Contract.Events;
 
-    class Program
+    public class Program
     {
         static void Validate_BasicCOMEvent()
         {
             Console.WriteLine($"{nameof(Validate_BasicCOMEvent)}...");
 
-            var eventTesting = (EventTesting)new EventTestingClass();
+            var eventTesting = new EventTesting();
 
             // Verify event handler subscription
 
@@ -56,7 +57,7 @@ namespace NetClient
         {
             Console.WriteLine($"{nameof(Validate_COMEventViaComAwareEventInfo)}...");
 
-            var eventTesting = (EventTesting)new EventTestingClass();
+            var eventTesting = new EventTesting();
 
             // Verify event handler subscription
 
@@ -88,7 +89,8 @@ namespace NetClient
             }
         }
 
-        static int Main(string[] doNotUse)
+        [Fact]
+        public static int TestEntryPoint()
         {
             // RegFree COM is not supported on Windows Nano
             if (Utilities.IsWindowsNanoServer)

@@ -14,14 +14,10 @@ namespace System.Security.Cryptography
 {
     internal static partial class Pbkdf2Implementation
     {
-        // For Windows 7 we will use BCryptDeriveKeyPBKDF2. For Windows 8+ (seen as version 6.2.0) we will
-        // use BCryptKeyDerivation since it has better performance.
-        private static readonly bool s_useKeyDerivation = OperatingSystem.IsWindowsVersionAtLeast(6, 2);
-
         // A cached instance of PBKDF2 for Windows 8, where pseudo handles are not supported.
         private static SafeBCryptAlgorithmHandle? s_pbkdf2AlgorithmHandle;
 
-        public static unsafe void Fill(
+        public static void Fill(
             ReadOnlySpan<byte> password,
             ReadOnlySpan<byte> salt,
             int iterations,
@@ -30,37 +26,30 @@ namespace System.Security.Cryptography
         {
             Debug.Assert(!destination.IsEmpty);
             Debug.Assert(iterations >= 0);
-            Debug.Assert(hashAlgorithmName.Name is not null);
 
-            if (s_useKeyDerivation)
-            {
-                FillKeyDerivation(password, salt, iterations, hashAlgorithmName.Name, destination);
-            }
-            else
-            {
-                FillDeriveKeyPBKDF2(password, salt, iterations, hashAlgorithmName.Name, destination);
-            }
+            FillKeyDerivation(password, salt, iterations, hashAlgorithmName, destination);
         }
 
         private static unsafe void FillKeyDerivation(
             ReadOnlySpan<byte> password,
             ReadOnlySpan<byte> salt,
             int iterations,
-            string hashAlgorithmName,
+            HashAlgorithmName hashAlgorithm,
             Span<byte> destination)
         {
+            Debug.Assert(hashAlgorithm.Name is not null);
+            string hashAlgorithmName = hashAlgorithm.Name;
             SafeBCryptKeyHandle keyHandle;
             int hashBlockSizeBytes = GetHashBlockSize(hashAlgorithmName);
 
-            // stackalloc 0 to let compiler know this cannot escape.
-            Span<byte> clearSpan = stackalloc byte[0];
-            ReadOnlySpan<byte> symmetricKeyMaterial = stackalloc byte[0];
+            scoped Span<byte> clearSpan;
+            scoped ReadOnlySpan<byte> symmetricKeyMaterial;
             int symmetricKeyMaterialLength;
 
             if (password.IsEmpty)
             {
                 // CNG won't accept a null pointer for the password.
-                symmetricKeyMaterial = stackalloc byte[1];
+                symmetricKeyMaterial = [0];
                 symmetricKeyMaterialLength = 0;
                 clearSpan = default;
             }
@@ -81,25 +70,12 @@ namespace System.Security.Cryptography
                 // Windows' PBKDF2 will do this up to a point. To ensure we accept arbitrary inputs for
                 // PBKDF2, we do the hashing ourselves.
                 Span<byte> hashBuffer = stackalloc byte[512 / 8]; // 64 bytes is SHA512, the largest digest handled.
-                int hashBufferSize;
 
-                switch (hashAlgorithmName)
+                if (!CryptographicOperations.TryHashData(hashAlgorithm, password, hashBuffer, out int hashBufferSize))
                 {
-                    case HashAlgorithmNames.SHA1:
-                        hashBufferSize = SHA1.HashData(password, hashBuffer);
-                        break;
-                    case HashAlgorithmNames.SHA256:
-                        hashBufferSize = SHA256.HashData(password, hashBuffer);
-                        break;
-                    case HashAlgorithmNames.SHA384:
-                        hashBufferSize = SHA384.HashData(password, hashBuffer);
-                        break;
-                    case HashAlgorithmNames.SHA512:
-                        hashBufferSize = SHA512.HashData(password, hashBuffer);
-                        break;
-                    default:
-                        Debug.Fail($"Unexpected hash algorithm '{hashAlgorithmName}'");
-                        throw new CryptographicException();
+                    CryptographicOperations.ZeroMemory(hashBuffer);
+                    Debug.Fail("Preallocated buffer was too small.");
+                    throw new CryptographicException();
                 }
 
                 clearSpan = hashBuffer.Slice(0, hashBufferSize);
@@ -221,45 +197,9 @@ namespace System.Security.Cryptography
             }
         }
 
-        private static unsafe void FillDeriveKeyPBKDF2(
-            ReadOnlySpan<byte> password,
-            ReadOnlySpan<byte> salt,
-            int iterations,
-            string hashAlgorithmName,
-            Span<byte> destination)
-        {
-            const BCryptOpenAlgorithmProviderFlags OpenAlgorithmFlags = BCryptOpenAlgorithmProviderFlags.BCRYPT_ALG_HANDLE_HMAC_FLAG;
-
-            // This code path will only be taken on Windows 7, so we can assume pseudo handles are not supported.
-            // Do not dispose handle since it is shared and cached.
-            SafeBCryptAlgorithmHandle handle =
-                Interop.BCrypt.BCryptAlgorithmCache.GetCachedBCryptAlgorithmHandle(hashAlgorithmName, OpenAlgorithmFlags, out _);
-
-            fixed (byte* pPassword = password)
-            fixed (byte* pSalt = salt)
-            fixed (byte* pDestination = destination)
-            {
-                NTSTATUS status = Interop.BCrypt.BCryptDeriveKeyPBKDF2(
-                    handle,
-                    pPassword,
-                    password.Length,
-                    pSalt,
-                    salt.Length,
-                    (ulong)iterations,
-                    pDestination,
-                    destination.Length,
-                    dwFlags: 0);
-
-                if (status != NTSTATUS.STATUS_SUCCESS)
-                {
-                    throw Interop.BCrypt.CreateCryptographicException(status);
-                }
-            }
-        }
-
         private static int GetHashBlockSize(string hashAlgorithmName)
         {
-            // Block sizes per NIST FIPS pub 180-4.
+            // Block sizes per NIST FIPS pub 180-4 and FIPS 202.
             switch (hashAlgorithmName)
             {
                 case HashAlgorithmNames.SHA1:
@@ -268,6 +208,12 @@ namespace System.Security.Cryptography
                 case HashAlgorithmNames.SHA384:
                 case HashAlgorithmNames.SHA512:
                     return 1024 / 8;
+                case HashAlgorithmNames.SHA3_256:
+                    return HMACSHA3_256.BlockSize;
+                case HashAlgorithmNames.SHA3_384:
+                    return HMACSHA3_384.BlockSize;
+                case HashAlgorithmNames.SHA3_512:
+                    return HMACSHA3_512.BlockSize;
                 default:
                     Debug.Fail($"Unexpected hash algorithm '{hashAlgorithmName}'");
                     throw new CryptographicException();

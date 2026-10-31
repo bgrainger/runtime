@@ -3,175 +3,47 @@ TOP=$(realpath $(CURDIR)/../../..)
 
 escape_quote = $(subst ",\",$(1))
 
-DOTNET=$(TOP)/dotnet.sh
-JSVU=$(HOME)/.jsvu
-CHROMEDRIVER?=$(HOME)/.chromedriver
-GECKODRIVER?=$(HOME)/.geckodriver
+ifneq ($(V),)
+MSBUILD_ARGS+=/p:MonoVerboseBuild=true
+MSBUILD_ARGS+=-bl
+endif
 
-#
-# These variables are set by wasm.proj
-#
-EMSDK_PATH?=$(TOP)/src/mono/wasm/emsdk
+MSBUILD_ARGS+=/p:KeepNativeSymbols=true
+
+DOTNET=$(TOP)/dotnet.sh
+
+# Resolve emsdk from the shared wasm tool cache (see eng/wasm/WasmToolCache.props). Leave
+# EMSDK_PATH unset when it can't be resolved so the build provisions it on demand.
+EMSDK_PATH?=$(shell . $(TOP)/eng/wasm/wasm-tool-cache.sh && wasm_tool_cache_dir emscripten $(TOP)/src/mono/browser/emscripten-version.txt $(TOP))
 CONFIG?=Release
 BINDIR?=$(TOP)/artifacts/bin
 OBJDIR?=$(TOP)/artifacts/obj
-PINVOKE_TABLE?=$(TOP)/artifacts/obj/wasm/pinvoke-table.h
-MONO_BIN_DIR?=$(BINDIR)/mono/Browser.wasm.$(CONFIG)
-NATIVE_BIN_DIR?=$(BINDIR)/native/net7.0-Browser-$(CONFIG)-wasm
-ICU_LIBDIR?=
-SYSTEM_NATIVE_LIBDIR?=$(TOP)/src/native/libs/System.Native
-_MSBUILD_WASM_BUILD_ARGS=/p:TargetOS=Browser /p:TargetArchitecture=wasm /p:Configuration=$(CONFIG)
+_MSBUILD_WASM_BUILD_ARGS=/p:TargetOS=browser /p:TargetArchitecture=wasm /p:Configuration=$(CONFIG)
 XHARNESS_BROWSER?=chrome
-EMCC_DEFAULT_RSP=$(NATIVE_BIN_DIR)/src/emcc-default.rsp
+HELIX_TARGET_QUEUE?=Ubuntu.1804.Amd64.Open
 
-all: build-native icu-files source-files header-files
+LOG_PATH=$(TOP)/artifacts/log/$(CONFIG)
 
-#
-# EMSCRIPTEN SETUP
-#
-#  If EMSDK_PATH is not set by the caller, download and setup a local emsdk install.
-#
+all: build-all
 
-EMSCRIPTEN_VERSION := $(shell cat $(TOP)/src/mono/wasm/emscripten-version.txt)
-EMSDK_LOCAL_PATH=emsdk
-EMCC=source $(EMSDK_PATH)/emsdk_env.sh 2>/dev/null && emcc
-
-.stamp-wasm-install-and-select-$(EMSCRIPTEN_VERSION):
-	rm -rf $(EMSDK_LOCAL_PATH)
-	git clone https://github.com/emscripten-core/emsdk.git $(EMSDK_LOCAL_PATH)
-	cd $(EMSDK_LOCAL_PATH) && git checkout $(EMSCRIPTEN_VERSION)
-	cd $(EMSDK_LOCAL_PATH) && ./emsdk install $(EMSCRIPTEN_VERSION)
-	cd $(EMSDK_LOCAL_PATH) && ./emsdk activate $(EMSCRIPTEN_VERSION)
-	touch $@
-
-provision-wasm: .stamp-wasm-install-and-select-$(EMSCRIPTEN_VERSION)
-	@echo "----------------------------------------------------------"
-	@echo "Installed emsdk into EMSDK_PATH=$(TOP)/src/mono/wasm/emsdk"
-
-# FIXME: When https://github.com/dotnet/runtime/issues/54565 is fixed, and the WasmApp targets are updated to use mono runtime components, remove this
-MONO_COMPONENT_LIBS= \
-	$(MONO_BIN_DIR)/libmono-component-hot_reload-static.a \
-	$(MONO_BIN_DIR)/libmono-component-debugger-static.a \
-	$(MONO_BIN_DIR)/libmono-component-diagnostics_tracing-stub-static.a
-
-MONO_OBJ_DIR=$(OBJDIR)/mono/Browser.wasm.$(CONFIG)
-MONO_INCLUDE_DIR=$(MONO_BIN_DIR)/include/mono-2.0
+MONO_OBJ_DIR=$(OBJDIR)/mono/browser.wasm.$(CONFIG)
 BUILDS_OBJ_DIR=$(MONO_OBJ_DIR)/wasm
-# libmonosgen-2.0 is in MONO_LIBS twice because the components and the runtime are depend on each other
-MONO_LIBS = \
-	$(MONO_BIN_DIR)/libmono-ee-interp.a \
-	$(MONO_BIN_DIR)/libmonosgen-2.0.a \
-	$(MONO_COMPONENT_LIBS) \
-	$(MONO_BIN_DIR)/libmonosgen-2.0.a \
-	$(MONO_BIN_DIR)/libmono-ilgen.a \
-	$(MONO_BIN_DIR)/libmono-icall-table.a \
-	$(MONO_BIN_DIR)/libmono-profiler-aot.a \
-	${NATIVE_BIN_DIR}/libSystem.Native.a \
-	${NATIVE_BIN_DIR}/libSystem.IO.Compression.Native.a \
-	$(ICU_LIBDIR)/libicuuc.a \
-	$(ICU_LIBDIR)/libicui18n.a
-
-ifeq ($(NOSTRIP),)
-STRIP_CMD=&& $(EMSDK_PATH)/upstream/bin/wasm-opt --strip-dwarf $(NATIVE_BIN_DIR)/dotnet.wasm -o $(NATIVE_BIN_DIR)/dotnet.wasm
-else
-STRIP_CMD=
-endif
 
 #
-# Wasm builds
-#
-
-$(NATIVE_BIN_DIR):
-	mkdir -p $$@
-
-$(NATIVE_BIN_DIR)/src:
-	mkdir -p $$@
-
-$(NATIVE_BIN_DIR)/include/wasm:
-	mkdir -p $$@
-
-$(BUILDS_OBJ_DIR):
-	mkdir -p $$@
-
-$(NATIVE_BIN_DIR)/dotnet.js: runtime/driver.c runtime/pinvoke.c runtime/pinvoke.h runtime/corebindings.c $(NATIVE_BIN_DIR)/src/runtime.iffe.js runtime/library-dotnet.js $(SYSTEM_NATIVE_LIBDIR)/pal_random.js $(MONO_LIBS) $(EMCC_DEFAULT_RSP) | $(NATIVE_BIN_DIR)
-	$(DOTNET) build $(CURDIR)/wasm.proj $(_MSBUILD_WASM_BUILD_ARGS) /t:BuildWasmRuntimes $(MSBUILD_ARGS)
-
-$(EMCC_DEFAULT_RSP): $(CURDIR)/wasm.proj | $(NATIVE_BIN_DIR)/src Makefile
-	$(DOTNET) build $(CURDIR)/wasm.proj /p:Configuration=$(CONFIG) /t:GenerateEmccPropsAndRspFiles
-
-$(NATIVE_BIN_DIR)/src/emcc-props.json: $(EMSDK_PATH)/upstream/.emsdk_version | $(NATIVE_BIN_DIR)/src
-	$(DOTNET) build $(CURDIR)/wasm.proj /p:Configuration=$(CONFIG) /t:GenerateEmccPropsAndRspFiles
-
-build-native: $(NATIVE_BIN_DIR)/dotnet.js $(NATIVE_BIN_DIR)/src/emcc-default.rsp $(NATIVE_BIN_DIR)/src/emcc-props.json
-
-clean-emsdk:
-	$(RM) -rf $(EMSDK_LOCAL_PATH)
-
-clean:
-	$(RM) -rf $(BUILDS_OBJ_DIR)
-
-icu-files: $(wildcard $(ICU_LIBDIR)/*.dat) $(ICU_LIBDIR)/libicuuc.a $(ICU_LIBDIR)/libicui18n.a | $(NATIVE_BIN_DIR)
-	cp $^ $(NATIVE_BIN_DIR)
-
-source-files: runtime/driver.c runtime/pinvoke.c runtime/corebindings.c runtime/library-dotnet.js $(SYSTEM_NATIVE_LIBDIR)/pal_random.js | $(NATIVE_BIN_DIR)/src
-	cp $^ $(NATIVE_BIN_DIR)/src
-
-header-files: runtime/pinvoke.h | $(NATIVE_BIN_DIR)/include/wasm
-	cp $^ $(NATIVE_BIN_DIR)/include/wasm
-
 # Helper targets
+#
+
 .PHONY: runtime
 .PHONY: build
-
-build:
-	EMSDK_PATH=$(EMSDK_PATH) $(TOP)/build.sh mono+libs.pretest -os Browser -c $(CONFIG) /p:ContinueOnError=false /p:StopOnFirstFailure=true $(MSBUILD_ARGS)
-
-build-all:
-	EMSDK_PATH=$(EMSDK_PATH) $(TOP)/build.sh mono+libs -os Browser -c $(CONFIG) /p:ContinueOnError=false /p:StopOnFirstFailure=true $(MSBUILD_ARGS)
-
-runtime:
-	EMSDK_PATH=$(EMSDK_PATH) $(TOP)/build.sh mono.runtime+mono.wasmruntime+libs.native+libs.pretest -os Browser -c $(CONFIG) /p:ContinueOnError=false /p:StopOnFirstFailure=true $(MSBUILD_ARGS)
-
-# Rebuild only the mono runtime+cross compiler, don't build dotnet.wasm
-mono-runtime:
-	EMSDK_PATH=$(EMSDK_PATH) $(TOP)/build.sh mono.runtime+libs.native+libs.pretest -os Browser -c $(CONFIG) /p:ContinueOnError=false /p:StopOnFirstFailure=true $(MSBUILD_ARGS)
-
-corlib:
-	EMSDK_PATH=$(EMSDK_PATH) $(TOP)/build.sh mono.corelib+mono.wasmruntime+libs.pretest -os Browser -c $(CONFIG) /p:ContinueOnError=false /p:StopOnFirstFailure=true $(MSBUILD_ARGS)
 
 test-runner:
 	$(DOTNET) build $(TOP)/src/libraries/Common/tests/WasmTestRunner /p:Configuration=$(CONFIG) $(MSBUILD_ARGS)
 
-app-builder:
-	$(DOTNET) build $(TOP)/src/tasks/WasmAppBuilder
-
 build-tasks:
-	$(DOTNET) build $(TOP)/src/tasks/WasmBuildTasks $(MSBUILD_ARGS)
+	$(DOTNET) build $(TOP)/src/tasks/tasks.proj /p:Configuration=$(CONFIG) /p:TargetOS=browser $(MSBUILD_ARGS)
 
-run-tests-v8-%:
-	EMSDK_PATH=$(EMSDK_PATH) PATH="$(JSVU):$(PATH)" $(DOTNET) build $(TOP)/src/libraries/$*/tests/ /t:Test $(_MSBUILD_WASM_BUILD_ARGS) /p:JSEngine=V8 $(MSBUILD_ARGS)
-run-tests-sm-%:
-	EMSDK_PATH=$(EMSDK_PATH) PATH="$(JSVU):$(PATH)" $(DOTNET) build $(TOP)/src/libraries/$*/tests/ /t:Test $(_MSBUILD_WASM_BUILD_ARGS) /p:JSEngine=SpiderMonkey $(MSBUILD_ARGS)
-run-tests-jsc-%:
-	EMSDK_PATH=$(EMSDK_PATH) PATH="$(JSVU):$(PATH)" $(DOTNET) build $(TOP)/src/libraries/$*/tests/ /t:Test $(_MSBUILD_WASM_BUILD_ARGS) /p:JSEngine=JavaScriptCore $(MSBUILD_ARGS)
+clean:
+	$(RM) -rf $(BUILDS_OBJ_DIR)
 
-run-tests-%:
-	EMSDK_PATH=$(EMSDK_PATH) PATH="$(JSVU):$(PATH)" $(DOTNET) build $(TOP)/src/libraries/$*/tests/ /t:Test $(_MSBUILD_WASM_BUILD_ARGS) $(MSBUILD_ARGS)
-
-run-build-tests:
-	PATH="$(JSVU):$(PATH)" $(DOTNET) build $(TOP)/src/tests/BuildWasmApps/Wasm.Build.Tests/ /t:Test $(_MSBUILD_WASM_BUILD_ARGS) $(MSBUILD_ARGS)
-
-run-browser-tests-%:
-	PATH="$(GECKODRIVER):$(CHROMEDRIVER):$(PATH)" XHARNESS_COMMAND="test-browser --browser=$(XHARNESS_BROWSER)" $(DOTNET) build $(TOP)/src/libraries/$*/tests/ /t:Test $(_MSBUILD_WASM_BUILD_ARGS) $(MSBUILD_ARGS)
-
-run-debugger-tests:
-	if [ ! -z "$(TEST_FILTER)" ]; then \
-		$(DOTNET) test  $(TOP)/src/mono/wasm/debugger/DebuggerTestSuite $(MSBUILD_ARGS) --filter FullyQualifiedName~$(TEST_FILTER) $(TEST_ARGS); \
-	else \
-		$(DOTNET) test  $(TOP)/src/mono/wasm/debugger/DebuggerTestSuite $(MSBUILD_ARGS) $(TEST_ARGS); \
-	fi
-
-build-dbg-proxy:
-	$(DOTNET) build $(TOP)/src/mono/wasm/debugger/BrowserDebugHost $(MSBUILD_ARGS)
-build-dbg-testsuite:
-	$(DOTNET) build $(TOP)/src/mono/wasm/debugger/DebuggerTestSuite $(MSBUILD_ARGS)
+build-app-host:
+	$(DOTNET) build $(TOP)/src/mono/wasm/host $(_MSBUILD_WASM_BUILD_ARGS) $(MSBUILD_ARGS)

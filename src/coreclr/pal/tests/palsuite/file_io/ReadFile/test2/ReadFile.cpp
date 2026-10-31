@@ -14,11 +14,11 @@
 **          WriteFile
 **          GetLastError
 **
-**
 **===================================================================*/
 
 
 #include <palsuite.h>
+#include <sys/mman.h>
 
 
 #define szStringTest "The quick fox jumped over the lazy dog's back.\0"
@@ -29,7 +29,6 @@
 //Previously number of tests was 6, now 4 refer VSW 312690
 #define NOOFTESTS 4
 
-const int PAGESIZE = 4096;
 char *readBuffer_ReadFile_test2;
 
 BOOL validateResults_ReadFile_test2(const char* szString,  // string read
@@ -66,9 +65,9 @@ BOOL readTest_ReadFile_test2(DWORD dwByteCount, char cResult)
     HANDLE hFile = NULL;
     DWORD dwBytesRead;
     BOOL bRc = FALSE;
-    
-    // open the test file 
-    hFile = CreateFile(szReadableFile, 
+
+    // open the test file
+    hFile = CreateFile(szReadableFile,
         GENERIC_READ,
         FILE_SHARE_READ,
         NULL,
@@ -77,12 +76,15 @@ BOOL readTest_ReadFile_test2(DWORD dwByteCount, char cResult)
         NULL);
     if(hFile == INVALID_HANDLE_VALUE)
     {
-        Trace("ReadFile: ERROR -> Unable to open file \"%s\".\n", 
+        Trace("ReadFile: ERROR -> Unable to open file \"%s\".\n",
             szReadableFile);
         return FALSE;
     }
 
-    memset(readBuffer_ReadFile_test2, 0, PAGESIZE);
+    SYSTEM_INFO sysInfo;
+    GetSystemInfo(&sysInfo);
+    long pageSize = sysInfo.dwPageSize;
+    memset(readBuffer_ReadFile_test2, 0, pageSize);
 
     bRc = ReadFile(hFile, readBuffer_ReadFile_test2, dwByteCount, &dwBytesRead, NULL);
 
@@ -94,7 +96,7 @@ BOOL readTest_ReadFile_test2(DWORD dwByteCount, char cResult)
             Trace("\nbRc = %d\n", bRc);
             Trace("readBuffer = [%s]  dwByteCount = %d  dwBytesRead = %d\n", readBuffer_ReadFile_test2, dwByteCount, dwBytesRead);
             Trace("cresult = 1\n");
-            Trace("getlasterror = %d\n", GetLastError()); 
+            Trace("getlasterror = %d\n", GetLastError());
             CloseHandle(hFile);
             return FALSE;
         }
@@ -121,51 +123,53 @@ BOOL readTest_ReadFile_test2(DWORD dwByteCount, char cResult)
 PALTEST(file_io_ReadFile_test2_paltest_readfile_test2, "file_io/ReadFile/test2/paltest_readfile_test2")
 {
     HANDLE hFile = NULL;
-    const int BUFFER_SIZE = 2 * PAGESIZE;
 
-    DWORD dwByteCount[] = { 0,   
-                            10,  
-                            strlen(szStringTest),
-                            PAGESIZE
+    SYSTEM_INFO sysInfo;
+    GetSystemInfo(&sysInfo);
+    long pageSize = sysInfo.dwPageSize;
+    long bufferSize = 2 * pageSize;
+
+    DWORD dwByteCount[] = { 0,
+                            10,
+                            (DWORD)strlen(szStringTest),
+                            (DWORD)pageSize
     // Commented out two negative test cases : Refer VSW 312690
-    //                            2 * PAGESIZE,
+    //                            2 * pageSize,
     //                           -1
                             };
 
-    DWORD oldProt;
-	char szResults[] =  "1111"; // Was "111100": Refer VSW 312690
+    char szResults[] =  "1111"; // Was "111100": Refer VSW 312690
     int i;
     BOOL bRc = FALSE;
     DWORD dwBytesWritten = 0;
-    
+
     if (0 != PAL_Initialize(argc,argv))
     {
         return FAIL;
     }
 
-    /* allocate read-write memery for readBuffer */
-    if (!(readBuffer_ReadFile_test2 = (char*) VirtualAlloc(NULL, BUFFER_SIZE, MEM_COMMIT, PAGE_READWRITE)))
+    readBuffer_ReadFile_test2 = (char*)mmap(NULL, bufferSize, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+	if (readBuffer_ReadFile_test2 == MAP_FAILED)
 	{
-		Fail("VirtualAlloc failed: GetLastError returns %d\n", GetLastError());
-		return FAIL;
-	}
-	
-    /* write protect the second page of readBuffer */
-	if (!VirtualProtect(&readBuffer_ReadFile_test2[PAGESIZE], PAGESIZE, PAGE_NOACCESS, &oldProt))
-	{
-		Fail("VirtualProtect failed: GetLastError returns %d\n", GetLastError());
+		Fail("mmap failed for readBuffer\n");
 		return FAIL;
 	}
 
-    // create the test file 
-    hFile = CreateFile(szReadableFile, 
+    if (mprotect(&readBuffer_ReadFile_test2[pageSize], pageSize, PROT_NONE) != 0)
+	{
+		Fail("mprotect failed for readBuffer\n");
+		return FAIL;
+	}
+
+    // create the test file
+    hFile = CreateFile(szReadableFile,
         GENERIC_WRITE,
         FILE_SHARE_WRITE,
         NULL,
         CREATE_ALWAYS,
         FILE_ATTRIBUTE_NORMAL,
         NULL);
-    
+
 	if(hFile == INVALID_HANDLE_VALUE)
     {
         Fail("ReadFile: ERROR -> Unable to create file \"%s\" (%d).\n",
@@ -175,7 +179,7 @@ PALTEST(file_io_ReadFile_test2_paltest_readfile_test2, "file_io/ReadFile/test2/p
     bRc = WriteFile(hFile, szStringTest, strlen(szStringTest), &dwBytesWritten, NULL);
     CloseHandle(hFile);
 
-    
+
     for (i = 0; i< NOOFTESTS; i++)
     {
         bRc = readTest_ReadFile_test2(dwByteCount[i], szResults[i]);
@@ -184,9 +188,8 @@ PALTEST(file_io_ReadFile_test2_paltest_readfile_test2, "file_io/ReadFile/test2/p
             Fail("ReadFile: ERROR -> Failed on test[%d]\n", i);
         }
     }
-	
-	VirtualFree(readBuffer_ReadFile_test2, BUFFER_SIZE, MEM_RELEASE);
+
+	munmap(readBuffer_ReadFile_test2, bufferSize);
     PAL_Terminate();
     return PASS;
 }
-

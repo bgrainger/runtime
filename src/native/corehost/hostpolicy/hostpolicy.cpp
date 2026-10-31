@@ -4,6 +4,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <pal.h>
 #include "args.h"
 #include <trace.h>
@@ -18,6 +19,7 @@
 #include <hostpolicy.h>
 #include "hostpolicy_context.h"
 #include "bundle/runner.h"
+#include "shared_store.h"
 
 namespace
 {
@@ -63,7 +65,31 @@ namespace
 
             // Verbose logging
             if (trace::is_enabled())
+            {
                 g_context->coreclr_properties.log_properties();
+                if (!g_context->coreclr_properties.contains(_STRINGIFY(HOST_PROPERTY_TRUSTED_PLATFORM_ASSEMBLIES)))
+                {
+                    for (const char* name : g_context->tpa_names)
+                    {
+                        std::unordered_map<std::string, hostpolicy_context_t::tpa_path_t>::const_iterator path =
+                            g_context->tpa_paths.find(name);
+                        assert(path != g_context->tpa_paths.end());
+
+                        const char* directory = path->second.directory;
+                        assert(directory[0] != '\0' && directory[strlen(directory) - 1] == static_cast<char>(DIR_SEPARATOR));
+
+                        pal::string_t name_str;
+                        pal::string_t directory_str;
+                        pal::string_t file_name_str;
+                        if (pal::clr_palstring(name, &name_str)
+                            && pal::clr_palstring(directory, &directory_str)
+                            && pal::clr_palstring(path->second.file_name.c_str(), &file_name_str))
+                        {
+                            trace::verbose(_X("TPA entry %s = %s%s"), name_str.c_str(), directory_str.c_str(), file_name_str.c_str());
+                        }
+                    }
+                }
+            }
 
             std::vector<char> host_path;
             pal::pal_clrstring(g_context->host_path, &host_path);
@@ -96,7 +122,7 @@ namespace
     }
 
     int create_hostpolicy_context(
-        hostpolicy_init_t &hostpolicy_init,
+        const hostpolicy_init_t &hostpolicy_init,
         const int argc,
         const pal::char_t *argv[],
         bool breadcrumbs_enabled,
@@ -141,7 +167,13 @@ namespace
 
         {
             std::lock_guard<std::mutex> lock{ g_context_lock };
-            g_context.reset(context_local.release());
+            g_context.reset(context_local.release(), [](hostpolicy_context_t* context)
+            {
+                // Before runtime load, release the context when its last owner goes away.
+                // After runtime load, retain it for callbacks and values that should survive for the process lifetime.
+                if (context->coreclr == nullptr)
+                    delete context;
+            });
         }
 
         return StatusCode::Success;
@@ -286,22 +318,17 @@ int HOSTPOLICY_CALLTYPE run_app(const int argc, const pal::char_t *argv[])
 
 void trace_hostpolicy_entrypoint_invocation(const pal::string_t& entryPointName)
 {
-    trace::info(_X("--- Invoked hostpolicy [commit hash: %s] [%s,%s,%s][%s] %s = {"),
-        _STRINGIFY(REPO_COMMIT_HASH),
-        _STRINGIFY(HOST_POLICY_PKG_NAME),
-        _STRINGIFY(HOST_POLICY_PKG_VER),
-        _STRINGIFY(HOST_POLICY_PKG_REL_DIR),
-        get_arch(),
-        entryPointName.c_str());
+    if (trace::is_enabled())
+        trace::info(_X("--- Invoked hostpolicy [version: %s] %s = {"), get_host_version_description().c_str(), entryPointName.c_str());
 }
 
 //
-// Loads and initilizes the hostpolicy.
+// Loads and initializes the hostpolicy.
 //
-// If hostpolicy is already initalized, the library will not be
+// If hostpolicy is already initialized, the library will not be
 // reinitialized.
 //
-SHARED_API int HOSTPOLICY_CALLTYPE corehost_load(host_interface_t* init)
+SHARED_API int HOSTPOLICY_CALLTYPE corehost_load(const host_interface_t* init)
 {
     assert(init != nullptr);
     std::lock_guard<std::mutex> lock{ g_init_lock };
@@ -353,9 +380,6 @@ void trace_corehost_init(
                 break;
             case host_mode_t::apphost:
                 host_mode_str = _X("apphost");
-                break;
-            case host_mode_t::split_fx:
-                host_mode_str = _X("split_fx");
                 break;
             case host_mode_t::libhost:
                 host_mode_str = _X("libhost");
@@ -454,7 +478,7 @@ SHARED_API int HOSTPOLICY_CALLTYPE corehost_main_with_output_buffer(const int ar
         {
             rc = StatusCode::HostApiBufferTooSmall;
             *required_buffer_size = len + 1;
-            trace::info(_X("get-native-search-directories failed with buffer too small"), output_string.c_str());
+            trace::info(_X("get-native-search-directories failed with buffer too small. Required: %d, available: %d"), len + 1, buffer_size);
         }
         else
         {
@@ -467,7 +491,7 @@ SHARED_API int HOSTPOLICY_CALLTYPE corehost_main_with_output_buffer(const int ar
     else
     {
         trace::error(_X("Unknown command: %s"), g_init.host_command.c_str());
-        rc = StatusCode::LibHostUnknownCommand;
+        rc = StatusCode::LibHostInvalidArgs;
     }
 
     return rc;
@@ -536,6 +560,18 @@ namespace
                 "Internal.Runtime.InteropServices.ComponentActivator",
                 "GetFunctionPointer",
                 delegate);
+        case coreclr_delegate_type::load_assembly:
+            return coreclr->create_delegate(
+                "System.Private.CoreLib",
+                "Internal.Runtime.InteropServices.ComponentActivator",
+                "LoadAssembly",
+                delegate);
+        case coreclr_delegate_type::load_assembly_bytes:
+            return coreclr->create_delegate(
+                "System.Private.CoreLib",
+                "Internal.Runtime.InteropServices.ComponentActivator",
+                "LoadAssemblyBytes",
+                delegate);
         default:
             return StatusCode::LibHostInvalidArgs;
         }
@@ -543,15 +579,22 @@ namespace
 
     int HOSTPOLICY_CALLTYPE get_property(const pal::char_t *key, const pal::char_t **value)
     {
-        if (key == nullptr)
+        if (key == nullptr || value == nullptr)
             return StatusCode::InvalidArgFailure;
+
+        *value = nullptr;
 
         const std::shared_ptr<hostpolicy_context_t> context = get_hostpolicy_context(/*require_runtime*/ false);
         if (context == nullptr)
             return StatusCode::HostInvalidState;
 
         if (!context->coreclr_properties.try_get(key, value))
-            return StatusCode::HostPropertyNotFound;
+        {
+            if (pal::strcmp(key, _STRINGIFY(HOST_PROPERTY_TRUSTED_PLATFORM_ASSEMBLIES)) != 0)
+                return StatusCode::HostPropertyNotFound;
+
+            *value = context->get_reconstructed_tpa_property().c_str();
+        }
 
         return StatusCode::Success;
     }
@@ -587,9 +630,13 @@ namespace
 
         const std::shared_ptr<hostpolicy_context_t> context = get_hostpolicy_context(/*require_runtime*/ false);
         if (context == nullptr)
+        {
+            *count = 0;
             return StatusCode::HostInvalidState;
+        }
 
-        size_t actualCount = context->coreclr_properties.count();
+        bool hasExplicitTpa = context->coreclr_properties.contains(_STRINGIFY(HOST_PROPERTY_TRUSTED_PLATFORM_ASSEMBLIES));
+        size_t actualCount = context->coreclr_properties.count() + (hasExplicitTpa ? 0 : 1);
         size_t input_count = *count;
         *count = actualCount;
         if (input_count < actualCount || keys == nullptr || values == nullptr)
@@ -603,6 +650,11 @@ namespace
             ++index;
         };
         context->coreclr_properties.enumerate(callback);
+        if (!hasExplicitTpa)
+        {
+            keys[index] = _STRINGIFY(HOST_PROPERTY_TRUSTED_PLATFORM_ASSEMBLIES);
+            values[index] = context->get_reconstructed_tpa_property().c_str();
+        }
 
         return StatusCode::Success;
     }
@@ -654,7 +706,7 @@ namespace
 //      [out] if initialization is successful, populated with a contract for performing operations on hostpolicy
 //
 // Return value:
-//    Success                            - Initialization was succesful
+//    Success                            - Initialization was successful
 //    Success_HostAlreadyInitialized     - Request is compatible with already initialized hostpolicy
 //    Success_DifferentRuntimeProperties - Request has runtime properties that differ from already initialized hostpolicy
 //
@@ -824,6 +876,50 @@ SHARED_API int HOSTPOLICY_CALLTYPE corehost_unload()
     return StatusCode::Success;
 }
 
+namespace
+{
+    pal::string_t get_root_deps_file(const hostpolicy_init_t& init)
+    {
+        if (init.is_framework_dependent)
+        {
+            const fx_definition_t& root_fx = get_root_framework(init.fx_definitions);
+            return deps_resolver_t::get_fx_deps(root_fx.get_dir(), root_fx.get_name());
+        }
+
+        // For self-contained, the root deps file is the app's deps file
+        if (!init.deps_file.empty())
+            return init.deps_file;
+
+        const std::shared_ptr<hostpolicy_context_t> context = get_hostpolicy_context(/*require_runtime*/ true);
+        if (bundle::info_t::is_single_file_bundle())
+        {
+            const bundle::runner_t* app = bundle::runner_t::app();
+            const pal::string_t& app_root = app->base_path();
+
+            return get_deps_from_app_binary(app->base_path(), context->application);
+        }
+
+        return get_deps_from_app_binary(get_directory(context->application), context->application);
+    }
+
+    deps_json_t::rid_resolution_options_t get_component_rid_resolution_options(const hostpolicy_init_t& init)
+    {
+        bool read_fallback_graph = hostpolicy_context_t::should_read_rid_fallback_graph(init);
+        if (read_fallback_graph)
+        {
+            // The RID graph still has to come from the actual root framework, so get the deps file
+            // for the app's root framework and read in the graph.
+            static deps_json_t::rid_fallback_graph_t root_rid_fallback_graph =
+                deps_json_t::get_rid_fallback_graph(get_root_deps_file(init));
+            return { read_fallback_graph, &root_rid_fallback_graph };
+        }
+        else
+        {
+            return { read_fallback_graph, nullptr };
+        }
+    }
+}
+
 SHARED_API int HOSTPOLICY_CALLTYPE corehost_resolve_component_dependencies(
     const pal::char_t *component_main_assembly_path,
     corehost_resolve_component_dependencies_result_fn result)
@@ -843,31 +939,26 @@ SHARED_API int HOSTPOLICY_CALLTYPE corehost_resolve_component_dependencies(
 
     // IMPORTANT: g_init is static/global and thus potentially accessed from multiple threads
     // We must only use it as read-only here (unlike the run scenarios which own it).
-    // For example the frameworks in g_init.fx_definitions can't be used "as-is" by the resolver
-    // right now as it would try to re-parse the .deps.json and thus modify the objects.
+    const hostpolicy_init_t &init = g_init;
 
     // The assumption is that component dependency resolution will only be called
     // when the coreclr is hosted through this hostpolicy and thus it will
     // have already called corehost_main_init.
-    if (!g_init.host_info.is_valid(g_init.host_mode))
+    if (!init.host_info.is_valid(init.host_mode))
     {
         trace::error(_X("Hostpolicy must be initialized and corehost_main must have been called before calling corehost_resolve_component_dependencies."));
         return StatusCode::CoreHostLibLoadFailure;
     }
 
     // If the current host mode is libhost, use apphost instead.
-    host_mode_t host_mode = g_init.host_mode == host_mode_t::libhost ? host_mode_t::apphost : g_init.host_mode;
+    host_mode_t host_mode = init.host_mode == host_mode_t::libhost ? host_mode_t::apphost : init.host_mode;
 
     // Initialize arguments (basically the structure describing the input app/component to resolve)
     arguments_t args;
     if (!init_arguments(
             component_main_assembly_path,
-            g_init.host_info,
-            g_init.tfm,
             host_mode,
-            /* additional_deps_serialized */ pal::string_t(), // Additional deps - don't use those from the app, they're already in the app
             /* deps_file */ pal::string_t(), // Avoid using any other deps file than the one next to the component
-            g_init.probe_paths,
             /* init_from_file_system */ true,
             args))
     {
@@ -881,10 +972,9 @@ SHARED_API int HOSTPOLICY_CALLTYPE corehost_resolve_component_dependencies(
 
     // For now intentionally don't process .runtimeconfig.json since we don't perform framework resolution.
 
-    // Call parse_runtime_config since it initializes the defaults for various settings
-    // but we don't have any .runtimeconfig.json for the component, so pass in empty paths.
+    // Initialize the runtime config without processing a .runtimeconfig.json for the component.
     // Empty paths is a valid case and the method will simply skip parsing anything.
-    app->parse_runtime_config(pal::string_t(), pal::string_t(), runtime_config_t::settings_t());
+    app->parse_runtime_config(pal::string_t(), pal::string_t(), std::nullopt);
     if (!app->get_runtime_config().is_valid())
     {
         // This should really never happen, but fail gracefully if it does anyway.
@@ -903,12 +993,15 @@ SHARED_API int HOSTPOLICY_CALLTYPE corehost_resolve_component_dependencies(
     // TODO Review: Since we're only passing the one component framework, the resolver will not consider
     // frameworks from the app for probing paths. So potential references to paths inside frameworks will not resolve.
 
-    // The RID graph still has to come from the actuall root framework, so take that from the g_init.fx_definitions
-    // which are the frameworks for the app.
+    static deps_json_t::rid_resolution_options_t rid_resolution_options = get_component_rid_resolution_options(init);
+
     deps_resolver_t resolver(
         args,
         component_fx_definitions,
-        &get_root_framework(g_init.fx_definitions).get_deps().get_rid_fallback_graph(),
+        /* additional_deps_serialized */ nullptr, // Additional deps - don't use those from the app, they're already in the app
+        shared_store::get_paths(init.tfm, host_mode, init.host_info.host_path),
+        init.probe_paths,
+        rid_resolution_options,
         true);
 
     pal::string_t resolver_errors;
@@ -927,19 +1020,31 @@ SHARED_API int HOSTPOLICY_CALLTYPE corehost_resolve_component_dependencies(
         return StatusCode::ResolverResolveFailure;
     }
 
+    pal::string_t tpa;
+    for (const probe_paths_t::tpa_t::entry_t& entry : probe_paths.tpa.entries)
+    {
+        assert(entry.directory_index < probe_paths.tpa.directories.size());
+        const probe_paths_t::tpa_t::entry_t& directory =
+            probe_paths.tpa.entries[probe_paths.tpa.directories[entry.directory_index]];
+        assert(directory.file_name_offset != 0 && directory.path[directory.file_name_offset - 1] == DIR_SEPARATOR);
+        tpa.append(directory.path, 0, directory.file_name_offset);
+        tpa.append(entry.path, entry.file_name_offset, pal::string_t::npos);
+        tpa.push_back(PATH_SEPARATOR);
+    }
+
     if (trace::is_enabled())
     {
         trace::info(_X("corehost_resolve_component_dependencies results: {"));
-        trace::info(_X("  assembly_paths: '%s'"), probe_paths.tpa.data());
-        trace::info(_X("  native_search_paths: '%s'"), probe_paths.native.data());
-        trace::info(_X("  resource_search_paths: '%s'"), probe_paths.resources.data());
+        trace::info(_X("  assembly_paths: '%s'"), tpa.c_str());
+        trace::info(_X("  native_search_paths: '%s'"), probe_paths.native.c_str());
+        trace::info(_X("  resource_search_paths: '%s'"), probe_paths.resources.c_str());
         trace::info(_X("}"));
     }
 
     result(
-        probe_paths.tpa.data(),
-        probe_paths.native.data(),
-        probe_paths.resources.data());
+        tpa.c_str(),
+        probe_paths.native.c_str(),
+        probe_paths.resources.c_str());
 
     return 0;
 }
@@ -961,7 +1066,7 @@ SHARED_API int HOSTPOLICY_CALLTYPE corehost_resolve_component_dependencies(
 // By default no callback is registered in which case the errors are written to stderr.
 //
 // Each call to the error writer is sort of like writing a single line (the EOL character is omitted).
-// Multiple calls to the error writer may occure for one failure.
+// Multiple calls to the error writer may occur for one failure.
 //
 SHARED_API corehost_error_writer_fn HOSTPOLICY_CALLTYPE corehost_set_error_writer(corehost_error_writer_fn error_writer)
 {

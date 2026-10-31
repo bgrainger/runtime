@@ -5,12 +5,10 @@
 **
 ** Header:  Assembly.hpp
 **
-
-**
 ** Purpose: Implements assembly (loader domain) architecture
 **
-**
 ===========================================================*/
+
 #ifndef _ASSEMBLY_H
 #define _ASSEMBLY_H
 
@@ -23,20 +21,6 @@
 #include "cordbpriv.h"
 #include "assemblyspec.hpp"
 
-class BaseDomain;
-class AppDomain;
-class DomainAssembly;
-class DomainModule;
-class SystemDomain;
-class ClassLoader;
-class ComDynamicWrite;
-class AssemblySink;
-class AssemblyNative;
-class AssemblySpec;
-class ISharedSecurityDescriptor;
-class SecurityTransparencyBehavior;
-class Pending;
-class AllocMemTracker;
 class FriendAssemblyDescriptor;
 
 // Bits in m_dwDynamicAssemblyAccess (see System.Reflection.Emit.AssemblyBuilderAccess.cs)
@@ -44,53 +28,145 @@ class FriendAssemblyDescriptor;
 #define ASSEMBLY_ACCESS_SAVE    0x02
 #define ASSEMBLY_ACCESS_COLLECT 0x8
 
-struct CreateDynamicAssemblyArgsGC
-{
-    ASSEMBLYNAMEREF assemblyName;
-    LOADERALLOCATORREF loaderAllocator;
-};
-
-struct CreateDynamicAssemblyArgs : CreateDynamicAssemblyArgsGC
-{
-    INT32           access;
-    StackCrawlMark* stackMark;
-};
-
-// An assembly is the unit of deployment for managed code.  Typically Assemblies are one to one with files
-// (Modules), however this is not necessary, as an assembly can contain serveral files (typically you only
-// do this so that you can resource-only modules that are national language specific)
-//
-// Conceptually Assemblies are loaded into code:AppDomain
-//
-// So in general an assemly is a list of code:Module, where a code:Module is 1-1 with a DLL or EXE file.
-//
-// One of the modules the code:Assembly.m_pManifest is special in that it knows about all the other
-// modules in an assembly (often it is the only one).
+// An assembly is the unit of deployment for managed code.
+// Assemblies are one to one with files since coreclr does not support multimodule assemblies.
 //
 class Assembly
 {
-    friend class BaseDomain;
-    friend class SystemDomain;
     friend class ClassLoader;
     friend class AssemblyNative;
     friend class AssemblySpec;
-    friend class NDirect;
-    friend class AssemblyNameNative;
     friend class ClrDataAccess;
 
-public:
-    Assembly(BaseDomain *pDomain, PEAssembly *pPEAssembly, DebuggerAssemblyControlFlags debuggerFlags, BOOL fIsCollectible);
-    void Init(AllocMemTracker *pamTracker, LoaderAllocator *pLoaderAllocator);
+private:
+    Assembly(PEAssembly *pPEAssembly, LoaderAllocator* pLoaderAllocator);
+    void Init(AllocMemTracker *pamTracker);
 
+// Load state tracking
+public:
+    // Return the File's load level.  Note that this is the last level actually successfully completed.
+    // Note that this is subtly different than the FileLoadLock's level, which is the last level
+    // which was triggered (but potentially skipped if error or inappropriate.)
+    FileLoadLevel GetLoadLevel() { LIMITED_METHOD_DAC_CONTRACT; return m_level; }
+
+    // Error means that a permanent load error has occurred.
+    bool IsError()
+    {
+        LIMITED_METHOD_DAC_CONTRACT;
+        DACCOP_IGNORE(FieldAccess, "No marshalling required");
+        return m_pError != NULL;
+    }
+
+    // Loading means that the load is still being tracked by a FileLoadLock.
+    bool IsLoading() { LIMITED_METHOD_CONTRACT; return m_isLoading; }
+
+    // Loaded means that the file can be used passively. This includes loading types, reflection,
+    // and jitting.
+    bool IsLoaded() { LIMITED_METHOD_DAC_CONTRACT; return m_isLoaded; }
+
+    // Active means that the file can be used actively. This includes code execution, static field
+    // access, and instance allocation.
+    bool IsActive() { LIMITED_METHOD_CONTRACT; return m_level >= FILE_ACTIVE; }
+
+    // Checks if the load has reached the point where profilers may be notified
+    // about the file. It's important that IF a profiler is notified, THEN this returns
+    // TRUE, otherwise there can be profiler-attach races where the profiler doesn't see
+    // the file via either enumeration or notification. As a result, this begins
+    // returning TRUE just before the profiler is actually notified.  See
+    // code:ProfilerFunctionEnum::Init#ProfilerEnumAssemblies
+    bool IsAvailableToProfilers()
+    {
+        LIMITED_METHOD_DAC_CONTRACT;
+        return IsProfilerNotified(); // despite the name, this function returns TRUE just before we notify the profiler
+    }
+
+    BOOL DoIncrementalLoad(FileLoadLevel targetLevel);
+
+    void ClearLoading() { LIMITED_METHOD_CONTRACT; m_isLoading = false; }
+    void SetLoadLevel(FileLoadLevel level)
+    {
+        LIMITED_METHOD_CONTRACT;
+        m_level = level;
+        m_isLoaded = (level >= FILE_LOAD_DELIVER_EVENTS);
+    }
+
+    BOOL NotifyDebuggerLoad(int flags, BOOL attaching);
+    void NotifyDebuggerUnload();
+
+    // Ensure that an assembly has reached at least the IsActive state. Throw if not
+    void EnsureActive()
+    {
+        WRAPPER_NO_CONTRACT;
+        return EnsureLoadLevel(FILE_ACTIVE);
+    }
+
+    // CheckActivated is appropriate for asserts that the assembly can be actively used.
+    // Note that this is slightly different from IsActive in that it deals with reentrancy cases properly.
+    CHECK CheckActivated();
+
+    // EnsureLoadLevel is a generic routine used to ensure that the file is not in a delay loaded
+    // state (unless it needs to be.)  This should be used when a particular level of loading
+    // is required for an operation.  Note that deadlocks are tolerated so the level may be one
+    void EnsureLoadLevel(FileLoadLevel targetLevel) DAC_EMPTY();
+
+    // RequireLoadLevel throws an exception if the assembly isn't loaded enough.  Note
+    // that this is intolerant of deadlock related failures so is only really appropriate for
+    // checks inside the main loading loop.
+    void RequireLoadLevel(FileLoadLevel targetLevel) DAC_EMPTY();
+
+    // This should be used to permanently set the load to fail. Do not use with transient conditions
+    void SetError(Exception *ex);
+
+    // Throws if a load error has occurred
+    void ThrowIfError(FileLoadLevel targetLevel) DAC_EMPTY();
+
+    // Checks that a load error has not occurred before the given level
+    CHECK CheckNoError(FileLoadLevel targetLevel) DAC_EMPTY_RET(CHECK::OK());
+
+private:
+    friend class AppDomain;
+    friend class FileLoadLock;
+
+#ifndef DACCESS_COMPILE
+    void Begin();
+    void BeforeTypeLoad();
+    void EagerFixups();
+#ifdef FEATURE_IJW
+    void VtableFixups();
+#endif // FEATURE_IJW
+    void DeliverSyncEvents();
+    void DeliverAsyncEvents();
+    void FinishLoad();
+    void Activate();
+
+    void RegisterWithHostAssembly();
+    void UnregisterFromHostAssembly();
+#endif
+
+    void SetProfilerNotified() { LIMITED_METHOD_CONTRACT; m_notifyFlags |= PROFILER_NOTIFIED; }
+    void SetDebuggerNotified() { LIMITED_METHOD_CONTRACT; m_notifyFlags |= DEBUGGER_NOTIFIED; }
+    void SetShouldNotifyDebugger() { LIMITED_METHOD_CONTRACT; m_notifyFlags |= DEBUGGER_NEEDNOTIFICATION; }
+
+    // IsNotified means that the profiler API notification has been delivered
+    bool IsProfilerNotified() { LIMITED_METHOD_CONTRACT; return (m_notifyFlags & PROFILER_NOTIFIED) == PROFILER_NOTIFIED; }
+    bool IsDebuggerNotified() { LIMITED_METHOD_CONTRACT; return (m_notifyFlags & DEBUGGER_NOTIFIED) == DEBUGGER_NOTIFIED; }
+    bool ShouldNotifyDebugger() { LIMITED_METHOD_CONTRACT; return (m_notifyFlags & DEBUGGER_NEEDNOTIFICATION) == DEBUGGER_NEEDNOTIFICATION; }
+
+    // CheckLoadLevel is an assert predicate used to verify the load level of an assembly.
+    // deadlockOK indicates that the level is allowed to be one short if we are restricted
+    // by loader reentrancy.
+    CHECK CheckLoadLevel(FileLoadLevel requiredLevel, BOOL deadlockOK = TRUE) DAC_EMPTY_RET(CHECK::OK());
+
+public:
     void StartUnload();
     void Terminate( BOOL signalProfiler = TRUE );
 
-    static Assembly *Create(BaseDomain *pDomain, PEAssembly *pPEAssembly, DebuggerAssemblyControlFlags debuggerFlags, BOOL fIsCollectible, AllocMemTracker *pamTracker, LoaderAllocator *pLoaderAllocator);
+    static Assembly *Create(PEAssembly *pPEAssembly, AllocMemTracker *pamTracker, LoaderAllocator *pLoaderAllocator);
     static void Initialize();
 
-    BOOL IsSystem() { WRAPPER_NO_CONTRACT; return m_pManifestFile->IsSystem(); }
+    bool IsSystem() { WRAPPER_NO_CONTRACT; return m_pPEAssembly->IsSystem(); }
 
-    static Assembly *CreateDynamic(AppDomain *pDomain, AssemblyBinder* pBinder, CreateDynamicAssemblyArgs *args);
+    static Assembly* CreateDynamic(AssemblyBinder* pBinder, NativeAssemblyNameParts* pAssemblyNameParts, INT32 hashAlgorithm, INT32 access, LOADERALLOCATORREF* pKeepAlive);
 
     MethodDesc *GetEntryPoint();
 
@@ -101,22 +177,11 @@ public:
     // PrepareModule call.
     void PrepareModuleForAssembly(Module* module, AllocMemTracker *pamTracker);
 
-    // This is the final step of publishing a Module into an Assembly. This step cannot fail.
-    void PublishModuleIntoAssembly(Module *module);
-
 #ifndef DACCESS_COMPILE
     void SetIsTenured()
     {
         WRAPPER_NO_CONTRACT;
-        m_pManifest->SetIsTenured();
-    }
-
-    // CAUTION: This should only be used as backout code if an assembly is unsuccessfully
-    //          added to the shared domain assembly map.
-    void UnsetIsTenured()
-    {
-        WRAPPER_NO_CONTRACT;
-        m_pManifest->UnsetIsTenured();
+        m_pModule->SetIsTenured();
     }
 #endif // DACCESS_COMPILE
 
@@ -130,176 +195,73 @@ public:
         return m_pClassLoader;
     }
 
-    // ------------------------------------------------------------
-    // Modules
-    // ------------------------------------------------------------
-
-    class ModuleIterator
-    {
-        Module* m_pManifest;
-        DWORD m_i;
-
-      public:
-        // The preferred constructor.  If you use this, you don't have to
-        // call Start() yourself
-        ModuleIterator(Assembly *pAssembly)
-        {
-            WRAPPER_NO_CONTRACT;
-            Start(pAssembly);
-        }
-
-        // When you don't have the Assembly at contruction time, use this
-        // constructor, and explicitly call Start() to begin the iteration.
-        ModuleIterator()
-        {
-            LIMITED_METHOD_CONTRACT;
-            SUPPORTS_DAC;
-
-            m_pManifest = NULL;
-            m_i = (DWORD) -1;
-        }
-
-        void Start(Assembly * pAssembly)
-        {
-            LIMITED_METHOD_CONTRACT;
-            SUPPORTS_DAC;
-
-            m_pManifest = pAssembly->GetManifestModule();
-            m_i = (DWORD) -1;
-        }
-
-        BOOL Next()
-        {
-            LIMITED_METHOD_CONTRACT;
-            SUPPORTS_DAC;
-            while (++m_i <= m_pManifest->GetFileMax())
-            {
-                if (GetModule() != NULL)
-                    return TRUE;
-            }
-            return FALSE;
-        }
-
-        Module *GetModule()
-        {
-            LIMITED_METHOD_CONTRACT;
-            SUPPORTS_DAC;
-            return m_pManifest->LookupFile(TokenFromRid(m_i, mdtFile));
-        }
-    };
-
-    ModuleIterator IterateModules()
-    {
-        WRAPPER_NO_CONTRACT;
-        SUPPORTS_DAC;
-        return ModuleIterator(this);
-    }
-
-
-    //****************************************************************************************
-    //
-    // Get the domain the assembly lives in.
-    PTR_BaseDomain Parent()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_pDomain;
-    }
-
-    // Sets the assemblies domain.
-    void SetParent(BaseDomain* pParent);
-
-    //-----------------------------------------------------------------------------------------
-    // EnsureActive ensures that the assembly is properly prepped in the current app domain
-    // for active uses like code execution, static field access, and instance allocation
-    //-----------------------------------------------------------------------------------------
-#ifndef DACCESS_COMPILE
-    VOID EnsureActive();
-#endif
-
-    //-----------------------------------------------------------------------------------------
-    // CheckActivated is a check predicate which should be used in active use paths like code
-    // execution, static field access, and instance allocation
-    //-----------------------------------------------------------------------------------------
-    CHECK CheckActivated();
-
-    // Returns the parent domain if it is not the system area. Returns NULL if it is the
-    // system domain
-    PTR_BaseDomain GetDomain();
     PTR_LoaderAllocator GetLoaderAllocator() { LIMITED_METHOD_DAC_CONTRACT; return m_pLoaderAllocator; }
 
 #ifdef LOGGING
-    LPCWSTR GetDebugName()
+    LPCUTF8 GetDebugName()
     {
         WRAPPER_NO_CONTRACT;
-        return GetManifestFile()->GetDebugName();
+        return GetPEAssembly()->GetDebugName();
     }
 #endif
 
     LPCUTF8 GetSimpleName()
     {
         WRAPPER_NO_CONTRACT;
-        return GetManifestFile()->GetSimpleName();
-    }
-
-    BOOL IsStrongNamed()
-    {
-        WRAPPER_NO_CONTRACT;
-        return GetManifestFile()->IsStrongNamed();
+        return GetPEAssembly()->GetSimpleName();
     }
 
     const void *GetPublicKey(DWORD *pcbPK)
     {
         WRAPPER_NO_CONTRACT;
-        return GetManifestFile()->GetPublicKey(pcbPK);
+        return GetPEAssembly()->GetPublicKey(pcbPK);
     }
 
     ULONG GetHashAlgId()
     {
         WRAPPER_NO_CONTRACT;
-        return GetManifestFile()->GetHashAlgId();
+        return GetPEAssembly()->GetHashAlgId();
     }
 
     HRESULT GetVersion(USHORT *pMajor, USHORT *pMinor, USHORT *pBuild, USHORT *pRevision)
     {
         WRAPPER_NO_CONTRACT;
-        return GetManifestFile()->GetVersion(pMajor, pMinor, pBuild, pRevision);
+        return GetPEAssembly()->GetVersion(pMajor, pMinor, pBuild, pRevision);
     }
 
     LPCUTF8 GetLocale()
     {
         WRAPPER_NO_CONTRACT;
-        return GetManifestFile()->GetLocale();
+        return GetPEAssembly()->GetLocale();
     }
 
     DWORD GetFlags()
     {
         WRAPPER_NO_CONTRACT;
-        return GetManifestFile()->GetFlags();
+        return GetPEAssembly()->GetFlags();
     }
 
     PTR_LoaderHeap GetLowFrequencyHeap();
     PTR_LoaderHeap GetHighFrequencyHeap();
-    PTR_LoaderHeap GetStubHeap();
-
-    PTR_Module GetManifestModule()
+    PTR_Module GetModule()
     {
         LIMITED_METHOD_CONTRACT;
         SUPPORTS_DAC;
-        return m_pManifest;
+        return m_pModule;
     }
 
-    PTR_PEAssembly GetManifestFile()
+    PTR_PEAssembly GetPEAssembly()
     {
         LIMITED_METHOD_CONTRACT;
         SUPPORTS_DAC;
-        return m_pManifestFile;
+        return m_pPEAssembly;
     }
 
-    IMDInternalImport* GetManifestImport()
+    IMDInternalImport* GetMDImport()
     {
         WRAPPER_NO_CONTRACT;
         SUPPORTS_DAC;
-        return m_pManifestFile->GetMDImport();
+        return m_pPEAssembly->GetMDImport();
     }
 
     HRESULT GetCustomAttribute(mdToken parentToken,
@@ -309,7 +271,7 @@ public:
     {
         WRAPPER_NO_CONTRACT;
         SUPPORTS_DAC;
-        return GetManifestModule()->GetCustomAttribute(parentToken, attribute, ppData, pcbData);
+        return GetModule()->GetCustomAttribute(parentToken, attribute, ppData, pcbData);
     }
 
     mdAssembly GetManifestToken()
@@ -324,7 +286,7 @@ public:
     {
         WRAPPER_NO_CONTRACT;
 
-        return m_pManifestFile->GetDisplayName(result, flags);
+        return m_pPEAssembly->GetDisplayName(result, flags);
     }
 #endif // DACCESS_COMPILE
 
@@ -332,10 +294,11 @@ public:
     {
         WRAPPER_NO_CONTRACT;
 
-        return m_pManifestFile->GetCodeBase(result);
+        return m_pPEAssembly->GetCodeBase(result);
     }
 
     OBJECTREF GetExposedObject();
+    OBJECTREF GetExposedObjectIfExists();
 
     DebuggerAssemblyControlFlags GetDebuggerInfoBits(void)
     {
@@ -351,26 +314,24 @@ public:
         m_debuggerFlags = flags;
     }
 
-    void SetCopiedPDBs()
+    Assembly* GetNextAssemblyInSameALC()
     {
-        LIMITED_METHOD_CONTRACT;
-
-        m_debuggerFlags = (DebuggerAssemblyControlFlags) (m_debuggerFlags | DACF_PDBS_COPIED);
+        return m_NextAssemblyInSameALC;
     }
 
-    ULONG HashIdentity()
+    void SetNextAssemblyInSameALC(Assembly* assembly)
     {
-        return GetManifestFile()->HashIdentity();
+        _ASSERTE(m_NextAssemblyInSameALC == NULL);
+        m_NextAssemblyInSameALC = assembly;
     }
 
-    //****************************************************************************************
-    //
-    // Uses the given token to load a module or another assembly. Returns the module in
-    // which the implementation resides.
+private:
+    DebuggerAssemblyControlFlags ComputeDebuggingConfig(void);
 
-    mdFile GetManifestFileToken(IMDInternalImport *pImport, mdFile kFile);
-    mdFile GetManifestFileToken(LPCSTR name);
-
+#ifdef DEBUGGING_SUPPORTED
+    HRESULT GetDebuggingCustomAttributes(DWORD* pdwFlags);
+#endif
+public:
     // On failure:
     //      if loadFlag == Loader::Load => throw
     //      if loadFlag != Loader::Load => return NULL
@@ -379,55 +340,45 @@ public:
                                      mdTypeDef mdNested,
                                      mdTypeDef *pCL);
 
-    static Module * FindModuleByTypeRef(Module *         pModule,
+    static Module * FindModuleByTypeRef(ModuleBase *     pModule,
                                         mdTypeRef        typeRef,
                                         Loader::LoadFlag loadFlag,
                                         BOOL *           pfNoResolutionScope);
 
-    Module *FindModuleByName(LPCSTR moduleName);
-
     //****************************************************************************************
     //
-    INT32 ExecuteMainMethod(PTRARRAYREF *stringArgs, BOOL waitForOtherThreads);
+    INT32 ExecuteMainMethod(PTRARRAYREF *stringArgs, bool captureException);
 
     //****************************************************************************************
 
+private:
     Assembly();
+
+public:
     ~Assembly();
 
     BOOL GetResource(LPCSTR szName, DWORD *cbResource,
-                     PBYTE *pbInMemoryResource, Assembly **pAssemblyRef,
-                     LPCSTR *szFileName, DWORD *dwLocation,
-                     BOOL fSkipRaiseResolveEvent = FALSE);
+                    PBYTE *pbInMemoryResource, Assembly **pAssemblyRef,
+                    LPCSTR *szFileName, DWORD *dwLocation);
 
     //****************************************************************************************
 #ifdef DACCESS_COMPILE
     void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);
 #endif
 
-    FORCEINLINE BOOL IsDynamic() { LIMITED_METHOD_CONTRACT; return m_isDynamic; }
-    FORCEINLINE BOOL IsCollectible() { LIMITED_METHOD_DAC_CONTRACT; return m_isCollectible; }
-
-    DWORD GetNextModuleIndex() { LIMITED_METHOD_CONTRACT; return m_nextAvailableModuleIndex++; }
+    FORCEINLINE bool IsDynamic() { LIMITED_METHOD_CONTRACT; return m_isDynamic; }
+    FORCEINLINE bool IsCollectible() { LIMITED_METHOD_DAC_CONTRACT; return m_isCollectible; }
 
     void AddType(Module* pModule,
                  mdTypeDef cl);
     void AddExportedType(mdExportedType cl);
-    mdAssemblyRef AddAssemblyRef(Assembly *refedAssembly, IMetaDataAssemblyEmit *pAssemEmitter);
+    mdAssemblyRef AddAssemblyRef(Assembly *refedAssembly, IMDInternalEmit *pAssemEmitter);
 
     //****************************************************************************************
-
-    DomainAssembly *GetDomainAssembly();
-    void SetDomainAssembly(DomainAssembly *pAssembly);
 
 #if defined(FEATURE_COLLECTIBLE_TYPES) && !defined(DACCESS_COMPILE)
     OBJECTHANDLE GetLoaderAllocatorObjectHandle() { WRAPPER_NO_CONTRACT; return GetLoaderAllocator()->GetLoaderAllocatorObjectHandle(); }
 #endif // FEATURE_COLLECTIBLE_TYPES
-
-#ifdef FEATURE_READYTORUN
-    BOOL IsInstrumented();
-    BOOL IsInstrumentedHelper();
-#endif // FEATURE_READYTORUN
 
 #ifdef FEATURE_COMINTEROP
     static ITypeLib * const InvalidTypeLib;
@@ -475,9 +426,7 @@ public:
 
     //****************************************************************************************
     // Is the given assembly a friend of this assembly?
-    bool GrantsFriendAccessTo(Assembly *pAccessingAssembly, FieldDesc *pFD);
-    bool GrantsFriendAccessTo(Assembly *pAccessingAssembly, MethodDesc *pMD);
-    bool GrantsFriendAccessTo(Assembly *pAccessingAssembly, MethodTable *pMT);
+    bool GrantsFriendAccessTo(Assembly *pAccessingAssembly);
     bool IgnoresAccessChecksTo(Assembly *pAccessedAssembly);
 
 #ifdef FEATURE_COMINTEROP
@@ -500,6 +449,7 @@ public:
     }
 #endif
 
+    static void AddDiagnosticStartupHookPath(LPCWSTR wszPath);
 
 protected:
 #ifdef FEATURE_COMINTEROP
@@ -520,9 +470,9 @@ protected:
 
         int mask = INTEROP_ATTRIBUTE_UNSET;
 
-        if (GetManifestModule()->GetCustomAttribute(TokenFromRid(1, mdtAssembly), WellKnownAttribute::ImportedFromTypeLib, NULL, 0) == S_OK)
+        if (GetModule()->GetCustomAttribute(TokenFromRid(1, mdtAssembly), WellKnownAttribute::ImportedFromTypeLib, NULL, 0) == S_OK)
             mask |= INTEROP_ATTRIBUTE_IMPORTED_FROM_TYPELIB;
-        if (GetManifestModule()->GetCustomAttribute(TokenFromRid(1, mdtAssembly), WellKnownAttribute::PrimaryInteropAssembly, NULL, 0) == S_OK)
+        if (GetModule()->GetCustomAttribute(TokenFromRid(1, mdtAssembly), WellKnownAttribute::PrimaryInteropAssembly, NULL, 0) == S_OK)
             mask |= INTEROP_ATTRIBUTE_PRIMARY_INTEROP_ASSEMBLY;
 
         if (!IsDynamic())
@@ -539,35 +489,21 @@ private:
 
     //****************************************************************************************
 
-    void CacheManifestExportedTypes(AllocMemTracker *pamTracker);
-    void CacheManifestFiles();
-
     void CacheFriendAssemblyInfo();
 #ifndef DACCESS_COMPILE
     ReleaseHolder<FriendAssemblyDescriptor> GetFriendAssemblyInfo();
 #endif
 public:
     void UpdateCachedFriendAssemblyInfo();
+
 private:
-
-
-    PTR_BaseDomain        m_pDomain;        // Parent Domain
     PTR_ClassLoader       m_pClassLoader;   // Single Loader
 
-
-
     PTR_MethodDesc        m_pEntryPoint;    // Method containing the entry point
-    PTR_Module            m_pManifest;
-    PTR_PEAssembly        m_pManifestFile;
+    PTR_Module            m_pModule;
+    PTR_PEAssembly        m_pPEAssembly;
 
     FriendAssemblyDescriptor *m_pFriendAssemblyDescriptor;
-
-    BOOL                  m_isDynamic;
-#ifdef FEATURE_COLLECTIBLE_TYPES
-    BOOL                  m_isCollectible;
-#endif // FEATURE_COLLECTIBLE_TYPES
-    DWORD                 m_nextAvailableModuleIndex;
-    PTR_LoaderAllocator   m_pLoaderAllocator;
 
 #ifdef FEATURE_COMINTEROP
     // If a TypeLib is ever required for this module, cache the pointer here.
@@ -575,22 +511,45 @@ private:
     InteropAttributeStatus m_InteropAttributeStatus;
 #endif // FEATURE_COMINTEROP
 
+    PTR_LoaderAllocator   m_pLoaderAllocator;
+#ifdef FEATURE_COLLECTIBLE_TYPES
+    BYTE                  m_isCollectible;
+#endif // FEATURE_COLLECTIBLE_TYPES
+    bool                  m_isDynamic;
+
+    // Load state tracking
+    bool            m_isLoading;
+    bool            m_isLoaded;
+    bool            m_isTerminated;
+    FileLoadLevel   m_level;
+    DWORD           m_notifyFlags;
+    Exception*      m_pError;
+
+#ifdef _DEBUG
+    bool            m_bDisableActivationCheck;
+#endif
+
     DebuggerAssemblyControlFlags m_debuggerFlags;
 
-    BOOL                  m_fTerminated;
+    LOADERHANDLE          m_hExposedObject;
 
-#ifdef FEATURE_READYTORUN
-    enum IsInstrumentedStatus {
-        IS_INSTRUMENTED_UNSET = 0,
-        IS_INSTRUMENTED_FALSE = 1,
-        IS_INSTRUMENTED_TRUE = 2,
-    };
-    IsInstrumentedStatus    m_isInstrumentedStatus;
-#endif // FEATURE_READYTORUN
+    Assembly*                   m_NextAssemblyInSameALC;
 
+    friend struct ::cdac_data<Assembly>;
 };
 
-typedef Assembly::ModuleIterator ModuleIterator;
+template<>
+struct cdac_data<Assembly>
+{
+#ifdef FEATURE_COLLECTIBLE_TYPES
+    static constexpr size_t IsCollectible = offsetof(Assembly, m_isCollectible);
+#endif
+    static constexpr size_t IsDynamic = offsetof(Assembly, m_isDynamic);
+    static constexpr size_t Module = offsetof(Assembly, m_pModule);
+    static constexpr size_t Error = offsetof(Assembly, m_pError);
+    static constexpr size_t NotifyFlags = offsetof(Assembly, m_notifyFlags);
+    static constexpr size_t IsLoaded = offsetof(Assembly, m_isLoaded);
+};
 
 #ifndef DACCESS_COMPILE
 
@@ -614,24 +573,19 @@ public:
     //
     // Arguments:
     //    pAccessingAssembly - the assembly requesting friend access
-    //    pMember            - the member that is attempting to be accessed
     //
     // Return Value:
     //    true if friend access is allowed, false otherwise
     //
-    // Notes:
-    //    Template type T should be either FieldDesc, MethodDesc, or MethodTable.
-    //
 
-    template <class T>
-    bool GrantsFriendAccessTo(Assembly *pAccessingAssembly, T *pMember)
+    bool GrantsFriendAccessTo(Assembly *pAccessingAssembly)
     {
         CONTRACTL
         {
             THROWS;
             GC_TRIGGERS;
+            MODE_ANY;
             PRECONDITION(CheckPointer(pAccessingAssembly));
-            PRECONDITION(CheckPointer(pMember));
         }
         CONTRACTL_END;
 
@@ -673,7 +627,7 @@ private:
     static
     bool IsAssemblyOnList(Assembly *pAssembly, const ArrayList &alAssemblyNames)
     {
-        return IsAssemblyOnList(pAssembly->GetManifestFile(), alAssemblyNames);
+        return IsAssemblyOnList(pAssembly->GetPEAssembly(), alAssemblyNames);
     }
 
     static

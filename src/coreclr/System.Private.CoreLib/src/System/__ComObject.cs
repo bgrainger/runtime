@@ -1,11 +1,19 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+#pragma warning disable CA1852 // __ComObject should not be sealed
+
 using System.Collections;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.CustomMarshalers;
+using System.Runtime.InteropServices.Marshalling;
 using System.Runtime.Versioning;
+
+using IEnumVARIANT = System.Runtime.InteropServices.ComTypes.IEnumVARIANT;
+using DISPPARAMS = System.Runtime.InteropServices.ComTypes.DISPPARAMS;
 
 namespace System
 {
@@ -14,7 +22,7 @@ namespace System
     /// the basics. This class is used for wrapping COM objects accessed from managed.
     /// </summary>
     [SupportedOSPlatform("windows")]
-    internal class __ComObject : MarshalByRefObject
+    internal class __ComObject : MarshalByRefObject, IDynamicInterfaceCastable
     {
         private Hashtable? m_ObjectToDataMap; // Do not rename (runtime relies on this name).
 
@@ -101,6 +109,19 @@ namespace System
             }
         }
 
+        [UnmanagedCallersOnly]
+        private static unsafe void ReleaseAllData(__ComObject* pComObject, Exception* pException)
+        {
+            try
+            {
+                pComObject->ReleaseAllData();
+            }
+            catch (Exception ex)
+            {
+                *pException = ex;
+            }
+        }
+
         /// <summary>
         /// Called from within the EE and is used to handle calls on methods of event interfaces.
         /// </summary>
@@ -118,15 +139,11 @@ namespace System
             return CreateEventProvider(t);
         }
 
-        internal int ReleaseSelf() => Marshal.InternalReleaseComObject(this);
-
-        internal void FinalReleaseSelf() => Marshal.InternalFinalReleaseComObject(this);
-
         private object CreateEventProvider(
             [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors)] RuntimeType t)
         {
             // Create the event provider for the specified type.
-            object EvProvider = Activator.CreateInstance(t, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.CreateInstance, null, new object[] { this }, null)!;
+            object EvProvider = Activator.CreateInstance(t, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.CreateInstance, null, [this], null)!;
 
             // Attempt to cache the wrapper on the object.
             if (!SetData(t, EvProvider))
@@ -137,11 +154,168 @@ namespace System
                     DisposableEvProv.Dispose();
                 }
 
-                // Another thead already cached the wrapper so use that one instead.
+                // Another thread already cached the wrapper so use that one instead.
                 EvProvider = GetData(t)!;
             }
 
             return EvProvider;
+        }
+
+        bool IDynamicInterfaceCastable.IsInterfaceImplemented(RuntimeTypeHandle interfaceType, bool throwIfNotImplemented)
+        {
+            if (interfaceType.Equals(typeof(IEnumerable).TypeHandle))
+            {
+                return IsIEnumerable(this);
+            }
+            else if (interfaceType.Equals(typeof(IEnumerator).TypeHandle))
+            {
+                return IsIEnumerator(this);
+            }
+            else if (interfaceType.Equals(typeof(ICustomAdapter).TypeHandle))
+            {
+                // This is for backwards compatibility purposes.
+                return IsIEnumerator(this) || IsIEnumerable(this);
+            }
+            else
+            {
+                return false;
+            }
+
+            static bool IsIEnumerable(__ComObject co)
+            {
+                try
+                {
+                    // We just need to know the query was successful.
+                    _ = IEnumerableOverDispatchImpl.QueryForNewEnum(co);
+                    return true;
+                }
+                catch
+                {
+                    // Exception was thrown. There are few options, but all imply "not supported".
+                    //  - Not IDispatch.
+                    //  - IDispatch doesn't support DISPID_NEWENUM operation.
+                    //  - The returned instance isn't IEnumVARIANT.
+                    return false;
+                }
+            }
+
+            static bool IsIEnumerator(__ComObject co)
+            {
+                return co is IEnumVARIANT;
+            }
+        }
+
+        RuntimeTypeHandle IDynamicInterfaceCastable.GetInterfaceImplementation(RuntimeTypeHandle interfaceType)
+        {
+            if (interfaceType.Equals(typeof(IEnumerable).TypeHandle))
+            {
+                return typeof(IEnumerableOverDispatchImpl).TypeHandle;
+            }
+            else if (interfaceType.Equals(typeof(ICustomAdapter).TypeHandle))
+            {
+                return typeof(ICustomAdapterOverDispatchImpl).TypeHandle;
+            }
+            else if (interfaceType.Equals(typeof(IEnumerator).TypeHandle))
+            {
+                return typeof(IEnumeratorOverEnumVARIANTImpl).TypeHandle;
+            }
+
+            return default;
+        }
+
+        [DynamicInterfaceCastableImplementation]
+        private interface IEnumerableOverDispatchImpl : IEnumerable
+        {
+            public static IEnumVARIANT QueryForNewEnum(__ComObject obj)
+            {
+                // Reserved DISPID slot for getting an enumerator from an IDispatch-implementing COM interface.
+                const int DISPID_NEWENUM = -4;
+                const int LCID_DEFAULT = 1;
+
+                IDispatch dispatch = (IDispatch)obj;
+                ComVariant result = default;
+                object? resultAsObject = null;
+                try
+                {
+                    unsafe
+                    {
+                        void* resultLocal = &result;
+                        DISPPARAMS dispParams = default;
+                        Guid guid = Guid.Empty;
+                        dispatch.Invoke(
+                            DISPID_NEWENUM,
+                            ref guid,
+                            LCID_DEFAULT,
+                            InvokeFlags.DISPATCH_METHOD | InvokeFlags.DISPATCH_PROPERTYGET,
+                            ref dispParams,
+                            new IntPtr(resultLocal),
+                            IntPtr.Zero,
+                            IntPtr.Zero);
+                    }
+                    resultAsObject = result.ToObject();
+                }
+                finally
+                {
+                    result.Dispose();
+                }
+
+                if (resultAsObject is not IEnumVARIANT enumVariant)
+                {
+                    throw new InvalidOperationException(SR.InvalidOp_InvalidNewEnumVariant);
+                }
+
+                return enumVariant;
+            }
+
+            IEnumerator IEnumerable.GetEnumerator()
+            {
+                IEnumVARIANT enumVariant = QueryForNewEnum((__ComObject)this);
+                IntPtr enumVariantPtr = IntPtr.Zero;
+                try
+                {
+                    enumVariantPtr = Marshal.GetIUnknownForObject(enumVariant);
+                    return (IEnumerator)EnumeratorToEnumVariantMarshaler.GetInstance(null).MarshalNativeToManaged(enumVariantPtr);
+                }
+                finally
+                {
+                    if (enumVariantPtr != IntPtr.Zero)
+                    {
+                        Marshal.Release(enumVariantPtr);
+                    }
+                }
+            }
+        }
+
+        [DynamicInterfaceCastableImplementation]
+        private interface ICustomAdapterOverDispatchImpl : ICustomAdapter
+        {
+            object ICustomAdapter.GetUnderlyingObject() => this;
+        }
+
+        [DynamicInterfaceCastableImplementation]
+        private interface IEnumeratorOverEnumVARIANTImpl : IEnumerator
+        {
+            private static IEnumerator GetEnumerator(__ComObject obj) =>
+                ComDataHelpers.GetOrCreateManagedViewFromComData<IEnumVARIANT, EnumeratorViewOfEnumVariant>(
+                    obj, static enumVariant => new EnumeratorViewOfEnumVariant(enumVariant));
+
+            bool IEnumerator.MoveNext()
+            {
+                return GetEnumerator((__ComObject)this).MoveNext();
+            }
+
+            void IEnumerator.Reset()
+            {
+                GetEnumerator((__ComObject)this).Reset();
+            }
+
+            object IEnumerator.Current
+            {
+                get
+                {
+                    return GetEnumerator((__ComObject)this).Current;
+                }
+            }
         }
     }
 }

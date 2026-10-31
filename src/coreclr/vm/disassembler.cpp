@@ -67,7 +67,7 @@ bool Disassembler::IsAvailable()
 }
 
 #if _DEBUG
-#define DISPLAYERROR(FMT, ...) wprintf(FMT, __VA_ARGS__)
+#define DISPLAYERROR(FMT, ...) minipal_log_print_error(FMT, __VA_ARGS__)
 #else
 #define DISPLAYERROR(FMT, ...) (void)0
 #endif
@@ -78,11 +78,10 @@ namespace
     {
         LIMITED_METHOD_CONTRACT;
 
-        LPCWSTR sysDirectory = GetInternalSystemDirectory();
-        LPCWSTR libFileName = MAKEDLLNAME(W("coredistools"));
-
         // Look for the coredistools module next to the clr binary
-        libPath.AppendPrintf(W("%s%s"), sysDirectory, libFileName);
+        IfFailThrow(GetClrModuleDirectory(libPath));
+
+        libPath.Append(MAKEDLLNAME(W("coredistools")));
 
         LPCWSTR libraryName = libPath.GetUnicode();
         return CLRLoadLibrary(libraryName);
@@ -105,10 +104,7 @@ void Disassembler::StaticInitialize()
         reinterpret_cast<decltype(External_InitDisasm)>(GetProcAddress(libraryHandle, "InitDisasm"));
     if (External_InitDisasm == nullptr)
     {
-        DISPLAYERROR(
-            W("GetProcAddress failed for library '%s', function 'InitDisasm': error %u\n"),
-            libPath.GetUnicode(),
-            GetLastError());
+        DISPLAYERROR("GetProcAddress failed for coredistools function 'InitDisasm': error %u\n", GetLastError());
         return;
     }
 
@@ -116,10 +112,7 @@ void Disassembler::StaticInitialize()
         reinterpret_cast<decltype(External_DisasmInstruction)>(GetProcAddress(libraryHandle, "DisasmInstruction"));
     if (External_DisasmInstruction == nullptr)
     {
-        DISPLAYERROR(
-            W("GetProcAddress failed for library '%s', function 'DisasmInstruction': error %u\n"),
-            libPath.GetUnicode(),
-            GetLastError());
+        DISPLAYERROR("GetProcAddress failed for coredistools function 'DisasmInstruction': error %u\n", GetLastError());
         return;
     }
 
@@ -127,10 +120,7 @@ void Disassembler::StaticInitialize()
         reinterpret_cast<decltype(External_FinishDisasm)>(GetProcAddress(libraryHandle, "FinishDisasm"));
     if (External_FinishDisasm == nullptr)
     {
-        DISPLAYERROR(
-            W("GetProcAddress failed for library '%s', function 'FinishDisasm': error %u\n"),
-            libPath.GetUnicode(),
-            GetLastError());
+        DISPLAYERROR("GetProcAddress failed for coredistools function 'FinishDisasm': error %u\n", GetLastError());
         return;
     }
 
@@ -166,7 +156,7 @@ Disassembler::Disassembler()
 
     // Try to get an external disassembler that is already available for use before creating one
     ExternalDisassembler *externalDisassembler =
-        FastInterlockExchangePointer(&s_availableExternalDisassembler, static_cast<ExternalDisassembler *>(nullptr));
+        InterlockedExchangeT(&s_availableExternalDisassembler, static_cast<ExternalDisassembler *>(nullptr));
     if (externalDisassembler == nullptr)
     {
     #if USE_COREDISTOOLS_DISASSEMBLER
@@ -194,7 +184,7 @@ Disassembler::~Disassembler()
 
     // Save the external disassembler for future use. We only save one instance, so delete a previously saved one.
     ExternalDisassembler *externalDisassemblerToDelete =
-        FastInterlockExchangePointer(&s_availableExternalDisassembler, m_externalDisassembler);
+        InterlockedExchangeT(&s_availableExternalDisassembler, m_externalDisassembler);
     if (externalDisassemblerToDelete == nullptr)
     {
         return;

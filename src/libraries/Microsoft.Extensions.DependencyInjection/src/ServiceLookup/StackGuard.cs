@@ -16,21 +16,10 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
 
         public bool TryEnterOnCurrentStack()
         {
-#if NETFRAMEWORK || NETSTANDARD2_0
-            try
-            {
-                RuntimeHelpers.EnsureSufficientExecutionStack();
-                return true;
-            }
-            catch (InsufficientExecutionStackException)
-            {
-            }
-#else
             if (RuntimeHelpers.TryEnsureSufficientExecutionStack())
             {
                 return true;
             }
-#endif
 
             if (_executionStackCount < MaxExecutionStackCount)
             {
@@ -65,7 +54,7 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
             try
             {
                 // Using default scheduler rather than picking up the current scheduler.
-                Task<R> task = Task.Factory.StartNew(action, state, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
+                Task<R> task = Task.Factory.StartNew((Func<object?, R>)action, state, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
 
                 // Avoid AsyncWaitHandle lazy allocation of ManualResetEvent in the rare case we finish quickly.
                 if (!task.IsCompleted)

@@ -15,16 +15,33 @@ namespace R2RDump
 {
     internal static class Extensions
     {
-        public static void WriteTo(this DebugInfo theThis, TextWriter writer, DumpOptions dumpOptions)
+        public static void WriteTo(this DebugInfo theThis, TextWriter writer, DumpModel model)
         {
             if (theThis.BoundsList.Count > 0)
                 writer.WriteLine("Debug Info");
 
             writer.WriteLine("    Bounds:");
+
+            byte[] boundsBytes = theThis.BoundsBytes;
+            for (int i = 0; i < boundsBytes.Length; i++)
+            {
+                if (i % 16 == 0)
+                {
+                    writer.Write($"{i:X8}:");
+                }
+                writer.Write($" {boundsBytes[i]:X2}");
+                if (i % 16 == 15 && i != boundsBytes.Length - 1)
+                {
+                    writer.WriteLine("");
+                }
+            }
+
+            writer.WriteLine("");
+
             for (int i = 0; i < theThis.BoundsList.Count; ++i)
             {
                 writer.Write("    ");
-                if (!dumpOptions.Naked)
+                if (!model.Naked)
                 {
                     writer.Write($"Native Offset: 0x{theThis.BoundsList[i].NativeOffset:X}, ");
                 }
@@ -47,7 +64,7 @@ namespace R2RDump
             }
             writer.WriteLine("");
 
-            if (dumpOptions.Normalize)
+            if (model.Normalize)
             {
                 theThis.VariablesList.Sort(new NativeVarInfoComparer());
             }
@@ -61,6 +78,7 @@ namespace R2RDump
                 writer.WriteLine($"    Variable Number: {varLoc.VariableNumber}");
                 writer.WriteLine($"    Start Offset: 0x{varLoc.StartOffset:X}");
                 writer.WriteLine($"    End Offset: 0x{varLoc.EndOffset:X}");
+                writer.WriteLine($"    Call return IL offset: 0x{varLoc.CallReturnValueILOffset:X}");
                 writer.WriteLine($"    Loc Type: {varLoc.VariableLocation.VarLocType}");
 
                 switch (varLoc.VariableLocation.VarLocType)
@@ -107,9 +125,9 @@ namespace R2RDump
             }
         }
 
-        public static void WriteTo(this ReadyToRunImportSection.ImportSectionEntry theThis, TextWriter writer, DumpOptions options)
+        public static void WriteTo(this ReadyToRunImportSection.ImportSectionEntry theThis, TextWriter writer, DumpModel model)
         {
-            if (!options.Naked)
+            if (!model.Naked)
             {
                 writer.Write($"+{theThis.StartOffset:X4}");
                 writer.Write($" ({theThis.StartRVA:X4})");
@@ -117,7 +135,7 @@ namespace R2RDump
                 writer.Write($"  SignatureRVA: 0x{theThis.SignatureRVA:X8}");
                 writer.Write("   ");
             }
-            writer.Write(theThis.Signature.ToString(options.GetSignatureFormattingOptions()));
+            writer.Write(theThis.Signature.ToString(model.SignatureFormattingOptions));
             if (theThis.GCRefMap != null)
             {
                 writer.Write(" -- ");
@@ -125,23 +143,23 @@ namespace R2RDump
             }
         }
 
-        public static void WriteTo(this ReadyToRunSection theThis, TextWriter writer, DumpOptions options)
+        public static void WriteTo(this ReadyToRunSection theThis, TextWriter writer, DumpModel model)
         {
             writer.WriteLine($"Type:  {Enum.GetName(typeof(ReadyToRunSectionType), theThis.Type)} ({theThis.Type:D})");
-            if (!options.Naked)
+            if (!model.Naked)
             {
                 writer.WriteLine($"RelativeVirtualAddress: 0x{theThis.RelativeVirtualAddress:X8}");
             }
             writer.WriteLine($"Size: {theThis.Size} bytes");
         }
 
-        public static void WriteTo(this ReadyToRunMethod theThis, TextWriter writer, DumpOptions options)
+        public static void WriteTo(this ReadyToRunMethod theThis, TextWriter writer, DumpModel model)
         {
             writer.WriteLine(theThis.SignatureString);
 
             writer.WriteLine($"Handle: 0x{MetadataTokens.GetToken(theThis.ComponentReader.MetadataReader, theThis.MethodHandle):X8}");
             writer.WriteLine($"Rid: {MetadataTokens.GetRowNumber(theThis.ComponentReader.MetadataReader, theThis.MethodHandle)}");
-            if (!options.Naked)
+            if (!model.Naked)
             {
                 writer.WriteLine($"EntryPointRuntimeFunctionId: {theThis.EntryPointRuntimeFunctionId}");
             }
@@ -150,39 +168,52 @@ namespace R2RDump
             {
                 writer.WriteLine($"Number of fixups: {theThis.Fixups.Count()}");
                 IEnumerable<FixupCell> fixups = theThis.Fixups;
-                if (options.Normalize)
+                if (model.Normalize)
                 {
-                    fixups = fixups.OrderBy((fc) => fc.Signature.ToString(options.GetSignatureFormattingOptions()));
+                    fixups = fixups.OrderBy(fc => fc.Signature.ToString(model.SignatureFormattingOptions));
                 }
 
                 foreach (FixupCell cell in fixups)
                 {
                     writer.Write("    ");
-                    if (!options.Naked)
+                    if (!model.Naked)
                     {
                         writer.Write($"TableIndex {cell.TableIndex}, Offset {cell.CellOffset:X4}: ");
                     }
-                    writer.WriteLine(cell.Signature.ToString(options.GetSignatureFormattingOptions()));
+                    writer.WriteLine(cell.Signature.ToString(model.SignatureFormattingOptions));
                 }
             }
         }
 
-        public static void WriteTo(this RuntimeFunction theThis, TextWriter writer, DumpOptions options)
+        public static void WriteTo(this RuntimeFunction theThis, TextWriter writer, DumpModel model)
         {
-            if (!options.Naked)
+            bool isWasm = theThis.UnwindInfo is ILCompiler.Reflection.ReadyToRun.Wasm32.UnwindInfo;
+            if (!model.Naked)
             {
                 writer.WriteLine($"Id: {theThis.Id}");
-                writer.WriteLine($"StartAddress: 0x{theThis.StartAddress:X8}");
+                if (isWasm)
+                {
+                    writer.WriteLine($"VirtualIP: {theThis.StartAddress}");
+                    writer.WriteLine($"IsFunclet: {theThis.WasmIsFunclet}");
+                }
+                else
+                {
+                    writer.WriteLine($"StartAddress: 0x{theThis.StartAddress:X8}");
+                }
             }
             if (theThis.Size == -1)
             {
                 writer.WriteLine("Size: Unavailable");
             }
+            else if (isWasm)
+            {
+                writer.WriteLine($"Size: {theThis.Size} virtual IPs");
+            }
             else
             {
                 writer.WriteLine($"Size: {theThis.Size} bytes");
             }
-            if (!options.Naked)
+            if (!model.Naked)
             {
                 writer.WriteLine($"UnwindRVA: 0x{theThis.UnwindRVA:X8}");
             }
@@ -211,7 +242,7 @@ namespace R2RDump
                 writer.WriteLine($"CountOfUnwindCodes: {amd64UnwindInfo.CountOfUnwindCodes}");
                 writer.WriteLine($"FrameRegister:      {((amd64UnwindInfo.FrameRegister == 0) ? "None" : amd64UnwindInfo.FrameRegister.ToString())}");
                 writer.WriteLine($"FrameOffset:        0x{amd64UnwindInfo.FrameOffset}");
-                if (!options.Naked)
+                if (!model.Naked && ((amd64UnwindInfo.Flags & (int)ILCompiler.Reflection.ReadyToRun.Amd64.UnwindFlags.UNW_FLAG_CHAININFO) == 0))
                 {
                     writer.WriteLine($"PersonalityRVA:     0x{amd64UnwindInfo.PersonalityRoutineRVA:X4}");
                 }
@@ -232,17 +263,17 @@ namespace R2RDump
 
             if (theThis.EHInfo != null)
             {
-                if (options.Naked)
+                if (model.Naked)
                     writer.WriteLine($@"EH info, #clauses = {theThis.EHInfo.EHClauses.Count}");
                 else
                     writer.WriteLine($@"EH info @ {theThis.EHInfo.RelativeVirtualAddress:X4}, #clauses = {theThis.EHInfo.EHClauses.Count}");
-                theThis.EHInfo.WriteTo(writer, !options.Naked);
+                theThis.EHInfo.WriteTo(writer, !model.Naked);
                 writer.WriteLine();
             }
 
             if (theThis.DebugInfo != null)
             {
-                theThis.DebugInfo.WriteTo(writer, options);
+                theThis.DebugInfo.WriteTo(writer, model);
             }
         }
 
@@ -277,6 +308,12 @@ namespace R2RDump
                             break;
                         case CORCOMPILE_GCREFMAP_TOKENS.GCREFMAP_VASIG_COOKIE:
                             writer.Write("V");
+                            break;
+                        case CORCOMPILE_GCREFMAP_TOKENS.GCREFMAP_THIS_REF:
+                            writer.Write("THIS:R");
+                            break;
+                        case CORCOMPILE_GCREFMAP_TOKENS.GCREFMAP_THIS_BYREF:
+                            writer.Write("THIS:I");
                             break;
                         default:
                             throw new NotImplementedException();

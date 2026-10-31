@@ -16,7 +16,7 @@
 .class public auto ansi beforefieldinit Program
        extends [mscorlib]System.Object
 {
-  .method public hidebysig static int32  Main(string[] args) cil managed noinlining
+  .method public hidebysig static int32  Main() cil managed noinlining
   {
     .custom instance void [xunit.core]Xunit.FactAttribute::.ctor() = (
         01 00 00 00
@@ -62,6 +62,13 @@
                                                                                                 bool)
     IL_0060:  call       object [mscorlib]System.Activator::CreateInstance(class [mscorlib]System.Type)
     IL_0065:  pop
+
+              ldstr      "MyDep.Enclosing2+Nested1+SubNested2, MyDep, Versio"
+              + "n=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+              call       class [mscorlib]System.Type [mscorlib]System.Type::GetType(string)
+              call       object [mscorlib]System.Activator::CreateInstance(class [mscorlib]System.Type)
+              pop
+
     IL_0066:  ldstr      "MyDep.Enclosing2+Nested2+SubNested1, MyDep, Versio"
     + "n=1.0.0.0, Culture=neutral, PublicKeyToken=null"
     IL_006b:  call       class [mscorlib]System.Type [mscorlib]System.Type::GetType(string)
@@ -109,6 +116,13 @@
                                                                                                 bool)
     IL_00e6:  call       object [mscorlib]System.Activator::CreateInstance(class [mscorlib]System.Type)
     IL_00eb:  pop
+
+              ldstr      "MyDep2.Enclosing2+Nested1+SubNested2, MyDep, Versi"
+              + "on=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+              call       class [mscorlib]System.Type [mscorlib]System.Type::GetType(string)
+              call       object [mscorlib]System.Activator::CreateInstance(class [mscorlib]System.Type)
+              pop
+
     IL_00ec:  ldstr      "MyDep2.Enclosing2+Nested2+SubNested1, MyDep, Versi"
     + "on=1.0.0.0, Culture=neutral, PublicKeyToken=null"
     IL_00f1:  call       class [mscorlib]System.Type [mscorlib]System.Type::GetType(string)
@@ -156,6 +170,14 @@
                                                                                                 bool)
     IL_016c:  call       object [mscorlib]System.Activator::CreateInstance(class [mscorlib]System.Type)
     IL_0171:  pop
+
+              ldstr      "MyDep3.Enclosing2+Nested1+SubNested2, MyDep, Versi"
+              + "on=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+              call       class [mscorlib]System.Type [mscorlib]System.Type::GetType(string)
+              call       object [mscorlib]System.Activator::CreateInstance(class [mscorlib]System.Type)
+              pop
+
+
     IL_0172:  ldstr      "MyDep3.Enclosing2+Nested2+SubNested1, MyDep, Versi"
     + "on=1.0.0.0, Culture=neutral, PublicKeyToken=null"
     IL_0177:  call       class [mscorlib]System.Type [mscorlib]System.Type::GetType(string)

@@ -24,7 +24,6 @@ namespace System.IO.FileSystem.Tests
 
         [Fact]
         [PlatformSpecific(TestPlatforms.AnyUnix)]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/60586", TestPlatforms.iOS | TestPlatforms.tvOS)]
         public void TestGetDrives()
         {
             var drives = DriveInfo.GetDrives();
@@ -42,7 +41,7 @@ namespace System.IO.FileSystem.Tests
         }
 
         [Fact]
-        [PlatformSpecific(TestPlatforms.AnyUnix & ~TestPlatforms.Browser)]
+        [PlatformSpecific(TestPlatforms.AnyUnix & ~TestPlatforms.Browser)]
         public void PropertiesOfInvalidDrive()
         {
             string invalidDriveName = "NonExistentDriveName";
@@ -64,7 +63,7 @@ namespace System.IO.FileSystem.Tests
         [PlatformSpecific(TestPlatforms.AnyUnix)]
         public void PropertiesOfValidDrive()
         {
-            var driveName = PlatformDetection.IsAndroid ? "/data" : "/";
+            var driveName = PlatformDetection.IsAndroid || PlatformDetection.IsLinuxBionic ? "/data" : "/";
             var driveInfo = new DriveInfo(driveName);
             var format = driveInfo.DriveFormat;
             Assert.Equal(PlatformDetection.IsBrowser ? DriveType.Unknown : DriveType.Fixed, driveInfo.DriveType);
@@ -94,6 +93,17 @@ namespace System.IO.FileSystem.Tests
         {
             var root = new DriveInfo("/");
             Assert.Throws<PlatformNotSupportedException>(() => root.VolumeLabel = root.Name);
+        }
+
+        [Fact]
+        [PlatformSpecific(TestPlatforms.AnyUnix)]
+        public void CanGetTempPathDriveFormat()
+        {
+            var driveInfo = new DriveInfo(Path.GetTempPath());
+
+            string format = driveInfo.DriveFormat;
+            Assert.NotNull(driveInfo.DriveFormat);
+            Assert.NotEmpty(driveInfo.DriveFormat);
         }
     }
 }

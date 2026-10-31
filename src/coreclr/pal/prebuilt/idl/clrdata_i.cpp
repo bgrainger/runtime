@@ -6,11 +6,9 @@
 /* link this file in with the server and any clients */
 
 
- /* File created by MIDL compiler version 8.01.0622 */
-/* at Mon Jan 18 19:14:07 2038
- */
-/* Compiler settings for C:/ssd/runtime/src/coreclr/inc/clrdata.idl:
-    Oicf, W1, Zp8, env=Win32 (32b run), target_arch=X86 8.01.0622 
+ /* File created by MIDL compiler version 8.01.0626 */
+/* Compiler settings for clrdata.idl:
+    Oicf, W1, Zp8, env=Win64 (32b run), target_arch=AMD64 8.01.0626 
     protocol : dce , ms_ext, c_ext, robust
     error checks: allocation ref bounds_check enum stub_data 
     VC __declspec() decoration level: 
@@ -80,6 +78,9 @@ MIDL_DEFINE_GUID(IID, IID_ICLRDataTarget3,0xa5664f95,0x0af4,0x4a1b,0x96,0x0e,0x2
 MIDL_DEFINE_GUID(IID, IID_ICLRRuntimeLocator,0xb760bf44,0x9377,0x4597,0x8b,0xe7,0x58,0x08,0x3b,0xdc,0x51,0x46);
 
 
+MIDL_DEFINE_GUID(IID, IID_ICLRContractLocator,0x17d5b8c6,0x34a9,0x407f,0xaf,0x4f,0xa9,0x30,0x20,0x1d,0x4e,0x02);
+
+
 MIDL_DEFINE_GUID(IID, IID_ICLRMetadataLocator,0xaa8fa804,0xbc05,0x4642,0xb2,0xc5,0xc3,0x53,0xed,0x22,0xfc,0x63);
 
 
@@ -89,6 +90,9 @@ MIDL_DEFINE_GUID(IID, IID_ICLRDataEnumMemoryRegionsCallback,0xBCDD6908,0xBA2D,0x
 MIDL_DEFINE_GUID(IID, IID_ICLRDataEnumMemoryRegionsCallback2,0x3721A26F,0x8B91,0x4D98,0xA3,0x88,0xDB,0x17,0xB3,0x56,0xFA,0xDB);
 
 
+MIDL_DEFINE_GUID(IID, IID_ICLRDataLoggingCallback,0xF315248D,0x8B79,0x49DB,0xB1,0x84,0x37,0x42,0x65,0x59,0xF7,0x03);
+
+
 MIDL_DEFINE_GUID(IID, IID_ICLRDataEnumMemoryRegions,0x471c35b4,0x7c2f,0x4ef0,0xa9,0x45,0x00,0xf8,0xc3,0x80,0x56,0xf1);
 
 #undef MIDL_DEFINE_GUID
@@ -96,6 +100,3 @@ MIDL_DEFINE_GUID(IID, IID_ICLRDataEnumMemoryRegions,0x471c35b4,0x7c2f,0x4ef0,0xa
 #ifdef __cplusplus
 }
 #endif
-
-
-

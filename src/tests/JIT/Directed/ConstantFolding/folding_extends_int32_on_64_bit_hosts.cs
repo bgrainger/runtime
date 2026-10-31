@@ -1,3 +1,9 @@
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+
+namespace JitTest_Directed_ConstantFolding_folding_extends_int32_on_64_bit_hosts;
+
+using Xunit;
 public class FoldingExtendsInt32On64BitHostsTest
 {
     // On 64 bit hosts, 32 bit constants are stored as 64 bit signed values.
@@ -5,7 +11,8 @@ public class FoldingExtendsInt32On64BitHostsTest
     // the host was 64 bit and the target - 32 bit. Thus local assertion prop
     // got the "poisoned" value, which lead to silent bad codegen.
 
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         var r1 = 31;
         // "Poisoned" value.

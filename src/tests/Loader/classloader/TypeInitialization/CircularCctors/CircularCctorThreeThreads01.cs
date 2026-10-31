@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 /*
+using TestLibrary;
 A --> B --> C --> D --> E --> A
 3 threads: Thread T1 starts initialization at A, thread T2 starts initialization at C, and thread T3 starts initialization at E.  
 This should form a three thread deadlock, which we will detect and allow one of the three threads to proceed, breaking the deadlock.
@@ -10,6 +11,8 @@ This should form a three thread deadlock, which we will detect and allow one of 
 using System;
 using System.Threading;
 using System.Runtime.CompilerServices;
+using Xunit;
+using TestLibrary;
 public class A 
 {
 	public static int i;
@@ -127,7 +130,9 @@ public class Test_CircularCctorThreeThreads01
 	}
 
 
-	public static int Main()
+ [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+	[ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
+	public static int TestEntryPoint()
 	{
   		Thread t1 = new Thread(RunGetA);
 	        t1.Name = "T1";

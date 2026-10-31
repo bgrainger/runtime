@@ -180,7 +180,7 @@ namespace BinderTracingTests
         //   ResolutionAttempted : ApplicationAssemblies                (DefaultALC)    [MismatchedAssemblyName]
         //   ResolutionAttempted : AssemblyLoadContextResolvingEvent    (DefaultALC)    [AssemblyNotFound]
         //   ResolutionAttempted : AppDomainAssemblyResolveEvent        (DefaultALC)    [AssemblyNotFound]
-        [BinderTest(isolate: true, additionalLoadsToTrack: new string[] { DependentAssemblyName + "_Copy" } )]
+        [BinderTest(isolate: true, additionalLoadsToTrack: new string[] { DependentAssemblyName + "_Copy" })]
         public static BindOperation ApplicationAssemblies_MismatchedAssemblyName()
         {
             var assemblyName = new AssemblyName($"{DependentAssemblyName}_Copy, Culture=neutral, PublicKeyToken=null");
@@ -622,6 +622,11 @@ namespace BinderTracingTests
                 errorMessage = e.Message;
             }
 
+            Assert.NotNull(errorMessage);
+            Assert.Contains($"'{DependentAssemblyName}'", errorMessage);
+            Assert.Contains($"'{DependentAssemblyName}, Version=1.0.0.0", errorMessage);
+            Assert.Contains(Helpers.GetAssemblyInAppPath(DependentAssemblyName), errorMessage);
+
             var assemblyName = new AssemblyName($"{DependentAssemblyName}, Version=2.0.0.0");
             return new BindOperation()
             {
@@ -634,7 +639,6 @@ namespace BinderTracingTests
                 Cached = false,
                 ResolutionAttempts = new List<ResolutionAttempt>()
                 {
-                    // GetResolutionAttempt(assemblyName, ResolutionStage.FindInLoadContext, AssemblyLoadContext.Default, ResolutionResult.IncompatibleVersion, UseDependentAssembly()),
                     GetResolutionAttempt(assemblyName, ResolutionStage.FindInLoadContext, AssemblyLoadContext.Default, ResolutionResult.Failure, new AssemblyName($"{DependentAssemblyName}, Version=1.0.0.0"), Helpers.GetAssemblyInAppPath(DependentAssemblyName), errorMessage),
                 }
             };

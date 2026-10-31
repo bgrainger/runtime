@@ -24,9 +24,14 @@ namespace System.Text.Json
         /// </summary>
         public ReadOnlySpan<byte> EncodedUtf8Bytes => _utf8Value;
 
+        /// <summary>
+        /// Returns the UTF-16 encoded representation of the pre-encoded JSON text as a <see cref="string"/>.
+        /// </summary>
+        public string Value => _value ?? string.Empty;
+
         private JsonEncodedText(byte[] utf8Value)
         {
-            Debug.Assert(utf8Value != null);
+            Debug.Assert(utf8Value is not null);
 
             _value = JsonReaderHelper.GetTextFromUtf8(utf8Value);
             _utf8Value = utf8Value;
@@ -45,8 +50,7 @@ namespace System.Text.Json
         /// </exception>
         public static JsonEncodedText Encode(string value, JavaScriptEncoder? encoder = null)
         {
-            if (value == null)
-                throw new ArgumentNullException(nameof(value));
+            ArgumentNullException.ThrowIfNull(value);
 
             return Encode(value.AsSpan(), encoder);
         }
@@ -69,25 +73,31 @@ namespace System.Text.Json
             return TranscodeAndEncode(value, encoder);
         }
 
-        private static JsonEncodedText TranscodeAndEncode(ReadOnlySpan<char> value, JavaScriptEncoder? encoder)
+        private static unsafe JsonEncodedText TranscodeAndEncode(ReadOnlySpan<char> value, JavaScriptEncoder? encoder)
         {
             JsonWriterHelper.ValidateValue(value);
 
             int expectedByteCount = JsonReaderHelper.GetUtf8ByteCount(value);
-            byte[] utf8Bytes = ArrayPool<byte>.Shared.Rent(expectedByteCount);
 
-            JsonEncodedText encodedText;
+            byte[]? array = null;
+            Span<byte> utf8Bytes = expectedByteCount <= JsonConstants.StackallocByteThreshold ?
+                stackalloc byte[JsonConstants.StackallocByteThreshold] :
+                (array = ArrayPool<byte>.Shared.Rent(expectedByteCount));
 
             // Since GetUtf8ByteCount above already throws on invalid input, the transcoding
             // to UTF-8 is guaranteed to succeed here. Therefore, there's no need for a try-catch-finally block.
             int actualByteCount = JsonReaderHelper.GetUtf8FromText(value, utf8Bytes);
-            Debug.Assert(expectedByteCount == actualByteCount);
+            utf8Bytes = utf8Bytes.Slice(0, actualByteCount);
+            Debug.Assert(expectedByteCount == utf8Bytes.Length);
 
-            encodedText = EncodeHelper(utf8Bytes.AsSpan(0, actualByteCount), encoder);
+            JsonEncodedText encodedText = EncodeHelper(utf8Bytes, encoder);
 
-            // On the basis that this is user data, go ahead and clear it.
-            utf8Bytes.AsSpan(0, expectedByteCount).Clear();
-            ArrayPool<byte>.Shared.Return(utf8Bytes);
+            if (array is not null)
+            {
+                // On the basis that this is user data, go ahead and clear it.
+                utf8Bytes.Clear();
+                ArrayPool<byte>.Shared.Return(array);
+            }
 
             return encodedText;
         }
@@ -133,9 +143,9 @@ namespace System.Text.Json
         /// </remarks>
         public bool Equals(JsonEncodedText other)
         {
-            if (_value == null)
+            if (_value is null)
             {
-                return other._value == null;
+                return other._value is null;
             }
             else
             {
@@ -177,6 +187,6 @@ namespace System.Text.Json
         /// Returns 0 on a default instance of <see cref="JsonEncodedText"/>.
         /// </remarks>
         public override int GetHashCode()
-            => _value == null ? 0 : _value.GetHashCode();
+            => _value?.GetHashCode() ?? 0;
     }
 }

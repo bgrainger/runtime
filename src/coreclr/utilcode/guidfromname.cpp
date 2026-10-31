@@ -43,31 +43,6 @@ Foundation, Inc., Hewlett-Packard Company, Microsoft, nor Digital Equipment
 Corporation makes any representations about the suitability of
 this software for any purpose.
 
-
-Copyright(C) The Internet Society 1997. All Rights Reserved.
-
-This document and translations of it may be copied and furnished to others,
-and derivative works that comment on or otherwise explain it or assist in
-its implementation may be prepared, copied, published and distributed, in
-whole or in part, without restriction of any kind, provided that the above
-copyright notice and this paragraph are included on all such copies and
-derivative works.However, this document itself may not be modified in any
-way, such as by removing the copyright notice or references to the Internet
-Society or other Internet organizations, except as needed for the purpose of
-developing Internet standards in which case the procedures for copyrights
-defined in the Internet Standards process must be followed, or as required
-to translate it into languages other than English.
-
-The limited permissions granted above are perpetual and will not be revoked
-by the Internet Society or its successors or assigns.
-
-This document and the information contained herein is provided on an "AS IS"
-basis and THE INTERNET SOCIETY AND THE INTERNET ENGINEERING TASK FORCE
-DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-ANY WARRANTY THAT THE USE OF THE INFORMATION HEREIN WILL NOT INFRINGE ANY
-RIGHTS OR ANY IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A
-PARTICULAR PURPOSE.
-
 */
 
 #include "stdafx.h"
@@ -141,13 +116,12 @@ inline USHORT NetworkToHostShort(USHORT netshort)
 }
 
 //=============================================================================
-// GuidFromName(GUID * pGuidResult, REFGUID refGuidNsid,
+// GuidFromName(REFGUID refGuidNsid,
 //              const void * pvName, DWORD dwcbName);
 //=============================================================================
 
-void GuidFromName
+static GUID GuidFromName
 (
-    GUID *  pGuidResult,        // resulting GUID
     REFGUID refGuidNsid,        // Name Space GUID, so identical names from
                                 // different name spaces generate different GUIDs
     const void * pvName,        // the name from which to generate a GUID
@@ -204,32 +178,25 @@ void GuidFromName
     guidTemp.Data4[0] &= 0x3F;  // clear variant bits
     guidTemp.Data4[0] |= 0x80;  // set variant = 100b
 
-    // If two GuidFromName calls were made from different threads with the same parameters,
-    // we may get incorrect result even though the expected result is the same, because
-    // GuidFromName is operating on the same pGuidResult buffer.
-    // Fix this problem by using a temp GUID buffer and then copy to the pGuidResult buffer.
-    memcpy(pGuidResult, &guidTemp, sizeof(GUID));
+    return guidTemp;
 }
 
-
-// This guid is used for calling GuidFromName function as COM+ runtime uniqualifier
+// This guid is used for calling GuidFromName function as CLR uniqualifier
 //
 // {69F9CBC9-DA05-11d1-9408-0000F8083460}
-static const GUID COMPLUS_RUNTIME_GUID = {0x69f9cbc9, 0xda05, 0x11d1,
+static const GUID CLR_UNIQUALIFIER_GUID = {0x69f9cbc9, 0xda05, 0x11d1,
         {0x94, 0x8, 0x0, 0x0, 0xf8, 0x8, 0x34, 0x60}};
 
-void CorGuidFromNameW
+GUID CorGuidFromNameW
 (
-    GUID *  pGuidResult,        // resulting GUID
     LPCWSTR wzName,             // the unicode name from which to generate a GUID
     SIZE_T  cchName             // name length in count of unicode character
 )
 {
     WRAPPER_NO_CONTRACT;
 
-    GuidFromName(
-        pGuidResult,
-        COMPLUS_RUNTIME_GUID,
+    return GuidFromName(
+        CLR_UNIQUALIFIER_GUID,
         wzName,
-        (DWORD)((cchName == (SIZE_T) -1 ? (wcslen(wzName)+1) : cchName) * sizeof(WCHAR)));
+        (DWORD)((cchName == (SIZE_T) -1 ? (u16_strlen(wzName)+1) : cchName) * sizeof(WCHAR)));
 }

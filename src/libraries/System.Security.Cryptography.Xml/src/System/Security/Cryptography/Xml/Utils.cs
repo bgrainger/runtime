@@ -23,6 +23,27 @@ namespace System.Security.Cryptography.Xml
         // Keeping this number low will preserve some stack space
         internal const int XmlDsigSearchDepth = 20;
 
+        /// <summary>
+        /// Adds <paramref name="attr"/> to a canonicalization render list, enforcing
+        /// <see cref="LocalAppContextSwitches.DangerousMaxCanonicalizationAttributesPerElement"/>.
+        /// </summary>
+        /// <remarks>
+        /// The render lists are scanned linearly for each candidate name, so leaving them unbounded
+        /// makes canonicalizing a single element quadratic in the number of attributes or namespace
+        /// declarations it carries - a cost an attacker controls on the signature verification path.
+        /// </remarks>
+        internal static void AddToRenderList(SortedList list, XmlAttribute attr)
+        {
+            int maxAttributes = LocalAppContextSwitches.DangerousMaxCanonicalizationAttributesPerElement;
+
+            if (maxAttributes > 0 && list.Count >= maxAttributes)
+            {
+                throw new CryptographicException(SR.Cryptography_Xml_MaxCanonicalizationAttributesExceeded);
+            }
+
+            list.Add(attr, null);
+        }
+
         private static bool HasNamespace(XmlElement element, string prefix, string value)
         {
             if (IsCommittedNamespace(element, prefix, value)) return true;
@@ -33,8 +54,7 @@ namespace System.Security.Cryptography.Xml
         // A helper function that determines if a namespace node is a committed attribute
         internal static bool IsCommittedNamespace(XmlElement element, string prefix, string value)
         {
-            if (element == null)
-                throw new ArgumentNullException(nameof(element));
+            ArgumentNullException.ThrowIfNull(element);
 
             string name = ((prefix.Length > 0) ? "xmlns:" + prefix : "xmlns");
             if (element.HasAttribute(name) && element.GetAttribute(name) == value) return true;
@@ -43,13 +63,12 @@ namespace System.Security.Cryptography.Xml
 
         internal static bool IsRedundantNamespace(XmlElement element, string prefix, string value)
         {
-            if (element == null)
-                throw new ArgumentNullException(nameof(element));
+            ArgumentNullException.ThrowIfNull(element);
 
-            XmlNode ancestorNode = ((XmlNode)element).ParentNode;
+            XmlNode? ancestorNode = ((XmlNode)element).ParentNode;
             while (ancestorNode != null)
             {
-                XmlElement ancestorElement = ancestorNode as XmlElement;
+                XmlElement? ancestorElement = ancestorNode as XmlElement;
                 if (ancestorElement != null)
                     if (HasNamespace(ancestorElement, prefix, value)) return true;
                 ancestorNode = ancestorNode.ParentNode;
@@ -58,9 +77,9 @@ namespace System.Security.Cryptography.Xml
             return false;
         }
 
-        internal static string GetAttribute(XmlElement element, string localName, string namespaceURI)
+        internal static string? GetAttribute(XmlElement element, string localName, string namespaceURI)
         {
-            string s = (element.HasAttribute(localName) ? element.GetAttribute(localName) : null);
+            string? s = (element.HasAttribute(localName) ? element.GetAttribute(localName) : null);
             if (s == null && element.HasAttribute(localName, namespaceURI))
                 s = element.GetAttribute(localName, namespaceURI);
             return s;
@@ -71,12 +90,12 @@ namespace System.Security.Cryptography.Xml
             return element.HasAttribute(localName) || element.HasAttribute(localName, namespaceURI);
         }
 
-        internal static bool VerifyAttributes(XmlElement element, string expectedAttrName)
+        internal static bool VerifyAttributes(XmlElement element, string? expectedAttrName)
         {
             return VerifyAttributes(element, expectedAttrName == null ? null : new string[] { expectedAttrName });
         }
 
-        internal static bool VerifyAttributes(XmlElement element, string[] expectedAttrNames)
+        internal static bool VerifyAttributes(XmlElement element, string[]? expectedAttrNames)
         {
             foreach (XmlAttribute attr in element.Attributes)
             {
@@ -114,7 +133,7 @@ namespace System.Security.Cryptography.Xml
 
         internal static bool IsEmptyDefaultNamespaceNode(XmlNode n)
         {
-            return IsDefaultNamespaceNode(n) && n.Value.Length == 0;
+            return IsDefaultNamespaceNode(n) && n.Value!.Length == 0;
         }
 
         internal static string GetNamespacePrefix(XmlAttribute a)
@@ -128,18 +147,12 @@ namespace System.Security.Cryptography.Xml
             return GetNamespacePrefix(a).Equals(nsPrefix);
         }
 
-        internal static bool IsNonRedundantNamespaceDecl(XmlAttribute a, XmlAttribute nearestAncestorWithSamePrefix)
+        internal static bool IsNonRedundantNamespaceDecl(XmlAttribute a, XmlAttribute? nearestAncestorWithSamePrefix)
         {
             if (nearestAncestorWithSamePrefix == null)
                 return !IsEmptyDefaultNamespaceNode(a);
             else
                 return !nearestAncestorWithSamePrefix.Value.Equals(a.Value);
-        }
-
-        internal static bool IsXmlPrefixDefinitionNode(XmlAttribute a)
-        {
-            return false;
-            //            return a.Prefix.Equals("xmlns") && a.LocalName.Equals("xml") && a.Value.Equals(NamespaceUrlForXmlPrefix);
         }
 
         internal static string DiscardWhiteSpaces(string inputBuffer)
@@ -179,27 +192,251 @@ namespace System.Security.Cryptography.Xml
             }
         }
 
-        internal static XmlReader PreProcessStreamInput(Stream inputStream, XmlResolver xmlResolver, string baseUri)
+        internal static XmlReader PreProcessStreamInput(Stream inputStream, XmlResolver? xmlResolver, string? baseUri)
         {
             XmlReaderSettings settings = GetSecureXmlReaderSettings(xmlResolver);
             XmlReader reader = XmlReader.Create(inputStream, settings, baseUri);
             return reader;
         }
 
-        internal static XmlReaderSettings GetSecureXmlReaderSettings(XmlResolver xmlResolver)
+        internal static XmlReaderSettings GetSecureXmlReaderSettings(XmlResolver? xmlResolver)
         {
             XmlReaderSettings settings = new XmlReaderSettings();
             settings.XmlResolver = xmlResolver;
-            settings.DtdProcessing = DtdProcessing.Parse;
+            settings.DtdProcessing = LocalAppContextSwitches.CryptoXmlAllowDtdProcessing
+                ? DtdProcessing.Parse
+                : DtdProcessing.Prohibit;
             settings.MaxCharactersFromEntities = MaxCharactersFromEntities;
             settings.MaxCharactersInDocument = MaxCharactersInDocument;
             return settings;
         }
 
+        internal static void LoadXmlDocumentWithMaxDepthCheck(XmlDocument xmlDocument, XmlReader reader, long maxDepth)
+        {
+            if (maxDepth == 0)
+            {
+                xmlDocument.Load(reader);
+                return;
+            }
+
+            using (XmlReader maxDepthReader = new MaxDepthXmlReader(reader, maxDepth, depthOffset: 0))
+            {
+                xmlDocument.Load(maxDepthReader);
+            }
+        }
+
+        internal static void ValidateInputXmlMaxDepth(XmlNode node, long maxDepth)
+        {
+            if (maxDepth == 0)
+            {
+                return;
+            }
+
+            XmlNode current = node;
+            long depth = 0;
+            while (true)
+            {
+                if (depth > maxDepth)
+                {
+                    throw new CryptographicException(SR.Cryptography_Xml_MaxDepthExceeded);
+                }
+
+                if (current.FirstChild != null)
+                {
+                    current = current.FirstChild;
+                    depth++;
+                    continue;
+                }
+
+                while (current != node && current.NextSibling == null)
+                {
+                    current = current.ParentNode!;
+                    depth--;
+                }
+
+                if (current == node)
+                {
+                    return;
+                }
+
+                current = current.NextSibling!;
+            }
+        }
+
+        internal static void ValidateInputXmlMaxDepth(XmlNode parent, string xml, long maxDepth, bool allowDtdProcessing)
+        {
+            if (maxDepth == 0 && allowDtdProcessing)
+            {
+                return;
+            }
+
+            NameTable nameTable = new NameTable();
+            XmlNamespaceManager nsMgr = new XmlNamespaceManager(nameTable);
+            for (XmlNode? ancestor = parent; ancestor != null; ancestor = ancestor.ParentNode)
+            {
+                if (ancestor.Attributes == null)
+                {
+                    continue;
+                }
+
+                foreach (XmlAttribute attr in ancestor.Attributes)
+                {
+                    if (attr.Prefix == "xmlns")
+                    {
+                        if (nsMgr.LookupNamespace(attr.LocalName) == null)
+                        {
+                            nsMgr.AddNamespace(attr.LocalName, attr.Value);
+                        }
+                    }
+                    else if (attr.Name == "xmlns")
+                    {
+                        if (nsMgr.LookupNamespace(string.Empty) == null)
+                        {
+                            nsMgr.AddNamespace(string.Empty, attr.Value);
+                        }
+                    }
+                }
+            }
+
+            XmlParserContext context = new XmlParserContext(nameTable, nsMgr, null, XmlSpace.None);
+
+            // XmlTextReader is used so general entity references surface as EntityReference
+            // nodes (below) instead of throwing when they aren't declared in this standalone
+            // parser's scope, and so DtdProcessing.Ignore skips any DOCTYPE without loading
+            // its entities. XmlResolver is nulled out so no external entity can be fetched.
+            XmlTextReader textReader;
+            if (parent is XmlDocument)
+            {
+                textReader = new XmlTextReader(new StringReader(xml), nameTable);
+            }
+            else
+            {
+                textReader = new XmlTextReader(xml, XmlNodeType.Element, context);
+            }
+
+            textReader.EntityHandling = EntityHandling.ExpandCharEntities;
+            textReader.DtdProcessing = allowDtdProcessing
+                ? DtdProcessing.Ignore
+                : DtdProcessing.Prohibit;
+            textReader.XmlResolver = null;
+
+            long depthOffset = 0;
+
+            if (maxDepth > 0 && parent is not XmlDocument)
+            {
+                XmlNode? container = parent is XmlElement ? parent : parent.ParentNode;
+
+                for (XmlNode? ancestor = container; ancestor != null; ancestor = ancestor.ParentNode)
+                {
+                    if (ancestor is XmlElement)
+                    {
+                        depthOffset++;
+                    }
+
+                    if (ancestor is XmlDocument)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            XmlReader outerReader = textReader;
+            XmlReader? innerReader = null;
+
+            if (maxDepth > 0)
+            {
+                outerReader = new MaxDepthXmlReader(textReader, maxDepth, depthOffset);
+                innerReader = textReader;
+            }
+
+            using (innerReader)
+            using (outerReader)
+            {
+                try
+                {
+                    while (outerReader.Read())
+                    {
+                        // A general entity reference can expand into an arbitrarily deep subtree
+                        // via the target document's DTD after this validator returns; without
+                        // processing that DTD here (billion laughs) the depth cannot be counted,
+                        // so reject the reference outright when DTD processing is disabled.
+                        // Predefined character entities do not surface as EntityReference and
+                        // are unaffected.
+                        if (!allowDtdProcessing && outerReader.NodeType == XmlNodeType.EntityReference)
+                        {
+                            throw new CryptographicException(SR.Cryptography_Xml_MaxDepthExceeded);
+                        }
+                    }
+                }
+                catch (XmlException e)
+                {
+                    throw new CryptographicException(SR.Cryptography_Xml_MaxDepthExceeded, e);
+                }
+            }
+        }
+
+        // Close() is a no-op so this wrapper does not take ownership of the inner reader.
+        private sealed class MaxDepthXmlReader : XmlReader
+        {
+            private readonly XmlReader _reader;
+            private readonly long _maxDepth;
+            private readonly long _depthOffset;
+
+            internal MaxDepthXmlReader(XmlReader reader, long maxDepth, long depthOffset)
+            {
+                _reader = reader;
+                _maxDepth = maxDepth;
+                _depthOffset = depthOffset;
+            }
+
+            public override bool Read()
+            {
+                bool result = _reader.Read();
+                if (_depthOffset + _reader.Depth > _maxDepth)
+                {
+                    throw new CryptographicException(SR.Cryptography_Xml_MaxDepthExceeded);
+                }
+
+                return result;
+            }
+
+            public override XmlNodeType NodeType => _reader.NodeType;
+            public override string LocalName => _reader.LocalName;
+            public override string NamespaceURI => _reader.NamespaceURI;
+            public override string Prefix => _reader.Prefix;
+            public override bool HasValue => _reader.HasValue;
+            public override string Value => _reader.Value;
+            public override int Depth => _reader.Depth;
+            public override string BaseURI => _reader.BaseURI;
+            public override bool IsEmptyElement => _reader.IsEmptyElement;
+            public override bool IsDefault => _reader.IsDefault;
+            public override XmlSpace XmlSpace => _reader.XmlSpace;
+            public override string XmlLang => _reader.XmlLang;
+            public override Type ValueType => _reader.ValueType;
+            public override int AttributeCount => _reader.AttributeCount;
+            public override bool EOF => _reader.EOF;
+            public override ReadState ReadState => _reader.ReadState;
+            public override XmlNameTable NameTable => _reader.NameTable;
+            public override bool CanResolveEntity => _reader.CanResolveEntity;
+            public override System.Xml.Schema.IXmlSchemaInfo? SchemaInfo => _reader.SchemaInfo;
+
+            public override string GetAttribute(int i) => _reader.GetAttribute(i);
+            public override string? GetAttribute(string name) => _reader.GetAttribute(name);
+            public override string? GetAttribute(string name, string? namespaceURI) => _reader.GetAttribute(name, namespaceURI);
+            public override string? LookupNamespace(string prefix) => _reader.LookupNamespace(prefix);
+            public override bool MoveToAttribute(string name) => _reader.MoveToAttribute(name);
+            public override bool MoveToAttribute(string name, string? ns) => _reader.MoveToAttribute(name, ns);
+            public override bool MoveToElement() => _reader.MoveToElement();
+            public override bool MoveToFirstAttribute() => _reader.MoveToFirstAttribute();
+            public override bool MoveToNextAttribute() => _reader.MoveToNextAttribute();
+            public override bool ReadAttributeValue() => _reader.ReadAttributeValue();
+            public override void ResolveEntity() => _reader.ResolveEntity();
+            public override void Close() { }
+        }
+
         internal static XmlDocument PreProcessDocumentInput(XmlDocument document, XmlResolver xmlResolver, string baseUri)
         {
-            if (document == null)
-                throw new ArgumentNullException(nameof(document));
+            ArgumentNullException.ThrowIfNull(document);
 
             MyXmlDocument doc = new MyXmlDocument();
             doc.PreserveWhitespace = document.PreserveWhitespace;
@@ -209,19 +446,28 @@ namespace System.Security.Cryptography.Xml
             {
                 XmlReaderSettings settings = new XmlReaderSettings();
                 settings.XmlResolver = xmlResolver;
-                settings.DtdProcessing = DtdProcessing.Parse;
+                settings.DtdProcessing = LocalAppContextSwitches.CryptoXmlAllowDtdProcessing
+                    ? DtdProcessing.Parse
+                    : DtdProcessing.Prohibit;
                 settings.MaxCharactersFromEntities = MaxCharactersFromEntities;
                 settings.MaxCharactersInDocument = MaxCharactersInDocument;
-                XmlReader reader = XmlReader.Create(stringReader, settings, baseUri);
-                doc.Load(reader);
+                using XmlReader reader = XmlReader.Create(stringReader, settings, baseUri);
+                long maxDepth = LocalAppContextSwitches.CryptoXmlMaxInputDocumentDepth;
+                if (maxDepth > 0)
+                {
+                    LoadXmlDocumentWithMaxDepthCheck(doc, reader, maxDepth);
+                }
+                else
+                {
+                    doc.Load(reader);
+                }
             }
             return doc;
         }
 
-        internal static XmlDocument PreProcessElementInput(XmlElement elem, XmlResolver xmlResolver, string baseUri)
+        internal static XmlDocument PreProcessElementInput(XmlElement elem, XmlResolver xmlResolver, string? baseUri)
         {
-            if (elem == null)
-                throw new ArgumentNullException(nameof(elem));
+            ArgumentNullException.ThrowIfNull(elem);
 
             MyXmlDocument doc = new MyXmlDocument();
             doc.PreserveWhitespace = true;
@@ -230,23 +476,33 @@ namespace System.Security.Cryptography.Xml
             {
                 XmlReaderSettings settings = new XmlReaderSettings();
                 settings.XmlResolver = xmlResolver;
-                settings.DtdProcessing = DtdProcessing.Parse;
+                settings.DtdProcessing = LocalAppContextSwitches.CryptoXmlAllowDtdProcessing
+                    ? DtdProcessing.Parse
+                    : DtdProcessing.Prohibit;
                 settings.MaxCharactersFromEntities = MaxCharactersFromEntities;
                 settings.MaxCharactersInDocument = MaxCharactersInDocument;
-                XmlReader reader = XmlReader.Create(stringReader, settings, baseUri);
-                doc.Load(reader);
+                using XmlReader reader = XmlReader.Create(stringReader, settings, baseUri);
+                long maxDepth = LocalAppContextSwitches.CryptoXmlMaxInputDocumentDepth;
+                if (maxDepth > 0)
+                {
+                    LoadXmlDocumentWithMaxDepthCheck(doc, reader, maxDepth);
+                }
+                else
+                {
+                    doc.Load(reader);
+                }
             }
             return doc;
         }
 
         internal static XmlDocument DiscardComments(XmlDocument document)
         {
-            XmlNodeList nodeList = document.SelectNodes("//comment()");
+            XmlNodeList? nodeList = document.SelectNodes("//comment()");
             if (nodeList != null)
             {
                 foreach (XmlNode node1 in nodeList)
                 {
-                    node1.ParentNode.RemoveChild(node1);
+                    node1.ParentNode!.RemoveChild(node1);
                 }
             }
             return document;
@@ -264,7 +520,7 @@ namespace System.Security.Cryptography.Xml
 
             do
             {
-                XmlNode rootNode = (XmlNode)elementList[index];
+                XmlNode rootNode = (XmlNode)elementList[index]!;
                 // Add the children nodes
                 XmlNodeList childNodes = rootNode.ChildNodes;
                 if (childNodes != null)
@@ -278,10 +534,10 @@ namespace System.Security.Cryptography.Xml
                     }
                 }
                 // Add the attribute nodes
-                XmlAttributeCollection attribNodes = rootNode.Attributes;
+                XmlAttributeCollection? attribNodes = rootNode.Attributes;
                 if (attribNodes != null)
                 {
-                    foreach (XmlNode attribNode in rootNode.Attributes)
+                    foreach (XmlNode attribNode in rootNode.Attributes!)
                     {
                         if (attribNode.LocalName == "xmlns" || attribNode.Prefix == "xmlns")
                             namespaceList.Add(attribNode);
@@ -307,7 +563,7 @@ namespace System.Security.Cryptography.Xml
             return nodeList;
         }
 
-        internal static bool NodeInList(XmlNode node, XmlNodeList nodeList)
+        internal static bool NodeInList(XmlNode? node, XmlNodeList nodeList)
         {
             foreach (XmlNode nodeElem in nodeList)
             {
@@ -337,8 +593,11 @@ namespace System.Security.Cryptography.Xml
             return idref;
         }
 
-        internal static string ExtractIdFromLocalUri(string uri)
+        internal static string ExtractIdFromLocalUri(string? uri)
         {
+            if (string.IsNullOrEmpty(uri))
+                throw new CryptographicException(SR.Cryptography_Xml_UriRequired);
+
             string idref = uri.Substring(1);
 
             // Deal with XPointer of type #xpointer(id("ID")). Other XPointer support isn't handled here and is anyway optional
@@ -358,8 +617,8 @@ namespace System.Security.Cryptography.Xml
         // This removes all children of an element.
         internal static void RemoveAllChildren(XmlElement inputElement)
         {
-            XmlNode child = inputElement.FirstChild;
-            XmlNode sibling = null;
+            XmlNode? child = inputElement.FirstChild;
+            XmlNode? sibling;
 
             while (child != null)
             {
@@ -376,7 +635,7 @@ namespace System.Security.Cryptography.Xml
         internal static long Pump(Stream input, Stream output)
         {
             // Use MemoryStream's WriteTo(Stream) method if possible
-            MemoryStream inputMS = input as MemoryStream;
+            MemoryStream? inputMS = input as MemoryStream;
             if (inputMS != null && inputMS.Position == 0)
             {
                 inputMS.WriteTo(output);
@@ -418,7 +677,7 @@ namespace System.Security.Cryptography.Xml
             return set;
         }
 
-        internal static string EscapeWhitespaceData(string data)
+        internal static string EscapeWhitespaceData(string? data)
         {
             StringBuilder sb = new StringBuilder();
             sb.Append(data);
@@ -426,7 +685,7 @@ namespace System.Security.Cryptography.Xml
             return sb.ToString();
         }
 
-        internal static string EscapeTextData(string data)
+        internal static string EscapeTextData(string? data)
         {
             StringBuilder sb = new StringBuilder();
             sb.Append(data);
@@ -455,7 +714,7 @@ namespace System.Security.Cryptography.Xml
             return sb.ToString();
         }
 
-        internal static XmlDocument GetOwnerDocument(XmlNodeList nodeList)
+        internal static XmlDocument? GetOwnerDocument(XmlNodeList nodeList)
         {
             foreach (XmlNode node in nodeList)
             {
@@ -465,7 +724,7 @@ namespace System.Security.Cryptography.Xml
             return null;
         }
 
-        internal static void AddNamespaces(XmlElement elem, CanonicalXmlNodeList namespaces)
+        internal static void AddNamespaces(XmlElement elem, CanonicalXmlNodeList? namespaces)
         {
             if (namespaces != null)
             {
@@ -496,18 +755,18 @@ namespace System.Security.Cryptography.Xml
         }
 
         // This method gets the attributes that should be propagated
-        internal static CanonicalXmlNodeList GetPropagatedAttributes(XmlElement elem)
+        internal static CanonicalXmlNodeList? GetPropagatedAttributes(XmlElement? elem)
         {
             if (elem == null)
                 return null;
 
             CanonicalXmlNodeList namespaces = new CanonicalXmlNodeList();
-            XmlNode ancestorNode = elem;
+            XmlNode? ancestorNode = elem;
             bool bDefNamespaceToAdd = true;
 
             while (ancestorNode != null)
             {
-                XmlElement ancestorElement = ancestorNode as XmlElement;
+                XmlElement? ancestorElement = ancestorNode as XmlElement;
                 if (ancestorElement == null)
                 {
                     ancestorNode = ancestorNode.ParentNode;
@@ -617,11 +876,11 @@ namespace System.Security.Cryptography.Xml
         }
 
         // Mimic the behavior of the X509IssuerSerial constructor with null and empty checks
-        internal static X509IssuerSerial CreateX509IssuerSerial(string issuerName, string serialNumber)
+        internal static X509IssuerSerial CreateX509IssuerSerial(string? issuerName, string? serialNumber)
         {
-            if (issuerName == null || issuerName.Length == 0)
+            if (string.IsNullOrEmpty(issuerName))
                 throw new ArgumentException(SR.Arg_EmptyOrNullString, nameof(issuerName));
-            if (serialNumber == null || serialNumber.Length == 0)
+            if (string.IsNullOrEmpty(serialNumber))
                 throw new ArgumentException(SR.Arg_EmptyOrNullString, nameof(serialNumber));
 
             return new X509IssuerSerial()
@@ -634,7 +893,7 @@ namespace System.Security.Cryptography.Xml
         internal static X509Certificate2Collection BuildBagOfCerts(KeyInfoX509Data keyInfoX509Data, CertUsageType certUsageType)
         {
             X509Certificate2Collection collection = new X509Certificate2Collection();
-            ArrayList decryptionIssuerSerials = (certUsageType == CertUsageType.Decryption ? new ArrayList() : null);
+            ArrayList? decryptionIssuerSerials = (certUsageType == CertUsageType.Decryption ? new ArrayList() : null);
             if (keyInfoX509Data.Certificates != null)
             {
                 foreach (X509Certificate2 certificate in keyInfoX509Data.Certificates)
@@ -645,7 +904,7 @@ namespace System.Security.Cryptography.Xml
                             collection.Add(certificate);
                             break;
                         case CertUsageType.Decryption:
-                            decryptionIssuerSerials.Add(CreateX509IssuerSerial(certificate.IssuerName.Name, certificate.SerialNumber));
+                            decryptionIssuerSerials!.Add(CreateX509IssuerSerial(certificate.IssuerName.Name, certificate.SerialNumber));
                             break;
                     }
                 }
@@ -666,7 +925,7 @@ namespace System.Security.Cryptography.Xml
             {
                 if (stores[index] != null)
                 {
-                    X509Certificate2Collection filters = null;
+                    X509Certificate2Collection? filters = null;
                     // We don't care if we can't open the store.
                     try
                     {
@@ -718,10 +977,17 @@ namespace System.Security.Cryptography.Xml
             return collection;
         }
 
+#if NET
+        internal static string EncodeHexString(byte[] sArray)
+        {
+            return Convert.ToHexString(sArray);
+        }
+#else
         internal static string EncodeHexString(byte[] sArray)
         {
             return HexConverter.ToString(sArray);
         }
+#endif
 
         internal static byte[] DecodeHexString(string s)
         {
@@ -748,11 +1014,11 @@ namespace System.Security.Cryptography.Xml
             return false;
         }
 
-        internal static AsymmetricAlgorithm GetAnyPublicKey(X509Certificate2 certificate)
+        internal static AsymmetricAlgorithm? GetAnyPublicKey(X509Certificate2 certificate)
         {
-            AsymmetricAlgorithm algorithm = (AsymmetricAlgorithm)certificate.GetRSAPublicKey() ?? certificate.GetECDsaPublicKey();
+            AsymmetricAlgorithm? algorithm = (AsymmetricAlgorithm?)certificate.GetRSAPublicKey() ?? certificate.GetECDsaPublicKey();
 
-#if NETCOREAPP
+#if NET
             if (algorithm is null && !OperatingSystem.IsTvOS() && !OperatingSystem.IsIOS())
             {
                 algorithm = certificate.GetDSAPublicKey();
@@ -763,6 +1029,5 @@ namespace System.Security.Cryptography.Xml
         }
 
         internal const int MaxTransformsPerReference = 10;
-        internal const int MaxReferencesPerSignedInfo = 100;
     }
 }

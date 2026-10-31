@@ -5,14 +5,19 @@
 #include <mono/metadata/assembly-internals.h>
 #include <mono/metadata/assembly.h>
 #include <mono/metadata/environment.h>
+#include <mono/metadata/icall-decl.h>
 #include <mono/metadata/loader-internals.h>
 #include <mono/metadata/native-library.h>
 #include <mono/metadata/reflection-internals.h>
+#include <mono/metadata/webcil-loader.h>
+#include <mono/mini/hostinformation.h>
 #include <mono/mini/mini-runtime.h>
 #include <mono/mini/mini.h>
 #include <mono/utils/mono-logger-internals.h>
 
 #include <mono/metadata/components.h>
+
+#include <corehost/host_runtime_contract.h>
 
 static MonoCoreTrustedPlatformAssemblies *trusted_platform_assemblies;
 static MonoCoreLookupPaths *native_lib_paths;
@@ -42,7 +47,7 @@ static gboolean
 parse_trusted_platform_assemblies (const char *assemblies_paths)
 {
 	// From
-	// https://docs.microsoft.com/en-us/dotnet/core/tutorials/netcore-hosting#step-3---prepare-runtime-properties
+	// https://learn.microsoft.com/dotnet/core/tutorials/netcore-hosting#step-3---prepare-runtime-properties
 	// this is ';' separated on Windows and ':' separated elsewhere.
 	char **parts = g_strsplit (assemblies_paths, G_SEARCHPATH_SEPARATOR_S, 0);
 	int asm_count = 0;
@@ -61,10 +66,33 @@ parse_trusted_platform_assemblies (const char *assemblies_paths)
 	a->basename_lens = g_new0 (uint32_t, asm_count + 1);
 	for (int i = 0; i < asm_count; ++i) {
 		a->basenames [i] = g_path_get_basename (a->assembly_filepaths [i]);
-		a->basename_lens [i] = strlen (a->basenames [i]);
+		a->basename_lens [i] = (uint32_t)strlen (a->basenames [i]);
 	}
 	a->basenames [asm_count] = NULL;
 	a->basename_lens [asm_count] = 0;
+
+	trusted_platform_assemblies = a;
+	return TRUE;
+}
+
+static gboolean
+parse_trusted_platform_assemblies_from_contract (void)
+{
+	const char * const *names = NULL;
+	size_t count = 0;
+	if (!mono_host_information_get_assembly_names (&names, &count) ||
+		(count != 0 && names == NULL) ||
+		count >= G_MAXUINT32)
+		return FALSE;
+
+	MonoCoreTrustedPlatformAssemblies *a = g_new0 (MonoCoreTrustedPlatformAssemblies, 1);
+	a->assembly_count = (uint32_t)count;
+	a->basenames = g_new0 (char*, count + 1);
+	a->basename_lens = g_new0 (uint32_t, count + 1);
+	for (size_t i = 0; i < count; ++i) {
+		a->basenames [i] = g_strdup (names [i]);
+		a->basename_lens [i] = (uint32_t)strlen (a->basenames [i]);
+	}
 
 	trusted_platform_assemblies = a;
 	return TRUE;
@@ -112,15 +140,29 @@ mono_core_preload_hook (MonoAssemblyLoadContext *alc, MonoAssemblyName *aname, c
 
 	size_t basename_len;
 	basename_len = strlen (basename);
+	size_t simple_name_len = strlen (aname->name);
+	gboolean has_fullpaths = a->assembly_filepaths != NULL;
 
-	for (int i = 0; i < a->assembly_count; ++i) {
-		if (basename_len == a->basename_lens [i] && !g_strncasecmp (basename, a->basenames [i], a->basename_lens [i])) {
+	for (guint32 i = 0; i < a->assembly_count; ++i) {
+		// Host-resolved entries store simple names, while path-based entries store filenames with extensions.
+		const char *requested_name = has_fullpaths ? basename : aname->name;
+		size_t requested_name_len = has_fullpaths ? basename_len : simple_name_len;
+		if (requested_name_len == a->basename_lens [i] && !g_strncasecmp (requested_name, a->basenames [i], a->basename_lens [i])) {
 			MonoAssemblyOpenRequest req;
 			mono_assembly_request_prepare_open (&req, default_alc);
 			req.request.predicate = predicate;
 			req.request.predicate_ud = predicate_ud;
 
-			const char *fullpath = a->assembly_filepaths [i];
+			char *resolved_path = NULL;
+			const char *fullpath = has_fullpaths ? a->assembly_filepaths [i] : NULL;
+			if (!has_fullpaths) {
+				const char *directory;
+				const char *file_name;
+				if (mono_host_information_resolve_assembly_to_path (a->basenames [i], &directory, &file_name))
+					fullpath = resolved_path = g_build_filename (directory, file_name, (const char*)NULL);
+			}
+			if (fullpath == NULL)
+				break;
 
 			gboolean found = g_file_test (fullpath, G_FILE_TEST_IS_REGULAR);
 
@@ -128,9 +170,39 @@ mono_core_preload_hook (MonoAssemblyLoadContext *alc, MonoAssemblyName *aname, c
 				MonoImageOpenStatus status;
 				result = mono_assembly_request_open (fullpath, &req, &status);
 				/* TODO: do something with the status at the end? */
-				if (result)
-					break;
 			}
+#ifdef ENABLE_WEBCIL
+			else {
+				/* /path/foo.dll -> /path/foo.webcil */
+				size_t n = strlen (fullpath);
+				if (n < strlen(".dll")) {
+					g_free (resolved_path);
+					continue;
+				}
+				n -= strlen(".dll");
+				char *fullpath2 = g_malloc (n + strlen(".webcil") + 1);
+				g_strlcpy (fullpath2, fullpath, n + 1);
+				g_strlcpy (fullpath2 + n, ".webcil", strlen(".webcil") + 1);
+				if (g_file_test (fullpath2, G_FILE_TEST_IS_REGULAR)) {
+					MonoImageOpenStatus status;
+					result = mono_assembly_request_open (fullpath2, &req, &status);
+				}
+				g_free (fullpath2);
+				if (!result) {
+					char *fullpath3 = g_malloc (n + strlen(MONO_WEBCIL_IN_WASM_EXTENSION) + 1);
+					g_strlcpy (fullpath3, fullpath, n + 1);
+					g_strlcpy (fullpath3 + n, MONO_WEBCIL_IN_WASM_EXTENSION, strlen(MONO_WEBCIL_IN_WASM_EXTENSION) + 1);
+					if (g_file_test (fullpath3, G_FILE_TEST_IS_REGULAR)) {
+						MonoImageOpenStatus status;
+						result = mono_assembly_request_open (fullpath3, &req, &status);
+					}
+					g_free (fullpath3);
+				}
+			}
+#endif
+			g_free (resolved_path);
+			if (result)
+				break;
 		}
 	}
 
@@ -151,25 +223,80 @@ install_assembly_loader_hooks (void)
 	mono_install_assembly_preload_hook_v2 (mono_core_preload_hook, (void*)trusted_platform_assemblies, FALSE);
 }
 
+MonoBoolean
+ves_icall_System_AppContext_TryGetHostPropertyValue (MonoStringHandle name, MonoStringHandleOut value, MonoError *error)
+{
+	MONO_HANDLE_ASSIGN (value, NULL_HANDLE_STRING);
+
+	char *name_utf8 = mono_string_handle_to_utf8 (name, error);
+	return_val_if_nok (error, FALSE);
+	gboolean is_tpa = !strcmp (name_utf8, HOST_PROPERTY_TRUSTED_PLATFORM_ASSEMBLIES);
+	g_free (name_utf8);
+	if (!is_tpa || trusted_platform_assemblies == NULL)
+		return FALSE;
+
+	// Explicit TPA properties are already stored in AppContext. Reconstruction should
+	// only be for assembly paths provided through host callbacks.
+	if (trusted_platform_assemblies->assembly_filepaths != NULL)
+		return FALSE;
+	GString *property_value = g_string_new (NULL);
+	for (guint32 i = 0; i < trusted_platform_assemblies->assembly_count; ++i) {
+		const char *directory;
+		const char *file_name;
+		if (!mono_host_information_resolve_assembly_to_path (
+				trusted_platform_assemblies->basenames [i],
+				&directory,
+				&file_name))
+			continue;
+
+		if (property_value->len != 0)
+			g_string_append_c (property_value, G_SEARCHPATH_SEPARATOR);
+		char *path = g_build_filename (directory, file_name, (const char*)NULL);
+		g_string_append (property_value, path);
+		g_free (path);
+	}
+
+	if (property_value->len == 0) {
+		g_string_free (property_value, TRUE);
+		return FALSE;
+	}
+
+	MonoStringHandle result = mono_string_new_handle (property_value->str, error);
+	g_string_free (property_value, TRUE);
+	return_val_if_nok (error, FALSE);
+	MONO_HANDLE_ASSIGN (value, result);
+	return TRUE;
+}
+
 static gboolean
 parse_properties (int propertyCount, const char **propertyKeys, const char **propertyValues)
 {
 	// A partial list of relevant properties is at:
-	// https://docs.microsoft.com/en-us/dotnet/core/tutorials/netcore-hosting#step-3---prepare-runtime-properties
-
+	// https://learn.microsoft.com/dotnet/core/tutorials/netcore-hosting#step-3---prepare-runtime-properties
+	PInvokeOverrideFn override_fn = NULL;
+	const char *tpa_property = NULL;
 	for (int i = 0; i < propertyCount; ++i) {
 		size_t prop_len = strlen (propertyKeys [i]);
-		if (prop_len == 27 && !strncmp (propertyKeys [i], "TRUSTED_PLATFORM_ASSEMBLIES", 27)) {
-			parse_trusted_platform_assemblies (propertyValues[i]);
-		} else if (prop_len == 9 && !strncmp (propertyKeys [i], "APP_PATHS", 9)) {
+		if (prop_len == 27 && !strncmp (propertyKeys [i], HOST_PROPERTY_TRUSTED_PLATFORM_ASSEMBLIES, 27)) {
+			tpa_property = propertyValues [i];
+		} else if (prop_len == 9 && !strncmp (propertyKeys [i], HOST_PROPERTY_APP_PATHS, 9)) {
 			app_paths = parse_lookup_paths (propertyValues [i]);
-		} else if (prop_len == 23 && !strncmp (propertyKeys [i], "PLATFORM_RESOURCE_ROOTS", 23)) {
+		} else if (prop_len == 23 && !strncmp (propertyKeys [i], HOST_PROPERTY_PLATFORM_RESOURCE_ROOTS, 23)) {
 			platform_resource_roots = parse_lookup_paths (propertyValues [i]);
-		} else if (prop_len == 29 && !strncmp (propertyKeys [i], "NATIVE_DLL_SEARCH_DIRECTORIES", 29)) {
+		} else if (prop_len == 29 && !strncmp (propertyKeys [i], HOST_PROPERTY_NATIVE_DLL_SEARCH_DIRECTORIES, 29)) {
 			native_lib_paths = parse_lookup_paths (propertyValues [i]);
-		} else if (prop_len == 16 && !strncmp (propertyKeys [i], "PINVOKE_OVERRIDE", 16)) {
-			PInvokeOverrideFn override_fn = (PInvokeOverrideFn)(uintptr_t)strtoull (propertyValues [i], NULL, 0);
-			mono_loader_install_pinvoke_override (override_fn);
+		} else if (prop_len == 16 && !strncmp (propertyKeys [i], HOST_PROPERTY_PINVOKE_OVERRIDE, 16)) {
+			if (override_fn == NULL) {
+				override_fn = (PInvokeOverrideFn)(uintptr_t)strtoull (propertyValues [i], NULL, 0);
+			}
+		} else if (prop_len == STRING_LENGTH(HOST_PROPERTY_RUNTIME_CONTRACT) && !strncmp (propertyKeys [i], HOST_PROPERTY_RUNTIME_CONTRACT, STRING_LENGTH(HOST_PROPERTY_RUNTIME_CONTRACT))) {
+			// Functions in HOST_RUNTIME_CONTRACT have priority over the individual properties
+			// for callbacks, so we set them as long as the contract has a non-null function.
+			struct host_runtime_contract* contract = (struct host_runtime_contract*)(uintptr_t)strtoull (propertyValues [i], NULL, 0);
+			mono_host_information_set_contract (contract);
+			if (contract->pinvoke_override != NULL) {
+				override_fn = (PInvokeOverrideFn)contract->pinvoke_override;
+			}
 		} else {
 #if 0
 			// can't use mono logger, it's not initialized yet.
@@ -177,6 +304,13 @@ parse_properties (int propertyCount, const char **propertyKeys, const char **pro
 #endif
 		}
 	}
+
+	if (!parse_trusted_platform_assemblies_from_contract () && tpa_property != NULL)
+		parse_trusted_platform_assemblies (tpa_property);
+
+	if (override_fn != NULL)
+		mono_loader_install_pinvoke_override (override_fn);
+
 	return TRUE;
 }
 
@@ -250,7 +384,7 @@ monovm_execute_assembly (int argc, const char **argv, const char *managedAssembl
 
 	char **mono_argv = (char **) malloc (sizeof (char *) * (mono_argc + 1 /* null terminated */));
 	const char **ptr = (const char **) mono_argv;
-	
+
 	*ptr++ = NULL;
 
 	// executable assembly
@@ -280,7 +414,7 @@ monovm_shutdown (int *latchedExitCode)
 
 static int
 monovm_create_delegate_impl (const char* assemblyName, const char* typeName, const char *methodName, void **delegate);
-	
+
 
 int
 monovm_create_delegate (const char *assemblyName, const char *typeName, const char *methodName, void **delegate)
@@ -289,7 +423,7 @@ monovm_create_delegate (const char *assemblyName, const char *typeName, const ch
 	/* monovm_create_delegate may be called instead of monovm_execute_assembly.  Initialize the
 	 * runtime if it isn't already. */
 	if (!mono_get_root_domain())
-		mini_init (assemblyName, "v4.0.30319");
+		mini_init (assemblyName);
 	MONO_ENTER_GC_UNSAFE;
 	result = monovm_create_delegate_impl (assemblyName, typeName, methodName, delegate);
 	MONO_EXIT_GC_UNSAFE;
@@ -337,7 +471,7 @@ monovm_create_delegate_impl (const char* assemblyName, const char* typeName, con
 
 	g_assert (t);
 	MonoClass *klass = mono_class_from_mono_type_internal (t);
-	
+
 
 	MonoMethod *method = mono_class_get_method_from_name_checked (klass, methodName, -1, 0, error);
 	goto_if_nok (error, fail);
@@ -346,7 +480,7 @@ monovm_create_delegate_impl (const char* assemblyName, const char* typeName, con
 		mono_error_set_not_supported (error, "MonoVM only supports UnmanagedCallersOnly implementations of hostfxr_get_runtime_delegate delegate types");
 		goto fail;
 	}
-	
+
 	MonoClass *delegate_klass = NULL;
 	MonoGCHandle target_handle = 0;
 	MonoMethod *wrapper = mono_marshal_get_managed_wrapper (method, delegate_klass, target_handle, error);

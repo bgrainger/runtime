@@ -4,6 +4,8 @@
 using System;
 using System.Collections.Generic;
 
+using Internal.Text;
+
 using Debug = System.Diagnostics.Debug;
 
 namespace Internal.TypeSystem
@@ -17,11 +19,11 @@ namespace Internal.TypeSystem
     /// The use of runtime determined types is limited to the dependency analysis and to communicating
     /// with the codegen backend during shared generic code generation. They should not show up within
     /// the system otherwise.
-    /// 
+    ///
     /// Runtime determined types behave mostly like the canonical type they are wrapping. Most of the overrides
     /// this type implements will forward the implementation to the <see cref="_rawCanonType"/>'s
     /// implementation.
-    /// 
+    ///
     /// Runtime determined types also behave like signature variables in the sense that they allow being
     /// substituted during signature instantiation.
     /// </remarks>
@@ -90,7 +92,7 @@ namespace Internal.TypeSystem
             }
         }
 
-        public override string Name
+        public override Utf8Span Name
         {
             get
             {
@@ -98,11 +100,12 @@ namespace Internal.TypeSystem
             }
         }
 
-        public override string Namespace
+        public override Utf8Span Namespace
         {
             get
             {
-                return String.Concat(_runtimeDeterminedDetailsType.Name, "_", _rawCanonType.Namespace);
+                return new Utf8Span(System.Text.Encoding.UTF8.GetBytes(_runtimeDeterminedDetailsType.Name))
+                    .Append("_"u8, _rawCanonType.Namespace);
             }
         }
 
@@ -122,9 +125,17 @@ namespace Internal.TypeSystem
             }
         }
 
-        public override MethodDesc GetMethod(string name, MethodSignature signature, Instantiation substitution)
+        public override MethodDesc GetMethod(Utf8Span name, MethodSignature signature, Instantiation substitution)
         {
             MethodDesc method = _rawCanonType.GetMethod(name, signature, substitution);
+            if (method == null)
+                return null;
+            return Context.GetMethodForRuntimeDeterminedType(method.GetTypicalMethodDefinition(), this);
+        }
+
+        public override MethodDesc GetMethodWithEquivalentSignature(Utf8Span name, MethodSignature signature, Instantiation substitution)
+        {
+            MethodDesc method = _rawCanonType.GetMethodWithEquivalentSignature(name, signature, substitution);
             if (method == null)
                 return null;
             return Context.GetMethodForRuntimeDeterminedType(method.GetTypicalMethodDefinition(), this);

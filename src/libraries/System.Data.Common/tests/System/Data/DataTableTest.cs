@@ -28,10 +28,12 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Data.SqlTypes;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Runtime.Serialization.Formatters.Tests;
 using System.Tests;
@@ -376,23 +378,45 @@ namespace System.Data.Tests
 
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsBinaryFormatterSupported), nameof(PlatformDetection.IsNotInvariantGlobalization))]
-        public void DataColumnTypeSerialization()
+        [Fact]
+        public void SerializationFormat_Binary_does_not_work_by_default()
         {
             DataTable dt = new DataTable("MyTable");
-            DataColumn dc = new DataColumn("dc", typeof(int));
-            dt.Columns.Add(dc);
-            dt.RemotingFormat = SerializationFormat.Binary;
+#pragma warning disable SYSLIB0038
+            Assert.Throws<InvalidEnumArgumentException>(() => dt.RemotingFormat = SerializationFormat.Binary);
+#pragma warning restore SYSLIB0038
+        }
 
-            DataTable dtDeserialized;
-            using (MemoryStream ms = new MemoryStream())
+        public static bool RemoteExecutorBinaryFormatter =>
+            RemoteExecutor.IsSupported && PlatformDetection.IsBinaryFormatterSupported;
+
+        [ConditionalFact(typeof(DataTableTest), nameof(RemoteExecutorBinaryFormatter))]
+        public void SerializationFormat_Binary_works_with_appconfig_switch()
+        {
+            RemoteExecutor.Invoke(RunTest).Dispose();
+
+            static void RunTest()
             {
-                BinaryFormatter bf = new BinaryFormatter();
-                bf.Serialize(ms, dt);
-                ms.Seek(0, SeekOrigin.Begin);
-                dtDeserialized = (DataTable)bf.Deserialize(ms);
+                AppContext.SetSwitch("Switch.System.Data.AllowUnsafeSerializationFormatBinary", true);
+
+                DataTable dt = new DataTable("MyTable");
+                DataColumn dc = new DataColumn("dc", typeof(int));
+                dt.Columns.Add(dc);
+#pragma warning disable SYSLIB0038
+                dt.RemotingFormat = SerializationFormat.Binary;
+#pragma warning restore SYSLIB0038
+
+                DataTable dtDeserialized;
+                using (MemoryStream ms = new MemoryStream())
+                {
+                    BinaryFormatter bf = new BinaryFormatter();
+                    bf.Serialize(ms, dt);
+                    ms.Seek(0, SeekOrigin.Begin);
+                    dtDeserialized = (DataTable)bf.Deserialize(ms);
+                }
+
+                Assert.Equal(dc.DataType, dtDeserialized.Columns[0].DataType);
             }
-            Assert.Equal(dc.DataType, dtDeserialized.Columns[0].DataType);
         }
 
         [Fact]
@@ -652,7 +676,7 @@ namespace System.Data.Tests
             /*
             try {
                 Mom.Select ("Child.Name = 'Jack'");
-Assert.False(true);
+Assert.Fail();
             } catch (Exception e) {
                 Assert.Equal (typeof (SyntaxErrorException), e.GetType ());
                 Assert.Equal ("Cannot interpret token 'Child' at position 1.", e.Message);
@@ -1585,7 +1609,7 @@ Assert.False(true);
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsBinaryFormatterSupported), nameof(PlatformDetection.IsNotInvariantGlobalization))]
         public void Serialize()
         {
-            // Create an array with multiple elements refering to
+            // Create an array with multiple elements referring to
             // the one Singleton object.
             DataTable dt = new DataTable();
 
@@ -1796,6 +1820,60 @@ Assert.False(true);
             Assert.True(dt.IsInitialized);
             Assert.True(_tableInitialized);
             dt.Initialized -= new EventHandler(OnTableInitialized);
+        }
+
+        [Fact]
+        public void MethodsCalledByReflectionSerializersAreNotTrimmed()
+        {
+            Assert.True(ShouldSerializeExists(nameof(DataTable.CaseSensitive)));
+            Assert.False(ShouldSerializeExists("Columns"));
+            Assert.False(ShouldSerializeExists("Constraints"));
+            Assert.False(ShouldSerializeExists("Indexes"));
+            Assert.True(ShouldSerializeExists(nameof(DataTable.Locale)));
+            Assert.True(ShouldSerializeExists(nameof(DataTable.Namespace)));
+            Assert.True(ShouldSerializeExists(nameof(DataTable.PrimaryKey)));
+
+            Assert.True(ResetExists(nameof(DataTable.CaseSensitive)));
+            Assert.True(ResetExists("Columns"));
+            Assert.True(ResetExists("Constraints"));
+            Assert.True(ResetExists("Indexes"));
+            Assert.False(ResetExists(nameof(DataTable.Locale)));
+            Assert.True(ResetExists(nameof(DataTable.Namespace)));
+            Assert.True(ResetExists(nameof(DataTable.PrimaryKey)));
+
+            bool ShouldSerializeExists(string name) => typeof(DataTable).GetMethod("ShouldSerialize" + name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public) != null;
+            bool ResetExists(string name) => typeof(DataTable).GetMethod("Reset" + name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public) != null;
+        }
+
+        [Fact]
+        public void MethodsCalledByReflectionSerializersAreNotTrimmedUsingTypeDescriptor()
+        {
+            DataTable dt = new DataTable();
+            dt.CaseSensitive = true;
+            dt.Locale = new CultureInfo("en-US");
+            dt.PrimaryKey = new DataColumn[] { dt.Columns.Add("id", typeof(int)) };
+            dt.Namespace = "NS";
+
+            PropertyDescriptorCollection properties = TypeDescriptor.GetProperties(dt);
+
+            Assert.True(properties[nameof(DataTable.PrimaryKey)].ShouldSerializeValue(dt));
+            properties[nameof(DataTable.PrimaryKey)].ResetValue(dt);
+            Assert.False(properties[nameof(DataTable.PrimaryKey)].ShouldSerializeValue(dt));
+            Assert.Equal(0, dt.PrimaryKey.Length);
+
+            Assert.True(properties[nameof(DataTable.CaseSensitive)].ShouldSerializeValue(dt));
+            properties[nameof(DataTable.CaseSensitive)].ResetValue(dt);
+            Assert.False(properties[nameof(DataTable.CaseSensitive)].ShouldSerializeValue(dt));
+            Assert.False(dt.CaseSensitive);
+
+            Assert.True(properties[nameof(DataTable.Locale)].ShouldSerializeValue(dt));
+            properties[nameof(DataTable.Locale)].ResetValue(dt);
+            Assert.True(properties[nameof(DataTable.Locale)].ShouldSerializeValue(dt)); // Reset method is not available
+
+            Assert.True(properties[nameof(DataTable.Namespace)].ShouldSerializeValue(dt));
+            properties[nameof(DataTable.Namespace)].ResetValue(dt);
+            Assert.False(properties[nameof(DataTable.Namespace)].ShouldSerializeValue(dt));
+            Assert.Equal("", dt.Namespace);
         }
 
         private void OnTableInitialized(object src, EventArgs args)
@@ -2774,7 +2852,7 @@ Assert.False(true);
             // ReadXmlSchema - Tables 1 Col count
             Assert.Equal(ds1.Tables[1].Columns.Count, dt2.Columns.Count);
 
-            //check some colummns types
+            //check some columns types
             // ReadXmlSchema - Tables 0 Col type
             Assert.Equal(ds1.Tables[0].Columns[0].GetType(), dt1.Columns[0].GetType());
 
@@ -2854,7 +2932,7 @@ Assert.False(true);
             // ReadXmlSchema - Tables 1 Col count
             Assert.Equal(ds1.Tables[1].Columns.Count, dt2.Columns.Count);
 
-            //check some colummns types
+            //check some columns types
             // ReadXmlSchema - Tables 0 Col type
             Assert.Equal(ds1.Tables[0].Columns[0].GetType(), dt1.Columns[0].GetType());
 
@@ -2911,7 +2989,7 @@ Assert.False(true);
             // ReadXmlSchema - Tables 1 Col count
             Assert.Equal(ds1.Tables[1].Columns.Count, dt2.Columns.Count);
 
-            //check some colummns types
+            //check some columns types
             // ReadXmlSchema - Tables 0 Col type
             Assert.Equal(ds1.Tables[0].Columns[0].GetType(), dt1.Columns[0].GetType());
 
@@ -3572,27 +3650,32 @@ Assert.False(true);
             dt.Columns.Add("StartDate", typeof(DateTime));
 
             DataRow dr;
-            DateTime date = DateTime.Now;
+            DateTime now = DateTime.Now;
+
+            // In RowFilter we have a string containing only seconds,
+            // but in rows we have a DateTime which also contains milliseconds.
+            // The test would fail without this extra minute, when now.Millisecond is 0.
+            DateTime rowDate = now.AddMinutes(1);
 
             for (int i = 0; i < 10; i++)
             {
                 dr = dt.NewRow();
-                dr["StartDate"] = date.AddDays(i);
+                dr["StartDate"] = rowDate.AddDays(i);
                 dt.Rows.Add(dr);
             }
 
             DataView dv = dt.DefaultView;
             dv.RowFilter = string.Format(CultureInfo.InvariantCulture,
                                 "StartDate >= #{0}# and StartDate <= #{1}#",
-                                DateTime.Now.AddDays(2),
-                                DateTime.Now.AddDays(4));
+                                now.AddDays(2),
+                                now.AddDays(4));
             Assert.Equal(10, dt.Rows.Count);
 
             int expectedRowCount = 2;
             if (dv.Count != expectedRowCount)
             {
                 StringBuilder sb = new();
-                sb.AppendLine($"DataView.Rows.Count: Expected: {expectedRowCount}, Actual: {dv.Count}. Debug data: RowFilter: {dv.RowFilter}, date: {date}");
+                sb.AppendLine($"DataView.Rows.Count: Expected: {expectedRowCount}, Actual: {dv.Count}. Debug data: RowFilter: {dv.RowFilter}, date: {now}");
                 for (int i = 0; i < dv.Count; i++)
                 {
                     sb.Append($"row#{i}: ");

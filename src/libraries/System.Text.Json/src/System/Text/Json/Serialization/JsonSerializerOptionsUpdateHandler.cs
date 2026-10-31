@@ -4,8 +4,11 @@
 using System.Collections.Generic;
 using System.Reflection.Metadata;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 [assembly: MetadataUpdateHandler(typeof(JsonSerializerOptionsUpdateHandler))]
+
+#pragma warning disable IDE0060
 
 namespace System.Text.Json
 {
@@ -17,8 +20,10 @@ namespace System.Text.Json
             // Ignore the types, and just clear out all reflection caches from serializer options.
             foreach (KeyValuePair<JsonSerializerOptions, object?> options in JsonSerializerOptions.TrackedOptionsInstances.All)
             {
-                options.Key.ClearClasses();
+                options.Key.ClearCaches();
             }
+
+            MemberAccessor.ClearCache();
         }
     }
 }

@@ -4,8 +4,9 @@ using System.Collections.Generic;
 using System.Text;
 using System.Runtime.InteropServices;
 using Xunit;
+using TestLibrary;
 
-namespace PInvokeTests
+namespace LayoutClass
 {
     [StructLayout(LayoutKind.Sequential)]
     public class EmptyBase
@@ -137,7 +138,24 @@ namespace PInvokeTests
         public RecursiveTestClass c;
     }
 
-    class StructureTests
+    public class RecursiveLayoutMetadataTest
+    {
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsCoreCLR))]
+        [InlineData(typeof(RecursiveTestClass))]
+        [InlineData(typeof(RecursiveTestStruct))]
+        public static void RepeatedRecursiveLayoutFailure(Type type)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                Assert.Throws<TypeLoadException>(() => Marshal.SizeOf(type));
+                Assert.Equal(sizeof(int), Marshal.SizeOf<Blittable>());
+            }
+        }
+    }
+
+    [SkipOnMono("needs triage")]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/91388", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+    public class LayoutClassTest
     {
         private const string SimpleBlittableSeqLayoutClass_UpdateField = nameof(SimpleBlittableSeqLayoutClass_UpdateField);
 
@@ -186,6 +204,7 @@ namespace PInvokeTests
         [DllImport("LayoutClassNative", EntryPoint = "Invalid")]
         private static extern void RecursiveNativeLayoutInvalid(RecursiveTestStruct str);
 
+        [Fact]
         public static void SequentialClass()
         {
             Console.WriteLine($"Running {nameof(SequentialClass)}...");
@@ -195,6 +214,7 @@ namespace PInvokeTests
             Assert.True(SimpleSeqLayoutClassByRef(p));
         }
 
+        [Fact]
         public static void SequentialClassNull()
         {
             Console.WriteLine($"Running {nameof(SequentialClassNull)}...");
@@ -202,6 +222,7 @@ namespace PInvokeTests
             Assert.True(SimpleSeqLayoutClassByRefNull(null));
         }
 
+        [Fact]
         public static void DerivedClassWithEmptyBase()
         {
             Console.WriteLine($"Running {nameof(DerivedClassWithEmptyBase)}...");
@@ -211,6 +232,7 @@ namespace PInvokeTests
             Assert.True(DerivedSeqLayoutClassByRef(new SeqDerivedClass2(42), 42));
         }
 
+        [Fact]
         public static void ExplicitClass()
         {
             Console.WriteLine($"Running {nameof(ExplicitClass)}...");
@@ -228,6 +250,7 @@ namespace PInvokeTests
             Assert.Equal(expected, p.a);
         }
 
+        [Fact]
         public static void BlittableClass()
         {
             // [Compat] Marshalled with [In, Out] behaviour by default
@@ -235,6 +258,7 @@ namespace PInvokeTests
             ValidateBlittableClassInOut(SimpleBlittableSeqLayoutClassByRef);
         }
 
+        [Fact]
         public static void BlittableClassNull()
         {
             // [Compat] Marshalled with [In, Out] behaviour by default
@@ -242,6 +266,7 @@ namespace PInvokeTests
             Assert.True(SimpleBlittableSeqLayoutClass_Null(null));
         }
 
+        [Fact]
         public static void BlittableClassByInAttr()
         {
             // [Compat] Marshalled with [In, Out] behaviour even when only [In] is specified
@@ -249,6 +274,7 @@ namespace PInvokeTests
             ValidateBlittableClassInOut(SimpleBlittableSeqLayoutClassByInAttr);
         }
 
+        [Fact]
         public static void BlittableClassByOutAttr()
         {
             // [Compat] Marshalled with [In, Out] behaviour even when only [Out] is specified
@@ -265,6 +291,7 @@ namespace PInvokeTests
             Assert.Equal(expected, p.a);
         }
 
+        [Fact]
         public static void SealedBlittableClass()
         {
             // [Compat] Marshalled with [In, Out] behaviour by default
@@ -272,6 +299,7 @@ namespace PInvokeTests
             ValidateSealedBlittableClassInOut(SealedBlittableSeqLayoutClassByRef);
         }
 
+        [Fact]
         public static void SealedBlittableClassByInAttr()
         {
             // [Compat] Marshalled with [In, Out] behaviour even when only [In] is specified
@@ -279,6 +307,7 @@ namespace PInvokeTests
             ValidateSealedBlittableClassInOut(SealedBlittableSeqLayoutClassByInAttr);
         }
 
+        [Fact]
         public static void SealedBlittableClassByOutAttr()
         {
             // [Compat] Marshalled with [In, Out] behaviour even when only [Out] is specified
@@ -286,6 +315,7 @@ namespace PInvokeTests
             ValidateSealedBlittableClassInOut(SealedBlittableSeqLayoutClassByOutAttr);
         }
 
+        [Fact]
         public static void SealedBlittablePinned()
         {
             Console.WriteLine($"Running {nameof(SealedBlittablePinned)}...");
@@ -293,6 +323,7 @@ namespace PInvokeTests
             Assert.True(PointersEqual(blittable, ref blittable.a));
         }
 
+        [Fact]
         public static void BlittablePinned()
         {
             Console.WriteLine($"Running {nameof(BlittablePinned)}...");
@@ -300,6 +331,7 @@ namespace PInvokeTests
             Assert.True(PointersEqual(blittable, ref blittable.a));
         }
 
+        [Fact]
         public static void NestedLayoutClass()
         {
             Console.WriteLine($"Running {nameof(NestedLayoutClass)}...");
@@ -313,40 +345,12 @@ namespace PInvokeTests
             Assert.True(SimpleNestedLayoutClassByValue(target));
         }
 
+        [Fact]
         public static void RecursiveNativeLayout()
         {
             Console.WriteLine($"Running {nameof(RecursiveNativeLayout)}...");
 
             Assert.Throws<TypeLoadException>(() => RecursiveNativeLayoutInvalid(new RecursiveTestStruct()));
-        }
-
-        public static int Main(string[] argv)
-        {
-            try
-            {
-                SequentialClass();
-                SequentialClassNull();
-                DerivedClassWithEmptyBase();
-                ExplicitClass();
-                BlittableClass();
-                BlittableClassNull();
-                SealedBlittableClass();
-                BlittableClassByInAttr();
-                SealedBlittableClassByInAttr();
-                BlittableClassByOutAttr();
-                SealedBlittableClassByOutAttr();
-                NestedLayoutClass();
-                RecursiveNativeLayout();
-                SealedBlittablePinned();
-                BlittablePinned();
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine($"Test Failure: {e}");
-                return 101;
-            }
-
-            return 100;
         }
     }
 }

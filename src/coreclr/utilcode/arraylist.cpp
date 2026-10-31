@@ -19,12 +19,12 @@
 // writers, however.)
 //
 
-void ArrayListBase::Clear()
+void ArrayListBase::Clear() noexcept
 {
     CONTRACTL
     {
         NOTHROW;
-        FORBID_FAULT;
+        GC_NOTRIGGER;
     }
     CONTRACTL_END
 
@@ -35,14 +35,13 @@ void ArrayListBase::Clear()
         delete [] block;
         block = next;
     }
-    m_firstBlock.m_next = 0;
+    m_firstBlock.m_next = nullptr;
     m_count = 0;
 }
 
 PTR_VOID * ArrayListBase::GetPtr(DWORD index) const
 {
     STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_FORBID_FAULT;
     STATIC_CONTRACT_CANNOT_TAKE_LOCK;
     SUPPORTS_DAC;
 
@@ -51,7 +50,7 @@ PTR_VOID * ArrayListBase::GetPtr(DWORD index) const
     ArrayListBlock *b = (ArrayListBlock*)&m_firstBlock;
     while (index >= b->m_blockSize)
     {
-        PREFIX_ASSUME(b->m_next != NULL);
+        _ASSERTE(b->m_next != NULL);
         index -= b->m_blockSize;
         b = b->m_next;
     }
@@ -66,7 +65,7 @@ HRESULT ArrayListBase::Append(void *element)
     CONTRACTL
     {
         NOTHROW;
-        INJECT_FAULT(return E_OUTOFMEMORY;);
+        GC_NOTRIGGER;
     }
     CONTRACTL_END
 
@@ -106,82 +105,6 @@ HRESULT ArrayListBase::Append(void *element)
 }
 
 #endif // #ifndef DACCESS_COMPILE
-
-DWORD ArrayListBase::FindElement(DWORD start, PTR_VOID element) const
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        FORBID_FAULT;
-    }
-    CONTRACTL_END
-
-    DWORD index = start;
-
-    _ASSERTE(index <= m_count);
-
-    ArrayListBlock *b = (ArrayListBlock*)&m_firstBlock;
-
-    //
-    // Skip to the block containing start.
-    // index should be the index of start in the block.
-    //
-
-    while (b != NULL && index >= b->m_blockSize)
-    {
-        index -= b->m_blockSize;
-        b = b->m_next;
-    }
-
-    //
-    // Adjust start to be the index of the start of the block
-    //
-
-    start -= index;
-
-    //
-    // Compute max number of entries from the start of the block
-    //
-
-    DWORD max = m_count - start;
-
-    while (b != NULL)
-    {
-        //
-        // Compute end of search in this block - either end of the block
-        // or end of the array
-        //
-
-        DWORD blockMax;
-        if (max < b->m_blockSize)
-            blockMax = max;
-        else
-            blockMax = b->m_blockSize;
-
-        //
-        // Scan for element, until the end.
-        //
-
-        while (index < blockMax)
-        {
-            if (b->m_array[index] == element)
-                return start + index;
-            index++;
-        }
-
-        //
-        // Otherwise, increment block start index, decrement max count,
-        // reset index, and go to the next block (if any)
-        //
-
-        start += b->m_blockSize;
-        max -= b->m_blockSize;
-        index = 0;
-        b = b->m_next;
-    }
-
-    return (DWORD) NOT_FOUND;
-}
 
 BOOL ArrayListBase::Iterator::Next()
 {

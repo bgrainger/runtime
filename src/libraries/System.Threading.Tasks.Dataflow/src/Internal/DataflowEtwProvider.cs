@@ -12,26 +12,22 @@
 
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.Tracing;
 using System.Linq;
 using System.Security;
-using System.Diagnostics.Tracing;
 
 namespace System.Threading.Tasks.Dataflow.Internal
 {
     /// <summary>Provides an event source for tracing Dataflow information.</summary>
     [EventSource(
         Name = "System.Threading.Tasks.Dataflow.DataflowEventSource",
-        Guid = "16F53577-E41D-43D4-B47E-C17025BF4025",
-        LocalizationResources = "FxResources.System.Threading.Tasks.Dataflow.SR")]
-    internal sealed class DataflowEtwProvider : EventSource
+        Guid = "16F53577-E41D-43D4-B47E-C17025BF4025")]
+    internal sealed partial class DataflowEtwProvider : EventSource
     {
         /// <summary>
         /// Defines the singleton instance for the dataflow ETW provider.
-        /// The dataflow provider GUID is {16F53577-E41D-43D4-B47E-C17025BF4025}.
         /// </summary>
         internal static readonly DataflowEtwProvider Log = new DataflowEtwProvider();
-        /// <summary>Prevent external instantiation.  All logging should go through the Log instance.</summary>
-        private DataflowEtwProvider() { }
 
         /// <summary>Enabled for all keywords.</summary>
         private const EventKeywords ALL_KEYWORDS = (EventKeywords)(-1);
@@ -102,11 +98,11 @@ namespace System.Threading.Tasks.Dataflow.Internal
             }
         }
 
-#if !ES_BUILD_STANDALONE
-        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
-            Justification = "WriteEvent Parameters are trimmer safe")]
-#endif
         [Event(TASKLAUNCHED_EVENTID, Level = EventLevel.Informational)]
+#if !NET
+        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
+                                      Justification = "This calls WriteEvent with all primitive arguments which is safe. Primitives are always serialized properly.")]
+#endif
         private void TaskLaunchedForMessageHandling(int blockId, TaskLaunchedReason reason, int availableMessages, int taskId)
         {
             WriteEvent(TASKLAUNCHED_EVENTID, blockId, reason, availableMessages, taskId);
@@ -141,7 +137,7 @@ namespace System.Threading.Tasks.Dataflow.Internal
 
                     if (completionTask.IsFaulted)
                     {
-                        try { exceptionData = string.Join(Environment.NewLine, completionTask.Exception!.InnerExceptions.Select(e => e.ToString())); }
+                        try { exceptionData = string.Join(Environment.NewLine, completionTask.Exception!.InnerExceptions.Select(static e => e.ToString())); }
                         catch { }
                     }
 
@@ -161,11 +157,11 @@ namespace System.Threading.Tasks.Dataflow.Internal
             Canceled = (int)TaskStatus.Canceled
         }
 
-#if !ES_BUILD_STANDALONE
-        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
-            Justification = "WriteEvent Parameters are trimmer safe")]
-#endif
         [Event(BLOCKCOMPLETED_EVENTID, Level = EventLevel.Informational)]
+#if !NET
+        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
+                                      Justification = "This calls WriteEvent with all primitive arguments which is safe. Primitives are always serialized properly.")]
+#endif
         private void DataflowBlockCompleted(int blockId, BlockCompletionReason reason, string exceptionData)
         {
             WriteEvent(BLOCKCOMPLETED_EVENTID, blockId, reason, exceptionData);

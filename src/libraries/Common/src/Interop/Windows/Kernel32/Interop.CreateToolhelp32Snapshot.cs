@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 internal static partial class Interop
@@ -21,7 +22,7 @@ internal static partial class Interop
             NoHeaps = 0x40000000
         }
 
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         internal struct PROCESSENTRY32
         {
             internal int dwSize;
@@ -33,23 +34,34 @@ internal static partial class Interop
             internal int th32ParentProcessID;
             internal int pcPriClassBase;
             internal int dwFlags;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = MAX_PATH)]
-            internal string szExeFile;
+#if NET
+            internal ExeFileNameBuffer szExeFile;
+
+            [InlineArray(MAX_PATH)]
+            internal struct ExeFileNameBuffer
+            {
+                private char _element0;
+            }
+#else
+            internal unsafe fixed char szExeFile[MAX_PATH];
+#endif
         }
 
-        // https://docs.microsoft.com/windows/desktop/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot
-        [GeneratedDllImport(Libraries.Kernel32, SetLastError = true)]
-        internal static partial IntPtr CreateToolhelp32Snapshot(SnapshotFlags dwFlags, uint th32ProcessID);
+        // https://learn.microsoft.com/windows/desktop/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.Kernel32, SetLastError = true)]
+        internal static partial nint CreateToolhelp32Snapshot(SnapshotFlags dwFlags, uint th32ProcessID);
 
-#pragma warning disable DLLIMPORTGENANALYZER015 // Use 'GeneratedDllImportAttribute' instead of 'DllImportAttribute' to generate P/Invoke marshalling code at compile time
-        // TODO: [DllImportGenerator] Switch to use GeneratedDllImport once we support non-blittable types.
-        // https://docs.microsoft.com/windows/desktop/api/tlhelp32/nf-tlhelp32-process32first
-        [DllImport(Libraries.Kernel32, SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Auto)]
-        internal static extern bool Process32First(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
+        // https://learn.microsoft.com/windows/desktop/api/tlhelp32/nf-tlhelp32-process32first
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.Kernel32, EntryPoint = "Process32FirstW", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static unsafe partial bool Process32First(nint hSnapshot, PROCESSENTRY32* lppe);
 
-        // https://docs.microsoft.com/windows/desktop/api/tlhelp32/nf-tlhelp32-process32next
-        [DllImport(Libraries.Kernel32, SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Auto)]
-        internal static extern bool Process32Next(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
-#pragma warning restore DLLIMPORTGENANALYZER015
+        // https://learn.microsoft.com/windows/desktop/api/tlhelp32/nf-tlhelp32-process32next
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.Kernel32, EntryPoint = "Process32NextW", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static unsafe partial bool Process32Next(nint hSnapshot, PROCESSENTRY32* lppe);
     }
 }

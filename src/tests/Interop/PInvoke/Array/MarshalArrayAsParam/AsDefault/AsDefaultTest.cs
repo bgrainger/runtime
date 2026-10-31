@@ -4,7 +4,12 @@
 using System;
 using System.Runtime.InteropServices;
 using Xunit;
+using TestLibrary;
 
+namespace MarshalArrayAsParam.Default;
+
+[ActiveIssue("https://github.com/dotnet/runtime/issues/91388", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+[SkipOnMono("needs triage")]
 public class ArrayMarshal
 {
     public struct TestStruct
@@ -310,7 +315,8 @@ public class ArrayMarshal
         return array;
     }
 
-    private static void TestMarshalByVal_NoAttributes()
+    [Fact]
+    public static void TestMarshalByVal_NoAttributes()
     {
         Console.WriteLine("ByVal marshaling CLR array as c-style-array no attributes");
 
@@ -334,7 +340,7 @@ public class ArrayMarshal
 
         Assert.True(CStyle_Array_Bool(InitBoolArray(ARRAY_SIZE), ARRAY_SIZE));
 
-        if (OperatingSystem.IsWindows())
+        if (TestLibrary.PlatformDetection.IsBuiltInComEnabled)
         {
             object[] oArr = InitArray<object>(ARRAY_SIZE);
             // Test nesting null value scenario
@@ -343,7 +349,8 @@ public class ArrayMarshal
         }
     }
 
-    private static void TestMarshalByVal_In()
+    [Fact]
+    public static void TestMarshalByVal_In()
     {
         Console.WriteLine("ByVal marshaling  CLR array as c-style-array with InAttribute applied");
 
@@ -366,7 +373,7 @@ public class ArrayMarshal
         Assert.True(CStyle_Array_LPSTR_In(strArr, ARRAY_SIZE));
         Assert.True(CStyle_Array_Struct_In(InitStructArray(ARRAY_SIZE), ARRAY_SIZE));
         Assert.True(CStyle_Array_Bool_In(InitBoolArray(ARRAY_SIZE), ARRAY_SIZE));
-        if (OperatingSystem.IsWindows())
+        if (TestLibrary.PlatformDetection.IsBuiltInComEnabled)
         {
             object[] oArr = InitArray<object>(ARRAY_SIZE);
             // Test nesting null value scenario
@@ -379,7 +386,8 @@ public class ArrayMarshal
 
     #region Marshal InOut ByVal
 
-    private static void TestMarshalInOut_ByVal()
+    [Fact]
+    public static void TestMarshalInOut_ByVal()
     {
         Console.WriteLine("By value marshaling CLR array as c-style-array with InAttribute and OutAttribute applied");
         Console.WriteLine("CStyle_Array_Int_InOut");
@@ -395,7 +403,7 @@ public class ArrayMarshal
         Console.WriteLine("CStyle_Array_Int_InOut_ZeroLength");
         int[] iArrLength0 = InitArray<int>(0);
         Assert.True(CStyle_Array_Int_InOut_ZeroLength(iArrLength0));
-        Assert.Equal(0, iArrLength0.Length);
+        Assert.Empty(iArrLength0);
 
         Console.WriteLine("CStyle_Array_Uint_InOut");
         uint[] uiArr = InitArray<uint>(ARRAY_SIZE);
@@ -461,7 +469,7 @@ public class ArrayMarshal
         Assert.True(CStyle_Array_Bool_InOut(boolArr, ARRAY_SIZE));
         Assert.True(Equals<bool>(boolArr, GetExpectedOutBoolArray(ARRAY_SIZE)));
 
-        if (OperatingSystem.IsWindows())
+        if (TestLibrary.PlatformDetection.IsBuiltInComEnabled)
         {
             Console.WriteLine("CStyle_Array_Object_InOut");
             object[] oArr = InitArray<object>(ARRAY_SIZE);
@@ -543,7 +551,8 @@ public class ArrayMarshal
 
     #region Marshal Out ByVal
 
-    private static void TestMarshalOut_ByVal()
+    [Fact]
+    public static void TestMarshalOut_ByVal()
     {
         Console.WriteLine("By value marshaling CLR array as c-style-array with OutAttribute applied");
 
@@ -560,7 +569,7 @@ public class ArrayMarshal
         Console.WriteLine("CStyle_Array_Int_Out_ZeroLength");
         int[] iArrLength0 = new int[0];
         Assert.True(CStyle_Array_Int_Out_ZeroLength(iArrLength0));
-        Assert.Equal(0, iArrLength0.Length);
+        Assert.Empty(iArrLength0);
 
         Console.WriteLine("CStyle_Array_Uint_Out");
         uint[] uiArr = new uint[ARRAY_SIZE];
@@ -624,7 +633,7 @@ public class ArrayMarshal
         Assert.True(CStyle_Array_Bool_Out(boolArr, ARRAY_SIZE));
         Assert.True(Equals<bool>(boolArr, GetExpectedOutBoolArray(ARRAY_SIZE)));
 
-        if (OperatingSystem.IsWindows())
+        if (TestLibrary.PlatformDetection.IsBuiltInComEnabled)
         {
             Console.WriteLine("CStyle_Array_Object_Out");
             object[] oArr = new object[ARRAY_SIZE];
@@ -639,7 +648,9 @@ public class ArrayMarshal
 
     #endregion
 
-    private static void TestMultidimensional()
+    [Fact]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/126467", typeof(Utilities), nameof(Utilities.IsNativeAot))]
+    public static void TestMultidimensional()
     {
         Console.WriteLine("================== [Get_Multidimensional_Array_Sum] ============");
         int[,] array = InitMultidimensionalBlittableArray(ROWS, COLUMNS);
@@ -650,25 +661,5 @@ public class ArrayMarshal
         }
 
         Assert.Equal(sum, Get_Multidimensional_Array_Sum(array, ROWS, COLUMNS));
-    }
-
-    public static int Main()
-    {
-        try
-        {
-            TestMarshalByVal_NoAttributes();
-            TestMarshalByVal_In();
-            TestMarshalInOut_ByVal();
-            TestMarshalOut_ByVal();
-            TestMultidimensional();
-
-            Console.WriteLine("\nTest PASS.");
-            return 100;
-        }
-        catch (Exception e)
-        {
-            Console.WriteLine($"\nTEST FAIL: {e}");
-            return 101;
-        }
     }
 }

@@ -33,7 +33,7 @@ const unsigned MODULE_MASK             = 0xffff;    // mask to get module index 
 const unsigned MODULE_LEVEL_OFFSET     = 16;        // offset of module load level
 const unsigned MAX_MODULE_LEVELS       = 0x100;     // maximum allowed number of module levels (2^8 values)
 
-const unsigned MAX_METHODS             = 0x4000;    // Maximum allowed number of methods (2^14 values) (in principle this is also limited by "unsigned short" counters)
+const unsigned MAX_METHODS             = 0xffff;    // Maximum allowed number of methods (2^16-1 values) (in principle this is also limited by "unsigned short" counters)
 
 const unsigned SIGNATURE_LENGTH_MASK   = 0xffff;    // mask to get signature from packed data (2^16-1 max signature length)
 
@@ -88,7 +88,7 @@ inline unsigned Pack8_24(unsigned up, unsigned low)
 //   m_JitInfoArray is an array of RecorderInfo (12 bytes on 32-bit systems, 16 bytes on 64-bit systems), with MAX_METHODS elements.
 //
 //   1. Modules.
-//     For modules RecorderInfo::data2 and RecorderInfo::ptr are set to 0. RecorderInfo::ptr == 0 is also a flag that RecorderInfo correponds to module.
+//     For modules RecorderInfo::data2 and RecorderInfo::ptr are set to 0. RecorderInfo::ptr == 0 is also a flag that RecorderInfo corresponds to module.
 //     RecorderInfo::data1 is non-zero and represents info for module.
 //
 //     Info for module includes module index and requested load level, with some additional data in higher bits (MULTICOREJIT_MODULEDEPENDENCY_RECORD_ID tag).
@@ -253,7 +253,7 @@ class MulticoreJitModuleEnumerator
 
 public:
     HRESULT EnumerateLoadedModules(AppDomain * pDomain);
-    HRESULT HandleAssembly(DomainAssembly * pAssembly);
+    HRESULT HandleAssembly(Assembly * pAssembly);
 };
 
 
@@ -306,7 +306,7 @@ private:
 
     HRESULT ReadCheckFile(const WCHAR * pFileName);
 
-    DomainAssembly * LoadAssembly(SString & assemblyName);
+    Assembly * LoadAssembly(SString & assemblyName);
 
 public:
 
@@ -626,15 +626,13 @@ private:
     unsigned FindModule(Module * pModule);
     unsigned GetOrAddModuleIndex(Module * pModule);
 
-    HRESULT WriteModuleRecord(IStream * pStream,  const RecorderModuleInfo & module);
+    HRESULT WriteModuleRecord(FILE * fp,  const RecorderModuleInfo & module);
 
     void RecordMethodInfo(unsigned moduleIndex, MethodDesc * pMethod, bool application);
     unsigned RecordModuleInfo(Module * pModule);
     void RecordOrUpdateModuleInfo(FileLoadLevel needLevel, unsigned moduleIndex);
 
-    void AddAllModulesInAsm(DomainAssembly * pAssembly);
-
-    HRESULT WriteOutput(IStream * pStream);
+    HRESULT WriteOutput(FILE * fp);
 
     HRESULT WriteOutput();
 
@@ -646,7 +644,7 @@ private:
 
 public:
 
-    MulticoreJitRecorder(AppDomain * pDomain, AssemblyBinder * pBinder, bool fRecorderActive)
+    MulticoreJitRecorder(AppDomain * pDomain, AssemblyBinder * pBinder)
         : m_stats(pDomain->GetMulticoreJitManager().GetStats())
         , m_ModuleList(nullptr)
         , m_JitInfoArray(nullptr)
@@ -656,18 +654,8 @@ public:
         m_pDomain = pDomain;
         m_pBinder = pBinder;
 
-        if (fRecorderActive)
-        {
-            m_ModuleList = new (nothrow) RecorderModuleInfo[MAX_MODULES];
-        }
-
         m_ModuleCount = 0;
         m_ModuleDepCount = 0;
-
-        if (fRecorderActive)
-        {
-            m_JitInfoArray = new (nothrow) RecorderInfo[MAX_METHODS];
-        }
 
         m_JitInfoCount = 0;
         m_fFirstMethod = true;
@@ -715,6 +703,14 @@ public:
                (m_ModuleCount  >= MAX_MODULES);
     }
 
+    void Activate()
+    {
+        LIMITED_METHOD_CONTRACT;
+
+        m_ModuleList = new (nothrow) RecorderModuleInfo[MAX_MODULES];
+        m_JitInfoArray = new (nothrow) RecorderInfo[MAX_METHODS];
+    }
+
     void RecordMethodJitOrLoad(MethodDesc * pMethod, bool application);
 
     MulticoreJitCodeInfo RequestMethodCode(MethodDesc * pMethod, MulticoreJitManager * pManager);
@@ -734,7 +730,8 @@ public:
 
 #ifdef MULTICOREJIT_LOGGING
 
-void _MulticoreJitTrace(const char * format, ...);
+#include <minipal/types.h>
+void _MulticoreJitTrace(const char * format, ...) MINIPAL_ATTR_FORMAT_PRINTF(1, 2);
 
 #define MulticoreJitTrace(x)      do { _MulticoreJitTrace x; } while (0)
 

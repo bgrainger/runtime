@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <minipal/types.h>
+
 #ifndef __cplusplus
 #include <stdbool.h>
 #endif
@@ -28,7 +30,7 @@
 #endif
 
 #if defined(TARGET_ANDROID)
-static inline void
+static inline void MINIPAL_ATTR_FORMAT_PRINTF(2, 3)
 do_abort_unless (bool condition, const char* fmt, ...)
 {
     if (condition) {
@@ -56,6 +58,14 @@ do_abort_unless (bool condition, const char* fmt, ...)
 #define PALEXPORT
 #endif
 #endif // PALEXPORT
+
+#ifndef PAL_CALLBACK_CALLTYPE
+#if defined(_WIN32) && defined(_M_IX86)
+#define PAL_CALLBACK_CALLTYPE __stdcall
+#else
+#define PAL_CALLBACK_CALLTYPE
+#endif
+#endif // PAL_CALLBACK_CALLTYPE
 
 #ifndef EXTERN_C
 #ifdef __cplusplus

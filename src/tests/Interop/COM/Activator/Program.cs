@@ -4,6 +4,7 @@ using System;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.Loader;
 
 using Internal.Runtime.InteropServices;
 using TestLibrary;
@@ -50,14 +51,56 @@ sealed class ClassFactoryWrapper
 
 namespace Activator
 {
-    unsafe class Program
+    public unsafe class Program
     {
+        private const string SharedLoadContextIdentifier = $"{nameof(Program)}.{nameof(ValidateAssemblyLoadContext)}";
+        private const nint IsolatedContext = -1;
+
+        private enum LoadContextKind
+        {
+            Default,
+            Isolated,
+            Named
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct LoadContext
+        {
+            public nuint Size;
+            public IntPtr Identifier;
+        }
+
         private static delegate*<ComActivationContext, object> GetClassFactoryForTypeMethod = (delegate*<ComActivationContext, object>)typeof(object).Assembly.GetType("Internal.Runtime.InteropServices.ComActivator", throwOnError: true).GetMethod("GetClassFactoryForType", BindingFlags.NonPublic | BindingFlags.Static).MethodHandle.GetFunctionPointer();
         private static delegate*<ComActivationContext, bool, void> ClassRegistrationScenarioForType = (delegate*<ComActivationContext, bool, void>)typeof(object).Assembly.GetType("Internal.Runtime.InteropServices.ComActivator", throwOnError: true).GetMethod("ClassRegistrationScenarioForType", BindingFlags.NonPublic | BindingFlags.Static).MethodHandle.GetFunctionPointer();
 
         private static ClassFactoryWrapper GetClassFactoryForType(ComActivationContext context)
         {
             return new ClassFactoryWrapper(GetClassFactoryForTypeMethod(context));
+        }
+
+        private static ClassFactoryWrapper GetClassFactoryForType(ComActivationContext context, LoadContextKind loadContextKind)
+        {
+            if (loadContextKind is not LoadContextKind.Named)
+            {
+                context.LoadContext = loadContextKind switch
+                {
+                    LoadContextKind.Default => IntPtr.Zero,
+                    LoadContextKind.Isolated => IsolatedContext,
+                    _ => throw new ArgumentOutOfRangeException(nameof(loadContextKind))
+                };
+                return GetClassFactoryForType(context);
+            }
+
+            fixed (char* identifier = SharedLoadContextIdentifier)
+            {
+                LoadContext loadContext = new()
+                {
+                    Size = (nuint)sizeof(LoadContext),
+                    Identifier = (IntPtr)identifier
+                };
+                context.LoadContext = (IntPtr)(&loadContext);
+                return GetClassFactoryForType(context);
+            }
         }
 
         static void InvalidInterfaceRequest()
@@ -128,9 +171,9 @@ namespace Activator
             }
         }
 
-        static void ValidateAssemblyIsolation(bool builtInComDisabled)
+        static void ValidateAssemblyLoadContext(bool builtInComDisabled, LoadContextKind loadContextKind)
         {
-            Console.WriteLine($"Running {nameof(ValidateAssemblyIsolation)}...");
+            Console.WriteLine($"Running {nameof(ValidateAssemblyLoadContext)}({nameof(loadContextKind)}={loadContextKind})...");
 
             string assemblySubPath = Path.Combine(Environment.CurrentDirectory, "Servers");
             string assemblyAPath = Path.Combine(assemblySubPath, "AssemblyA.dll");
@@ -163,11 +206,11 @@ namespace Activator
                 if (builtInComDisabled)
                 {
                     Assert.Throws<NotSupportedException>(
-                        () => GetClassFactoryForType(cxt));
+                        () => GetClassFactoryForType(cxt, loadContextKind));
                     return;
                 }
 
-                var factory = GetClassFactoryForType(cxt);
+                var factory = GetClassFactoryForType(cxt, loadContextKind);
 
                 IntPtr svrRaw;
                 factory.CreateInstance(null, ref iid, out svrRaw);
@@ -191,7 +234,7 @@ namespace Activator
                     TypeName = "ClassFromB"
                 };
 
-                var factory = GetClassFactoryForType(cxt);
+                var factory = GetClassFactoryForType(cxt, loadContextKind);
 
                 IntPtr svrRaw;
                 factory.CreateInstance(null, ref iid, out svrRaw);
@@ -200,7 +243,23 @@ namespace Activator
                 typeCFromAssemblyB = (Type)svr.GetTypeFromC();
             }
 
-            Assert.NotEqual(typeCFromAssemblyA, typeCFromAssemblyB);
+            if (loadContextKind is LoadContextKind.Isolated)
+            {
+                Assert.NotEqual(typeCFromAssemblyA, typeCFromAssemblyB);
+            }
+            else
+            {
+                Assert.Equal(typeCFromAssemblyA, typeCFromAssemblyB);
+            }
+
+            if (loadContextKind is LoadContextKind.Named)
+            {
+                AssemblyLoadContext alcA = AssemblyLoadContext.GetLoadContext(typeCFromAssemblyA.Assembly);
+                AssemblyLoadContext alcB = AssemblyLoadContext.GetLoadContext(typeCFromAssemblyB.Assembly);
+                Assert.NotSame(AssemblyLoadContext.Default, alcA);
+                Assert.Same(alcA, alcB);
+                Assert.Equal($"ComponentLoadContext({SharedLoadContextIdentifier})", alcA.Name);
+            }
         }
 
         static void ValidateUserDefinedRegistrationCallbacks()
@@ -319,7 +378,8 @@ namespace Activator
             }
         }
 
-        static int Main(string[] doNotUse)
+        [Fact]
+        public static int TestEntryPoint()
         {
             try
             {
@@ -334,10 +394,13 @@ namespace Activator
                 InvalidInterfaceRequest();
                 ClassNotRegistered(builtInComDisabled);
                 NonrootedAssemblyPath(builtInComDisabled);
-                ValidateAssemblyIsolation(builtInComDisabled);
+                ValidateAssemblyLoadContext(builtInComDisabled, LoadContextKind.Isolated);
                 if (!builtInComDisabled)
                 {
-                    // We don't test this scenario with builtInComDisabled since it is covered by ValidateAssemblyIsolation() above
+                    // When built-in COM is disabled, the isolated case above verifies that activation fails
+                    // before load context selection, so testing the other load context kinds would be redundant.
+                    ValidateAssemblyLoadContext(builtInComDisabled, LoadContextKind.Default);
+                    ValidateAssemblyLoadContext(builtInComDisabled, LoadContextKind.Named);
                     ValidateUserDefinedRegistrationCallbacks();
                 }
             }

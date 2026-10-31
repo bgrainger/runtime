@@ -1,12 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-//
+
 // OBJECT.CPP
 //
-// Definitions of a Com+ Object
-//
-
-
+// Definitions of a CLR Object
 
 #include "common.h"
 
@@ -23,6 +20,18 @@
 
 SVAL_IMPL(INT32, ArrayBase, s_arrayBoundsZero);
 
+static DWORD GetGlobalNewHashCode()
+{
+    LIMITED_METHOD_CONTRACT;
+    // Used for generating hash codes for exceptions to determine whether the
+    // Catch_Handler_Found_Event should be reported. See Thread::GetNewHashCode.
+    // Using linear congruential generator from Knuth Vol. 2, p. 102, line 24
+    static DWORD dwHashCodeSeed = 123456789U * 1566083941U + 1;
+    const DWORD multiplier = 1*4 + 5; //same as the GetNewHashCode method
+    dwHashCodeSeed = dwHashCodeSeed*multiplier + 1;
+    return dwHashCodeSeed;
+}
+
 // follow the necessary rules to get a new valid hashcode for an object
 DWORD Object::ComputeHashCode()
 {
@@ -31,10 +40,18 @@ DWORD Object::ComputeHashCode()
     // note that this algorithm now uses at most HASHCODE_BITS so that it will
     // fit into the objheader if the hashcode has to be moved back into the objheader
     // such as for an object that is being frozen
+    Thread *pThread = GetThreadNULLOk();
     do
     {
-        // we use the high order bits in this case because they're more random
-        hashCode = GetThread()->GetNewHashCode() >> (32-HASHCODE_BITS);
+        if (pThread == NULL)
+        {
+            hashCode = (GetGlobalNewHashCode() >> (32-HASHCODE_BITS));
+        }
+        else
+        {
+            // we use the high order bits in this case because they're more random
+            hashCode = pThread->GetNewHashCode() >> (32-HASHCODE_BITS);
+        }
     }
     while (hashCode == 0);   // need to enforce hashCode != 0
 
@@ -42,6 +59,18 @@ DWORD Object::ComputeHashCode()
      _ASSERTE((hashCode & ((1<<HASHCODE_BITS)-1)) == hashCode);
 
     return hashCode;
+}
+
+DWORD Object::GetGlobalNewHashCode()
+{
+    LIMITED_METHOD_CONTRACT;
+    // Used for generating hash codes for exceptions to determine whether the
+    // Catch_Handler_Found_Event should be reported. See Thread::GetNewHashCode.
+    // Using linear congruential generator from Knuth Vol. 2, p. 102, line 24
+    static DWORD dwHashCodeSeed = 123456789U * 1566083941U + 1;
+    const DWORD multiplier = 1*4 + 5; //same as the GetNewHashCode method
+    dwHashCodeSeed = dwHashCodeSeed*multiplier + 1;
+    return dwHashCodeSeed;
 }
 
 #ifndef DACCESS_COMPILE
@@ -109,7 +138,7 @@ INT32 Object::GetHashCodeEx()
                     }
                     else
                     {
-                        __SwitchToThread(0, ++dwSwitchCount);
+                        minipal_switch_to_thread(++dwSwitchCount);
                     }
                     continue;
                 }
@@ -132,7 +161,13 @@ BOOL Object::ValidateObjectWithPossibleAV()
     CANNOT_HAVE_CONTRACT;
     SUPPORTS_DAC;
 
-    return GetGCSafeMethodTable()->ValidateWithPossibleAV();
+    PTR_MethodTable table = GetGCSafeMethodTable();
+    if (table == NULL)
+    {
+        return FALSE;
+    }
+
+    return table->ValidateWithPossibleAV();
 }
 
 
@@ -211,9 +246,7 @@ TypeHandle Object::GetGCSafeTypeHandleIfPossible() const
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM());
         PRECONDITION(CheckPointer(pInterfaceMT));
-        PRECONDITION(pObj->GetMethodTable()->IsRestored_NoLogging());
         PRECONDITION(pInterfaceMT->IsInterface());
     }
     CONTRACTL_END
@@ -249,7 +282,7 @@ TypeHandle Object::GetGCSafeTypeHandleIfPossible() const
 Assembly *AssemblyBaseObject::GetAssembly()
 {
     WRAPPER_NO_CONTRACT;
-    return m_pAssembly->GetAssembly();
+    return m_pAssembly;
 }
 
 STRINGREF AllocateString(SString sstr)
@@ -266,23 +299,10 @@ STRINGREF AllocateString(SString sstr)
     return strObj;
 }
 
-CHARARRAYREF AllocateCharArray(DWORD dwArrayLength)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-    return (CHARARRAYREF)AllocatePrimitiveArray(ELEMENT_TYPE_CHAR, dwArrayLength);
-}
-
 void Object::ValidateHeap(BOOL bDeep)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
 #if defined (VERIFY_HEAP)
     //no need to verify next object's header in this case
@@ -295,7 +315,6 @@ void Object::SetOffsetObjectRef(DWORD dwOffset, size_t dwValue)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
     STATIC_CONTRACT_MODE_COOPERATIVE;
 
     OBJECTREF*  location;
@@ -311,7 +330,6 @@ void SetObjectReferenceUnchecked(OBJECTREF *dst,OBJECTREF ref)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
     STATIC_CONTRACT_MODE_COOPERATIVE;
     STATIC_CONTRACT_CANNOT_TAKE_LOCK;
 
@@ -325,23 +343,23 @@ void SetObjectReferenceUnchecked(OBJECTREF *dst,OBJECTREF ref)
     ErectWriteBarrier(dst, ref);
 }
 
-void STDCALL CopyValueClassUnchecked(void* dest, void* src, MethodTable *pMT)
+void CopyValueClassUnchecked(void* dest, void* src, MethodTable *pMT)
 {
 
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
     STATIC_CONTRACT_MODE_COOPERATIVE;
 
     _ASSERTE(!pMT->IsArray());  // bunch of assumptions about arrays wrong.
 
-    if (pMT->ContainsPointers())
+    if (pMT->ContainsGCPointers())
     {
-        memmoveGCRefs(dest, src, pMT->GetNumInstanceFieldBytes());
+        memmoveGCRefs(dest, src, pMT->GetNumInstanceFieldBytesIfContainsGCPointers());
     }
     else
     {
-        switch (pMT->GetNumInstanceFieldBytes())
+        DWORD numInstanceFieldBytes = pMT->GetNumInstanceFieldBytes();
+        switch (numInstanceFieldBytes)
         {
         case 1:
             *(UINT8*)dest = *(UINT8*)src;
@@ -362,7 +380,7 @@ void STDCALL CopyValueClassUnchecked(void* dest, void* src, MethodTable *pMT)
             break;
 #endif // !ALIGN_ACCESS
         default:
-            memcpyNoGCRefs(dest, src, pMT->GetNumInstanceFieldBytes());
+            memcpyNoGCRefs(dest, src, numInstanceFieldBytes);
             break;
         }
     }
@@ -371,11 +389,10 @@ void STDCALL CopyValueClassUnchecked(void* dest, void* src, MethodTable *pMT)
 // Copy value class into the argument specified by the argDest.
 // The destOffset is nonzero when copying values into Nullable<T>, it is the offset
 // of the T value inside of the Nullable<T>
-void STDCALL CopyValueClassArgUnchecked(ArgDestination *argDest, void* src, MethodTable *pMT, int destOffset)
+void CopyValueClassArgUnchecked(ArgDestination *argDest, void* src, MethodTable *pMT, int destOffset)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
     STATIC_CONTRACT_MODE_COOPERATIVE;
 
 #if defined(UNIX_AMD64_ABI)
@@ -390,7 +407,15 @@ void STDCALL CopyValueClassArgUnchecked(ArgDestination *argDest, void* src, Meth
 
     if (argDest->IsHFA())
     {
-        argDest->CopyHFAStructToRegister(src, pMT->GetAlignedNumInstanceFieldBytes());
+        argDest->CopyHFAStructToRegister(src, pMT->GetNumInstanceFieldBytes());
+        return;
+    }
+
+#elif defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+
+    if (argDest->IsStructPassedInRegs())
+    {
+        argDest->CopyStructToRegisters(src, pMT->GetNumInstanceFieldBytes(), destOffset);
         return;
     }
 
@@ -399,26 +424,6 @@ void STDCALL CopyValueClassArgUnchecked(ArgDestination *argDest, void* src, Meth
     _ASSERTE(destOffset == 0);
 
     CopyValueClassUnchecked(argDest->GetDestinationAddress(), src, pMT);
-}
-
-// Initialize the value class argument to zeros
-void InitValueClassArg(ArgDestination *argDest, MethodTable *pMT)
-{
-    STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
-    STATIC_CONTRACT_MODE_COOPERATIVE;
-
-#if defined(UNIX_AMD64_ABI)
-
-    if (argDest->IsStructPassedInRegs())
-    {
-        argDest->ZeroStructInRegisters(pMT->GetNumInstanceFieldBytes());
-        return;
-    }
-
-#endif
-    InitValueClass(argDest->GetDestinationAddress(), pMT);
 }
 
 #if defined (VERIFY_HEAP)
@@ -444,17 +449,8 @@ VOID Object::Validate(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
     STATIC_CONTRACT_MODE_COOPERATIVE;
     STATIC_CONTRACT_CANNOT_TAKE_LOCK;
-
-    if (g_IBCLogger.InstrEnabled() && !GCStress<cfg_any>::IsEnabled())
-    {
-        // If we are instrumenting for IBC (and GCStress is not enabled)
-        // then skip these Object::Validate() as they slow down the
-        // instrument phase by an order of magnitude
-        return;
-    }
 
     if (g_fEEShutDown & ShutDown_Phase2)
     {
@@ -484,7 +480,7 @@ VOID Object::Validate(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock)
 
 
     {   // ValidateInner can throw or fault on failure which violates contract.
-        CONTRACT_VIOLATION(ThrowsViolation | FaultViolation);
+        CONTRACT_VIOLATION(ThrowsViolation);
 
         // using inner helper because of TRY and stack objects with destructors.
         ValidateInner(bDeep, bVerifyNextHeader, bVerifySyncBlock);
@@ -495,7 +491,6 @@ VOID Object::ValidateInner(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncB
 {
     STATIC_CONTRACT_THROWS; // See CONTRACT_VIOLATION above
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FAULT; // See CONTRACT_VIOLATION above
     STATIC_CONTRACT_MODE_COOPERATIVE;
     STATIC_CONTRACT_CANNOT_TAKE_LOCK;
 
@@ -564,6 +559,7 @@ VOID Object::ValidateInner(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncB
         {
             Object * nextObj = GCHeapUtilities::GetGCHeap ()->NextObj (this);
             if ((nextObj != NULL) &&
+                (nextObj->GetGCSafeMethodTable() != nullptr) &&
                 (nextObj->GetGCSafeMethodTable() != g_pFreeObjectMethodTable))
             {
                 // we need a read barrier here - to make sure we read the object header _after_
@@ -579,7 +575,7 @@ VOID Object::ValidateInner(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncB
 #ifdef FEATURE_64BIT_ALIGNMENT
         if (pMT->RequiresAlign8())
         {
-            CHECK_AND_TEAR_DOWN((((size_t)this) & 0x7) == (pMT->IsValueType()? 4:0));
+            CHECK_AND_TEAR_DOWN((((size_t)this) & 0x7) == (size_t)(pMT->IsValueType()?4:0));
         }
         lastTest = 9;
 #endif // FEATURE_64BIT_ALIGNMENT
@@ -587,10 +583,11 @@ VOID Object::ValidateInner(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncB
     }
     EX_CATCH
     {
-        STRESS_LOG3(LF_ASSERT, LL_ALWAYS, "Detected use of corrupted OBJECTREF: %p [MT=%p] (lastTest=%d)", this, lastTest > 0 ? (*(size_t*)this) : 0, lastTest);
+        STRESS_LOG3(LF_ASSERT, LL_ALWAYS, "Detected use of corrupted OBJECTREF: %p [MT=%p] (lastTest=%d)", this,
+                    (void*)(size_t)(lastTest > 0 ? (*(size_t*)this) : 0), lastTest);
         CHECK_AND_TEAR_DOWN(!"Detected use of a corrupted OBJECTREF. Possible GC hole.");
     }
-    EX_END_CATCH(SwallowAllExceptions);
+    EX_END_CATCH
 }
 
 
@@ -623,47 +620,6 @@ STRINGREF StringObject::NewString(INT32 length) {
     }
 }
 
-
-/*==================================NewString===================================
-**Action: Many years ago, VB didn't have the concept of a byte array, so enterprising
-**        users created one by allocating a BSTR with an odd length and using it to
-**        store bytes.  A generation later, we're still stuck supporting this behavior.
-**        The way that we do this is to take advantage of the difference between the
-**        array length and the string length.  The string length will always be the
-**        number of characters between the start of the string and the terminating 0.
-**        If we need an odd number of bytes, we'll take one wchar after the terminating 0.
-**        (e.g. at position StringLength+1).  The high-order byte of this wchar is
-**        reserved for flags and the low-order byte is our odd byte. This function is
-**        used to allocate a string of that shape, but we don't actually mark the
-**        trailing byte as being in use yet.
-**Returns: A newly allocated string.  Null if length is less than 0.
-**Arguments: length -- the length of the string to allocate
-**           bHasTrailByte -- whether the string also has a trailing byte.
-**Exceptions: OutOfMemoryException if AllocateString fails.
-==============================================================================*/
-STRINGREF StringObject::NewString(INT32 length, BOOL bHasTrailByte) {
-    CONTRACTL {
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-        PRECONDITION(length>=0 && length != INT32_MAX);
-    } CONTRACTL_END;
-
-    STRINGREF pString;
-    if (length<0 || length == INT32_MAX) {
-        return NULL;
-    } else if (length == 0) {
-        return GetEmptyString();
-    } else {
-        pString = AllocateString(length);
-        _ASSERTE(pString->GetBuffer()[length]==0);
-        if (bHasTrailByte) {
-            _ASSERTE(pString->GetBuffer()[length+1]==0);
-        }
-    }
-
-    return pString;
-}
-
 //========================================================================
 // Creates a System.String object and initializes from
 // the supplied null-terminated C string.
@@ -685,7 +641,7 @@ STRINGREF StringObject::NewString(const WCHAR *pwsz)
     else
     {
 
-        DWORD nch = (DWORD)wcslen(pwsz);
+        DWORD nch = (DWORD)u16_strlen(pwsz);
         if (nch==0) {
             return GetEmptyString();
         }
@@ -767,7 +723,7 @@ STRINGREF StringObject::NewString(LPCUTF8 psz)
     }
     CQuickBytes qb;
     WCHAR* pwsz = (WCHAR*) qb.AllocThrows((length) * sizeof(WCHAR));
-    length = WszMultiByteToWideChar(CP_UTF8, 0, psz, length, pwsz, length);
+    length = MultiByteToWideChar(CP_UTF8, 0, psz, length, pwsz, length);
     if (length == 0) {
         COMPlusThrow(kArgumentException, W("Arg_InvalidUTF8String"));
     }
@@ -796,7 +752,7 @@ STRINGREF StringObject::NewString(LPCUTF8 psz, int cBytes)
         COMPlusThrowOM();
     CQuickBytes qb;
     WCHAR* pwsz = (WCHAR*) qb.AllocThrows(cWszBytes);
-    int length = WszMultiByteToWideChar(CP_UTF8, 0, psz, cBytes, pwsz, cBytes);
+    int length = MultiByteToWideChar(CP_UTF8, 0, psz, cBytes, pwsz, cBytes);
     if (length == 0) {
         COMPlusThrow(kArgumentException, W("Arg_InvalidUTF8String"));
     }
@@ -808,27 +764,8 @@ STRINGREF StringObject::NewString(LPCUTF8 psz, int cBytes)
 // STATIC MEMBER VARIABLES
 //
 //
-STRINGREF* StringObject::EmptyStringRefPtr=NULL;
-
-//The special string helpers are used as flag bits for weird strings that have bytes
-//after the terminating 0.  The only case where we use this right now is the VB BSTR as
-//byte array which is described in MakeStringAsByteArrayFromBytes.
-#define SPECIAL_STRING_VB_BYTE_ARRAY 0x100
-
-FORCEINLINE BOOL MARKS_VB_BYTE_ARRAY(WCHAR x)
-{
-    return static_cast<BOOL>(x & SPECIAL_STRING_VB_BYTE_ARRAY);
-}
-
-FORCEINLINE WCHAR MAKE_VB_TRAIL_BYTE(BYTE x)
-{
-    return static_cast<WCHAR>(x) | SPECIAL_STRING_VB_BYTE_ARRAY;
-}
-
-FORCEINLINE BYTE GET_VB_TRAIL_BYTE(WCHAR x)
-{
-    return static_cast<BYTE>(x & 0xFF);
-}
+STRINGREF* StringObject::EmptyStringRefPtr = NULL;
+bool StringObject::EmptyStringIsFrozen = false;
 
 
 /*==============================InitEmptyStringRefPtr============================
@@ -844,142 +781,11 @@ STRINGREF* StringObject::InitEmptyStringRefPtr() {
 
     GCX_COOP();
 
-    EEStringData data(0, W(""), TRUE);
-    EmptyStringRefPtr = SystemDomain::System()->DefaultDomain()->GetLoaderAllocator()->GetStringObjRefPtrFromUnicodeString(&data);
+    EEStringData data(0, W(""));
+    void* pinnedStr = nullptr;
+    EmptyStringRefPtr = SystemDomain::System()->DefaultDomain()->GetLoaderAllocator()->GetStringObjRefPtrFromUnicodeString(&data, &pinnedStr);
+    EmptyStringIsFrozen = pinnedStr != nullptr;
     return EmptyStringRefPtr;
-}
-
-// strAChars must be null-terminated, with an appropriate aLength
-// strBChars must be null-terminated, with an appropriate bLength OR bLength == -1
-// If bLength == -1, we stop on the first null character in strBChars
-BOOL StringObject::CaseInsensitiveCompHelper(__in_ecount(aLength) WCHAR *strAChars, __in_z INT8 *strBChars, INT32 aLength, INT32 bLength, INT32 *result) {
-    CONTRACTL {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-        PRECONDITION(CheckPointer(strAChars));
-        PRECONDITION(CheckPointer(strBChars));
-        PRECONDITION(CheckPointer(result));
-    } CONTRACTL_END;
-
-    WCHAR *strAStart = strAChars;
-    INT8  *strBStart = strBChars;
-    unsigned charA;
-    unsigned charB;
-
-    for(;;) {
-        charA = *strAChars;
-        charB = (unsigned) *strBChars;
-
-        //Case-insensitive comparison on chars greater than 0x7F
-        //requires a locale-aware casing operation and we're not going there.
-        if ((charA|charB)>0x7F) {
-            *result = 0;
-            return FALSE;
-        }
-
-        // uppercase both chars.
-        if (charA>='a' && charA<='z') {
-            charA ^= 0x20;
-        }
-        if (charB>='a' && charB<='z') {
-            charB ^= 0x20;
-        }
-
-        //Return the (case-insensitive) difference between them.
-        if (charA!=charB) {
-            *result = (int)(charA-charB);
-            return TRUE;
-        }
-
-
-        if (charA==0)   // both strings have null character
-        {
-            if (bLength == -1)
-            {
-                *result = aLength - static_cast<INT32>(strAChars - strAStart);
-                return TRUE;
-            }
-            if (strAChars==strAStart + aLength || strBChars==strBStart + bLength)
-            {
-                *result = aLength - bLength;
-                return TRUE;
-            }
-            // else both embedded zeros
-        }
-
-        // Next char
-        strAChars++; strBChars++;
-    }
-
-}
-
-/*============================InternalTrailByteCheck============================
-**Action: Many years ago, VB didn't have the concept of a byte array, so enterprising
-**        users created one by allocating a BSTR with an odd length and using it to
-**        store bytes.  A generation later, we're still stuck supporting this behavior.
-**        The way that we do this is stick the trail byte in the sync block
-**        whenever we encounter such a situation. Since we expect this to be a very corner case
-**        accessing the sync block seems like a good enough solution
-**
-**Returns: True if <CODE>str</CODE> contains a VB trail byte, false otherwise.
-**Arguments: str -- The string to be examined.
-**Exceptions: None
-==============================================================================*/
-BOOL StringObject::HasTrailByte() {
-    WRAPPER_NO_CONTRACT;
-
-    SyncBlock * pSyncBlock = PassiveGetSyncBlock();
-    if(pSyncBlock != NULL)
-    {
-        return pSyncBlock->HasCOMBstrTrailByte();
-    }
-
-    return FALSE;
-}
-
-/*=================================GetTrailByte=================================
-**Action:  If <CODE>str</CODE> contains a vb trail byte, returns a copy of it.
-**Returns: True if <CODE>str</CODE> contains a trail byte.  *bTrailByte is set to
-**         the byte in question if <CODE>str</CODE> does have a trail byte, otherwise
-**         it's set to 0.
-**Arguments: str -- The string being examined.
-**           bTrailByte -- An out param to hold the value of the trail byte.
-**Exceptions: None.
-==============================================================================*/
-BOOL StringObject::GetTrailByte(BYTE *bTrailByte) {
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-    _ASSERTE(bTrailByte);
-    *bTrailByte=0;
-
-    BOOL retValue = HasTrailByte();
-
-    if(retValue)
-    {
-        *bTrailByte = GET_VB_TRAIL_BYTE(GetHeader()->PassiveGetSyncBlock()->GetCOMBstrTrailByte());
-    }
-
-    return retValue;
-}
-
-/*=================================SetTrailByte=================================
-**Action: Sets the trail byte in the sync block
-**Returns: True.
-**Arguments: str -- The string into which to set the trail byte.
-**           bTrailByte -- The trail byte to be added to the string.
-**Exceptions: None.
-==============================================================================*/
-BOOL StringObject::SetTrailByte(BYTE bTrailByte) {
-    WRAPPER_NO_CONTRACT;
-
-    GetHeader()->GetSyncBlock()->SetCOMBstrTrailByte(MAKE_VB_TRAIL_BYTE(bTrailByte));
-    return TRUE;
 }
 
 #ifdef USE_CHECKED_OBJECTREFS
@@ -993,7 +799,6 @@ OBJECTREF::OBJECTREF()
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     m_asObj = (Object*)POISONC;
     Thread::ObjectRefNew(this);
@@ -1007,7 +812,6 @@ OBJECTREF::OBJECTREF(const OBJECTREF & objref)
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
     STATIC_CONTRACT_MODE_COOPERATIVE;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     VALIDATEOBJECT(objref.m_asObj);
 
@@ -1041,7 +845,6 @@ OBJECTREF::OBJECTREF(const OBJECTREF *pObjref, tagVolatileLoadWithoutBarrier tag
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
     STATIC_CONTRACT_MODE_COOPERATIVE;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     Object* objrefAsObj = VolatileLoadWithoutBarrier(&pObjref->m_asObj);
     VALIDATEOBJECT(objrefAsObj);
@@ -1075,7 +878,6 @@ OBJECTREF::OBJECTREF(TADDR nul)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     //_ASSERTE(nul == 0);
     m_asObj = (Object*)nul;
@@ -1101,7 +903,6 @@ OBJECTREF::OBJECTREF(Object *pObject)
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
     STATIC_CONTRACT_MODE_COOPERATIVE;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     DEBUG_ONLY_FUNCTION;
 
@@ -1134,7 +935,6 @@ int OBJECTREF::operator!() const
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     // We don't do any validation here, as we want to allow zero comparison in preemptive mode
     return !m_asObj;
@@ -1147,13 +947,12 @@ int OBJECTREF::operator==(const OBJECTREF &objref) const
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     if (objref.m_asObj != NULL) // Allow comparison to zero in preemptive mode
     {
         // REVISIT_TODO: Weakening the contract system a little bit here. We should really
         // add a special NULLOBJECTREF which can be used for these situations and have
-        // a seperate code path for that with the correct contract protections.
+        // a separate code path for that with the correct contract protections.
         STATIC_CONTRACT_VIOLATION(ModeViolation);
 
         VALIDATEOBJECT(objref.m_asObj);
@@ -1185,13 +984,12 @@ int OBJECTREF::operator!=(const OBJECTREF &objref) const
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     if (objref.m_asObj != NULL)  // Allow comparison to zero in preemptive mode
     {
         // REVISIT_TODO: Weakening the contract system a little bit here. We should really
         // add a special NULLOBJECTREF which can be used for these situations and have
-        // a seperate code path for that with the correct contract protections.
+        // a separate code path for that with the correct contract protections.
         STATIC_CONTRACT_VIOLATION(ModeViolation);
 
         VALIDATEOBJECT(objref.m_asObj);
@@ -1225,7 +1023,6 @@ Object* OBJECTREF::operator->()
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     VALIDATEOBJECT(m_asObj);
         // If this assert fires, you probably did not protect
@@ -1250,7 +1047,6 @@ const Object* OBJECTREF::operator->() const
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     VALIDATEOBJECT(m_asObj);
         // If this assert fires, you probably did not protect
@@ -1279,7 +1075,6 @@ OBJECTREF& OBJECTREF::operator=(const OBJECTREF &objref)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     VALIDATEOBJECT(objref.m_asObj);
 
@@ -1313,7 +1108,6 @@ OBJECTREF& OBJECTREF::operator=(TADDR nul)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     _ASSERTE(nul == 0);
     Thread::ObjectRefAssign(this);
@@ -1324,35 +1118,6 @@ OBJECTREF& OBJECTREF::operator=(TADDR nul)
     return *this;
 }
 #endif  // DEBUG
-
-#ifdef _DEBUG
-
-void* __cdecl GCSafeMemCpy(void * dest, const void * src, size_t len)
-{
-    STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
-
-    if (!(((*(BYTE**)&dest) <  g_lowest_address ) ||
-          ((*(BYTE**)&dest) >= g_highest_address)))
-    {
-        Thread* pThread = GetThreadNULLOk();
-
-        // GCHeapUtilities::IsHeapPointer has race when called in preemptive mode. It walks the list of segments
-        // that can be modified by GC. Do the check below only if it is safe to do so.
-        if (pThread != NULL && pThread->PreemptiveGCDisabled())
-        {
-            // Note there is memcpyNoGCRefs which will allow you to do a memcpy into the GC
-            // heap if you really know you don't need to call the write barrier
-
-            _ASSERTE(!GCHeapUtilities::GetGCHeap()->IsHeapPointer((BYTE *) dest) ||
-                     !"using memcpy to copy into the GC heap, use CopyValueClass");
-        }
-    }
-    return memcpyNoGCRefs(dest, src, len);
-}
-
-#endif // _DEBUG
 
 // This function clears a piece of memory in a GC safe way.  It makes the guarantee
 // that it will clear memory in at least pointer sized chunks whenever possible.
@@ -1383,7 +1148,7 @@ void __fastcall ZeroMemoryInGCHeap(void* mem, size_t size)
         *memBytes++ = 0;
 }
 
-void StackTraceArray::Append(StackTraceElement const * begin, StackTraceElement const * end)
+void StackTraceArray::Append(StackTraceElement const * elem)
 {
     CONTRACTL
     {
@@ -1394,13 +1159,12 @@ void StackTraceArray::Append(StackTraceElement const * begin, StackTraceElement 
     }
     CONTRACTL_END;
 
-    // ensure that only one thread can write to the array
-    EnsureThreadAffinity();
+    // Only the thread that has created the array can append to it
+    assert(GetObjectThread() == GetThreadNULLOk());
 
-    size_t newsize = Size() + (end - begin);
-    Grow(newsize);
-    memcpyNoGCRefs(GetData() + Size(), begin, (end - begin) * sizeof(StackTraceElement));
-    MemoryBarrier();  // prevent the newsize from being reordered with the array copy
+    uint32_t newsize = Size() + 1;
+    _ASSERTE(newsize <= Capacity());
+    memcpyNoGCRefs(GetData() + Size(), elem, sizeof(StackTraceElement));
     SetSize(newsize);
 
 #if defined(_DEBUG)
@@ -1421,109 +1185,91 @@ void StackTraceArray::CheckState() const
     if (!m_array)
         return;
 
-    assert(GetObjectThread() == GetThreadNULLOk());
+    _ASSERTE(GetObjectThread() == GetThreadNULLOk());
 
-    size_t size = Size();
+    uint32_t size = Size();
     StackTraceElement const * p;
     p = GetData();
-    for (size_t i = 0; i < size; ++i)
-        assert(p[i].pFunc != NULL);
+    for (uint32_t i = 0; i < size; ++i)
+        _ASSERTE(p[i].pFunc != NULL);
 }
 
-void StackTraceArray::Grow(size_t grow_size)
+void StackTraceArray::Allocate(size_t size)
 {
     CONTRACTL
     {
         THROWS;
         GC_TRIGGERS;
         MODE_COOPERATIVE;
-        INJECT_FAULT(ThrowOutOfMemory(););
         PRECONDITION(IsProtectedByGCFrame((OBJECTREF*)this));
     }
     CONTRACTL_END;
 
-    size_t raw_size = grow_size * sizeof(StackTraceElement) + sizeof(ArrayHeader);
+    S_SIZE_T raw_size = S_SIZE_T(size) * S_SIZE_T(sizeof(StackTraceElement)) + S_SIZE_T(sizeof(ArrayHeader));
 
-    if (!m_array)
+    if (raw_size.IsOverflow() || !FitsIn<DWORD>(raw_size.Value()))
     {
-        SetArray(I1ARRAYREF(AllocatePrimitiveArray(ELEMENT_TYPE_I1, static_cast<DWORD>(raw_size))));
-        SetSize(0);
-        SetObjectThread();
+        EX_THROW(EEMessageException, (kOverflowException, IDS_EE_ARRAY_DIMENSIONS_EXCEEDED));
     }
-    else
-    {
-        if (Capacity() >= raw_size)
-            return;
 
-        // allocate a new array, copy the data
-        size_t new_capacity = Max(Capacity() * 2, raw_size);
-
-        _ASSERTE(new_capacity >= grow_size * sizeof(StackTraceElement) + sizeof(ArrayHeader));
-
-        I1ARRAYREF newarr = (I1ARRAYREF) AllocatePrimitiveArray(ELEMENT_TYPE_I1, static_cast<DWORD>(new_capacity));
-        memcpyNoGCRefs(newarr->GetDirectPointerToNonObjectElements(),
-                       GetRaw(),
-                       Size() * sizeof(StackTraceElement) + sizeof(ArrayHeader));
-
-        SetArray(newarr);
-    }
+    SetArray(I1ARRAYREF(AllocatePrimitiveArray(ELEMENT_TYPE_I1, static_cast<DWORD>(raw_size.Value()))));
+    SetSize(0);
+    SetKeepAliveItemsCount(0);
+    SetObjectThread();
 }
 
-void StackTraceArray::EnsureThreadAffinity()
+size_t StackTraceArray::Capacity() const
 {
     WRAPPER_NO_CONTRACT;
-
     if (!m_array)
-        return;
-
-    if (GetObjectThread() != GetThreadNULLOk())
     {
-        // object is being changed by a thread different from the one which created it
-        // make a copy of the array to prevent a race condition when two different threads try to change it
-        StackTraceArray copy;
-        GCPROTECT_BEGIN(copy);
-            copy.CopyFrom(*this);
-            this->Swap(copy);
-        GCPROTECT_END();
+        return 0;
     }
+
+    return (m_array->GetNumComponents() - sizeof(ArrayHeader)) / sizeof(StackTraceElement);
 }
 
-#ifdef _MSC_VER
-#pragma warning(disable: 4267)
-#endif
+// Compute the number of methods in the stack trace that can be collected. We need to store keepAlive
+// objects (Resolver / LoaderAllocator) for these methods.
+uint32_t StackTraceArray::ComputeKeepAliveItemsCount()
+{
+    LIMITED_METHOD_CONTRACT;
 
-// Deep copies the stack trace array
-void StackTraceArray::CopyFrom(StackTraceArray const & src)
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < Size(); i++)
+    {
+        if ((*this)[i].flags & STEF_KEEPALIVE)
+        {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+uint32_t StackTraceArray::CopyDataFrom(StackTraceArray const & src)
 {
     CONTRACTL
     {
-        THROWS;
-        GC_TRIGGERS;
+        NOTHROW;
+        GC_NOTRIGGER;
         MODE_COOPERATIVE;
-        INJECT_FAULT(ThrowOutOfMemory(););
         PRECONDITION(IsProtectedByGCFrame((OBJECTREF*)this));
         PRECONDITION(IsProtectedByGCFrame((OBJECTREF*)&src));
     }
     CONTRACTL_END;
 
-    m_array = (I1ARRAYREF) AllocatePrimitiveArray(ELEMENT_TYPE_I1, static_cast<DWORD>(src.Capacity()));
-
-    Volatile<size_t> size = src.Size();
+    uint32_t size = src.Size();
     memcpyNoGCRefs(GetRaw(), src.GetRaw(), size * sizeof(StackTraceElement) + sizeof(ArrayHeader));
+    // Affinitize the copy with the current thread
+    SetObjectThread();
 
-    SetSize(size);  // set size to the exact value which was used when we copied the data
-                    // another thread might have changed it at the time of copying
-    SetObjectThread();  // affinitize the newly created array with the current thread
+    return size;
 }
-
-#ifdef _MSC_VER
-#pragma warning(default: 4267)
-#endif
-
 
 #ifdef _DEBUG
 //===============================================================================
-// Code that insures that our unmanaged version of Nullable is consistant with
+// Code that ensures that our unmanaged version of Nullable is consistant with
 // the managed version Nullable<T> for all T.
 
 void Nullable::CheckFieldOffsets(TypeHandle nullableType)
@@ -1540,7 +1286,7 @@ void Nullable::CheckFieldOffsets(TypeHandle nullableType)
 
     MethodTable* nullableMT = nullableType.GetMethodTable();
 
-        // insure that the managed version of the table is the same as the
+        // ensure that the managed version of the table is the same as the
         // unmanaged.  Note that we can't do this in corelib.h because this
         // class is generic and field layout depends on the instantiation.
 
@@ -1576,19 +1322,16 @@ BOOL Nullable::IsNullableForTypeHelper(MethodTable* nullableMT, MethodTable* par
 }
 
 //===============================================================================
-// Returns true if nullableMT is Nullable<T> for T == paramMT
-
-BOOL Nullable::IsNullableForTypeHelperNoGC(MethodTable* nullableMT, MethodTable* paramMT)
+int32_t Nullable::GetValueAddrOffset(MethodTable* nullableMT)
 {
     LIMITED_METHOD_CONTRACT;
-    if (!nullableMT->IsNullable())
-        return FALSE;
 
-    // we require an exact match of the parameter types
-    return TypeHandle(paramMT) == nullableMT->GetInstantiation()[0];
+    _ASSERTE(IsNullableType(nullableMT));
+    _ASSERTE(strcmp(nullableMT->GetApproxFieldDescListRaw()[1].GetDebugName(), "value") == 0);
+    _ASSERTE(nullableMT->GetApproxFieldDescListRaw()[1].GetOffset() == nullableMT->GetNullableValueAddrOffset());
+    return nullableMT->GetNullableValueAddrOffset();
 }
 
-//===============================================================================
 CLR_BOOL* Nullable::HasValueAddr(MethodTable* nullableMT) {
 
     LIMITED_METHOD_CONTRACT;
@@ -1604,11 +1347,12 @@ void* Nullable::ValueAddr(MethodTable* nullableMT) {
     LIMITED_METHOD_CONTRACT;
 
     _ASSERTE(strcmp(nullableMT->GetApproxFieldDescListRaw()[1].GetDebugName(), "value") == 0);
-    return (((BYTE*) this) + nullableMT->GetApproxFieldDescListRaw()[1].GetOffset());
+    _ASSERTE(nullableMT->GetApproxFieldDescListRaw()[1].GetOffset() == nullableMT->GetNullableValueAddrOffset());
+    return (((BYTE*) this) + nullableMT->GetNullableValueAddrOffset());
 }
 
 //===============================================================================
-// Special Logic to box a nullable<T> as a boxed<T>
+// Special logic to box a nullable<T> as a boxed<T>
 
 OBJECTREF Nullable::Box(void* srcPtr, MethodTable* nullableMT)
 {
@@ -1620,12 +1364,11 @@ OBJECTREF Nullable::Box(void* srcPtr, MethodTable* nullableMT)
     }
     CONTRACTL_END;
 
-    FAULT_NOT_FATAL();      // FIX_NOW: why do we need this?
 
     Nullable* src = (Nullable*) srcPtr;
 
     _ASSERTE(IsNullableType(nullableMT));
-        // We better have a concrete instantiation, or our field offset asserts are not useful
+    // We better have a concrete instantiation, or our field offset asserts are not useful
     _ASSERTE(!nullableMT->ContainsGenericVariables());
 
     if (!*src->HasValueAddr(nullableMT))
@@ -1634,7 +1377,12 @@ OBJECTREF Nullable::Box(void* srcPtr, MethodTable* nullableMT)
     OBJECTREF obj = 0;
     GCPROTECT_BEGININTERIOR (src);
     MethodTable* argMT = nullableMT->GetInstantiation()[0].AsMethodTable();
-    obj = argMT->Allocate();
+
+    // MethodTable::Allocate() triggers cctors, so to avoid that we
+    // allocate directly without triggering cctors - boxing should not trigger cctors.
+    argMT->EnsureInstanceActive();
+    obj = AllocateObject(argMT);
+
     CopyValueClass(obj->UnBox(), src->ValueAddr(nullableMT), argMT);
     GCPROTECT_END ();
 
@@ -1656,16 +1404,16 @@ BOOL Nullable::UnBox(void* destPtr, OBJECTREF boxedVal, MethodTable* destMT)
     Nullable* dest = (Nullable*) destPtr;
     BOOL fRet = TRUE;
 
-        // We should only get here if we are unboxing a T as a Nullable<T>
+    // We should only get here if we are unboxing a T as a Nullable<T>
     _ASSERTE(IsNullableType(destMT));
 
-        // We better have a concrete instantiation, or our field offset asserts are not useful
+    // We better have a concrete instantiation, or our field offset asserts are not useful
     _ASSERTE(!destMT->ContainsGenericVariables());
 
     if (boxedVal == NULL)
     {
         // Logically we are doing *dest->HasValueAddr(destMT) = false;
-        // We zero out the whole structure becasue it may contain GC references
+        // We zero out the whole structure because it may contain GC references
         // and these need to be initialized to zero.   (could optimize in the non-GC case)
         InitValueClass(destPtr, destMT);
         fRet = TRUE;
@@ -1700,110 +1448,6 @@ BOOL Nullable::UnBox(void* destPtr, OBJECTREF boxedVal, MethodTable* destMT)
 
 //===============================================================================
 // Special Logic to unbox a boxed T as a nullable<T>
-// Does not handle type equivalence (may conservatively return FALSE)
-BOOL Nullable::UnBoxNoGC(void* destPtr, OBJECTREF boxedVal, MethodTable* destMT)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-    Nullable* dest = (Nullable*) destPtr;
-
-        // We should only get here if we are unboxing a T as a Nullable<T>
-    _ASSERTE(IsNullableType(destMT));
-
-        // We better have a concrete instantiation, or our field offset asserts are not useful
-    _ASSERTE(!destMT->ContainsGenericVariables());
-
-    if (boxedVal == NULL)
-    {
-        // Logically we are doing *dest->HasValueAddr(destMT) = false;
-        // We zero out the whole structure becasue it may contain GC references
-        // and these need to be initialized to zero.   (could optimize in the non-GC case)
-        InitValueClass(destPtr, destMT);
-    }
-    else
-    {
-        if (!IsNullableForTypeNoGC(destMT, boxedVal->GetMethodTable()))
-        {
-            // For safety's sake, also allow true nullables to be unboxed normally.
-            // This should not happen normally, but we want to be robust
-            if (destMT == boxedVal->GetMethodTable())
-            {
-                CopyValueClass(dest, boxedVal->GetData(), destMT);
-                return TRUE;
-            }
-            return FALSE;
-        }
-
-        *dest->HasValueAddr(destMT) = true;
-        CopyValueClass(dest->ValueAddr(destMT), boxedVal->UnBox(), boxedVal->GetMethodTable());
-    }
-    return TRUE;
-}
-
-//===============================================================================
-// Special Logic to unbox a boxed T as a nullable<T> into an argument
-// specified by the argDest.
-// Does not handle type equivalence (may conservatively return FALSE)
-BOOL Nullable::UnBoxIntoArgNoGC(ArgDestination *argDest, OBJECTREF boxedVal, MethodTable* destMT)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-
-#if defined(UNIX_AMD64_ABI)
-    if (argDest->IsStructPassedInRegs())
-    {
-        // We should only get here if we are unboxing a T as a Nullable<T>
-        _ASSERTE(IsNullableType(destMT));
-
-        // We better have a concrete instantiation, or our field offset asserts are not useful
-        _ASSERTE(!destMT->ContainsGenericVariables());
-
-        if (boxedVal == NULL)
-        {
-            // Logically we are doing *dest->HasValueAddr(destMT) = false;
-            // We zero out the whole structure becasue it may contain GC references
-            // and these need to be initialized to zero.   (could optimize in the non-GC case)
-            InitValueClassArg(argDest, destMT);
-        }
-        else
-        {
-            if (!IsNullableForTypeNoGC(destMT, boxedVal->GetMethodTable()))
-            {
-                // For safety's sake, also allow true nullables to be unboxed normally.
-                // This should not happen normally, but we want to be robust
-                if (destMT == boxedVal->GetMethodTable())
-                {
-                    CopyValueClassArg(argDest, boxedVal->GetData(), destMT, 0);
-                    return TRUE;
-                }
-                return FALSE;
-            }
-
-            Nullable* dest = (Nullable*)argDest->GetStructGenRegDestinationAddress();
-            *dest->HasValueAddr(destMT) = true;
-            int destOffset = (BYTE*)dest->ValueAddr(destMT) - (BYTE*)dest;
-            CopyValueClassArg(argDest, boxedVal->UnBox(), boxedVal->GetMethodTable(), destOffset);
-        }
-        return TRUE;
-    }
-
-#endif // UNIX_AMD64_ABI
-
-    return UnBoxNoGC(argDest->GetDestinationAddress(), boxedVal, destMT);
-}
-
-//===============================================================================
-// Special Logic to unbox a boxed T as a nullable<T>
 // Does not do any type checks.
 void Nullable::UnBoxNoCheck(void* destPtr, OBJECTREF boxedVal, MethodTable* destMT)
 {
@@ -1816,16 +1460,16 @@ void Nullable::UnBoxNoCheck(void* destPtr, OBJECTREF boxedVal, MethodTable* dest
     CONTRACTL_END;
     Nullable* dest = (Nullable*) destPtr;
 
-        // We should only get here if we are unboxing a T as a Nullable<T>
+    // We should only get here if we are unboxing a T as a Nullable<T>
     _ASSERTE(IsNullableType(destMT));
 
-        // We better have a concrete instantiation, or our field offset asserts are not useful
+    // We better have a concrete instantiation, or our field offset asserts are not useful
     _ASSERTE(!destMT->ContainsGenericVariables());
 
     if (boxedVal == NULL)
     {
         // Logically we are doing *dest->HasValueAddr(destMT) = false;
-        // We zero out the whole structure becasue it may contain GC references
+        // We zero out the whole structure because it may contain GC references
         // and these need to be initialized to zero.   (could optimize in the non-GC case)
         InitValueClass(destPtr, destMT);
     }
@@ -1836,6 +1480,7 @@ void Nullable::UnBoxNoCheck(void* destPtr, OBJECTREF boxedVal, MethodTable* dest
             // For safety's sake, also allow true nullables to be unboxed normally.
             // This should not happen normally, but we want to be robust
             CopyValueClass(dest, boxedVal->GetData(), destMT);
+            return;
         }
 
         *dest->HasValueAddr(destMT) = true;
@@ -1904,10 +1549,11 @@ StackTraceElement & StackTraceArray::operator[](size_t index)
 }
 
 #if !defined(DACCESS_COMPILE)
-// Define the lock used to access stacktrace from an exception object
-SpinLock g_StackTraceArrayLock;
 
-void ExceptionObject::SetStackTrace(I1ARRAYREF stackTrace, PTRARRAYREF dynamicMethodArray)
+// If there are any dynamic methods, the stack trace object is the dynamic methods array with its first
+// slot set to the stack trace I1Array.
+// Otherwise the stack trace object is directly the stacktrace I1Array
+void ExceptionObject::SetStackTrace(OBJECTREF stackTrace)
 {
     CONTRACTL
     {
@@ -1917,57 +1563,250 @@ void ExceptionObject::SetStackTrace(I1ARRAYREF stackTrace, PTRARRAYREF dynamicMe
     }
     CONTRACTL_END;
 
-    SpinLock::AcquireLock(&g_StackTraceArrayLock);
+#ifdef STRESS_LOG
+    if (StressLog::StressLogOn(~0u, 0))
+    {
+        StressLog::CreateThreadStressLog();
+    }
+#endif
 
     SetObjectReference((OBJECTREF*)&_stackTrace, (OBJECTREF)stackTrace);
-    SetObjectReference((OBJECTREF*)&_dynamicMethods, (OBJECTREF)dynamicMethodArray);
-
-    SpinLock::ReleaseLock(&g_StackTraceArrayLock);
-
 }
 #endif // !defined(DACCESS_COMPILE)
 
-void ExceptionObject::GetStackTrace(StackTraceArray & stackTrace, PTRARRAYREF * outDynamicMethodArray /*= NULL*/) const
+// Get the stack trace and keep alive array for the exception.
+// Both arrays returned by the method are safe to work with without other threads modifying them.
+// - if the stack trace was created by the current thread, the arrays are returned as is.
+// - if it was created by another thread, deep copies of the arrays are returned. It is ensured
+//   that both of these arrays are consistent. That means that the stack trace doesn't contain
+//   frames that need keep alive objects and that are not protected by entries in the keep alive
+//   array.
+void ExceptionObject::GetStackTrace(StackTraceArray & stackTrace, PTRARRAYREF * outKeepAliveArray, Thread *pCurrentThread) const
 {
     CONTRACTL
     {
-        GC_NOTRIGGER;
-        NOTHROW;
+        GC_TRIGGERS;
+        THROWS;
         MODE_COOPERATIVE;
+        PRECONDITION(IsProtectedByGCFrame((OBJECTREF*)&stackTrace));
+        PRECONDITION(IsProtectedByGCFrame((OBJECTREF*)outKeepAliveArray));
     }
     CONTRACTL_END;
 
-#if !defined(DACCESS_COMPILE)
-    SpinLock::AcquireLock(&g_StackTraceArrayLock);
-#endif // !defined(DACCESS_COMPILE)
+    ExceptionObject::GetStackTraceParts(_stackTrace, stackTrace, outKeepAliveArray);
 
-    StackTraceArray temp(_stackTrace);
-    stackTrace.Swap(temp);
-
-    if (outDynamicMethodArray != NULL)
+#ifndef DACCESS_COMPILE
+    if ((stackTrace.Get() != NULL) && (stackTrace.GetObjectThread() != pCurrentThread))
     {
-        *outDynamicMethodArray = _dynamicMethods;
+        GetStackTraceClone(stackTrace, outKeepAliveArray);
+    }
+#endif // DACCESS_COMPILE
+}
+
+#ifndef DACCESS_COMPILE
+void ExceptionObject::GetStackTraceClone(StackTraceArray & stackTrace, PTRARRAYREF * outKeepAliveArray)
+{
+    {
+        struct
+        {
+            StackTraceArray newStackTrace;
+            PTRARRAYREF newKeepAliveArray = NULL;
+        } gc;
+
+        GCPROTECT_BEGIN(gc);
+
+        // When the stack trace was created by other thread than the current one, we create a copy of both the stack trace and the keepAlive arrays to make sure
+        // they are not changing while the caller is accessing them.
+        gc.newStackTrace.Allocate(stackTrace.Capacity());
+        uint32_t numCopiedFrames = gc.newStackTrace.CopyDataFrom(stackTrace);
+        // Set size to the exact value which was used when we copied the data,
+        // another thread might have changed it at the time of copying
+        gc.newStackTrace.SetSize(numCopiedFrames);
+
+        stackTrace.Set(gc.newStackTrace.Get());
+
+        uint32_t keepAliveArrayCapacity = ((*outKeepAliveArray) == NULL) ? 0 : (*outKeepAliveArray)->GetNumComponents();
+
+        // It is possible that another thread was modifying the stack trace array and keep alive array while we were making the copies.
+        // The following sequence of events could have happened:
+        // Case 1:
+        // * The current thread gets the stack trace array and the keep alive array references using the ExceptionObject::GetStackTraceParts above
+        // * The current thread reads the size of the stack trace array
+        // * Another thread adds a new stack frame to the stack trace array and a corresponding keep alive object to the keep alive array
+        // * The current thread creates a copy of the stack trace using the size it read before
+        // * The keep alive count stored in the stack trace array doesn't match the elements in the copy of the stack trace array
+        // In this case, we need to recompute the keep alive count based on the copied stack trace array.
+        //
+        // Case 2:
+        // * The current thread gets the stack trace array and the keep alive array references using the ExceptionObject::GetStackTraceParts above
+        // * Another thread adds a stack frame with a keep alive item and that exceeds the keep alive array capacity. So it allocates a new keep alive array
+        //   and adds the new keep alive item to it.
+        // * Thus the keep alive array this thread has read doesn't have the keep alive item, but the stack trace array contains the element the other thread has added.
+        // In this case, we need to trim the stack trace array at the first element that doesn't have a corresponding keep alive object in the keep alive array.
+        // We cannot fetch the keep alive object for that stack trace entry, because in the meanwhile, the keep alive array that the other thread created
+        // may have been collected and the method related to the stack trace entry may have been collected as well.
+        //
+        uint32_t keepAliveItemsCount = 0;
+        for (uint32_t i = 0; i < numCopiedFrames; i++)
+        {
+            if (stackTrace[i].flags & STEF_KEEPALIVE)
+            {
+                if ((keepAliveItemsCount + 1) >= keepAliveArrayCapacity)
+                {
+                    // Trim the stack trace at a point where a dynamic or collectible method is found without a corresponding keepAlive object.
+                    stackTrace.SetSize(i);
+                    break;
+                }
+                else
+                {
+                    _ASSERTE((*outKeepAliveArray)->GetAt(keepAliveItemsCount + 1) != NULL);
+                }
+
+                keepAliveItemsCount++;
+            }
+        }
+
+        stackTrace.SetKeepAliveItemsCount(keepAliveItemsCount);
+        _ASSERTE(stackTrace.ComputeKeepAliveItemsCount() == keepAliveItemsCount);
+
+        if (keepAliveArrayCapacity != 0)
+        {
+            gc.newKeepAliveArray = (PTRARRAYREF)AllocateObjectArray(keepAliveArrayCapacity, g_pObjectClass);
+            _ASSERTE((*outKeepAliveArray) != NULL);
+            memmoveGCRefs(gc.newKeepAliveArray->GetDataPtr() + 1,
+                          (*outKeepAliveArray)->GetDataPtr() + 1,
+                          (keepAliveItemsCount) * sizeof(Object *));
+            gc.newKeepAliveArray->SetAt(0, stackTrace.Get());
+            *outKeepAliveArray = gc.newKeepAliveArray;
+        }
+        else
+        {
+            *outKeepAliveArray = NULL;
+        }
+        GCPROTECT_END();
+    }
+}
+#endif // DACCESS_COMPILE
+
+// Get the stack trace and the dynamic method array from the stack trace object.
+// If the stack trace was created by another thread, it returns clones of both arrays.
+/* static */
+void ExceptionObject::GetStackTraceParts(OBJECTREF stackTraceObj, StackTraceArray & stackTrace, PTRARRAYREF * outKeepAliveArray /*= NULL*/)
+{
+    CONTRACTL
+    {
+        GC_TRIGGERS;
+        THROWS;
+        MODE_COOPERATIVE;
+        PRECONDITION(IsProtectedByGCFrame((OBJECTREF*)&stackTrace));
+        PRECONDITION(IsProtectedByGCFrame((OBJECTREF*)outKeepAliveArray));
+    }
+    CONTRACTL_END;
+
+    PTRARRAYREF keepAliveArray = NULL;
+
+    // Extract the stack trace and keepAlive arrays from the stack trace object.
+    if ((stackTraceObj != NULL) && ((dac_cast<PTR_ArrayBase>(OBJECTREFToObject(stackTraceObj)))->GetMethodTable()->ContainsGCPointers()))
+    {
+        // The stack trace object is the dynamic methods array with its first slot set to the stack trace I1Array.
+        PTR_PTRArray combinedArray = dac_cast<PTR_PTRArray>(OBJECTREFToObject(stackTraceObj));
+        stackTrace.Set(dac_cast<I1ARRAYREF>(combinedArray->GetAt(0)));
+        keepAliveArray = dac_cast<PTRARRAYREF>(ObjectToOBJECTREF(combinedArray));
+    }
+    else
+    {
+        stackTrace.Set(dac_cast<I1ARRAYREF>(stackTraceObj));
     }
 
-#if !defined(DACCESS_COMPILE)
-    SpinLock::ReleaseLock(&g_StackTraceArrayLock);
-#endif // !defined(DACCESS_COMPILE)
-
+    if (outKeepAliveArray != NULL)
+    {
+        *outKeepAliveArray = keepAliveArray;
+    }
 }
 
-bool LAHashDependentHashTrackerObject::IsLoaderAllocatorLive()
+#ifndef DACCESS_COMPILE
+void LoaderAllocatorObject::SetSlotsUsed(INT32 newSlotsUsed)
 {
-    return (ObjectFromHandle(_dependentHandle) != NULL);
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_COOPERATIVE;
+        PRECONDITION(m_pLoaderAllocatorScout->m_nativeLoaderAllocator->HasHandleTableLock());
+    }
+    CONTRACTL_END;
+
+    m_slotsUsed = newSlotsUsed;
 }
 
-void LAHashDependentHashTrackerObject::GetDependentAndLoaderAllocator(OBJECTREF *pLoaderAllocatorRef, GCHEAPHASHOBJECTREF *pGCHeapHash)
+PTRARRAYREF LoaderAllocatorObject::GetHandleTable()
 {
-    OBJECTREF primary = ObjectFromHandle(_dependentHandle);
-    if (pLoaderAllocatorRef != NULL)
-        *pLoaderAllocatorRef = primary;
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_COOPERATIVE;
+        PRECONDITION(m_pLoaderAllocatorScout->m_nativeLoaderAllocator->HasHandleTableLock());
+    }
+    CONTRACTL_END;
 
-    IGCHandleManager *mgr = GCHandleUtilities::GetGCHandleManager();
-    // Secondary is tracked only if primary is non-null
-    if (pGCHeapHash != NULL)
-        *pGCHeapHash = (GCHEAPHASHOBJECTREF)(OBJECTREF)((primary != NULL) ? mgr->GetDependentHandleSecondary(_dependentHandle) : NULL);
+    return (PTRARRAYREF)m_pSlots;
 }
+
+void LoaderAllocatorObject::SetHandleTable(PTRARRAYREF handleTable)
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_COOPERATIVE;
+        PRECONDITION(m_pLoaderAllocatorScout->m_nativeLoaderAllocator->HasHandleTableLock());
+    }
+    CONTRACTL_END;
+
+    SetObjectReference(&m_pSlots, (OBJECTREF)handleTable);
+}
+
+INT32 LoaderAllocatorObject::GetSlotsUsed()
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_COOPERATIVE;
+        PRECONDITION(m_pLoaderAllocatorScout->m_nativeLoaderAllocator->HasHandleTableLock());
+    }
+    CONTRACTL_END;
+
+    return m_slotsUsed;
+}
+
+#ifdef DEBUG
+static void CheckOffsetOfFieldInInstantiation(MethodTable *pMTOfInstantiation, FieldDesc* pField, size_t offset)
+{
+    STANDARD_VM_CONTRACT;
+
+    MethodTable* pGenericFieldMT = pField->GetApproxEnclosingMethodTable();
+    DWORD index = pGenericFieldMT->GetIndexForFieldDesc(pField);
+    FieldDesc *pFieldOnInstantiation = pMTOfInstantiation->GetFieldDescByIndex(index);
+
+    if (pFieldOnInstantiation->GetOffset() != offset)
+    {
+        _ASSERTE(!"Field offset mismatch");
+    }
+}
+
+/*static*/ void GenericCacheStruct::ValidateLayout(MethodTable* pMTOfInstantiation)
+{
+    STANDARD_VM_CONTRACT;
+
+    CheckOffsetOfFieldInInstantiation(pMTOfInstantiation, CoreLibBinder::GetField(FIELD__GENERICCACHE__TABLE), offsetof(GenericCacheStruct, _table));
+    CheckOffsetOfFieldInInstantiation(pMTOfInstantiation, CoreLibBinder::GetField(FIELD__GENERICCACHE__SENTINEL_TABLE), offsetof(GenericCacheStruct, _sentinelTable));
+    CheckOffsetOfFieldInInstantiation(pMTOfInstantiation, CoreLibBinder::GetField(FIELD__GENERICCACHE__LAST_FLUSH_SIZE), offsetof(GenericCacheStruct, _lastFlushSize));
+    CheckOffsetOfFieldInInstantiation(pMTOfInstantiation, CoreLibBinder::GetField(FIELD__GENERICCACHE__INITIAL_CACHE_SIZE), offsetof(GenericCacheStruct, _initialCacheSize));
+    CheckOffsetOfFieldInInstantiation(pMTOfInstantiation, CoreLibBinder::GetField(FIELD__GENERICCACHE__MAX_CACHE_SIZE), offsetof(GenericCacheStruct, _maxCacheSize));
+    // Validate the layout of the Generic
+}
+#endif
+
+#endif // DACCESS_COMPILE

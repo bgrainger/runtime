@@ -4,16 +4,16 @@
 namespace Internal.TypeSystem
 {
     // Dummy implementation of diagnostic names that just forwards to Name/Namespace
-    abstract partial class DefType
+    public abstract partial class DefType
     {
         /// <summary>
         /// Gets the Name of a type. This must not throw
         /// </summary>
-        public string DiagnosticName => Name;
+        public string DiagnosticName => GetName();
 
         /// <summary>
         /// Gets the Namespace of a type. This must not throw
         /// </summary>
-        public string DiagnosticNamespace => Namespace;
+        public string DiagnosticNamespace => GetNamespace();
     }
 }

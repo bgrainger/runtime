@@ -1,41 +1,34 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using System.Security;
 
-namespace System.DirectoryServices.Interop
+namespace System.DirectoryServices
 {
-
-    [StructLayout(LayoutKind.Explicit)]
-    internal struct Variant
-    {
-        [FieldOffset(0)]
-        public ushort varType;
-        [FieldOffset(2)]
-        public ushort reserved1;
-        [FieldOffset(4)]
-        public ushort reserved2;
-        [FieldOffset(6)]
-        public ushort reserved3;
-        [FieldOffset(8)]
-        public short boolvalue;
-        [FieldOffset(8)]
-        public IntPtr ptr1;
-        [FieldOffset(12)]
-        public IntPtr ptr2;
-    }
 
     internal static class UnsafeNativeMethods
     {
-        [DllImport(global::Interop.Libraries.Activeds, ExactSpelling = true, EntryPoint = "ADsOpenObject", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
-        private static extern int IntADsOpenObject(string path, string? userName, string? password, int flags, [In, Out] ref Guid iid, [Out, MarshalAs(UnmanagedType.Interface)] out object ppObject);
-
         public static int ADsOpenObject(string path, string? userName, string? password, int flags, [In, Out] ref Guid iid, [Out, MarshalAs(UnmanagedType.Interface)] out object ppObject)
         {
+            IntPtr ppObjectNative = IntPtr.Zero;
             try
             {
-                return IntADsOpenObject(path, userName, password, flags, ref iid, out ppObject);
+                int hr = global::Interop.Activeds.ADsOpenObject(path, userName, password, flags, ref iid, out ppObjectNative);
+                try
+                {
+                    ppObject = ppObjectNative != IntPtr.Zero ? Marshal.GetObjectForIUnknown(ppObjectNative) : null!;
+                    return hr;
+                }
+                finally
+                {
+                    if (ppObjectNative != IntPtr.Zero)
+                    {
+                        Marshal.Release(ppObjectNative);
+                    }
+                }
             }
             catch (EntryPointNotFoundException)
             {
@@ -374,10 +367,10 @@ namespace System.DirectoryServices.Interop
             [PreserveSig]
             int GetOption(int flag, [Out] out object value);
 
-            void SetOption(int option, Variant value);
+            void SetOption(int option, ComVariant value);
         }
 
-        // IDirecorySearch return codes
+        // IDirectorySearch return codes
         internal const int S_ADS_NOMORE_ROWS = 0x00005012;
         internal const int INVALID_FILTER = unchecked((int)0x8007203E);
         internal const int SIZE_LIMIT_EXCEEDED = unchecked((int)0x80072023);

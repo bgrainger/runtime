@@ -1,24 +1,21 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System;
+using System.Collections;
+using System.Collections.Specialized;
+using System.Diagnostics.CodeAnalysis;
+using System.IO;
+using System.Reflection;
+using System.Xml;
+using System.Xml.Schema;
+using System.Xml.Serialization;
+
 namespace System.Xml.Serialization
 {
-    using System;
-    using System.IO;
-    using System.Xml;
-    using System.Xml.Schema;
-    using System.Xml.Serialization;
-    using System.Collections;
-    using System.Collections.Specialized;
-    using System.Reflection;
-    using System.Diagnostics.CodeAnalysis;
-
     public class ImportContext
     {
         private readonly bool _shareTypes;
-        private SchemaObjectCache? _cache; // cached schema top-level items
-        private Hashtable? _mappings; // XmlSchema -> SerializableMapping, XmlSchemaSimpleType -> EnumMapping, XmlSchemaComplexType -> StructMapping
-        private Hashtable? _elements; // XmlSchemaElement -> ElementAccessor
         private CodeIdentifiers? _typeIdentifiers;
 
         public ImportContext(CodeIdentifiers? identifiers, bool shareTypes)
@@ -29,45 +26,13 @@ namespace System.Xml.Serialization
 
         internal ImportContext() : this(null, false) { }
 
-        internal SchemaObjectCache Cache
-        {
-            get
-            {
-                if (_cache == null)
-                    _cache = new SchemaObjectCache();
-                return _cache;
-            }
-        }
+        internal SchemaObjectCache Cache => field ??= new SchemaObjectCache(); // cached schema top-level items
 
-        internal Hashtable Elements
-        {
-            get
-            {
-                if (_elements == null)
-                    _elements = new Hashtable();
-                return _elements;
-            }
-        }
+        internal Hashtable Elements => field ??= new Hashtable(); // XmlSchemaElement -> ElementAccessor
 
-        internal Hashtable Mappings
-        {
-            get
-            {
-                if (_mappings == null)
-                    _mappings = new Hashtable();
-                return _mappings;
-            }
-        }
+        internal Hashtable Mappings => field ??= new Hashtable(); // XmlSchema -> SerializableMapping, XmlSchemaSimpleType -> EnumMapping, XmlSchemaComplexType -> StructMapping
 
-        public CodeIdentifiers TypeIdentifiers
-        {
-            get
-            {
-                if (_typeIdentifiers == null)
-                    _typeIdentifiers = new CodeIdentifiers();
-                return _typeIdentifiers;
-            }
-        }
+        public CodeIdentifiers TypeIdentifiers => _typeIdentifiers ??= new CodeIdentifiers();
 
         public bool ShareTypes
         {
@@ -82,53 +47,17 @@ namespace System.Xml.Serialization
 
     internal sealed class SchemaObjectCache
     {
-        private Hashtable? _graph;
-        private Hashtable? _hash;
-        private Hashtable? _objectCache;
-        private StringCollection? _warnings;
         // UNDONE remove me soon, this is debug only code
         internal Hashtable looks = new Hashtable();
-        private Hashtable Graph
-        {
-            get
-            {
-                if (_graph == null)
-                    _graph = new Hashtable();
-                return _graph;
-            }
-        }
+        private Hashtable Graph => field ??= new Hashtable();
 
-        private Hashtable Hash
-        {
-            get
-            {
-                if (_hash == null)
-                    _hash = new Hashtable();
-                return _hash;
-            }
-        }
+        private Hashtable Hash => field ??= new Hashtable();
 
-        private Hashtable ObjectCache
-        {
-            get
-            {
-                if (_objectCache == null)
-                    _objectCache = new Hashtable();
-                return _objectCache;
-            }
-        }
+        private Hashtable ObjectCache => field ??= new Hashtable();
 
-        internal StringCollection Warnings
-        {
-            get
-            {
-                if (_warnings == null)
-                    _warnings = new StringCollection();
-                return _warnings;
-            }
-        }
+        internal StringCollection Warnings => field ??= new StringCollection();
 
-        internal XmlSchemaObject? AddItem(XmlSchemaObject? item, XmlQualifiedName? qname, XmlSchemas schemas)
+        internal XmlSchemaObject? AddItem(XmlSchemaObject? item, XmlQualifiedName? qname)
         {
             if (item == null)
                 return null;
@@ -170,15 +99,15 @@ namespace System.Xml.Serialization
                 return true;
             if (o1.GetType() != o2.GetType())
                 return false;
-            if (Hash[o1] == null)
-                Hash[o1] = GetHash(o1);
+
+            Hash[o1] ??= GetHash(o1);
             int hash1 = (int)Hash[o1]!;
             int hash2 = GetHash(o2);
             if (hash1 != hash2)
                 return false;
 
             if (shareTypes)
-                return CompositeHash(o1, hash1) == CompositeHash(o2, hash2);
+                return CompositeHash(o1) == CompositeHash(o2);
             return true;
         }
 
@@ -200,7 +129,7 @@ namespace System.Xml.Serialization
             return deps;
         }
 
-        private int CompositeHash(XmlSchemaObject o, int hash)
+        private int CompositeHash(XmlSchemaObject o)
         {
             ArrayList list = GetDependencies(o, new ArrayList(), new Hashtable());
             double tmp = 0;
@@ -216,6 +145,7 @@ namespace System.Xml.Serialization
         }
 
         [RequiresUnreferencedCode("creates SchemaGraph")]
+        [RequiresDynamicCode(XmlSerializer.AotSerializationWarning)]
         internal void GenerateSchemaGraph(XmlSchemas schemas)
         {
             SchemaGraph graph = new SchemaGraph(Graph, schemas);
@@ -248,7 +178,7 @@ namespace System.Xml.Serialization
             return code;
         }
 
-        private string ToString(XmlSchemaObject o, SchemaObjectWriter writer)
+        private static string ToString(XmlSchemaObject o, SchemaObjectWriter writer)
         {
             return writer.WriteXmlSchemaObject(o);
         }
@@ -262,6 +192,7 @@ namespace System.Xml.Serialization
         private readonly int _items;
 
         [RequiresUnreferencedCode("Calls Compile")]
+        [RequiresDynamicCode(XmlSerializer.AotSerializationWarning)]
         internal SchemaGraph(Hashtable scope, XmlSchemas schemas)
         {
             _scope = scope;
@@ -328,9 +259,8 @@ namespace System.Xml.Serialization
                 XmlSchemaParticle? particle = null;
                 XmlSchemaObjectCollection? attributes = null;
 
-                if (item is XmlSchemaComplexType)
+                if (item is XmlSchemaComplexType ct)
                 {
-                    XmlSchemaComplexType ct = (XmlSchemaComplexType)item;
                     if (ct.ContentModel != null)
                     {
                         XmlSchemaContent? content = ct.ContentModel.Content;
@@ -339,27 +269,24 @@ namespace System.Xml.Serialization
                             baseName = ((XmlSchemaComplexContentRestriction)content).BaseTypeName;
                             attributes = ((XmlSchemaComplexContentRestriction)content).Attributes;
                         }
-                        else if (content is XmlSchemaSimpleContentRestriction)
+                        else if (content is XmlSchemaSimpleContentRestriction restriction)
                         {
-                            XmlSchemaSimpleContentRestriction restriction = (XmlSchemaSimpleContentRestriction)content;
                             if (restriction.BaseType != null)
                                 baseType = restriction.BaseType;
                             else
                                 baseName = restriction.BaseTypeName;
                             attributes = restriction.Attributes;
                         }
-                        else if (content is XmlSchemaComplexContentExtension)
+                        else if (content is XmlSchemaComplexContentExtension complex)
                         {
-                            XmlSchemaComplexContentExtension extension = (XmlSchemaComplexContentExtension)content;
-                            attributes = extension.Attributes;
-                            particle = extension.Particle;
-                            baseName = extension.BaseTypeName;
+                            attributes = complex.Attributes;
+                            particle = complex.Particle;
+                            baseName = complex.BaseTypeName;
                         }
-                        else if (content is XmlSchemaSimpleContentExtension)
+                        else if (content is XmlSchemaSimpleContentExtension simple)
                         {
-                            XmlSchemaSimpleContentExtension extension = (XmlSchemaSimpleContentExtension)content;
-                            attributes = extension.Attributes;
-                            baseName = extension.BaseTypeName;
+                            attributes = simple.Attributes;
+                            baseName = simple.BaseTypeName;
                         }
                     }
                     else
@@ -367,9 +294,8 @@ namespace System.Xml.Serialization
                         attributes = ct.Attributes;
                         particle = ct.Particle;
                     }
-                    if (particle is XmlSchemaGroupRef)
+                    if (particle is XmlSchemaGroupRef refGroup)
                     {
-                        XmlSchemaGroupRef refGroup = (XmlSchemaGroupRef)particle;
                         particle = ((XmlSchemaGroup)_schemas.Find(refGroup.RefName, typeof(XmlSchemaGroup), false)!).Particle;
                     }
                     else if (particle is XmlSchemaGroupBase)
@@ -377,18 +303,16 @@ namespace System.Xml.Serialization
                         particle = (XmlSchemaGroupBase)particle;
                     }
                 }
-                else if (item is XmlSchemaSimpleType)
+                else if (item is XmlSchemaSimpleType simpleType)
                 {
-                    XmlSchemaSimpleType simpleType = (XmlSchemaSimpleType)item;
                     XmlSchemaSimpleTypeContent? content = simpleType.Content;
                     if (content is XmlSchemaSimpleTypeRestriction)
                     {
                         baseType = ((XmlSchemaSimpleTypeRestriction)content).BaseType;
                         baseName = ((XmlSchemaSimpleTypeRestriction)content).BaseTypeName;
                     }
-                    else if (content is XmlSchemaSimpleTypeList)
+                    else if (content is XmlSchemaSimpleTypeList list)
                     {
-                        XmlSchemaSimpleTypeList list = (XmlSchemaSimpleTypeList)content;
                         if (list.ItemTypeName != null && !list.ItemTypeName.IsEmpty)
                             baseName = list.ItemTypeName;
                         if (list.ItemType != null)
@@ -512,8 +436,7 @@ namespace System.Xml.Serialization
                         XmlAttribute attribute = attrs[i];
                         if (attribute.LocalName == Wsdl.ArrayType && attribute.NamespaceURI == Wsdl.Namespace)
                         {
-                            string dims;
-                            XmlQualifiedName qname = TypeScope.ParseWsdlArrayType(attribute.Value, out dims, item);
+                            XmlQualifiedName qname = TypeScope.ParseWsdlArrayType(attribute.Value, out _, item);
                             XmlSchemaType? type = (XmlSchemaType?)_schemas.Find(qname, typeof(XmlSchemaType), false);
                             AddRef(refs, type);
                         }

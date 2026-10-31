@@ -8,10 +8,12 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
-using Microsoft.Diagnostics.Tools.RuntimeClient;
 using Microsoft.Diagnostics.Tracing;
 using Tracing.Tests.Common;
 using Microsoft.Diagnostics.Tracing.Parsers.Clr;
+using Microsoft.Diagnostics.NETCore.Client;
+using Xunit;
+using TestLibrary;
 
 namespace Tracing.Tests.BigEventsValidation
 {
@@ -26,10 +28,10 @@ namespace Tracing.Tests.BigEventsValidation
         }
 
         public static BigEventSource Log = new BigEventSource();
-        
+
         public void BigEvent()
         {
-            WriteEvent(1, bigString);        
+            WriteEvent(1, bigString);
         }
 
         public void SmallEvent()
@@ -38,20 +40,24 @@ namespace Tracing.Tests.BigEventsValidation
         }
     }
 
-    
+
     public class BigEventsValidation
     {
-        public static int Main(string[] args)
+        [ActiveIssue("Could not load legacy Microsoft.Diagnostics.Tools.RuntimeClient and system.diagnostics.process not supported", TestPlatforms.Browser)]
+        [ActiveIssue("Can't find file dotnet-diagnostic-{pid}-*-socket", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoRuntime), nameof(PlatformDetection.IsRiscv64Process))]
+        [SkipOnCoreClr("This test is sensitive to JIT optimizations.", RuntimeTestModes.AnyJitOptimizationStress)]
+        [SkipOnCoreClr("Tracing tests routinely time out with JIT stress and GC stress.", RuntimeTestModes.AnyGCStress)]
+        [Fact]
+        public static int TestEntryPoint()
         {
             // This test tries to send a big event (>100KB) and checks that the app does not crash
             // See https://github.com/dotnet/runtime/issues/50515 for the regression issue
-            var providers = new List<Provider>()
+            var providers = new List<EventPipeProvider>()
             {
-                new Provider("BigEventSource")
+                new EventPipeProvider("BigEventSource", EventLevel.Verbose)
             };
 
-            var configuration = new SessionConfiguration(circularBufferSizeMB: 1024, format: EventPipeSerializationFormat.NetTrace,  providers: providers);
-            return IpcTraceTest.RunAndValidateEventCounts(_expectedEventCounts, _eventGeneratingAction, configuration, _Verify);
+            return IpcTraceTest.RunAndValidateEventCounts(_expectedEventCounts, _eventGeneratingAction, providers, 1024, _Verify);
         }
 
         private static Dictionary<string, ExpectedEventCount> _expectedEventCounts = new Dictionary<string, ExpectedEventCount>()
@@ -59,7 +65,7 @@ namespace Tracing.Tests.BigEventsValidation
             { "BigEventSource", -1 }
         };
 
-        private static Action _eventGeneratingAction = () => 
+        private static Action _eventGeneratingAction = () =>
         {
             // Write 10 big events
             for (int i = 0; i < 10; i++)

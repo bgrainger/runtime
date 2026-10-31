@@ -1,15 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-//
 
-//
 ////////////////////////////////////////////////////////////////////////////////
 // This module defines a Utility Class used by reflection
-//
-//
-
 ////////////////////////////////////////////////////////////////////////////////
-
 
 #include "common.h"
 #include "invokeutil.h"
@@ -27,7 +21,7 @@
 
 // The Attributes Table
 //  20 bits for built in types and 12 bits for Properties
-//  The properties are followed by the widening mask.  All types widen to them selves.
+//  The properties are followed by the widening mask.  All types widen to themselves.
 const DWORD InvokeUtil::PrimitiveAttributes[PRIMITIVE_TABLE_SIZE] = {
     0x00,                     // ELEMENT_TYPE_END
     0x00,                     // ELEMENT_TYPE_VOID
@@ -57,14 +51,13 @@ BOOL InvokeUtil::IsVoidPtr(TypeHandle th)
 
 OBJECTREF InvokeUtil::CreatePointer(TypeHandle th, void * p)
 {
-    CONTRACT(OBJECTREF) {
+    CONTRACTL {
         THROWS;
         GC_TRIGGERS;
         MODE_COOPERATIVE;
         PRECONDITION(!th.IsNull());
-        POSTCONDITION(RETVAL != NULL);
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     OBJECTREF refObj = NULL;
     GCPROTECT_BEGIN(refObj);
@@ -77,246 +70,50 @@ OBJECTREF InvokeUtil::CreatePointer(TypeHandle th, void * p)
     SetObjectReference(&(((ReflectionPointer *)OBJECTREFToObject(refObj))->_ptrType), refType);
 
     GCPROTECT_END();
-    RETURN refObj;
+    _ASSERTE(refObj != NULL);
+    return refObj;
 }
 
 TypeHandle InvokeUtil::GetPointerType(OBJECTREF pObj) {
-    CONTRACT(TypeHandle) {
+    CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
         MODE_COOPERATIVE;
         PRECONDITION(pObj != NULL);
-        POSTCONDITION(!RETVAL.IsNull());
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     ReflectionPointer * pReflectionPointer = (ReflectionPointer *)OBJECTREFToObject(pObj);
     REFLECTCLASSBASEREF o = (REFLECTCLASSBASEREF)pReflectionPointer->_ptrType;
     TypeHandle typeHandle = o->GetType();
-    RETURN typeHandle;
+    _ASSERTE(!typeHandle.IsNull());
+    return typeHandle;
 }
 
 void* InvokeUtil::GetPointerValue(OBJECTREF pObj) {
-    CONTRACT(void*) {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_COOPERATIVE;
-        PRECONDITION(pObj != NULL);
-        POSTCONDITION(CheckPointer(RETVAL, NULL_OK));
-    }
-    CONTRACT_END;
-
-    ReflectionPointer * pReflectionPointer = (ReflectionPointer *)OBJECTREFToObject(pObj);
-    void *value = pReflectionPointer->_ptr;
-    RETURN value;
-}
-
-void *InvokeUtil::GetIntPtrValue(OBJECTREF pObj) {
-    CONTRACT(void*) {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_COOPERATIVE;
-        PRECONDITION(pObj != NULL);
-        POSTCONDITION(CheckPointer(RETVAL, NULL_OK));
-    }
-    CONTRACT_END;
-
-    RETURN *(void **)((pObj)->UnBox());
-}
-
-void InvokeUtil::CopyArg(TypeHandle th, OBJECTREF *pObjUNSAFE, ArgDestination *argDest) {
     CONTRACTL {
-        THROWS;
-        GC_NOTRIGGER; // Caller does not protect object references
+        NOTHROW;
+        GC_NOTRIGGER;
         MODE_COOPERATIVE;
-        PRECONDITION(!th.IsNull());
-        PRECONDITION(CheckPointer(pObjUNSAFE));
-        INJECT_FAULT(COMPlusThrowOM());
+        PRECONDITION(pObj != NULL);
     }
     CONTRACTL_END;
 
-    void *pArgDst = argDest->GetDestinationAddress();
+    ReflectionPointer * pReflectionPointer = (ReflectionPointer *)OBJECTREFToObject(pObj);
+    void *value = pReflectionPointer->_ptr;
+    return value;
+}
 
-    OBJECTREF rObj = *pObjUNSAFE;
-    MethodTable* pMT;
-    CorElementType oType;
-    CorElementType type;
-
-    if (rObj != 0) {
-        pMT = rObj->GetMethodTable();
-        oType = pMT->GetInternalCorElementType();
+void *InvokeUtil::GetIntPtrValue(OBJECTREF pObj) {
+    CONTRACTL {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_COOPERATIVE;
+        PRECONDITION(pObj != NULL);
     }
-    else {
-        pMT = 0;
-        oType = ELEMENT_TYPE_OBJECT;
-    }
-    type = th.GetVerifierCorElementType();
+    CONTRACTL_END;
 
-    // This basically maps the Signature type our type and calls the CreatePrimitiveValue
-    //  method.  We can omit this if we get alignment on these types.
-    switch (type) {
-    case ELEMENT_TYPE_BOOLEAN:
-    case ELEMENT_TYPE_I1:
-    case ELEMENT_TYPE_U1:
-    case ELEMENT_TYPE_I2:
-    case ELEMENT_TYPE_U2:
-    case ELEMENT_TYPE_CHAR:
-    case ELEMENT_TYPE_I4:
-    case ELEMENT_TYPE_U4:
-    case ELEMENT_TYPE_R4:
-    IN_TARGET_32BIT(case ELEMENT_TYPE_I:)
-    IN_TARGET_32BIT(case ELEMENT_TYPE_U:)
-    {
-        // If we got the univeral zero...Then assign it and exit.
-        if (rObj == 0)
-            *(PVOID *)pArgDst = 0;
-        else
-        {
-            ARG_SLOT slot;
-            CreatePrimitiveValue(type, oType, rObj, &slot);
-            *(PVOID *)pArgDst = (PVOID)slot;
-        }
-        break;
-    }
-
-
-    case ELEMENT_TYPE_I8:
-    case ELEMENT_TYPE_U8:
-    case ELEMENT_TYPE_R8:
-    IN_TARGET_64BIT(case ELEMENT_TYPE_I:)
-    IN_TARGET_64BIT(case ELEMENT_TYPE_U:)
-    {
-        // If we got the univeral zero...Then assign it and exit.
-        if (rObj == 0)
-            *(INT64 *)pArgDst = 0;
-        else
-        {
-            ARG_SLOT slot;
-            CreatePrimitiveValue(type, oType, rObj, &slot);
-            *(INT64 *)pArgDst = (INT64)slot;
-        }
-        break;
-    }
-
-    case ELEMENT_TYPE_VALUETYPE:
-    {
-        // If we got the universal zero...Then assign it and exit.
-        if (rObj == 0) {
-            InitValueClassArg(argDest, th.AsMethodTable());
-         }
-        else {
-            if (!th.AsMethodTable()->UnBoxIntoArg(argDest, rObj))
-                COMPlusThrow(kArgumentException, W("Arg_ObjObj"));
-        }
-        break;
-    }
-
-    case ELEMENT_TYPE_SZARRAY:          // Single Dim
-    case ELEMENT_TYPE_ARRAY:            // General Array
-    case ELEMENT_TYPE_CLASS:            // Class
-    case ELEMENT_TYPE_OBJECT:
-    case ELEMENT_TYPE_STRING:           // System.String
-    case ELEMENT_TYPE_VAR:
-    {
-        if (rObj == 0)
-            *(PVOID *)pArgDst = 0;
-        else
-            *(PVOID *)pArgDst = OBJECTREFToObject(rObj);
-        break;
-    }
-
-    case ELEMENT_TYPE_BYREF:
-    {
-       //
-       //     (obj is the parameter passed to MethodInfo.Invoke, by the caller)
-       //     if argument is a primitive
-       //     {
-       //         if incoming argument, obj, is null
-       //             Allocate a boxed object and place ref to it in 'obj'
-       //         Unbox 'obj' and pass it to callee
-       //     }
-       //     if argument is a value class
-       //     {
-       //         if incoming argument, obj, is null
-       //             Allocate an object of that valueclass, and place ref to it in 'obj'
-       //         Unbox 'obj' and pass it to callee
-       //     }
-       //     if argument is an objectref
-       //     {
-       //         pass obj to callee
-       //     }
-       //
-        TypeHandle thBaseType = th.AsTypeDesc()->GetTypeParam();
-
-        // We should never get here for nullable types.  Instead invoke
-        // heads these off and morphs the type handle to not be byref anymore
-        _ASSERTE(!Nullable::IsNullableType(thBaseType));
-
-        TypeHandle srcTH = TypeHandle();
-        if (rObj == 0)
-            oType = thBaseType.GetSignatureCorElementType();
-        else
-            srcTH = rObj->GetTypeHandle();
-
-        //CreateByRef only triggers GC in throw path, so it's OK to use the raw unsafe pointer
-        *(PVOID *)pArgDst = CreateByRef(thBaseType, oType, srcTH, rObj, pObjUNSAFE);
-        break;
-    }
-
-    case ELEMENT_TYPE_TYPEDBYREF:
-    {
-        TypedByRef* ptr = (TypedByRef*) pArgDst;
-        TypeHandle srcTH;
-        BOOL bIsZero = FALSE;
-
-        // If we got the univeral zero...Then assign it and exit.
-        if (rObj== 0) {
-            bIsZero = TRUE;
-            ptr->data = 0;
-            ptr->type = TypeHandle();
-        }
-        else {
-            bIsZero = FALSE;
-            srcTH = rObj->GetTypeHandle();
-            ptr->type = rObj->GetTypeHandle();
-        }
-
-        if (!bIsZero)
-        {
-            //CreateByRef only triggers GC in throw path
-            ptr->data = CreateByRef(srcTH, oType, srcTH, rObj, pObjUNSAFE);
-        }
-
-        break;
-    }
-
-    case ELEMENT_TYPE_PTR:
-    case ELEMENT_TYPE_FNPTR:
-    {
-        // If we got the univeral zero...Then assign it and exit.
-        if (rObj == 0) {
-            *(PVOID *)pArgDst = 0;
-        }
-        else {
-            if (rObj->GetMethodTable() == CoreLibBinder::GetClassIfExist(CLASS__POINTER) && type == ELEMENT_TYPE_PTR)
-                *(PVOID *)pArgDst = GetPointerValue(rObj);
-            else if (rObj->GetTypeHandle().AsMethodTable() == CoreLibBinder::GetElementType(ELEMENT_TYPE_I))
-            {
-                ARG_SLOT slot;
-                CreatePrimitiveValue(oType, oType, rObj, &slot);
-                *(PVOID *)pArgDst = (PVOID)slot;
-            }
-            else
-                COMPlusThrow(kArgumentException,W("Arg_ObjObj"));
-        }
-        break;
-    }
-
-    case ELEMENT_TYPE_VOID:
-    default:
-        _ASSERTE(!"Unknown Type");
-        COMPlusThrow(kNotSupportedException);
-    }
+    return *(void **)((pObj)->UnBox());
 }
 
 // CreatePrimitiveValue
@@ -336,22 +133,22 @@ void InvokeUtil::CreatePrimitiveValue(CorElementType dstType,
         MODE_COOPERATIVE;
         PRECONDITION(srcObj != NULL);
         PRECONDITION(CheckPointer(pDst));
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END;
     CreatePrimitiveValue(dstType, srcType, srcObj->UnBox(), srcObj->GetMethodTable(), pDst);
 }
 
-void InvokeUtil::CreatePrimitiveValue(CorElementType dstType,CorElementType srcType,
-    void *pSrc, MethodTable *pSrcMT, ARG_SLOT* pDst)
+void InvokeUtil::CreatePrimitiveValue(CorElementType dstType,
+                                      CorElementType srcType,
+                                      void *pSrc,
+                                      MethodTable *pSrcMT,
+                                      ARG_SLOT* pDst)
 {
-
     CONTRACTL {
         THROWS;
         GC_NOTRIGGER;
         MODE_COOPERATIVE;
         PRECONDITION(CheckPointer(pDst));
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END;
 
@@ -434,10 +231,10 @@ void InvokeUtil::CreatePrimitiveValue(CorElementType dstType,CorElementType srcT
             *pDst = data;
             break;
         case ELEMENT_TYPE_R4:
-            *pDst = (I8)(*(R4*)pSrc);
+            *pDst = (CLR_I8)(*(CLR_R4*)pSrc);
             break;
         case ELEMENT_TYPE_R8:
-            *pDst = (I8)(*(R8*)pSrc);
+            *pDst = (CLR_I8)(*(CLR_R8*)pSrc);
             break;
         default:
             _ASSERTE(!"Unknown conversion");
@@ -448,35 +245,35 @@ void InvokeUtil::CreatePrimitiveValue(CorElementType dstType,CorElementType srcT
     case ELEMENT_TYPE_R4:
     case ELEMENT_TYPE_R8:
         {
-        R8 r8 = 0;
+        CLR_R8 r8 = 0;
         switch (srcType) {
         case ELEMENT_TYPE_BOOLEAN:
         case ELEMENT_TYPE_I1:
         case ELEMENT_TYPE_I2:
         case ELEMENT_TYPE_I4:
         IN_TARGET_32BIT(case ELEMENT_TYPE_I:)
-            r8 = (R8)((INT32)data);
+            r8 = (CLR_R8)((INT32)data);
             break;
         case ELEMENT_TYPE_U1:
         case ELEMENT_TYPE_CHAR:
         case ELEMENT_TYPE_U2:
         case ELEMENT_TYPE_U4:
         IN_TARGET_32BIT(case ELEMENT_TYPE_U:)
-            r8 = (R8)((UINT32)data);
+            r8 = (CLR_R8)((UINT32)data);
             break;
         case ELEMENT_TYPE_U8:
         IN_TARGET_64BIT(case ELEMENT_TYPE_U:)
-            r8 = (R8)((UINT64)data);
+            r8 = (CLR_R8)((UINT64)data);
             break;
         case ELEMENT_TYPE_I8:
         IN_TARGET_64BIT(case ELEMENT_TYPE_I:)
-            r8 = (R8)((INT64)data);
+            r8 = (CLR_R8)((INT64)data);
             break;
         case ELEMENT_TYPE_R4:
-            r8 = *(R4*)pSrc;
+            r8 = *(CLR_R4*)pSrc;
             break;
         case ELEMENT_TYPE_R8:
-            r8 = *(R8*)pSrc;
+            r8 = *(CLR_R8*)pSrc;
             break;
         default:
             _ASSERTE(!"Unknown R4 or R8 conversion");
@@ -485,7 +282,7 @@ void InvokeUtil::CreatePrimitiveValue(CorElementType dstType,CorElementType srcT
         }
 
         if (dstType == ELEMENT_TYPE_R4) {
-            R4 r4 = (R4)r8;
+            CLR_R4 r4 = (CLR_R4)r8;
             *pDst = (UINT32&)r4;
         }
         else {
@@ -499,46 +296,6 @@ void InvokeUtil::CreatePrimitiveValue(CorElementType dstType,CorElementType srcT
     }
 }
 
-void* InvokeUtil::CreateByRef(TypeHandle dstTh,
-                              CorElementType srcType,
-                              TypeHandle srcTH,
-                              OBJECTREF srcObj,
-                              OBJECTREF *pIncomingObj) {
-    CONTRACTL {
-        THROWS;
-        GC_NOTRIGGER;
-        MODE_COOPERATIVE;
-        PRECONDITION(!dstTh.IsNull());
-        PRECONDITION(CheckPointer(pIncomingObj));
-
-        INJECT_FAULT(COMPlusThrowOM());
-    }
-    CONTRACTL_END;
-
-    CorElementType dstType = dstTh.GetSignatureCorElementType();
-    if (IsPrimitiveType(srcType) && IsPrimitiveType(dstType)) {
-        if (dstType != srcType)
-        {
-            CONTRACT_VIOLATION (GCViolation);
-            COMPlusThrow(kArgumentException,W("Arg_PrimWiden"));
-        }
-
-        return srcObj->UnBox();
-    }
-
-    if (srcTH.IsNull()) {
-        return pIncomingObj;
-    }
-
-    _ASSERTE(srcObj != NULL);
-
-    if (dstType == ELEMENT_TYPE_VALUETYPE) {
-        return srcObj->UnBox();
-    }
-    else
-        return pIncomingObj;
-}
-
 //ValidField
 // This method checks that the object can be widened to the proper type
 void InvokeUtil::ValidField(TypeHandle th, OBJECTREF* value)
@@ -550,7 +307,6 @@ void InvokeUtil::ValidField(TypeHandle th, OBJECTREF* value)
         PRECONDITION(!th.IsNull());
         PRECONDITION(CheckPointer(value));
         PRECONDITION(IsProtectedByGCFrame (value));
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END;
 
@@ -597,7 +353,7 @@ void InvokeUtil::ValidField(TypeHandle th, OBJECTREF* value)
             if (th.IsEnum())
                 COMPlusThrow(kArgumentException,W("Arg_ObjObj"));
 
-            type = th.GetVerifierCorElementType();
+            type = th.GetInternalCorElementType();
             if (IsPrimitiveType(type))
             {
                 if (CanPrimitiveWiden(type, oType))
@@ -613,7 +369,6 @@ void InvokeUtil::ValidField(TypeHandle th, OBJECTREF* value)
         return;
     }
 
-
     if (!IsPrimitiveType(oType))
         COMPlusThrow(kArgumentException,W("Arg_ObjObj"));
     // Now make sure we can widen into the proper type -- CanWiden may run GC...
@@ -621,180 +376,40 @@ void InvokeUtil::ValidField(TypeHandle th, OBJECTREF* value)
         COMPlusThrow(kArgumentException,W("Arg_ObjObj"));
 }
 
-//
-// CreateObjectAfterInvoke
-// This routine will create the specified object from the value returned by the Invoke target.
-//
-// This does not handle the ELEMENT_TYPE_VALUETYPE case. The caller must preallocate the box object and
-// copy the value type into it afterward.
-//
-OBJECTREF InvokeUtil::CreateObjectAfterInvoke(TypeHandle th, void * pValue) {
+OBJECTREF InvokeUtil::CreateTargetExcept(OBJECTREF* except) {
     CONTRACTL {
         THROWS;
         GC_TRIGGERS;
         MODE_COOPERATIVE;
-        PRECONDITION(!th.IsNull());
+        PRECONDITION(CheckPointer(except));
+        PRECONDITION(IsProtectedByGCFrame (except));
 
-        INJECT_FAULT(COMPlusThrowOM());
+
     }
     CONTRACTL_END;
 
-    CorElementType type = th.GetSignatureCorElementType();
-    OBJECTREF obj = NULL;
-
-    // WARNING: pValue can be an inner reference into a managed object and it is not protected from GC. You must do nothing that
-    // triggers a GC until the all the data it points to has been captured in a GC-protected location.
-
-    // Handle the non-table types
-    switch (type) {
-    case ELEMENT_TYPE_VOID:
-        break;
-
-    case ELEMENT_TYPE_PTR:
+    struct
     {
-        obj = CreatePointer(th, *(void **)pValue);
-        break;
-    }
-
-    case ELEMENT_TYPE_CLASS:        // Class
-    case ELEMENT_TYPE_SZARRAY:      // Single Dim, Zero
-    case ELEMENT_TYPE_ARRAY:        // General Array
-    case ELEMENT_TYPE_STRING:
-    case ELEMENT_TYPE_OBJECT:
-    case ELEMENT_TYPE_VAR:
-        obj = *(OBJECTREF *)pValue;
-        break;
-
-    case ELEMENT_TYPE_FNPTR:
-        {
-            LPVOID capturedValue = *(LPVOID*)pValue;
-            INDEBUG(pValue = (LPVOID)(size_t)0xcccccccc); // We're about to allocate a GC object - can no longer trust pValue
-            obj = AllocateObject(CoreLibBinder::GetElementType(ELEMENT_TYPE_I));
-            *(LPVOID*)(obj->UnBox()) = capturedValue;
-        }
-        break;
-
-    default:
-        _ASSERTE(!"Unknown Type");
-        COMPlusThrow(kNotSupportedException);
-    }
-
-    return obj;
-}
-
-// This is a special purpose Exception creation function.  It
-//  creates the ReflectionTypeLoadException placing the passed
-//  classes array and exception array into it.
-OBJECTREF InvokeUtil::CreateClassLoadExcept(OBJECTREF* classes, OBJECTREF* except) {
-    CONTRACT(OBJECTREF) {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-        PRECONDITION(CheckPointer(classes));
-        PRECONDITION(CheckPointer(except));
-        PRECONDITION(IsProtectedByGCFrame (classes));
-        PRECONDITION(IsProtectedByGCFrame (except));
-
-        POSTCONDITION(RETVAL != NULL);
-
-        INJECT_FAULT(COMPlusThrowOM());
-    }
-    CONTRACT_END;
-
-    OBJECTREF oRet = 0;
-
-    struct {
-        OBJECTREF o;
-        STRINGREF str;
+        OBJECTREF oRet;
+        OBJECTREF innerEx;
     } gc;
-    ZeroMemory(&gc, sizeof(gc));
-
-    MethodTable *pVMClassLoadExcept = CoreLibBinder::GetException(kReflectionTypeLoadException);
-    gc.o = AllocateObject(pVMClassLoadExcept);
+    gc.oRet = NULL;
+    gc.innerEx = NULL;
     GCPROTECT_BEGIN(gc);
-    ARG_SLOT args[4];
 
-    // Retrieve the resource string.
-    ResMgrGetString(W("ReflectionTypeLoad_LoadFailed"), &gc.str);
+    UnmanagedCallersOnlyCaller createTargetExcept(METHOD__EXCEPTION__CREATE_TARGET_INVOCATION_EXCEPTION);
 
-    MethodDesc* pMD = MemberLoader::FindMethod(gc.o->GetMethodTable(),
-                            COR_CTOR_METHOD_NAME, &gsig_IM_ArrType_ArrException_Str_RetVoid);
-
-    if (!pMD)
-    {
-        MAKE_WIDEPTR_FROMUTF8(wzMethodName, COR_CTOR_METHOD_NAME);
-        COMPlusThrowNonLocalized(kMissingMethodException, wzMethodName);
-    }
-
-    MethodDescCallSite ctor(pMD);
-
-    // Call the constructor
-    args[0]  = ObjToArgSlot(gc.o);
-    args[1]  = ObjToArgSlot(*classes);
-    args[2]  = ObjToArgSlot(*except);
-    args[3]  = ObjToArgSlot((OBJECTREF)gc.str);
-
-    ctor.Call(args);
-
-    oRet = gc.o;
-
-    GCPROTECT_END();
-    RETURN oRet;
-}
-
-OBJECTREF InvokeUtil::CreateTargetExcept(OBJECTREF* except) {
-    CONTRACT(OBJECTREF) {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-        PRECONDITION(CheckPointer(except));
-        PRECONDITION(IsProtectedByGCFrame (except));
-
-        POSTCONDITION(RETVAL != NULL);
-
-        INJECT_FAULT(COMPlusThrowOM());
-    }
-    CONTRACT_END;
-
-    OBJECTREF o;
-    OBJECTREF oRet = 0;
-
-    MethodTable *pVMTargetExcept = CoreLibBinder::GetException(kTargetInvocationException);
-    o = AllocateObject(pVMTargetExcept);
-    GCPROTECT_BEGIN(o);
-    ARG_SLOT args[2];
-
-    MethodDesc* pMD = MemberLoader::FindMethod(o->GetMethodTable(),
-                            COR_CTOR_METHOD_NAME, &gsig_IM_Exception_RetVoid);
-
-    if (!pMD)
-    {
-        MAKE_WIDEPTR_FROMUTF8(wzMethodName, COR_CTOR_METHOD_NAME);
-        COMPlusThrowNonLocalized(kMissingMethodException, wzMethodName);
-    }
-
-    MethodDescCallSite ctor(pMD);
-
-    // Call the constructor
-    args[0]  = ObjToArgSlot(o);
     // for security, don't allow a non-exception object to be spoofed as an exception object. We cast later and
     // don't check and this could cause us grief.
     _ASSERTE(!except || IsException((*except)->GetMethodTable()));  // how do we get non-exceptions?
-    if (except && IsException((*except)->GetMethodTable()))
-    {
-        args[1]  = ObjToArgSlot(*except);
-    }
-    else
-    {
-        args[1] = NULL;
-    }
 
-    ctor.Call(args);
+    gc.innerEx = (except && IsException((*except)->GetMethodTable())) ? *except : NULL;
 
-    oRet = o;
+    createTargetExcept.InvokeThrowing(&gc.innerEx, &gc.oRet);
 
     GCPROTECT_END();
-    RETURN oRet;
+    _ASSERTE(gc.oRet != NULL);
+    return gc.oRet;
 }
 
 // Ensure that the field is declared on the type or subtype of the type to which the typed reference refers.
@@ -809,7 +424,6 @@ void InvokeUtil::ValidateObjectTarget(FieldDesc *pField, TypeHandle enclosingTyp
         PRECONDITION(!enclosingType.IsNull() || pField->IsStatic());
         PRECONDITION(CheckPointer(target));
 
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END;
 
@@ -817,7 +431,7 @@ void InvokeUtil::ValidateObjectTarget(FieldDesc *pField, TypeHandle enclosingTyp
         return;
 
     if (!pField->IsStatic() && !*target)
-        COMPlusThrow(kTargetException,W("RFLCT.Targ_StatFldReqTarg"));
+        COMPlusThrow(kTargetException,W("RFLCT_Targ_StatFldReqTarg"));
 
     // Verify that the object is of the proper type...
     TypeHandle ty = (*target)->GetTypeHandle();
@@ -835,14 +449,14 @@ void InvokeUtil::ValidateObjectTarget(FieldDesc *pField, TypeHandle enclosingTyp
 
 // SetValidField
 // Given an target object, a value object and a field this method will set the field
-//  on the target object.  The field must be validate before calling this.
+//  on the target object.  The field must be validated before calling this.
 void InvokeUtil::SetValidField(CorElementType fldType,
                                TypeHandle fldTH,
                                FieldDesc *pField,
                                OBJECTREF *target,
                                OBJECTREF *valueObj,
                                TypeHandle declaringType,
-                               CLR_BOOL *pDomainInitialized) {
+                               BOOL *pIsClassInitialized) {
     CONTRACTL {
         THROWS;
         GC_TRIGGERS;
@@ -855,7 +469,6 @@ void InvokeUtil::SetValidField(CorElementType fldType,
         PRECONDITION(IsProtectedByGCFrame (valueObj));
         PRECONDITION(declaringType.IsNull () || !declaringType.IsTypeDesc());
 
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END;
 
@@ -880,19 +493,18 @@ void InvokeUtil::SetValidField(CorElementType fldType,
         pDeclMT = pField->GetModule()->GetGlobalMethodTable();
     }
 
-    if (*pDomainInitialized == FALSE)
+    if (*pIsClassInitialized == FALSE)
     {
         EX_TRY
         {
             pDeclMT->EnsureInstanceActive();
             pDeclMT->CheckRunClassInitThrowing();
-
-            *pDomainInitialized = TRUE;
+            *pIsClassInitialized = pDeclMT->IsClassInited();
         }
         EX_CATCH_THROWABLE(&Throwable);
     }
 #ifdef _DEBUG
-    else if (*pDomainInitialized == TRUE && !declaringType.IsNull())
+    else if (*pIsClassInitialized == TRUE && !declaringType.IsNull())
        CONSISTENCY_CHECK(declaringType.GetMethodTable()->CheckActivated());
 #endif
 
@@ -1042,9 +654,13 @@ void InvokeUtil::SetValidField(CorElementType fldType,
         {
             void* pFieldData;
             if (pField->IsStatic())
+            {
                 pFieldData = pField->GetCurrentStaticAddress();
+            }
             else
-                pFieldData = (*((BYTE**)target)) + pField->GetOffset() + sizeof(Object);
+            {
+                pFieldData = pField->GetInstanceAddress(*target);
+            }
 
             if (*valueObj == NULL)
                 InitValueClass(pFieldData, pMT);
@@ -1063,9 +679,7 @@ void InvokeUtil::SetValidField(CorElementType fldType,
 
 // GetFieldValue
 // This method will return an ARG_SLOT containing the value of the field.
-// GetFieldValue
-// This method will return an ARG_SLOT containing the value of the field.
-OBJECTREF InvokeUtil::GetFieldValue(FieldDesc* pField, TypeHandle fieldType, OBJECTREF* target, TypeHandle declaringType, CLR_BOOL *pDomainInitialized) {
+OBJECTREF InvokeUtil::GetFieldValue(FieldDesc* pField, TypeHandle fieldType, OBJECTREF* target, TypeHandle declaringType, BOOL *pIsClassInitialized) {
     CONTRACTL {
         THROWS;
         GC_TRIGGERS;
@@ -1075,7 +689,6 @@ OBJECTREF InvokeUtil::GetFieldValue(FieldDesc* pField, TypeHandle fieldType, OBJ
         PRECONDITION(CheckPointer(target));
         PRECONDITION(declaringType.IsNull () || !declaringType.IsTypeDesc());
 
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END;
 
@@ -1089,7 +702,7 @@ OBJECTREF InvokeUtil::GetFieldValue(FieldDesc* pField, TypeHandle fieldType, OBJ
     {
         pDeclMT = declaringType.GetMethodTable();
 
-        // We don't allow getting the field just so we don't have more specical
+        // We don't allow getting the field just so we don't have more special
         // cases than we need to.  Then we need at least the throw check to ensure
         // we don't allow data corruption.
         if (Nullable::IsNullableType(pDeclMT))
@@ -1103,22 +716,20 @@ OBJECTREF InvokeUtil::GetFieldValue(FieldDesc* pField, TypeHandle fieldType, OBJ
         pDeclMT = pField->GetModule()->GetGlobalMethodTable();
     }
 
-    if (*pDomainInitialized == FALSE)
+    if (*pIsClassInitialized == FALSE)
     {
         EX_TRY
         {
             pDeclMT->EnsureInstanceActive();
             pDeclMT->CheckRunClassInitThrowing();
-
-            *pDomainInitialized = TRUE;
+            *pIsClassInitialized = pDeclMT->IsClassInited();
         }
         EX_CATCH_THROWABLE(&Throwable);
     }
 #ifdef _DEBUG
-    else if (*pDomainInitialized == TRUE && !declaringType.IsNull())
+    else if (*pIsClassInitialized == TRUE && !declaringType.IsNull())
        CONSISTENCY_CHECK(declaringType.GetMethodTable()->CheckActivated());
 #endif
-
 
     if(Throwable != NULL)
     {
@@ -1174,7 +785,7 @@ OBJECTREF InvokeUtil::GetFieldValue(FieldDesc* pField, TypeHandle fieldType, OBJ
 
     case ELEMENT_TYPE_VALUETYPE:
     {
-        // Value classes require createing a boxed version of the field and then
+        // Value classes require creating a boxed version of the field and then
         //  copying from the source...
         // Allocate an object to return...
         _ASSERTE(!fieldType.IsTypeDesc());
@@ -1185,9 +796,12 @@ OBJECTREF InvokeUtil::GetFieldValue(FieldDesc* pField, TypeHandle fieldType, OBJ
         GCPROTECT_BEGIN(obj);
         // calculate the offset to the field...
         if (pField->IsStatic())
+        {
             p = pField->GetCurrentStaticAddress();
-        else {
-                p = (*((BYTE**)target)) + pField->GetOffset() + sizeof(Object);
+        }
+        else
+        {
+            p = pField->GetInstanceAddress(*target);
         }
         GCPROTECT_END();
 
@@ -1197,8 +811,8 @@ OBJECTREF InvokeUtil::GetFieldValue(FieldDesc* pField, TypeHandle fieldType, OBJ
             CopyValueClass(obj->GetData(), p, fieldType.AsMethodTable());
         }
 
-            // If it is a Nullable<T>, box it using Nullable<T> conventions.
-            // TODO: this double allocates on constructions which is wastefull
+        // If it is a Nullable<T>, box it using Nullable<T> conventions.
+        // TODO: this double allocates on constructions which is wastefull
         obj = Nullable::NormalizeBox(obj);
         break;
     }
@@ -1236,5 +850,3 @@ OBJECTREF InvokeUtil::GetFieldValue(FieldDesc* pField, TypeHandle fieldType, OBJ
 
     return obj;
 }
-
-

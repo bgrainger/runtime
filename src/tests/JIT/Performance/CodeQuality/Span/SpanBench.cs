@@ -7,6 +7,10 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using Xunit;
+using TestLibrary;
+
+#pragma warning disable xUnit1013
 
 namespace Span
 {
@@ -1074,7 +1078,11 @@ namespace Span
         #endregion // TestSpanAPIs
 
 
-        public static int Main(string[] args)
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/54906", TestPlatforms.Android)]
+        [ActiveIssue("System.IO.FileNotFoundException: Could not load file or assembly 'xunit.performance.core, Version=1.0.0.0, Culture=neutral, PublicKeyToken=67066efe964d3b03' or one of its dependencies.", TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+        [Fact]
+        public static void TestEntryPoint()
         {
             // Now simulate xunit-perf's benchmark discovery so we know what tests to invoke
             TypeInfo t = typeof(SpanBench).GetTypeInfo();
@@ -1105,7 +1113,8 @@ namespace Span
             }
 
             // The only failure modes are crash/exception.
-            return 100;
         }
     }
 }
+
+#pragma warning restore xUnit1013

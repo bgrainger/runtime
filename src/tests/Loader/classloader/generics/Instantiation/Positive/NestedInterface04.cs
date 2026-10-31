@@ -2,6 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using Xunit;
+using TestLibrary;
 
 public struct ValX0 {}
 public struct ValY0 {}
@@ -67,7 +69,9 @@ public class Test_NestedInterface04
 	
 	}
 	
-	public static int Main()
+ [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+	[Fact]
+	public static int TestEntryPoint()
 	{
 
 		Outer<int>.IGen<int> IGenInt = new Gen<int>(new int());

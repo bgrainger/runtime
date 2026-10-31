@@ -1,14 +1,5 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-//
-// File: memberload.h
-//
-
-
-//
-
-//
-// ============================================================================
 
 #ifndef _MEMBERLOAD_H
 #define _MEMBERLOAD_H
@@ -17,7 +8,7 @@
 /*
  *  Include Files
  */
-#include "eecontract.h"
+#include <contract.h>
 #include "argslot.h"
 #include "vars.hpp"
 #include "cor.h"
@@ -28,17 +19,6 @@
 #include "typehandle.h"
 #include "methodtable.h"
 #include "typectxt.h"
-
-//
-// This enum represents the property methods that can be passed to FindPropertyMethod().
-//
-
-enum EnumPropertyMethods
-{
-    PropertyGet = 0,
-    PropertySet = 1,
-};
-
 
 //
 // This enum represents the event methods that can be passed to FindEventMethod().
@@ -62,10 +42,10 @@ class MemberLoader
 public:
     static void DECLSPEC_NORETURN ThrowMissingMethodException(MethodTable* pMT,
                                             LPCSTR szMember,
-                                            Module *pModule,
-                                            PCCOR_SIGNATURE pSig,
-                                            DWORD cSig,
-                                            const SigTypeContext *pTypeContext);
+                                            ModuleBase *pModule = NULL,
+                                            PCCOR_SIGNATURE pSig = NULL,
+                                            DWORD cSig = 0,
+                                            const SigTypeContext *pTypeContext = NULL);
 
     static void DECLSPEC_NORETURN ThrowMissingFieldException( MethodTable *pMT,
                                             LPCSTR szMember);
@@ -100,7 +80,7 @@ public:
                                                mdToken FieldDef,
                                                BOOL strictMetadataChecks);
 
-    static void GetDescFromMemberRef(Module * pModule,
+    static void GetDescFromMemberRef(ModuleBase * pModule,
                                      mdToken MemberRef,
                                      MethodDesc ** ppMD,
                                      FieldDesc ** ppFD,
@@ -118,11 +98,11 @@ public:
                                      PCCOR_SIGNATURE * ppTypeSig = NULL,    // Optionally, return generic signatures fetched from metadata during loading.
                                      ULONG * pcbTypeSig = NULL);
 
-    static MethodDesc * GetMethodDescFromMemberRefAndType(Module * pModule,
+    static MethodDesc * GetMethodDescFromMemberRefAndType(ModuleBase * pModule,
                                                           mdToken MemberRef,
                                                           MethodTable * pMT);
 
-    static FieldDesc * GetFieldDescFromMemberRefAndType(Module * pModule,
+    static FieldDesc * GetFieldDescFromMemberRefAndType(ModuleBase * pModule,
                                                         mdToken MemberRef,
                                                         MethodTable * pMT);
 
@@ -198,7 +178,7 @@ private:
     static const FM_Flags FM_SpecialVirtualMask = (FM_Flags) (FM_ExcludeNonVirtual |
                                                               FM_ExcludeVirtual);
 
-    // Typedef for string comparition functions.
+    // Typedef for string comparison functions.
     typedef int (__cdecl *UTF8StringCompareFuncPtr)(const char *, const char *);
 
     static inline UTF8StringCompareFuncPtr FM_GetStrCompFunc(DWORD dwFlags)
@@ -215,13 +195,12 @@ public:
        FM_Flags flags = FM_Default);
 
     // typeHnd is the type handle associated with the class being looked up.
-    // It has additional information in the case of a domain neutral class (Arrays)
     static MethodDesc *FindMethod(
        MethodTable * pMT,
        LPCUTF8 pszName,
        PCCOR_SIGNATURE pSignature,
        DWORD cSignature,
-       Module* pModule,
+       ModuleBase* pModule,
        FM_Flags flags = FM_Default,
        const Substitution *pDefSubst = NULL);
 
@@ -230,12 +209,6 @@ public:
     static MethodDesc *FindMethodByName(
        MethodTable * pMT,
        LPCUTF8 pszName,
-       FM_Flags flags = FM_Default);
-
-    static MethodDesc *FindPropertyMethod(
-       MethodTable * pMT,
-       LPCUTF8 pszName,
-       EnumPropertyMethods Method,
        FM_Flags flags = FM_Default);
 
     static MethodDesc *FindEventMethod(
@@ -255,7 +228,7 @@ public:
        LPCUTF8 pszName,
        PCCOR_SIGNATURE pSignature,
        DWORD cSignature,
-       Module* pModule,
+       ModuleBase* pModule,
        BOOL bCaseSensitive = TRUE);
 
     static MethodDesc *FindConstructor(MethodTable * pMT, LPHARDCODEDMETASIG pwzSignature);

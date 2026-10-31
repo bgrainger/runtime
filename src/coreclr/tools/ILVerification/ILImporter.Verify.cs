@@ -9,6 +9,8 @@ using Internal.TypeSystem.Ecma;
 
 using ILVerify;
 
+#pragma warning disable IDE0060
+
 namespace Internal.IL
 {
     class VerificationException : Exception
@@ -27,9 +29,18 @@ namespace Internal.IL
 
     class VerifierException : Exception
     {
-        internal VerifierException(string message) : base(message)
+        internal VerifierException(string message)
+            : this(VerifierError.None, message)
         {
         }
+
+        internal VerifierException(VerifierError code, string message)
+            : base(message)
+        {
+            Code = code;
+        }
+
+        internal VerifierError Code { get; }
     }
 
     partial class ILImporter
@@ -207,11 +218,21 @@ namespace Internal.IL
 
         public void Verify()
         {
+            // Check code size before any other processing
+            FatalCheck(_ilBytes.Length > 0, VerifierError.CodeSizeZero);
+
             _instructionBoundaries = new bool[_ilBytes.Length];
 
             FindBasicBlocks();
-            FindEnclosingExceptionRegions();
             InitialPass();
+            VerifyExceptionRegions();
+            FindEnclosingExceptionRegions();
+
+            // ECMA-335 I.12.4.2.8.1 forbids filters and handlers at method entry.
+            _currentInstructionOffset = 0;
+            Check(!_basicBlocks[0].HandlerIndex.HasValue, VerifierError.FallthroughIntoHandler);
+            Check(!_basicBlocks[0].FilterIndex.HasValue, VerifierError.FallthroughIntoFilter);
+
             ImportBasicBlocks();
         }
 
@@ -241,7 +262,7 @@ namespace Internal.IL
                             var probeItem = _exceptionRegions[j].ILRegion;
 
                             if (currentlySelected.TryOffset < probeItem.TryOffset &&
-                                currentlySelected.TryOffset + currentlySelected.TryLength > probeItem.TryOffset + probeItem.TryLength)
+                                currentlySelected.TryOffset + currentlySelected.TryLength >= probeItem.TryOffset + probeItem.TryLength)
                             {
                                 basicBlock.TryIndex = j;
                             }
@@ -260,7 +281,7 @@ namespace Internal.IL
                             var probeItem = _exceptionRegions[j].ILRegion;
 
                             if (currentlySelected.HandlerOffset < probeItem.HandlerOffset &&
-                                currentlySelected.HandlerOffset + currentlySelected.HandlerLength > probeItem.HandlerOffset + probeItem.HandlerLength)
+                                currentlySelected.HandlerOffset + currentlySelected.HandlerLength >= probeItem.HandlerOffset + probeItem.HandlerLength)
                             {
                                 basicBlock.HandlerIndex = j;
                             }
@@ -275,17 +296,24 @@ namespace Internal.IL
                         }
                     }
                 }
+
+                // Empty regions can mark an entry without enclosing the block. Do not
+                // initialize an EH entry stack from an unrelated enclosing region.
+                basicBlock.TryStart &= basicBlock.TryIndex.HasValue &&
+                    _exceptionRegions[basicBlock.TryIndex.Value].ILRegion.TryOffset == offset;
+                basicBlock.HandlerStart &= basicBlock.HandlerIndex.HasValue &&
+                    _exceptionRegions[basicBlock.HandlerIndex.Value].ILRegion.HandlerOffset == offset;
+                basicBlock.FilterStart &= basicBlock.FilterIndex.HasValue &&
+                    _exceptionRegions[basicBlock.FilterIndex.Value].ILRegion.FilterOffset == offset;
             }
         }
 
         /// <summary>
-        /// Checks whether the metod's il modifies the this pointer and builds up the
+        /// Checks whether the method's il modifies the this pointer and builds up the
         /// array of valid target offsets.
         /// </summary>
         private void InitialPass()
         {
-            FatalCheck(_ilBytes.Length > 0, VerifierError.CodeSizeZero);
-
             _modifiesThisPtr = false;
             _validTargetOffsets = new bool[_ilBytes.Length];
 
@@ -600,8 +628,11 @@ namespace Internal.IL
 
         void CheckIsArray(StackValue value)
         {
-            Check((value.Kind == StackValueKind.ObjRef) && ((value.Type == null) || value.Type.IsSzArray),
-                VerifierError.ExpectedArray /* , value */);
+            if (!Check((value.Kind == StackValueKind.ObjRef) && ((value.Type == null) || value.Type.IsSzArray),
+                VerifierError.ExpectedArray /* , value */))
+            {
+                AbortBasicBlockVerification();
+            }
         }
 
         void CheckIsAssignable(StackValue src, StackValue dst, VerifierError error = VerifierError.StackUnexpected)
@@ -811,7 +842,7 @@ namespace Internal.IL
                     }
                     isValid = false;
                 }
-                else if (target.HandlerIndex == null)
+                else if (target.FilterIndex == null)
                 {
                     if (reportErrors)
                     {
@@ -1095,7 +1126,7 @@ namespace Internal.IL
                     VerificationError(VerifierError.DelegatePattern);
                     return;
                 }
-                else
+                if (!ftn.Method.Signature.IsStatic)
                 {
                     // See "Rules for non-virtual call to a non-final virtual method" in ImportCall
                     if (ftn.Method.IsVirtual && !ftn.Method.IsFinal && !obj.IsBoxedValueType)
@@ -1119,37 +1150,111 @@ namespace Internal.IL
                 VerificationError(VerifierError.DelegatePattern);
         }
 
-        void CheckIsDelegateAssignable(MethodDesc ftn, TypeDesc delegateType)
+        bool IsDelegateAssignable(MethodDesc targetMethod, TypeDesc delegateType, StackValue firstArg)
         {
-            if (!IsDelegateAssignable(ftn, delegateType))
-                VerificationError(VerifierError.DelegateCtor);
-        }
-
-        bool IsDelegateAssignable(MethodDesc ftn, TypeDesc delegateType)
-        {
-            var invokeMethod = delegateType.GetMethod("Invoke", null);
+            var invokeMethod = delegateType.GetMethod("Invoke"u8, null);
             if (invokeMethod == null)
                 return false;
 
-            var ftnSignature = ftn.Signature;
-            var delegateSignature = invokeMethod.Signature;
+            var targetSignature = targetMethod.Signature;
+            var invokeSignature = invokeMethod.Signature;
 
             // Compare calling convention ignoring distinction between static and instance
-            if ((ftnSignature.Flags & ~MethodSignatureFlags.Static) != (delegateSignature.Flags & ~MethodSignatureFlags.Static))
+            if ((targetSignature.Flags & ~MethodSignatureFlags.Static) != (invokeSignature.Flags & ~MethodSignatureFlags.Static))
                 return false;
+
+            // Compare return type
+            if (!IsAssignable(targetSignature.ReturnType, invokeSignature.ReturnType))
+                return false;
+
+            int totalTargetArgs = targetSignature.Length + (targetSignature.IsStatic ? 0 : 1);
 
             // Compare signature parameters
-            if (ftnSignature.Length != delegateSignature.Length)
-                return false;
 
-            for (int i = 0; i < ftnSignature.Length; i++)
+            bool isOpenDelegate;
+            if (totalTargetArgs == invokeSignature.Length)
             {
-                if (!IsAssignable(delegateSignature[i], ftnSignature[i]))
+                // All arguments provided by invoke, delegate must be open.
+                isOpenDelegate = true;
+            }
+            else if (totalTargetArgs == invokeSignature.Length + 1)
+            {
+                // One too few arguments provided by invoke, delegate must be closed.
+                isOpenDelegate = false;
+            }
+            else
+            {
+                return false;
+            }
+
+            // An open static delegate which takes no arguments. In that case we're done.
+            if (totalTargetArgs == 0)
+            {
+                Debug.Assert(isOpenDelegate);
+                return true;
+            }
+
+            int consumedArgs = 0;
+
+            if (isOpenDelegate)
+            {
+                // If we're looking at an open delegate but the caller has provided a target it's not a match.
+                if (firstArg.Type != null)
+                    return false;
+
+                consumedArgs++;
+            }
+            else
+            {
+                // If we're looking at a closed delegate but the caller has not provided a target it's not a match.
+                if (firstArg.Type == null)
                     return false;
             }
 
-            // Compare return type
-            return IsAssignable(ftnSignature.ReturnType, delegateSignature.ReturnType);
+            TypeDesc firstTargetArg;
+            if (targetSignature.IsStatic)
+            {
+                // Checked above
+                Debug.Assert(targetSignature.Length != 0);
+
+                // The first argument for a static method is the first fixed arg.
+                firstTargetArg = targetSignature[0];
+                consumedArgs--;
+            }
+            else
+            {
+                // The type of the first argument to an instance method is from the method type.
+                firstTargetArg = targetMethod.OwningType;
+
+                // If the delegate is open and the target method is on a value type or primitive then the first argument of the invoke
+                // method must be a reference to that type. So make the type we got from the reference to a ref. (We don't need to
+                // do this for the closed instance case because there we got the invocation side type from the first arg passed in, i.e.
+                // ref was stripped from it implicitly).
+                if (isOpenDelegate && firstTargetArg.IsValueType)
+                    firstTargetArg = firstTargetArg.MakeByRefType();
+            }
+
+            // For a closed delegate it is the target pushed on the stack, so compare against the stack value itself:
+            // it keeps track of boxed value types, which are object references and assignable to anything they can be cast to
+            // (e.g. a boxed int32 target for ToString()).
+            bool firstArgAssignable = isOpenDelegate
+                ? IsAssignable(invokeSignature[0], firstTargetArg)
+                : IsAssignable(firstArg, StackValue.CreateObjRef(firstTargetArg));
+
+            if (!firstArgAssignable)
+                return false;
+
+            // We better have same number of remaining args
+            if (invokeSignature.Length - consumedArgs != targetSignature.Length)
+                return false;
+
+            for (int i = isOpenDelegate ? 1 : 0; i < invokeSignature.Length; i++)
+            {
+                if (!IsAssignable(invokeSignature[i], targetSignature[i - consumedArgs]))
+                    return false;
+            }
+
+            return true;
         }
 
         ILOpcode GetOpcodeAt(int instructionOffset)
@@ -1239,49 +1344,39 @@ namespace Internal.IL
 
         void StartImportingBasicBlock(BasicBlock basicBlock)
         {
+            _currentInstructionOffset = basicBlock.StartOffset;
             _delegateCreateStart = null;
             _isThisInitialized = basicBlock.IsThisInitialized;
 
             if (basicBlock.TryStart)
             {
-                Check(basicBlock.EntryStack == null || basicBlock.EntryStack.Length == 0, VerifierError.TryNonEmptyStack);
-
                 for (int i = 0; i < _exceptionRegions.Length; i++)
                 {
                     var r = _exceptionRegions[i];
 
-                    if (basicBlock.StartOffset != r.ILRegion.TryOffset)
+                    if (basicBlock.StartOffset != r.ILRegion.TryOffset || r.ILRegion.TryLength == 0)
                         continue;
 
-                    if (r.ILRegion.Kind == ILExceptionRegionKind.Filter)
+                    if (r.ILRegion.Kind == ILExceptionRegionKind.Filter && _validTargetOffsets[r.ILRegion.FilterOffset])
                     {
                         var filterBlock = _basicBlocks[r.ILRegion.FilterOffset];
                         PropagateThisState(basicBlock, filterBlock);
                         MarkBasicBlock(filterBlock);
                     }
 
-                    var handlerBlock = _basicBlocks[r.ILRegion.HandlerOffset];
-                    PropagateThisState(basicBlock, handlerBlock);
-                    MarkBasicBlock(handlerBlock);
+                    if (r.ILRegion.HandlerLength != 0 && _validTargetOffsets[r.ILRegion.HandlerOffset])
+                    {
+                        var handlerBlock = _basicBlocks[r.ILRegion.HandlerOffset];
+                        PropagateThisState(basicBlock, handlerBlock);
+                        MarkBasicBlock(handlerBlock);
+                    }
                 }
             }
 
             if (basicBlock.FilterStart || basicBlock.HandlerStart)
             {
-                ExceptionRegion r;
-                if (basicBlock.HandlerIndex.HasValue)
-                {
-                    r = _exceptionRegions[basicBlock.HandlerIndex.Value];
-                }
-                else if (basicBlock.FilterIndex.HasValue)
-                {
-                    r = _exceptionRegions[basicBlock.FilterIndex.Value];
-                }
-                else
-                {
-                    Debug.Fail("Block marked as filter / handler start but no filter / handler index set.");
-                    return;
-                }
+                ExceptionRegion r = _exceptionRegions[basicBlock.FilterStart ?
+                    basicBlock.FilterIndex.Value : basicBlock.HandlerIndex.Value];
 
                 if (r.ILRegion.Kind == ILExceptionRegionKind.Filter || r.ILRegion.Kind == ILExceptionRegionKind.Catch)
                 {
@@ -1316,6 +1411,13 @@ namespace Internal.IL
                     if (basicBlock.EntryStack == null)
                         basicBlock.EntryStack = s_emptyStack;
                 }
+            }
+
+            if (basicBlock.TryStart)
+            {
+                // A catch/filter entry supplies an exception object even when no predecessor
+                // propagated a stack. Check after initializing that entry stack.
+                Check(basicBlock.EntryStack == null || basicBlock.EntryStack.Length == 0, VerifierError.TryNonEmptyStack);
             }
 
             if (basicBlock.EntryStack?.Length > 0)
@@ -1470,12 +1572,27 @@ namespace Internal.IL
             TypeDesc constrained = null;
             bool tailCall = false;
 
+            MethodDesc method = ResolveMethodToken(token);
+            MethodSignature sig = method.Signature;
+
             if (opcode != ILOpcode.newobj)
             {
-                if (HasPendingPrefix(Prefix.Constrained) && opcode == ILOpcode.callvirt)
+                if (HasPendingPrefix(Prefix.Constrained))
                 {
-                    ClearPendingPrefix(Prefix.Constrained);
-                    constrained = _constrained;
+                    if (opcode == ILOpcode.callvirt)
+                    {
+                        ClearPendingPrefix(Prefix.Constrained);
+                        constrained = _constrained;
+                    }
+                    else if (opcode == ILOpcode.call && method.IsVirtual && sig.IsStatic && method.OwningType.IsInterface)
+                    {
+                        ClearPendingPrefix(Prefix.Constrained);
+                        constrained = _constrained;
+
+                        // The constrained type must implement the interface declaring the static virtual method
+                        if (!constrained.CanCastTo(method.OwningType))
+                            VerificationError(VerifierError.ConstrainedTypeNoInterfaceImpl, constrained, method.OwningType);
+                    }
                 }
 
                 if (HasPendingPrefix(Prefix.Tail))
@@ -1489,22 +1606,20 @@ namespace Internal.IL
             // if (sig.isVarArg())
             //      eeGetCallSiteSig(memberRef, getCurrentModuleHandle(), getCurrentContext(), &sig, false);
 
-            MethodDesc method = ResolveMethodToken(token);
-
-            MethodSignature sig = method.Signature;
-
             TypeDesc methodType = sig.IsStatic ? null : method.OwningType;
 
             if (opcode == ILOpcode.callvirt)
             {
-                Check(methodType != null, VerifierError.CallVirtOnStatic);
+                FatalCheck(methodType != null, VerifierError.CallVirtOnStatic);
                 Check(!methodType.IsValueType, VerifierError.CallVirtOnValueType);
             }
             else if (opcode != ILOpcode.newobj)
             {
                 EcmaMethod ecmaMethod = method.GetTypicalMethodDefinition() as EcmaMethod;
                 if (ecmaMethod != null)
-                    Check(!ecmaMethod.IsAbstract, VerifierError.CallAbstract);
+                {
+                    Check(!ecmaMethod.IsAbstract || (method.OwningType.IsInterface && constrained != null), VerifierError.CallAbstract);
+                }
             }
 
             if (opcode == ILOpcode.newobj && methodType.IsDelegate)
@@ -1525,7 +1640,10 @@ namespace Internal.IL
 
                 CheckDelegateCreation(actualFtn, actualObj);
 
-                CheckIsDelegateAssignable(actualFtn.Method, methodType);
+                // A function pointer that did not come from ldftn/ldvirtftn carries no method;
+                // StackMethod has already been reported for it above.
+                if (actualFtn.IsMethod && !IsDelegateAssignable(actualFtn.Method, methodType, actualObj))
+                    VerificationError(VerifierError.DelegateCtor);
             }
             else
             {
@@ -1658,31 +1776,7 @@ namespace Internal.IL
 
             // special checks for tailcalls
             if (tailCall)
-            {
-                TypeDesc callerReturnType = _methodSignature.ReturnType;
-
-                if (returnType.IsVoid || callerReturnType.IsVoid)
-                {
-                    Check(returnType.IsVoid && callerReturnType.IsVoid, VerifierError.TailRetVoid);
-                }
-                // else
-                // if (returnType.IsValueType || callerReturnType.IsValueType)
-                // {
-                //      TODO: Check exact match
-                // }
-                else
-                {
-                    var retStackType = StackValue.CreateFromType(returnType);
-                    var callerRetStackType = StackValue.CreateFromType(callerReturnType);
-                    Check(IsAssignable(retStackType, callerRetStackType), VerifierError.TailRetType, retStackType, callerRetStackType);
-                }
-
-                // for tailcall, stack must be empty
-                Check(_stackTop == 0, VerifierError.TailStackEmpty);
-
-                // The instruction following a tail.call shall be a ret
-                Check(_currentOffset < _ilBytes.Length && (ILOpcode)_ilBytes[_currentOffset] == ILOpcode.ret, VerifierError.TailRet);
-            }
+                CheckTailCallReturn(returnType);
 
             // now push on the result
             if (opcode == ILOpcode.newobj)
@@ -1714,9 +1808,81 @@ namespace Internal.IL
             }
         }
 
+        void CheckTailCallReturn(TypeDesc returnType)
+        {
+            TypeDesc callerReturnType = _methodSignature.ReturnType;
+
+            if (returnType.IsVoid || callerReturnType.IsVoid)
+            {
+                Check(returnType.IsVoid && callerReturnType.IsVoid, VerifierError.TailRetVoid);
+            }
+            // else
+            // if (returnType.IsValueType || callerReturnType.IsValueType)
+            // {
+            //      TODO: Check exact match
+            // }
+            else
+            {
+                var retStackType = StackValue.CreateFromType(returnType);
+                var callerRetStackType = StackValue.CreateFromType(callerReturnType);
+                Check(IsAssignable(retStackType, callerRetStackType), VerifierError.TailRetType, retStackType, callerRetStackType);
+            }
+
+            // for tailcall, stack must be empty
+            Check(_stackTop == 0, VerifierError.TailStackEmpty);
+
+            // The instruction following a tail.call shall be a ret
+            Check(_currentOffset < _ilBytes.Length && (ILOpcode)_ilBytes[_currentOffset] == ILOpcode.ret, VerifierError.TailRet);
+        }
+
         void ImportCalli(int token)
         {
-            throw new NotImplementedException($"{nameof(ImportCalli)} not implemented");
+            // calli is always reported as unverifiable. The runtime does not track the lifetime of function
+            // pointers, so the target may be code that has been unloaded. The call site is still checked, and
+            // verification goes on.
+            Unverifiable();
+
+            bool tailCall = HasPendingPrefix(Prefix.Tail);
+            ClearPendingPrefix(Prefix.Tail);
+
+            object tokenObj = ResolveToken(token);
+            FatalCheck(tokenObj is MethodSignature, VerifierError.ExpectedSignatureToken);
+            var sig = (MethodSignature)tokenObj;
+
+            var ftn = Pop();
+            Check(ftn.Kind == StackValueKind.NativeInt, VerifierError.StackMethod, ftn);
+
+            // An instance call site that does not list the type of 'this' takes one argument more than it declares.
+            bool implicitThis = !sig.IsStatic && !sig.IsExplicitThis;
+            var args = new StackValue[sig.Length + (implicitThis ? 1 : 0)];
+            for (int i = args.Length - 1; i >= 0; i--)
+                args[i] = Pop();
+
+            int firstParameter = args.Length - sig.Length;
+            for (int i = 0; i < sig.Length; i++)
+            {
+                var declared = StackValue.CreateFromType(sig[i]);
+                CheckIsAssignable(args[firstParameter + i], declared);
+
+                if (tailCall)
+                    Check(!IsByRefLike(declared), VerifierError.TailByRef, declared);
+            }
+
+            if (implicitThis && tailCall)
+                Check(!IsByRefLike(args[0]), VerifierError.TailByRef, args[0]);
+
+            if (tailCall)
+                CheckTailCallReturn(sig.ReturnType);
+
+            if (!sig.ReturnType.IsVoid)
+            {
+                var returnValue = StackValue.CreateFromType(sig.ReturnType);
+
+                if (returnValue.Kind == StackValueKind.ByRef)
+                    returnValue.SetIsPermanentHome();
+
+                Push(returnValue);
+            }
         }
 
         void ImportLdFtn(int token, ILOpcode opCode)
@@ -1736,6 +1902,18 @@ namespace Internal.IL
                 _delegateCreateStart = _currentInstructionOffset;
 
                 instance = null;
+
+                if (HasPendingPrefix(Prefix.Constrained) && method.IsVirtual &&
+                    method.Signature.IsStatic && method.OwningType.IsInterface)
+                {
+                    ClearPendingPrefix(Prefix.Constrained);
+                    if (!_constrained.CanCastTo(method.OwningType))
+                        VerificationError(VerifierError.ConstrainedTypeNoInterfaceImpl, _constrained, method.OwningType);
+                }
+                else
+                {
+                    Check(!method.IsAbstract, VerifierError.CallAbstract);
+                }
             }
             else if (opCode == ILOpcode.ldvirtftn)
             {
@@ -1801,7 +1979,22 @@ namespace Internal.IL
 
             var declaredReturnType = _method.Signature.ReturnType;
 
-            if (declaredReturnType.IsVoid)
+            // For async methods, unwrap Task/ValueTask return types
+            TypeDesc expectedReturnType = declaredReturnType;
+            if (_method.IsAsync)
+            {
+                if (IsTaskOrValueTaskType(declaredReturnType, out TypeDesc unwrappedType))
+                {
+                    expectedReturnType = unwrappedType;
+                }
+                else
+                {
+                    // Async methods must return Task or ValueTask
+                    VerificationError(VerifierError.StackUnexpected);
+                }
+            }
+
+            if (expectedReturnType.IsVoid)
             {
                 Debug.Assert(_stackTop >= 0);
 
@@ -1817,11 +2010,49 @@ namespace Internal.IL
                     Check(_stackTop == 1, VerifierError.ReturnEmpty);
 
                     var actualReturnType = Pop();
-                    CheckIsAssignable(actualReturnType, StackValue.CreateFromType(declaredReturnType));
+                    CheckIsAssignable(actualReturnType, StackValue.CreateFromType(expectedReturnType));
 
-                    Check((!declaredReturnType.IsByRef && !declaredReturnType.IsByRefLike) || actualReturnType.IsPermanentHome, VerifierError.ReturnPtrToStack);
+                    Check((!expectedReturnType.IsByRef && !expectedReturnType.IsByRefLike) || actualReturnType.IsPermanentHome, VerifierError.ReturnPtrToStack);
                 }
             }
+        }
+
+        bool IsTaskOrValueTaskType(TypeDesc type, out TypeDesc unwrappedType)
+        {
+            unwrappedType = null;
+
+            if (type is not MetadataType metadataType)
+                return false;
+
+            if (metadataType.Namespace != "System.Threading.Tasks"u8)
+                return false;
+
+            // Check for Task (non-generic)
+            if (metadataType.Name == "Task"u8 && !metadataType.HasInstantiation)
+            {
+                unwrappedType = _typeSystemContext.GetWellKnownType(WellKnownType.Void);
+                return true;
+            }
+
+            // Check for ValueTask (non-generic)
+            if (metadataType.Name == "ValueTask"u8 && !metadataType.HasInstantiation)
+            {
+                unwrappedType = _typeSystemContext.GetWellKnownType(WellKnownType.Void);
+                return true;
+            }
+
+            // Check for Task<T> and ValueTask<T>
+            if (metadataType.HasInstantiation && metadataType.Instantiation.Length == 1)
+            {
+                if (metadataType.Name == "Task`1"u8 ||
+                    metadataType.Name == "ValueTask`1"u8)
+                {
+                    unwrappedType = metadataType.Instantiation[0];
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         void ImportFallthrough(BasicBlock next)
@@ -2060,7 +2291,7 @@ namespace Internal.IL
                     actualThis = StackValue.CreateByRef(actualThis.Type);
 
                 var declaredThis = owningType.IsValueType ?
-                    StackValue.CreateByRef(owningType) : StackValue.CreateObjRef(owningType);
+                    StackValue.CreateByRef(owningType, readOnly : true) : StackValue.CreateObjRef(owningType);
 
                 CheckIsAssignable(actualThis, declaredThis);
 
@@ -2085,8 +2316,7 @@ namespace Internal.IL
                 isPermanentHome = true;
                 instance = null;
 
-                if (field.IsInitOnly)
-                    Check(_method.IsStaticConstructor && field.OwningType == _method.OwningType, VerifierError.InitOnly);
+                // TODO: verification of readonly references https://github.com/dotnet/runtime/issues/57444
             }
             else
             {
@@ -2295,11 +2525,43 @@ namespace Internal.IL
 
         void ImportEndFinally()
         {
-            Check(_currentBasicBlock.HandlerIndex.HasValue, VerifierError.Endfinally);
-            Check(_exceptionRegions[_currentBasicBlock.HandlerIndex.Value].ILRegion.Kind == ILExceptionRegionKind.Finally ||
-                _exceptionRegions[_currentBasicBlock.HandlerIndex.Value].ILRegion.Kind == ILExceptionRegionKind.Fault, VerifierError.Endfinally);
+            // ECMA-335 I.12.4.2.8.2.6: the innermost enclosing protected block, filter or handler
+            // shall be a finally or fault handler.
+            if (Check(_currentBasicBlock.HandlerIndex.HasValue, VerifierError.Endfinally))
+            {
+                Check(_exceptionRegions[_currentBasicBlock.HandlerIndex.Value].ILRegion.Kind
+                    is ILExceptionRegionKind.Finally or ILExceptionRegionKind.Fault &&
+                    !IsInTryOrFilterNestedInHandler(_currentBasicBlock), VerifierError.Endfinally);
+            }
 
             EmptyTheStack();
+        }
+
+        /// <summary>
+        /// Checks whether the innermost try block or filter enclosing <paramref name="block"/> lies
+        /// inside the innermost handler enclosing it, so that the handler is not the innermost
+        /// enclosing exception-handling block.
+        /// </summary>
+        bool IsInTryOrFilterNestedInHandler(BasicBlock block)
+        {
+            ref var handler = ref _exceptionRegions[block.HandlerIndex.Value].ILRegion;
+            int handlerEnd = handler.HandlerOffset + handler.HandlerLength;
+
+            if (block.TryIndex.HasValue)
+            {
+                ref var tryRegion = ref _exceptionRegions[block.TryIndex.Value].ILRegion;
+                if (handler.HandlerOffset <= tryRegion.TryOffset && tryRegion.TryOffset + tryRegion.TryLength <= handlerEnd)
+                    return true;
+            }
+
+            if (block.FilterIndex.HasValue)
+            {
+                ref var filterRegion = ref _exceptionRegions[block.FilterIndex.Value].ILRegion;
+                if (handler.HandlerOffset <= filterRegion.FilterOffset && filterRegion.HandlerOffset <= handlerEnd)
+                    return true;
+            }
+
+            return false;
         }
 
         void ImportNewArray(int token)
@@ -2341,7 +2603,8 @@ namespace Internal.IL
                 }
             }
 
-            Push(StackValue.CreateFromType(elementType));
+            // ldelem.ref on a null array has no element type; the result is a null reference
+            Push(elementType != null ? StackValue.CreateFromType(elementType) : StackValue.CreateObjRef(null));
         }
 
         void ImportStoreElement(int token)
@@ -2510,6 +2773,8 @@ namespace Internal.IL
 
             var size = Pop();
 
+            Check(_stackTop == 0, VerifierError.LocallocStackNotEmpty);
+
             CheckIsInteger(size);
 
             Push(StackValue.CreatePrimitive(StackValueKind.NativeInt));
@@ -2517,8 +2782,8 @@ namespace Internal.IL
 
         void ImportEndFilter()
         {
-            Check(_currentBasicBlock.FilterIndex.HasValue, VerifierError.Endfilter);
-            Check(_currentOffset == _exceptionRegions[_currentBasicBlock.FilterIndex.Value].ILRegion.HandlerOffset, VerifierError.Endfilter);
+            if (Check(_currentBasicBlock.FilterIndex.HasValue, VerifierError.Endfilter))
+                Check(_currentOffset == _exceptionRegions[_currentBasicBlock.FilterIndex.Value].ILRegion.HandlerOffset, VerifierError.Endfilter);
 
             var result = Pop(allowUninitThis: true);
             Check(result.Kind == StackValueKind.Int32, VerifierError.StackUnexpected, result);
@@ -2595,6 +2860,7 @@ namespace Internal.IL
 
         void ImportUnalignedPrefix(byte alignment)
         {
+            Check(alignment is 1 or 2 or 4, VerifierError.UnalignedAlignment);
             CheckPendingPrefix(_pendingPrefix & ~Prefix.Volatile);
             _pendingPrefix |= Prefix.Unaligned;
         }
@@ -2654,7 +2920,7 @@ namespace Internal.IL
             {
                 foreach (var data in signature.GetEmbeddedSignatureData())
                 {
-                    if (data.type is MetadataType mdType && mdType.Namespace == "System.Runtime.CompilerServices" && mdType.Name == "IsExternalInit" &&
+                    if (data.type is MetadataType mdType && mdType.Namespace == "System.Runtime.CompilerServices"u8 && mdType.Name == "IsExternalInit"u8 &&
                         data.index == MethodSignature.IndexOfCustomModifiersOnReturnType)
                         return true;
                 }
@@ -2676,11 +2942,14 @@ namespace Internal.IL
         void ReportInvalidBranchTarget(int targetOffset)
         {
             VerificationError(VerifierError.BadBranch);
+            // The later passes index the basic block array with the branch target.
+            AbortMethodVerification();
         }
 
         void ReportFallthroughAtEndOfMethod()
         {
             VerificationError(VerifierError.MethodFallthrough);
+            AbortMethodVerification();
         }
 
         void ReportMethodEndInsideInstruction()
@@ -2694,8 +2963,14 @@ namespace Internal.IL
             VerificationError(VerifierError.UnknownOpcode);
         }
 
+        void ReportInvalidExceptionRegion()
+        {
+            VerificationError(VerifierError.EHClauseOutOfRange);
+            AbortMethodVerification();
+        }
+
         //
-        // Deprecated
+        // Variable argument lists and typed references
         //
 
         void ImportArgList()
@@ -2705,17 +2980,43 @@ namespace Internal.IL
 
         void ImportRefAnyType()
         {
-            throw new PlatformNotSupportedException("TypedReference not supported in .NET Core");
+            var typedReference = Pop();
+            CheckIsAssignable(typedReference, StackValue.CreateValueType(GetWellKnownType(WellKnownType.TypedReference)));
+
+            Push(StackValue.CreateValueType(GetWellKnownType(WellKnownType.RuntimeTypeHandle)));
         }
 
         void ImportMkRefAny(int token)
         {
-            throw new PlatformNotSupportedException("TypedReference not supported in .NET Core");
+            var type = ResolveTypeToken(token);
+
+            var ptr = Pop();
+
+            // ECMA-335 III.4.19: verification requires a managed pointer to an instance of the class.
+            // The class may be byref-like: the ECMA-335 augments allow a managed pointer to a byref-like type.
+            if (Check(ptr.Kind == StackValueKind.ByRef, VerifierError.StackByRef, ptr))
+            {
+                // III.1.8.1.2.2: a controlled-mutability managed pointer cannot be used with mkrefany.
+                Check(!ptr.IsReadOnly, VerifierError.ReadOnlyInMkrefany);
+
+                if (ptr.Type != type)
+                    VerificationError(VerifierError.StackUnexpected, ptr, StackValue.CreateByRef(type));
+            }
+
+            Check(_method.OwningType.CanAccess(type), VerifierError.TypeAccess);
+
+            Push(StackValue.CreateValueType(GetWellKnownType(WellKnownType.TypedReference)));
         }
 
         void ImportRefAnyVal(int token)
         {
-            throw new PlatformNotSupportedException("TypedReference not supported in .NET Core");
+            var type = ResolveTypeToken(token);
+
+            var typedReference = Pop();
+            CheckIsAssignable(typedReference, StackValue.CreateValueType(GetWellKnownType(WellKnownType.TypedReference)));
+
+            // The address can point to a local of a caller, so it does not have a permanent home.
+            Push(StackValue.CreateByRef(type));
         }
     }
 }

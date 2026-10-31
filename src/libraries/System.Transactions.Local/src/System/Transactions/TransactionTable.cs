@@ -6,118 +6,6 @@ using System.Threading;
 
 namespace System.Transactions
 {
-    internal sealed class CheapUnfairReaderWriterLock
-    {
-        private object? _writerFinishedEvent;
-
-        private int _readersIn;
-        private int _readersOut;
-        private bool _writerPresent;
-
-        private object? _syncRoot;
-
-        // Spin lock params
-        private const int MAX_SPIN_COUNT = 100;
-        private const int SLEEP_TIME = 500;
-
-        public CheapUnfairReaderWriterLock()
-        {
-        }
-
-        private object SyncRoot
-        {
-            get
-            {
-                if (_syncRoot == null)
-                {
-                    Interlocked.CompareExchange(ref _syncRoot, new object(), null);
-                }
-                return _syncRoot;
-            }
-        }
-
-        private bool ReadersPresent => _readersIn != _readersOut;
-
-        private ManualResetEvent WriterFinishedEvent
-        {
-            get
-            {
-                if (_writerFinishedEvent == null)
-                {
-                    Interlocked.CompareExchange(ref _writerFinishedEvent, new ManualResetEvent(true), null);
-                }
-                return (ManualResetEvent)_writerFinishedEvent;
-            }
-        }
-
-        public int EnterReadLock()
-        {
-            int readerIndex = 0;
-            do
-            {
-                if (_writerPresent)
-                {
-                    WriterFinishedEvent.WaitOne();
-                }
-
-                readerIndex = Interlocked.Increment(ref _readersIn);
-
-                if (!_writerPresent)
-                {
-                    break;
-                }
-
-                Interlocked.Decrement(ref _readersIn);
-            }
-            while (true);
-
-            return readerIndex;
-        }
-
-        public void EnterWriteLock()
-        {
-            Monitor.Enter(SyncRoot);
-
-            _writerPresent = true;
-            WriterFinishedEvent.Reset();
-
-            do
-            {
-                int i = 0;
-                while (ReadersPresent && i < MAX_SPIN_COUNT)
-                {
-                    Thread.Sleep(0);
-                    i++;
-                }
-
-                if (ReadersPresent)
-                {
-                    Thread.Sleep(SLEEP_TIME);
-                }
-            }
-            while (ReadersPresent);
-        }
-
-        public void ExitReadLock()
-        {
-            Interlocked.Increment(ref _readersOut);
-        }
-
-        public void ExitWriteLock()
-        {
-            try
-            {
-                _writerPresent = false;
-                WriterFinishedEvent.Set();
-            }
-            finally
-            {
-                Monitor.Exit(SyncRoot);
-            }
-        }
-    }
-
-
     // This transaction table implementation uses an array of lists to avoid contention.  The list for a
     // transaction is decided by its hashcode.
     internal sealed class TransactionTable
@@ -137,11 +25,13 @@ namespace System.Transactions
         private long _ticks;
         private long _lastTimerTime;
 
+        private int _nextTransactionId;
+
         // Sets of arrays of transactions.
         private readonly BucketSet _headBucketSet;
 
         // Synchronize adding transactions with shutting off the timer and started events.
-        private readonly CheapUnfairReaderWriterLock _rwLock;
+        private readonly ReaderWriterLockSlim _rwLock;
 
         internal TransactionTable()
         {
@@ -162,7 +52,7 @@ namespace System.Transactions
             _headBucketSet = new BucketSet(this, long.MaxValue);
 
             // Allocate the lock
-            _rwLock = new CheapUnfairReaderWriterLock();
+            _rwLock = new ReaderWriterLockSlim();
         }
 
 
@@ -222,10 +112,10 @@ namespace System.Transactions
         // absolute timeout.
         internal int Add(InternalTransaction txNew)
         {
-            // Tell the runtime that we are modifying global state.
-            int readerIndex = 0;
+            int transactionHash = Interlocked.Increment(ref _nextTransactionId);
 
-            readerIndex = _rwLock.EnterReadLock();
+            _rwLock.EnterReadLock();
+
             try
             {
                 // Start the timer if needed before checking the current time since the current
@@ -255,7 +145,7 @@ namespace System.Transactions
                 _rwLock.ExitReadLock();
             }
 
-            return readerIndex;
+            return transactionHash;
         }
 
 
@@ -270,7 +160,7 @@ namespace System.Transactions
             // the absolute timeout value for the transaction.  When it is found it passes
             // the insert down to that set.
             //
-            // An importent thing to note about the list is that forward links are all weak
+            // An important thing to note about the list is that forward links are all weak
             // references and reverse links are all strong references.  This allows the GC
             // to clean up old links in the list so that they don't need to be removed manually.
             // However if there is still a rooted strong reference to an old link in the
@@ -339,17 +229,14 @@ namespace System.Transactions
                         if (oldNextSetWeak != null)
                         {
                             BucketSet? oldSet = (BucketSet?)oldNextSetWeak.Target;
-                            if (oldSet != null)
-                            {
-                                // prev references are just there to root things for the GC.  If this object is
-                                // gone we don't really care.
-                                oldSet.prevSet = newBucketSet;
-                            }
+                            // prev references are just there to root things for the GC.  If this object is
+                            // gone we don't really care.
+                            oldSet?.prevSet = newBucketSet;
                         }
                         newBucketSet.prevSet = lastBucketSet;
                     }
 
-                    // Special note - We are going to loop back to the BucketSet that preceeds the one we just tried
+                    // Special note - We are going to loop back to the BucketSet that precedes the one we just tried
                     // to insert because we may have lost the race to insert our new BucketSet into the list to another
                     // "Add" thread. By looping back, we check again to see if the BucketSet we just created actually
                     // got added. If it did, we will exit out of the outer loop and add the transaction. But if we
@@ -359,7 +246,6 @@ namespace System.Transactions
                     // creating the second BucketSet with remove the backward reference that was created in the
                     // first trip thru the loop.
                     currentBucketSet = lastBucketSet;
-                    lastBucketSet = null;
 
                     // The outer loop will iterate and pick up where we left off.
                 }
@@ -373,7 +259,7 @@ namespace System.Transactions
 
 
         // Remove a transaction from the table.
-        internal void Remove(InternalTransaction tx)
+        internal static void Remove(InternalTransaction tx)
         {
             Debug.Assert(tx._tableBucket != null);
             tx._tableBucket.Remove(tx);
@@ -410,14 +296,14 @@ namespace System.Transactions
             // that point will timeout so once we've found it then it is just a matter of traversing the
             // structure.
             //
-            BucketSet? lastBucketSet = null;
+            BucketSet? lastBucketSet;
             BucketSet currentBucketSet = _headBucketSet; // The list always has a head.
 
             // Acquire a writer lock before checking to see if we should disable the timer.
             // Adding of transactions acquires a reader lock and might insert a new BucketSet.
             // If that races with our check for a BucketSet existing, we may not timeout that
             // transaction that is being added.
-            WeakReference? nextWeakSet = null;
+            WeakReference? nextWeakSet;
             BucketSet? nextBucketSet = null;
 
             nextWeakSet = (WeakReference?)currentBucketSet.nextSetWeak;
@@ -505,7 +391,7 @@ namespace System.Transactions
                 if (abortingSetsWeak == nextWeakSet)
                 {
                     // Yea - now proceed to abort the transactions.
-                    BucketSet? abortingBucketSets = null;
+                    BucketSet? abortingBucketSets;
 
                     do
                     {

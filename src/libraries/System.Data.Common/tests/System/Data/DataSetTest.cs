@@ -28,6 +28,7 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 
+using System.ComponentModel;
 using System.Xml;
 using System.Xml.Schema;
 using System.Xml.Serialization;
@@ -36,9 +37,11 @@ using System.Data.SqlTypes;
 using System.Globalization;
 using System.Text;
 using System.Diagnostics;
+using System.Runtime.Serialization.Formatters.Binary;
 using Microsoft.DotNet.RemoteExecutor;
 using Xunit;
 using System.Tests;
+using System.Reflection;
 
 namespace System.Data.Tests
 {
@@ -361,7 +364,7 @@ namespace System.Data.Tests
             Assert.Equal(xml, sw.ToString());
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.DataSetXmlSerializationIsSupported))]
         public void SerializeDataSet()
         {
             // see GetReady() for current culture
@@ -381,7 +384,7 @@ namespace System.Data.Tests
             Assert.Equal(result.Replace("\r\n", "\n"), xml.Replace("\r\n", "\n"));
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.DataSetXmlSerializationIsSupported))]
         public void SerializeDataSet2()
         {
             DataSet quota = new DataSet("Quota");
@@ -414,7 +417,7 @@ namespace System.Data.Tests
             DataSet ds = (DataSet)ser.Deserialize(new StringReader(sw.ToString()));
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.DataSetXmlSerializationIsSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/30154")]
         public void SerializeDataSet3()
         {
@@ -472,7 +475,7 @@ namespace System.Data.Tests
             Assert.Equal(xml, result.Replace("\r\n", "").Replace("\n", ""), ignoreCase: false, ignoreLineEndingDifferences: true, ignoreWhiteSpaceDifferences: true);
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.DataSetXmlSerializationIsSupported))]
         public void DeserializeDataSet()
         {
             string xml = @"<DataSet>
@@ -1352,7 +1355,7 @@ namespace System.Data.Tests
             }
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.DataSetXmlSerializationIsSupported))]
         public void DeserializeModifiedDataSet()
         {
             // Serialization begins
@@ -1415,7 +1418,7 @@ namespace System.Data.Tests
                     }
                 }
             }
-            Assert.False(true);
+            Assert.Fail();
         }
 
         /// <summary>
@@ -1577,6 +1580,64 @@ namespace System.Data.Tests
             DataSet data2 = new DataSet();
             data2.ReadXml(new StringReader(
                 writer.GetStringBuilder().ToString()));
+        }
+
+        [Fact]
+        public void SerializationFormat_Binary_does_not_work_by_default()
+        {
+            DataSet ds = new DataSet();
+#pragma warning disable SYSLIB0038
+            Assert.Throws<InvalidEnumArgumentException>(() => ds.RemotingFormat = SerializationFormat.Binary);
+#pragma warning restore SYSLIB0038
+        }
+
+        public static bool RemoteExecutorBinaryFormatter =>
+            RemoteExecutor.IsSupported && PlatformDetection.IsBinaryFormatterSupported;
+
+        [ConditionalFact(typeof(DataSetTest), nameof(RemoteExecutorBinaryFormatter))]
+        public void SerializationFormat_Binary_works_with_appconfig_switch()
+        {
+            RemoteExecutor.Invoke(RunTest).Dispose();
+
+            static void RunTest()
+            {
+                AppContext.SetSwitch("Switch.System.Data.AllowUnsafeSerializationFormatBinary", true);
+
+                DataSet ds = new DataSet();
+                DataTable dt = new DataTable("MyTable");
+                DataColumn dc = new DataColumn("dc", typeof(int));
+                dt.Columns.Add(dc);
+                ds.Tables.Add(dt);
+#pragma warning disable SYSLIB0038
+                ds.RemotingFormat = SerializationFormat.Binary;
+#pragma warning restore SYSLIB0038
+
+                DataSet dsDeserialized;
+                using (MemoryStream ms = new MemoryStream())
+                {
+                    BinaryFormatter bf = new BinaryFormatter();
+                    bf.Serialize(ms, ds);
+                    ms.Seek(0, SeekOrigin.Begin);
+                    dsDeserialized = (DataSet)bf.Deserialize(ms);
+                }
+
+                Assert.Equal(dc.DataType, dsDeserialized.Tables[0].Columns[0].DataType);
+            }
+        }
+
+        [Fact]
+        public void MethodsCalledByReflectionSerializersAreNotTrimmed()
+        {
+            Assert.True(ShouldSerializeExists(nameof(DataSet.Relations)));
+            Assert.True(ShouldSerializeExists(nameof(DataSet.Tables)));
+            Assert.True(ShouldSerializeExists(nameof(DataSet.Locale)));
+
+            Assert.True(ResetExists(nameof(DataSet.Relations)));
+            Assert.True(ResetExists(nameof(DataSet.Tables)));
+            Assert.False(ResetExists(nameof(DataSet.Locale)));
+
+            bool ShouldSerializeExists(string name) => typeof(DataSet).GetMethod("ShouldSerialize" + name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public) != null;
+            bool ResetExists(string name) => typeof(DataSet).GetMethod("Reset" + name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public) != null;
         }
 
         #region DataSet.CreateDataReader Tests and DataSet.Load Tests

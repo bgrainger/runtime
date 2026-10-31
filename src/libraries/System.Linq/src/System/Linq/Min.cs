@@ -2,330 +2,202 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
+using System.Numerics;
 
 namespace System.Linq
 {
     public static partial class Enumerable
     {
-        public static int Min(this IEnumerable<int> source)
+        public static int Min(this IEnumerable<int> source) => Min(source, comparer: null);
+
+        public static long Min(this IEnumerable<long> source) => Min(source, comparer: null);
+
+        private static T MinIntegerEnumerator<T>(IEnumerable<T> source) where T : struct, IBinaryInteger<T>
         {
-            if (source == null)
+            using IEnumerator<T> e = source.GetEnumerator();
+            if (!e.MoveNext())
             {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
+                ThrowHelper.ThrowNoElementsException();
             }
 
-            int value;
-            using (IEnumerator<int> e = source.GetEnumerator())
+            T value = e.Current;
+            while (e.MoveNext())
             {
-                if (!e.MoveNext())
+                T x = e.Current;
+                if (x < value)
                 {
-                    ThrowHelper.ThrowNoElementsException();
-                }
-
-                value = e.Current;
-                while (e.MoveNext())
-                {
-                    int x = e.Current;
-                    if (x < value)
-                    {
-                        value = x;
-                    }
+                    value = x;
                 }
             }
 
             return value;
         }
 
-        public static int? Min(this IEnumerable<int?> source)
+        public static int? Min(this IEnumerable<int?> source) => MinInteger(source);
+
+        public static long? Min(this IEnumerable<long?> source) => MinInteger(source);
+
+        private static T? MinInteger<T>(this IEnumerable<T?> source) where T : struct, IBinaryInteger<T>
         {
-            if (source == null)
+            if (source is null)
             {
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
             }
 
-            int? value = null;
-            using (IEnumerator<int?> e = source.GetEnumerator())
+            T? value = null;
+            using IEnumerator<T?> e = source.GetEnumerator();
+            // Start off knowing that we have a non-null value (or exit here, knowing we don't)
+            // so we don't have to keep testing for nullity.
+            do
             {
-                // Start off knowing that we've a non-null value (or exit here, knowing we don't)
-                // so we don't have to keep testing for nullity.
-                do
+                if (!e.MoveNext())
                 {
-                    if (!e.MoveNext())
-                    {
-                        return value;
-                    }
-
-                    value = e.Current;
+                    return value;
                 }
-                while (!value.HasValue);
 
-                // Keep hold of the wrapped value, and do comparisons on that, rather than
-                // using the lifted operation each time.
-                int valueVal = value.GetValueOrDefault();
-                while (e.MoveNext())
+                value = e.Current;
+            }
+            while (!value.HasValue);
+
+            // Keep hold of the wrapped value, and do comparisons on that, rather than
+            // using the lifted operation each time.
+            T valueVal = value.GetValueOrDefault();
+            while (e.MoveNext())
+            {
+                T? cur = e.Current;
+                T x = cur.GetValueOrDefault();
+
+                // Do not replace & with &&. The branch prediction cost outweighs the extra operation
+                // unless nulls either never happen or always happen.
+                if (cur.HasValue & x < valueVal)
                 {
-                    int? cur = e.Current;
-                    int x = cur.GetValueOrDefault();
+                    valueVal = x;
+                    value = cur;
+                }
+            }
 
-                    // Do not replace & with &&. The branch prediction cost outweighs the extra operation
-                    // unless nulls either never happen or always happen.
-                    if (cur.HasValue & x < valueVal)
+            return value;
+        }
+
+        public static float Min(this IEnumerable<float> source) => MinFloat(source);
+
+        public static float? Min(this IEnumerable<float?> source) => MinFloat(source);
+
+        public static double Min(this IEnumerable<double> source) => MinFloat(source);
+
+        public static double? Min(this IEnumerable<double?> source) => MinFloat(source);
+
+        private static T MinFloat<T>(this IEnumerable<T> source) where T : struct, IFloatingPointIeee754<T>
+        {
+            T value;
+
+            if (source is null)
+            {
+                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
+            }
+
+            if (source.TryGetSpan(out ReadOnlySpan<T> span))
+            {
+                if (span.IsEmpty)
+                {
+                    ThrowHelper.ThrowNoElementsException();
+                }
+
+                value = span[0];
+                for (int i = 1; (uint)i < (uint)span.Length; i++)
+                {
+                    T current = span[i];
+                    if (current < value)
+                    {
+                        value = current;
+                    }
+                    else if (T.IsNaN(current))
+                    {
+                        return current;
+                    }
+                }
+
+                return value;
+            }
+
+            using IEnumerator<T> e = source.GetEnumerator();
+            if (!e.MoveNext())
+            {
+                ThrowHelper.ThrowNoElementsException();
+            }
+
+            value = e.Current;
+            if (T.IsNaN(value))
+            {
+                return value;
+            }
+
+            while (e.MoveNext())
+            {
+                T x = e.Current;
+                if (x < value)
+                {
+                    value = x;
+                }
+
+                // Normally NaN < anything is false, as is anything < NaN
+                // However, this leads to some irksome outcomes in Min and Max.
+                // If we use those semantics then Min(NaN, 5.0) is NaN, but
+                // Min(5.0, NaN) is 5.0!  To fix this, we impose a total
+                // ordering where NaN is smaller than every value, including
+                // negative infinity.
+                // Not testing for NaN therefore isn't an option, but since we
+                // can't find a smaller value, we can short-circuit.
+                else if (T.IsNaN(x))
+                {
+                    return x;
+                }
+            }
+
+            return value;
+        }
+
+        private static T? MinFloat<T>(this IEnumerable<T?> source) where T : struct, IFloatingPointIeee754<T>
+        {
+            if (source is null)
+            {
+                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
+            }
+
+            T? value = null;
+
+            using IEnumerator<T?> e = source.GetEnumerator();
+            do
+            {
+                if (!e.MoveNext())
+                {
+                    return value;
+                }
+
+                value = e.Current;
+            }
+            while (!value.HasValue);
+
+            T valueVal = value.GetValueOrDefault();
+            if (T.IsNaN(valueVal))
+            {
+                return value;
+            }
+
+            while (e.MoveNext())
+            {
+                T? cur = e.Current;
+                if (cur.HasValue)
+                {
+                    T x = cur.GetValueOrDefault();
+                    if (x < valueVal)
                     {
                         valueVal = x;
                         value = cur;
                     }
-                }
-            }
-
-            return value;
-        }
-
-        public static long Min(this IEnumerable<long> source)
-        {
-            if (source == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
-            }
-
-            long value;
-            using (IEnumerator<long> e = source.GetEnumerator())
-            {
-                if (!e.MoveNext())
-                {
-                    ThrowHelper.ThrowNoElementsException();
-                }
-
-                value = e.Current;
-                while (e.MoveNext())
-                {
-                    long x = e.Current;
-                    if (x < value)
+                    else if (T.IsNaN(x))
                     {
-                        value = x;
-                    }
-                }
-            }
-
-            return value;
-        }
-
-        public static long? Min(this IEnumerable<long?> source)
-        {
-            if (source == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
-            }
-
-            long? value = null;
-            using (IEnumerator<long?> e = source.GetEnumerator())
-            {
-                do
-                {
-                    if (!e.MoveNext())
-                    {
-                        return value;
-                    }
-
-                    value = e.Current;
-                }
-                while (!value.HasValue);
-
-                long valueVal = value.GetValueOrDefault();
-                while (e.MoveNext())
-                {
-                    long? cur = e.Current;
-                    long x = cur.GetValueOrDefault();
-
-                    // Do not replace & with &&. The branch prediction cost outweighs the extra operation
-                    // unless nulls either never happen or always happen.
-                    if (cur.HasValue & x < valueVal)
-                    {
-                        valueVal = x;
-                        value = cur;
-                    }
-                }
-            }
-
-            return value;
-        }
-
-        public static float Min(this IEnumerable<float> source)
-        {
-            if (source == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
-            }
-
-            float value;
-            using (IEnumerator<float> e = source.GetEnumerator())
-            {
-                if (!e.MoveNext())
-                {
-                    ThrowHelper.ThrowNoElementsException();
-                }
-
-                value = e.Current;
-                if (float.IsNaN(value))
-                {
-                    return value;
-                }
-
-                while (e.MoveNext())
-                {
-                    float x = e.Current;
-                    if (x < value)
-                    {
-                        value = x;
-                    }
-
-                    // Normally NaN < anything is false, as is anything < NaN
-                    // However, this leads to some irksome outcomes in Min and Max.
-                    // If we use those semantics then Min(NaN, 5.0) is NaN, but
-                    // Min(5.0, NaN) is 5.0!  To fix this, we impose a total
-                    // ordering where NaN is smaller than every value, including
-                    // negative infinity.
-                    // Not testing for NaN therefore isn't an option, but since we
-                    // can't find a smaller value, we can short-circuit.
-                    else if (float.IsNaN(x))
-                    {
-                        return x;
-                    }
-                }
-            }
-
-            return value;
-        }
-
-        public static float? Min(this IEnumerable<float?> source)
-        {
-            if (source == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
-            }
-
-            float? value = null;
-            using (IEnumerator<float?> e = source.GetEnumerator())
-            {
-                do
-                {
-                    if (!e.MoveNext())
-                    {
-                        return value;
-                    }
-
-                    value = e.Current;
-                }
-                while (!value.HasValue);
-
-                float valueVal = value.GetValueOrDefault();
-                if (float.IsNaN(valueVal))
-                {
-                    return value;
-                }
-
-                while (e.MoveNext())
-                {
-                    float? cur = e.Current;
-                    if (cur.HasValue)
-                    {
-                        float x = cur.GetValueOrDefault();
-                        if (x < valueVal)
-                        {
-                            valueVal = x;
-                            value = cur;
-                        }
-                        else if (float.IsNaN(x))
-                        {
-                            return cur;
-                        }
-                    }
-                }
-            }
-
-            return value;
-        }
-
-        public static double Min(this IEnumerable<double> source)
-        {
-            if (source == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
-            }
-
-            double value;
-            using (IEnumerator<double> e = source.GetEnumerator())
-            {
-                if (!e.MoveNext())
-                {
-                    ThrowHelper.ThrowNoElementsException();
-                }
-
-                value = e.Current;
-                if (double.IsNaN(value))
-                {
-                    return value;
-                }
-
-                while (e.MoveNext())
-                {
-                    double x = e.Current;
-                    if (x < value)
-                    {
-                        value = x;
-                    }
-                    else if (double.IsNaN(x))
-                    {
-                        return x;
-                    }
-                }
-            }
-
-            return value;
-        }
-
-        public static double? Min(this IEnumerable<double?> source)
-        {
-            if (source == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
-            }
-
-            double? value = null;
-            using (IEnumerator<double?> e = source.GetEnumerator())
-            {
-                do
-                {
-                    if (!e.MoveNext())
-                    {
-                        return value;
-                    }
-
-                    value = e.Current;
-                }
-                while (!value.HasValue);
-
-                double valueVal = value.GetValueOrDefault();
-                if (double.IsNaN(valueVal))
-                {
-                    return value;
-                }
-
-                while (e.MoveNext())
-                {
-                    double? cur = e.Current;
-                    if (cur.HasValue)
-                    {
-                        double x = cur.GetValueOrDefault();
-                        if (x < valueVal)
-                        {
-                            valueVal = x;
-                            value = cur;
-                        }
-                        else if (double.IsNaN(x))
-                        {
-                            return cur;
-                        }
+                        return cur;
                     }
                 }
             }
@@ -335,27 +207,45 @@ namespace System.Linq
 
         public static decimal Min(this IEnumerable<decimal> source)
         {
-            if (source == null)
+            decimal value;
+
+            if (source is null)
             {
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
             }
 
-            decimal value;
-            using (IEnumerator<decimal> e = source.GetEnumerator())
+            if (source.TryGetSpan(out ReadOnlySpan<decimal> span))
             {
-                if (!e.MoveNext())
+                if (span.IsEmpty)
                 {
                     ThrowHelper.ThrowNoElementsException();
                 }
 
-                value = e.Current;
-                while (e.MoveNext())
+                value = span[0];
+                for (int i = 1; (uint)i < (uint)span.Length; i++)
                 {
-                    decimal x = e.Current;
-                    if (x < value)
+                    if (span[i] < value)
                     {
-                        value = x;
+                        value = span[i];
                     }
+                }
+
+                return value;
+            }
+
+            using IEnumerator<decimal> e = source.GetEnumerator();
+            if (!e.MoveNext())
+            {
+                ThrowHelper.ThrowNoElementsException();
+            }
+
+            value = e.Current;
+            while (e.MoveNext())
+            {
+                decimal x = e.Current;
+                if (x < value)
+                {
+                    value = x;
                 }
             }
 
@@ -364,35 +254,33 @@ namespace System.Linq
 
         public static decimal? Min(this IEnumerable<decimal?> source)
         {
-            if (source == null)
+            if (source is null)
             {
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
             }
 
             decimal? value = null;
-            using (IEnumerator<decimal?> e = source.GetEnumerator())
+            using IEnumerator<decimal?> e = source.GetEnumerator();
+            do
             {
-                do
+                if (!e.MoveNext())
                 {
-                    if (!e.MoveNext())
-                    {
-                        return value;
-                    }
-
-                    value = e.Current;
+                    return value;
                 }
-                while (!value.HasValue);
 
-                decimal valueVal = value.GetValueOrDefault();
-                while (e.MoveNext())
+                value = e.Current;
+            }
+            while (!value.HasValue);
+
+            decimal valueVal = value.GetValueOrDefault();
+            while (e.MoveNext())
+            {
+                decimal? cur = e.Current;
+                decimal x = cur.GetValueOrDefault();
+                if (cur.HasValue && x < valueVal)
                 {
-                    decimal? cur = e.Current;
-                    decimal x = cur.GetValueOrDefault();
-                    if (cur.HasValue && x < valueVal)
-                    {
-                        valueVal = x;
-                        value = cur;
-                    }
+                    valueVal = x;
+                    value = cur;
                 }
             }
 
@@ -409,39 +297,81 @@ namespace System.Linq
         /// <exception cref="ArgumentNullException"><paramref name="source" /> is <see langword="null" />.</exception>
         /// <exception cref="ArgumentException">No object in <paramref name="source" /> implements the <see cref="System.IComparable" /> or <see cref="System.IComparable{T}" /> interface.</exception>
         /// <remarks>
-        /// <para>If type <typeparamref name="TSource" /> implements <see cref="System.IComparable{T}" />, the <see cref="Max{T}(IEnumerable{T})" /> method uses that implementation to compare values. Otherwise, if type <typeparamref name="TSource" /> implements <see cref="System.IComparable" />, that implementation is used to compare values.</para>
+        /// <para>If type <typeparamref name="TSource" /> implements <see cref="System.IComparable{T}" />, the <see cref="Min{T}(IEnumerable{T})" /> method uses that implementation to compare values. Otherwise, if type <typeparamref name="TSource" /> implements <see cref="System.IComparable" />, that implementation is used to compare values.</para>
         /// <para>If <typeparamref name="TSource" /> is a reference type and the source sequence is empty or contains only values that are <see langword="null" />, this method returns <see langword="null" />.</para>
-        /// <para>In Visual Basic query expression syntax, an `Aggregate Into Max()` clause translates to an invocation of <see cref="O:Enumerable.Max" />.</para>
+        /// <para>In Visual Basic query expression syntax, an `Aggregate Into Min()` clause translates to an invocation of <see cref="O:Enumerable.Min" />.</para>
         /// </remarks>
         public static TSource? Min<TSource>(this IEnumerable<TSource> source, IComparer<TSource>? comparer)
         {
-            if (source == null)
+            if (source is null)
             {
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
+            }
+
+            if (source.TryGetSpan(out ReadOnlySpan<TSource> span))
+            {
+                return span.Min(comparer);
+            }
+
+            // For the non-span integer sequences, use a direct comparison rather than paying the
+            // per-element cost of Comparer<TSource>.Default.
+            if (comparer is null || comparer == Comparer<TSource>.Default)
+            {
+                if (typeof(TSource) == typeof(byte)) return (TSource)(object)MinIntegerEnumerator((IEnumerable<byte>)source);
+                if (typeof(TSource) == typeof(sbyte)) return (TSource)(object)MinIntegerEnumerator((IEnumerable<sbyte>)source);
+                if (typeof(TSource) == typeof(ushort)) return (TSource)(object)MinIntegerEnumerator((IEnumerable<ushort>)source);
+                if (typeof(TSource) == typeof(short)) return (TSource)(object)MinIntegerEnumerator((IEnumerable<short>)source);
+                if (typeof(TSource) == typeof(char)) return (TSource)(object)MinIntegerEnumerator((IEnumerable<char>)source);
+                if (typeof(TSource) == typeof(uint)) return (TSource)(object)MinIntegerEnumerator((IEnumerable<uint>)source);
+                if (typeof(TSource) == typeof(int)) return (TSource)(object)MinIntegerEnumerator((IEnumerable<int>)source);
+                if (typeof(TSource) == typeof(ulong)) return (TSource)(object)MinIntegerEnumerator((IEnumerable<ulong>)source);
+                if (typeof(TSource) == typeof(long)) return (TSource)(object)MinIntegerEnumerator((IEnumerable<long>)source);
+                if (typeof(TSource) == typeof(nuint)) return (TSource)(object)MinIntegerEnumerator((IEnumerable<nuint>)source);
+                if (typeof(TSource) == typeof(nint)) return (TSource)(object)MinIntegerEnumerator((IEnumerable<nint>)source);
+                if (typeof(TSource) == typeof(Int128)) return (TSource)(object)MinIntegerEnumerator((IEnumerable<Int128>)source);
+                if (typeof(TSource) == typeof(UInt128)) return (TSource)(object)MinIntegerEnumerator((IEnumerable<UInt128>)source);
             }
 
             comparer ??= Comparer<TSource>.Default;
 
             TSource? value = default;
-            using (IEnumerator<TSource> e = source.GetEnumerator())
+            using IEnumerator<TSource> e = source.GetEnumerator();
+            if (value is null)
             {
-                if (value == null)
+                do
                 {
-                    do
+                    if (!e.MoveNext())
                     {
-                        if (!e.MoveNext())
-                        {
-                            return value;
-                        }
-
-                        value = e.Current;
+                        return value;
                     }
-                    while (value == null);
 
+                    value = e.Current;
+                }
+                while (value is null);
+
+                while (e.MoveNext())
+                {
+                    TSource next = e.Current;
+                    if (next is not null && comparer.Compare(next, value) < 0)
+                    {
+                        value = next;
+                    }
+                }
+            }
+            else
+            {
+                if (!e.MoveNext())
+                {
+                    ThrowHelper.ThrowNoElementsException();
+                }
+
+                value = e.Current;
+                if (comparer == Comparer<TSource>.Default)
+                {
                     while (e.MoveNext())
                     {
                         TSource next = e.Current;
-                        if (next != null && comparer.Compare(next, value) < 0)
+                        if (Comparer<TSource>.Default.Compare(next, value) < 0)
                         {
                             value = next;
                         }
@@ -449,32 +379,12 @@ namespace System.Linq
                 }
                 else
                 {
-                    if (!e.MoveNext())
+                    while (e.MoveNext())
                     {
-                        ThrowHelper.ThrowNoElementsException();
-                    }
-
-                    value = e.Current;
-                    if (comparer == Comparer<TSource>.Default)
-                    {
-                        while (e.MoveNext())
+                        TSource next = e.Current;
+                        if (comparer.Compare(next, value) < 0)
                         {
-                            TSource next = e.Current;
-                            if (Comparer<TSource>.Default.Compare(next, value) < 0)
-                            {
-                                value = next;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        while (e.MoveNext())
-                        {
-                            TSource next = e.Current;
-                            if (comparer.Compare(next, value) < 0)
-                            {
-                                value = next;
-                            }
+                            value = next;
                         }
                     }
                 }
@@ -510,12 +420,12 @@ namespace System.Linq
         /// </remarks>
         public static TSource? MinBy<TSource, TKey>(this IEnumerable<TSource> source, Func<TSource, TKey> keySelector, IComparer<TKey>? comparer)
         {
-            if (source == null)
+            if (source is null)
             {
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
             }
 
-            if (keySelector == null)
+            if (keySelector is null)
             {
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.keySelector);
             }
@@ -541,7 +451,7 @@ namespace System.Linq
 
             if (default(TKey) is null)
             {
-                if (key == null)
+                if (key is null)
                 {
                     TSource firstValue = value;
 
@@ -556,14 +466,14 @@ namespace System.Linq
                         value = e.Current;
                         key = keySelector(value);
                     }
-                    while (key == null);
+                    while (key is null);
                 }
 
                 while (e.MoveNext())
                 {
                     TSource nextValue = e.Current;
                     TKey nextKey = keySelector(nextValue);
-                    if (nextKey != null && comparer.Compare(nextKey, key) < 0)
+                    if (nextKey is not null && comparer.Compare(nextKey, key) < 0)
                     {
                         key = nextKey;
                         value = nextValue;
@@ -603,364 +513,196 @@ namespace System.Linq
             return value;
         }
 
-        public static int Min<TSource>(this IEnumerable<TSource> source, Func<TSource, int> selector)
+        public static int Min<TSource>(this IEnumerable<TSource> source, Func<TSource, int> selector) => MinInteger(source, selector);
+
+        public static int? Min<TSource>(this IEnumerable<TSource> source, Func<TSource, int?> selector) => MinInteger(source, selector);
+
+        public static long Min<TSource>(this IEnumerable<TSource> source, Func<TSource, long> selector) => MinInteger(source, selector);
+
+        public static long? Min<TSource>(this IEnumerable<TSource> source, Func<TSource, long?> selector) => MinInteger(source, selector);
+
+        private static TResult MinInteger<TSource, TResult>(this IEnumerable<TSource> source, Func<TSource, TResult> selector) where TResult : struct, IBinaryInteger<TResult>
         {
-            if (source == null)
+            if (source is null)
             {
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
             }
 
-            if (selector == null)
+            if (selector is null)
             {
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.selector);
             }
 
-            int value;
-            using (IEnumerator<TSource> e = source.GetEnumerator())
+            TResult value;
+            using IEnumerator<TSource> e = source.GetEnumerator();
+            if (!e.MoveNext())
             {
-                if (!e.MoveNext())
-                {
-                    ThrowHelper.ThrowNoElementsException();
-                }
+                ThrowHelper.ThrowNoElementsException();
+            }
 
-                value = selector(e.Current);
-                while (e.MoveNext())
+            value = selector(e.Current);
+            while (e.MoveNext())
+            {
+                TResult x = selector(e.Current);
+                if (x < value)
                 {
-                    int x = selector(e.Current);
-                    if (x < value)
-                    {
-                        value = x;
-                    }
+                    value = x;
                 }
             }
 
             return value;
         }
 
-        public static int? Min<TSource>(this IEnumerable<TSource> source, Func<TSource, int?> selector)
+        private static TResult? MinInteger<TSource, TResult>(this IEnumerable<TSource> source, Func<TSource, TResult?> selector) where TResult : struct, IBinaryInteger<TResult>
         {
-            if (source == null)
+            if (source is null)
             {
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
             }
 
-            if (selector == null)
+            if (selector is null)
             {
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.selector);
             }
 
-            int? value = null;
-            using (IEnumerator<TSource> e = source.GetEnumerator())
+            TResult? value = null;
+            using IEnumerator<TSource> e = source.GetEnumerator();
+            // Start off knowing that we've a non-null value (or exit here, knowing we don't)
+            // so we don't have to keep testing for nullity.
+            do
             {
-                // Start off knowing that we've a non-null value (or exit here, knowing we don't)
-                // so we don't have to keep testing for nullity.
-                do
+                if (!e.MoveNext())
                 {
-                    if (!e.MoveNext())
-                    {
-                        return value;
-                    }
-
-                    value = selector(e.Current);
+                    return value;
                 }
-                while (!value.HasValue);
 
-                // Keep hold of the wrapped value, and do comparisons on that, rather than
-                // using the lifted operation each time.
-                int valueVal = value.GetValueOrDefault();
-                while (e.MoveNext())
+                value = selector(e.Current);
+            }
+            while (!value.HasValue);
+
+            // Keep hold of the wrapped value, and do comparisons on that, rather than
+            // using the lifted operation each time.
+            TResult valueVal = value.GetValueOrDefault();
+            while (e.MoveNext())
+            {
+                TResult? cur = selector(e.Current);
+                TResult x = cur.GetValueOrDefault();
+
+                // Do not replace & with &&. The branch prediction cost outweighs the extra operation
+                // unless nulls either never happen or always happen.
+                if (cur.HasValue & x < valueVal)
                 {
-                    int? cur = selector(e.Current);
-                    int x = cur.GetValueOrDefault();
+                    valueVal = x;
+                    value = cur;
+                }
+            }
 
-                    // Do not replace & with &&. The branch prediction cost outweighs the extra operation
-                    // unless nulls either never happen or always happen.
-                    if (cur.HasValue & x < valueVal)
+            return value;
+        }
+
+        public static float Min<TSource>(this IEnumerable<TSource> source, Func<TSource, float> selector) => MinFloat(source, selector);
+
+        public static float? Min<TSource>(this IEnumerable<TSource> source, Func<TSource, float?> selector) => MinFloat(source, selector);
+
+        public static double Min<TSource>(this IEnumerable<TSource> source, Func<TSource, double> selector) => MinFloat(source, selector);
+
+        public static double? Min<TSource>(this IEnumerable<TSource> source, Func<TSource, double?> selector) => MinFloat(source, selector);
+
+        private static TResult MinFloat<TSource, TResult>(this IEnumerable<TSource> source, Func<TSource, TResult> selector) where TResult : struct, IFloatingPointIeee754<TResult>
+        {
+            if (source is null)
+            {
+                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
+            }
+
+            if (selector is null)
+            {
+                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.selector);
+            }
+
+            TResult value;
+            using IEnumerator<TSource> e = source.GetEnumerator();
+            if (!e.MoveNext())
+            {
+                ThrowHelper.ThrowNoElementsException();
+            }
+
+            value = selector(e.Current);
+            if (TResult.IsNaN(value))
+            {
+                return value;
+            }
+
+            while (e.MoveNext())
+            {
+                TResult x = selector(e.Current);
+                if (x < value)
+                {
+                    value = x;
+                }
+
+                // Normally NaN < anything is false, as is anything < NaN
+                // However, this leads to some irksome outcomes in Min and Max.
+                // If we use those semantics then Min(NaN, 5.0) is NaN, but
+                // Min(5.0, NaN) is 5.0!  To fix this, we impose a total
+                // ordering where NaN is smaller than every value, including
+                // negative infinity.
+                // Not testing for NaN therefore isn't an option, but since we
+                // can't find a smaller value, we can short-circuit.
+                else if (TResult.IsNaN(x))
+                {
+                    return x;
+                }
+            }
+
+            return value;
+        }
+
+        private static TResult? MinFloat<TSource, TResult>(this IEnumerable<TSource> source, Func<TSource, TResult?> selector) where TResult : struct, IFloatingPointIeee754<TResult>
+        {
+            if (source is null)
+            {
+                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
+            }
+
+            if (selector is null)
+            {
+                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.selector);
+            }
+
+            TResult? value = null;
+            using IEnumerator<TSource> e = source.GetEnumerator();
+            do
+            {
+                if (!e.MoveNext())
+                {
+                    return value;
+                }
+
+                value = selector(e.Current);
+            }
+            while (!value.HasValue);
+
+            TResult valueVal = value.GetValueOrDefault();
+            if (TResult.IsNaN(valueVal))
+            {
+                return value;
+            }
+
+            while (e.MoveNext())
+            {
+                TResult? cur = selector(e.Current);
+                if (cur.HasValue)
+                {
+                    TResult x = cur.GetValueOrDefault();
+                    if (x < valueVal)
                     {
                         valueVal = x;
                         value = cur;
                     }
-                }
-            }
-
-            return value;
-        }
-
-        public static long Min<TSource>(this IEnumerable<TSource> source, Func<TSource, long> selector)
-        {
-            if (source == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
-            }
-
-            if (selector == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.selector);
-            }
-
-            long value;
-            using (IEnumerator<TSource> e = source.GetEnumerator())
-            {
-                if (!e.MoveNext())
-                {
-                    ThrowHelper.ThrowNoElementsException();
-                }
-
-                value = selector(e.Current);
-                while (e.MoveNext())
-                {
-                    long x = selector(e.Current);
-                    if (x < value)
+                    else if (TResult.IsNaN(x))
                     {
-                        value = x;
-                    }
-                }
-            }
-
-            return value;
-        }
-
-        public static long? Min<TSource>(this IEnumerable<TSource> source, Func<TSource, long?> selector)
-        {
-            if (source == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
-            }
-
-            if (selector == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.selector);
-            }
-
-            long? value = null;
-            using (IEnumerator<TSource> e = source.GetEnumerator())
-            {
-                do
-                {
-                    if (!e.MoveNext())
-                    {
-                        return value;
-                    }
-
-                    value = selector(e.Current);
-                }
-                while (!value.HasValue);
-
-                long valueVal = value.GetValueOrDefault();
-                while (e.MoveNext())
-                {
-                    long? cur = selector(e.Current);
-                    long x = cur.GetValueOrDefault();
-
-                    // Do not replace & with &&. The branch prediction cost outweighs the extra operation
-                    // unless nulls either never happen or always happen.
-                    if (cur.HasValue & x < valueVal)
-                    {
-                        valueVal = x;
-                        value = cur;
-                    }
-                }
-            }
-
-            return value;
-        }
-
-        public static float Min<TSource>(this IEnumerable<TSource> source, Func<TSource, float> selector)
-        {
-            if (source == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
-            }
-
-            if (selector == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.selector);
-            }
-
-            float value;
-            using (IEnumerator<TSource> e = source.GetEnumerator())
-            {
-                if (!e.MoveNext())
-                {
-                    ThrowHelper.ThrowNoElementsException();
-                }
-
-                value = selector(e.Current);
-                if (float.IsNaN(value))
-                {
-                    return value;
-                }
-
-                while (e.MoveNext())
-                {
-                    float x = selector(e.Current);
-                    if (x < value)
-                    {
-                        value = x;
-                    }
-
-                    // Normally NaN < anything is false, as is anything < NaN
-                    // However, this leads to some irksome outcomes in Min and Max.
-                    // If we use those semantics then Min(NaN, 5.0) is NaN, but
-                    // Min(5.0, NaN) is 5.0!  To fix this, we impose a total
-                    // ordering where NaN is smaller than every value, including
-                    // negative infinity.
-                    // Not testing for NaN therefore isn't an option, but since we
-                    // can't find a smaller value, we can short-circuit.
-                    else if (float.IsNaN(x))
-                    {
-                        return x;
-                    }
-                }
-            }
-
-            return value;
-        }
-
-        public static float? Min<TSource>(this IEnumerable<TSource> source, Func<TSource, float?> selector)
-        {
-            if (source == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
-            }
-
-            if (selector == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.selector);
-            }
-
-            float? value = null;
-            using (IEnumerator<TSource> e = source.GetEnumerator())
-            {
-                do
-                {
-                    if (!e.MoveNext())
-                    {
-                        return value;
-                    }
-
-                    value = selector(e.Current);
-                }
-                while (!value.HasValue);
-
-                float valueVal = value.GetValueOrDefault();
-                if (float.IsNaN(valueVal))
-                {
-                    return value;
-                }
-
-                while (e.MoveNext())
-                {
-                    float? cur = selector(e.Current);
-                    if (cur.HasValue)
-                    {
-                        float x = cur.GetValueOrDefault();
-                        if (x < valueVal)
-                        {
-                            valueVal = x;
-                            value = cur;
-                        }
-                        else if (float.IsNaN(x))
-                        {
-                            return cur;
-                        }
-                    }
-                }
-            }
-
-            return value;
-        }
-
-        public static double Min<TSource>(this IEnumerable<TSource> source, Func<TSource, double> selector)
-        {
-            if (source == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
-            }
-
-            if (selector == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.selector);
-            }
-
-            double value;
-            using (IEnumerator<TSource> e = source.GetEnumerator())
-            {
-                if (!e.MoveNext())
-                {
-                    ThrowHelper.ThrowNoElementsException();
-                }
-
-                value = selector(e.Current);
-                if (double.IsNaN(value))
-                {
-                    return value;
-                }
-
-                while (e.MoveNext())
-                {
-                    double x = selector(e.Current);
-                    if (x < value)
-                    {
-                        value = x;
-                    }
-                    else if (double.IsNaN(x))
-                    {
-                        return x;
-                    }
-                }
-            }
-
-            return value;
-        }
-
-        public static double? Min<TSource>(this IEnumerable<TSource> source, Func<TSource, double?> selector)
-        {
-            if (source == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
-            }
-
-            if (selector == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.selector);
-            }
-
-            double? value = null;
-            using (IEnumerator<TSource> e = source.GetEnumerator())
-            {
-                do
-                {
-                    if (!e.MoveNext())
-                    {
-                        return value;
-                    }
-
-                    value = selector(e.Current);
-                }
-                while (!value.HasValue);
-
-                double valueVal = value.GetValueOrDefault();
-                if (double.IsNaN(valueVal))
-                {
-                    return value;
-                }
-
-                while (e.MoveNext())
-                {
-                    double? cur = selector(e.Current);
-                    if (cur.HasValue)
-                    {
-                        double x = cur.GetValueOrDefault();
-                        if (x < valueVal)
-                        {
-                            valueVal = x;
-                            value = cur;
-                        }
-                        else if (double.IsNaN(x))
-                        {
-                            return cur;
-                        }
+                        return cur;
                     }
                 }
             }
@@ -970,32 +712,30 @@ namespace System.Linq
 
         public static decimal Min<TSource>(this IEnumerable<TSource> source, Func<TSource, decimal> selector)
         {
-            if (source == null)
+            if (source is null)
             {
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
             }
 
-            if (selector == null)
+            if (selector is null)
             {
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.selector);
             }
 
             decimal value;
-            using (IEnumerator<TSource> e = source.GetEnumerator())
+            using IEnumerator<TSource> e = source.GetEnumerator();
+            if (!e.MoveNext())
             {
-                if (!e.MoveNext())
-                {
-                    ThrowHelper.ThrowNoElementsException();
-                }
+                ThrowHelper.ThrowNoElementsException();
+            }
 
-                value = selector(e.Current);
-                while (e.MoveNext())
+            value = selector(e.Current);
+            while (e.MoveNext())
+            {
+                decimal x = selector(e.Current);
+                if (x < value)
                 {
-                    decimal x = selector(e.Current);
-                    if (x < value)
-                    {
-                        value = x;
-                    }
+                    value = x;
                 }
             }
 
@@ -1004,18 +744,59 @@ namespace System.Linq
 
         public static decimal? Min<TSource>(this IEnumerable<TSource> source, Func<TSource, decimal?> selector)
         {
-            if (source == null)
+            if (source is null)
             {
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
             }
 
-            if (selector == null)
+            if (selector is null)
             {
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.selector);
             }
 
             decimal? value = null;
-            using (IEnumerator<TSource> e = source.GetEnumerator())
+            using IEnumerator<TSource> e = source.GetEnumerator();
+            do
+            {
+                if (!e.MoveNext())
+                {
+                    return value;
+                }
+
+                value = selector(e.Current);
+            }
+            while (!value.HasValue);
+
+            decimal valueVal = value.GetValueOrDefault();
+            while (e.MoveNext())
+            {
+                decimal? cur = selector(e.Current);
+                decimal x = cur.GetValueOrDefault();
+                if (cur.HasValue && x < valueVal)
+                {
+                    valueVal = x;
+                    value = cur;
+                }
+            }
+
+            return value;
+        }
+
+        public static TResult? Min<TSource, TResult>(this IEnumerable<TSource> source, Func<TSource, TResult> selector)
+        {
+            if (source is null)
+            {
+                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
+            }
+
+            if (selector is null)
+            {
+                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.selector);
+            }
+
+            TResult? value = default;
+            using IEnumerator<TSource> e = source.GetEnumerator();
+            if (value is null)
             {
                 do
                 {
@@ -1026,77 +807,32 @@ namespace System.Linq
 
                     value = selector(e.Current);
                 }
-                while (!value.HasValue);
+                while (value is null);
 
-                decimal valueVal = value.GetValueOrDefault();
+                Comparer<TResult> comparer = Comparer<TResult>.Default;
                 while (e.MoveNext())
                 {
-                    decimal? cur = selector(e.Current);
-                    decimal x = cur.GetValueOrDefault();
-                    if (cur.HasValue && x < valueVal)
+                    TResult x = selector(e.Current);
+                    if (x is not null && comparer.Compare(x, value) < 0)
                     {
-                        valueVal = x;
-                        value = cur;
+                        value = x;
                     }
                 }
             }
-
-            return value;
-        }
-
-        public static TResult? Min<TSource, TResult>(this IEnumerable<TSource> source, Func<TSource, TResult> selector)
-        {
-            if (source == null)
+            else
             {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
-            }
-
-            if (selector == null)
-            {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.selector);
-            }
-
-            TResult? value = default;
-            using (IEnumerator<TSource> e = source.GetEnumerator())
-            {
-                if (value == null)
+                if (!e.MoveNext())
                 {
-                    do
-                    {
-                        if (!e.MoveNext())
-                        {
-                            return value;
-                        }
-
-                        value = selector(e.Current);
-                    }
-                    while (value == null);
-
-                    Comparer<TResult> comparer = Comparer<TResult>.Default;
-                    while (e.MoveNext())
-                    {
-                        TResult x = selector(e.Current);
-                        if (x != null && comparer.Compare(x, value) < 0)
-                        {
-                            value = x;
-                        }
-                    }
+                    ThrowHelper.ThrowNoElementsException();
                 }
-                else
-                {
-                    if (!e.MoveNext())
-                    {
-                        ThrowHelper.ThrowNoElementsException();
-                    }
 
-                    value = selector(e.Current);
-                    while (e.MoveNext())
+                value = selector(e.Current);
+                while (e.MoveNext())
+                {
+                    TResult x = selector(e.Current);
+                    if (Comparer<TResult>.Default.Compare(x, value) < 0)
                     {
-                        TResult x = selector(e.Current);
-                        if (Comparer<TResult>.Default.Compare(x, value) < 0)
-                        {
-                            value = x;
-                        }
+                        value = x;
                     }
                 }
             }

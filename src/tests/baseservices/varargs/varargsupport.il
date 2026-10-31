@@ -8,14 +8,14 @@
 }
 .assembly extern xunit.core {}
 .assembly extern legacy library mscorlib {}
-.assembly 'vafilt'
+.assembly 'varargsupport'
 {
   
   
 }
 .namespace App
 {
-  .class auto ansi Foo extends [mscorlib]System.Object
+  .class public auto ansi Foo extends [mscorlib]System.Object
   {
     .field private class System.String text
     .method family newslot virtual instance vararg class App.Foo VargFunc() il managed
@@ -60,7 +60,7 @@
     } 
 
     
-    .method public static int32  Main(class System.String[] args) il managed
+    .method public static int32  Main() il managed
     {
       .custom instance void [xunit.core]Xunit.FactAttribute::.ctor() = (
           01 00 00 00

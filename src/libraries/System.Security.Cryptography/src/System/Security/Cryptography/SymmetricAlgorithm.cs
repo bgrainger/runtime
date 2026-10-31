@@ -19,9 +19,10 @@ namespace System.Security.Cryptography
         public static SymmetricAlgorithm Create() =>
             throw new PlatformNotSupportedException(SR.Cryptography_DefaultAlgorithm_NotSupported);
 
-        [RequiresUnreferencedCode(CryptoConfigForwarder.CreateFromNameUnreferencedCodeMessage)]
+        [Obsolete(Obsoletions.CryptoStringFactoryMessage, DiagnosticId = Obsoletions.CryptoStringFactoryDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
+        [RequiresUnreferencedCode(CryptoConfig.CreateFromNameUnreferencedCodeMessage)]
         public static SymmetricAlgorithm? Create(string algName) =>
-            (SymmetricAlgorithm?)CryptoConfigForwarder.CreateFromName(algName);
+            CryptoConfig.CreateFromName<SymmetricAlgorithm>(algName);
 
         public virtual int FeedbackSize
         {
@@ -70,8 +71,7 @@ namespace System.Security.Cryptography
 
             set
             {
-                if (value == null)
-                    throw new ArgumentNullException(nameof(value));
+                ArgumentNullException.ThrowIfNull(value);
                 if (value.Length != this.BlockSize / 8)
                     throw new CryptographicException(SR.Cryptography_InvalidIVSize);
 
@@ -90,8 +90,7 @@ namespace System.Security.Cryptography
 
             set
             {
-                if (value == null)
-                    throw new ArgumentNullException(nameof(value));
+                ArgumentNullException.ThrowIfNull(value);
 
                 long bitLength = value.Length * 8L;
                 if (bitLength > int.MaxValue || !ValidKeySize((int)bitLength))
@@ -211,6 +210,55 @@ namespace System.Security.Cryptography
             }
         }
 
+        /// <summary>
+        ///   Sets the key for this instance.
+        /// </summary>
+        /// <param name="key">The new key for this instance.</param>
+        /// <exception cref="CryptographicException">
+        ///   <para>
+        ///     The key size is invalid.
+        ///   </para>
+        ///   <para>-or-</para>
+        ///   <para>
+        ///     An error occurred while setting the key.
+        ///   </para>
+        /// </exception>
+        public void SetKey(ReadOnlySpan<byte> key)
+        {
+            long bitLength = key.Length * 8L;
+
+            if (bitLength > int.MaxValue || !ValidKeySize((int)bitLength))
+            {
+                throw new CryptographicException(SR.Cryptography_InvalidKeySize);
+            }
+
+            SetKeyCore(key);
+        }
+
+        /// <summary>
+        ///   Sets the key for this instance.
+        /// </summary>
+        /// <param name="key">The new key for this instance.</param>
+        /// <exception cref="CryptographicException">
+        ///   An error occurred while setting the key.
+        /// </exception>
+        /// <remarks>
+        ///   <para>
+        ///     <see cref="SymmetricAlgorithm" /> will only call this method after validating the
+        ///     length of <paramref name="key"/> against <see cref="LegalKeySizes"/>.
+        ///     Other callers are expected to similarly ensure that this method is only called with
+        ///     validly-sized inputs.
+        ///   </para>
+        ///   <para>
+        ///     The base class implementation is to assign the <see cref="Key"/> property.
+        ///     Derived types should override this method to avoid copying the key into a new array.
+        ///   </para>
+        /// </remarks>
+        protected virtual void SetKeyCore(ReadOnlySpan<byte> key)
+        {
+            Key = key.ToArray();
+        }
+
         public abstract void GenerateIV();
 
         public abstract void GenerateKey();
@@ -313,8 +361,7 @@ namespace System.Security.Cryptography
 
         private int GetCiphertextLengthBlockAligned(int plaintextLength, PaddingMode paddingMode)
         {
-            if (plaintextLength < 0)
-                throw new ArgumentOutOfRangeException(nameof(plaintextLength), SR.ArgumentOutOfRange_NeedNonNegNum);
+            ArgumentOutOfRangeException.ThrowIfNegative(plaintextLength);
 
             int blockSizeBits = BlockSize; // The BlockSize property is in bits.
 
@@ -395,12 +442,8 @@ namespace System.Security.Cryptography
         /// </remarks>
         public int GetCiphertextLengthCfb(int plaintextLength, PaddingMode paddingMode = PaddingMode.None, int feedbackSizeInBits = 8)
         {
-            if (plaintextLength < 0)
-                throw new ArgumentOutOfRangeException(nameof(plaintextLength), SR.ArgumentOutOfRange_NeedNonNegNum);
-
-            if (feedbackSizeInBits <= 0)
-                throw new ArgumentOutOfRangeException(nameof(feedbackSizeInBits), SR.ArgumentOutOfRange_NeedPosNum);
-
+            ArgumentOutOfRangeException.ThrowIfNegative(plaintextLength);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(feedbackSizeInBits);
             if ((feedbackSizeInBits & 0b111) != 0)
                 throw new ArgumentException(SR.Argument_BitsMustBeWholeBytes, nameof(feedbackSizeInBits));
 
@@ -449,10 +492,9 @@ namespace System.Security.Cryptography
         /// </remarks>
         public byte[] DecryptEcb(byte[] ciphertext, PaddingMode paddingMode)
         {
-            // Padding mode is validated by callee.
-            if (ciphertext is null)
-                throw new ArgumentNullException(nameof(ciphertext));
+            ArgumentNullException.ThrowIfNull(ciphertext);
 
+            // Padding mode is validated by callee.
             return DecryptEcb(new ReadOnlySpan<byte>(ciphertext), paddingMode);
         }
 
@@ -568,10 +610,9 @@ namespace System.Security.Cryptography
         /// </remarks>
         public byte[] EncryptEcb(byte[] plaintext, PaddingMode paddingMode)
         {
-            // paddingMode is validated by callee
-            if (plaintext is null)
-                throw new ArgumentNullException(nameof(plaintext));
+            ArgumentNullException.ThrowIfNull(plaintext);
 
+            // paddingMode is validated by callee
             return EncryptEcb(new ReadOnlySpan<byte>(plaintext), paddingMode);
         }
 
@@ -692,10 +733,8 @@ namespace System.Security.Cryptography
         /// </remarks>
         public byte[] DecryptCbc(byte[] ciphertext, byte[] iv, PaddingMode paddingMode = PaddingMode.PKCS7)
         {
-            if (ciphertext is null)
-                throw new ArgumentNullException(nameof(ciphertext));
-            if (iv is null)
-                throw new ArgumentNullException(nameof(iv));
+            ArgumentNullException.ThrowIfNull(ciphertext);
+            ArgumentNullException.ThrowIfNull(iv);
 
             return DecryptCbc(new ReadOnlySpan<byte>(ciphertext), new ReadOnlySpan<byte>(iv), paddingMode);
         }
@@ -849,10 +888,8 @@ namespace System.Security.Cryptography
         /// </remarks>
         public byte[] EncryptCbc(byte[] plaintext, byte[] iv, PaddingMode paddingMode = PaddingMode.PKCS7)
         {
-            if (plaintext is null)
-                throw new ArgumentNullException(nameof(plaintext));
-            if (iv is null)
-                throw new ArgumentNullException(nameof(iv));
+            ArgumentNullException.ThrowIfNull(plaintext);
+            ArgumentNullException.ThrowIfNull(iv);
 
             return EncryptCbc(new ReadOnlySpan<byte>(plaintext), new ReadOnlySpan<byte>(iv), paddingMode);
         }
@@ -1023,10 +1060,8 @@ namespace System.Security.Cryptography
         /// </remarks>
         public byte[] DecryptCfb(byte[] ciphertext, byte[] iv, PaddingMode paddingMode = PaddingMode.None, int feedbackSizeInBits = 8)
         {
-            if (ciphertext is null)
-                throw new ArgumentNullException(nameof(ciphertext));
-            if (iv is null)
-                throw new ArgumentNullException(nameof(iv));
+            ArgumentNullException.ThrowIfNull(ciphertext);
+            ArgumentNullException.ThrowIfNull(iv);
 
             return DecryptCfb(
                 new ReadOnlySpan<byte>(ciphertext),

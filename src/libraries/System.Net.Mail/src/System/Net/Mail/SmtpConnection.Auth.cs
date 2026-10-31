@@ -18,9 +18,7 @@ namespace System.Net.Mail
 #pragma warning disable CS0414      // Field is not used in test project
         private bool _serverSupportsStartTls;
 #pragma warning restore CS0414
-#if !NO_NTAUTHENTICATION
         private bool _sawNegotiate;
-#endif
         private SupportedAuth _supportedAuth = SupportedAuth.None;
         private readonly ISmtpAuthenticationModule[] _authenticationModules;
 
@@ -47,8 +45,12 @@ namespace System.Net.Mail
             _supportedAuth = SupportedAuth.None;
             foreach (string extension in extensions)
             {
-                if (string.Compare(extension, 0, AuthExtension, 0,
-                    SizeOfAuthExtension, StringComparison.OrdinalIgnoreCase) == 0)
+                if (extension is null)
+                {
+                    continue;
+                }
+
+                if (extension.StartsWith(AuthExtension, StringComparison.OrdinalIgnoreCase))
                 {
                     // remove the AUTH text including the following character
                     // to ensure that split only gets the modules supported
@@ -69,15 +71,15 @@ namespace System.Net.Mail
                         }
                     }
                 }
-                else if (string.Compare(extension, 0, "dsn ", 0, 3, StringComparison.OrdinalIgnoreCase) == 0)
+                else if (extension.StartsWith("dsn", StringComparison.OrdinalIgnoreCase))
                 {
                     _dsnEnabled = true;
                 }
-                else if (string.Compare(extension, 0, "STARTTLS", 0, 8, StringComparison.OrdinalIgnoreCase) == 0)
+                else if (extension.StartsWith("STARTTLS", StringComparison.OrdinalIgnoreCase))
                 {
                     _serverSupportsStartTls = true;
                 }
-                else if (string.Compare(extension, 0, "SMTPUTF8", 0, 8, StringComparison.OrdinalIgnoreCase) == 0)
+                else if (extension.StartsWith("SMTPUTF8", StringComparison.OrdinalIgnoreCase))
                 {
                     _serverSupportsEai = true;
                 }
@@ -93,7 +95,6 @@ namespace System.Net.Mail
                     return true;
                 }
             }
-#if !NO_NTAUTHENTICATION
             else if (module is SmtpNegotiateAuthenticationModule)
             {
                 if ((_supportedAuth & SupportedAuth.GSSAPI) > 0)
@@ -110,7 +111,6 @@ namespace System.Net.Mail
                     return true;
                 }
             }
-#endif
 
             return false;
         }

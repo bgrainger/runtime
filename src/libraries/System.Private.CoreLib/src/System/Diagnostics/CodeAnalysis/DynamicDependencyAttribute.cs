@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-#nullable enable
-
 namespace System.Diagnostics.CodeAnalysis
 {
     /// <summary>
@@ -130,8 +128,10 @@ namespace System.Diagnostics.CodeAnalysis
         public string? AssemblyName { get; }
 
         /// <summary>
-        /// Gets or sets the condition in which the dependency is applicable, e.g. "DEBUG".
+        /// Gets or sets the condition in which the dependency is applicable.
         /// </summary>
+        [System.Obsolete("This property is no longer supported.")]
+        [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
         public string? Condition { get; set; }
     }
 }

@@ -18,17 +18,222 @@
 #include "dllimport.h"
 #include "comdelegate.h"
 #include "eeconfig.h"
-#include "comdatetime.h"
-#include "olevariant.h"
 #include <cor.h>
 #include <corpriv.h>
 #include <corerror.h>
 #include "sigformat.h"
 #include "marshalnative.h"
-#include "typeparse.h"
 #ifdef FEATURE_COMINTEROP
-#include <winstring.h>
+#include "interoputil.h"
 #endif // FEATURE_COMINTEROP
+
+static VARTYPE GetVarTypeForCorElementType(CorElementType type)
+{
+    CONTRACTL
+    {
+        THROWS;
+        GC_NOTRIGGER;
+        MODE_ANY;
+    }
+    CONTRACTL_END;
+
+    static const BYTE map[] =
+    {
+        VT_EMPTY,           // ELEMENT_TYPE_END
+        VT_VOID,            // ELEMENT_TYPE_VOID
+        VT_BOOL,            // ELEMENT_TYPE_BOOLEAN
+        VT_UI2,             // ELEMENT_TYPE_CHAR
+        VT_I1,              // ELEMENT_TYPE_I1
+        VT_UI1,             // ELEMENT_TYPE_U1
+        VT_I2,              // ELEMENT_TYPE_I2
+        VT_UI2,             // ELEMENT_TYPE_U2
+        VT_I4,              // ELEMENT_TYPE_I4
+        VT_UI4,             // ELEMENT_TYPE_U4
+        VT_I8,              // ELEMENT_TYPE_I8
+        VT_UI8,             // ELEMENT_TYPE_U8
+        VT_R4,              // ELEMENT_TYPE_R4
+        VT_R8,              // ELEMENT_TYPE_R8
+    };
+
+    _ASSERTE(type < (CorElementType) (sizeof(map) / sizeof(map[0])));
+
+    VARTYPE vt = VARTYPE(map[type]);
+
+    return vt;
+}
+
+VARTYPE GetVarTypeForTypeHandle(TypeHandle type)
+{
+    CONTRACTL
+    {
+        THROWS;
+        GC_TRIGGERS;
+        MODE_ANY;
+    }
+    CONTRACTL_END;
+
+    // Handle primitive types.
+    CorElementType elemType = type.GetSignatureCorElementType();
+    if (elemType <= ELEMENT_TYPE_R8)
+        return GetVarTypeForCorElementType(elemType);
+
+    // Types incompatible with interop.
+    if (type.IsTypeDesc())
+        COMPlusThrow(kArgumentException, IDS_EE_COM_UNSUPPORTED_SIG);
+
+    // Handle objects.
+    MethodTable * pMT = type.AsMethodTable();
+
+    if (pMT == g_pStringClass)
+        return VT_BSTR;
+    if (pMT == g_pObjectClass)
+        return VT_VARIANT;
+
+    // We need to make sure the CVClasses table is populated.
+    if(CoreLibBinder::IsClass(pMT, CLASS__DATE_TIME))
+        return VT_DATE;
+    if(CoreLibBinder::IsClass(pMT, CLASS__DECIMAL))
+        return VT_DECIMAL;
+
+#ifdef HOST_64BIT
+    if (CoreLibBinder::IsClass(pMT, CLASS__INTPTR))
+        return VT_I8;
+    if (CoreLibBinder::IsClass(pMT, CLASS__UINTPTR))
+        return VT_UI8;
+#else
+    if (CoreLibBinder::IsClass(pMT, CLASS__INTPTR))
+        return VT_INT;
+    if (CoreLibBinder::IsClass(pMT, CLASS__UINTPTR))
+        return VT_UINT;
+#endif
+
+#ifdef FEATURE_COMINTEROP
+    // The wrapper types are only available when built-in COM is supported.
+    if (g_pConfig->IsBuiltInCOMSupported())
+    {
+        if (CoreLibBinder::IsClass(pMT, CLASS__DISPATCH_WRAPPER))
+            return VT_DISPATCH;
+        if (CoreLibBinder::IsClass(pMT, CLASS__UNKNOWN_WRAPPER))
+            return VT_UNKNOWN;
+        if (CoreLibBinder::IsClass(pMT, CLASS__ERROR_WRAPPER))
+            return VT_ERROR;
+        if (CoreLibBinder::IsClass(pMT, CLASS__CURRENCY_WRAPPER))
+            return VT_CY;
+        if (CoreLibBinder::IsClass(pMT, CLASS__BSTR_WRAPPER))
+            return VT_BSTR;
+
+        // VariantWrappers cannot be stored in VARIANT's.
+        if (CoreLibBinder::IsClass(pMT, CLASS__VARIANT_WRAPPER))
+            COMPlusThrow(kArgumentException, IDS_EE_COM_UNSUPPORTED_SIG);
+    }
+#endif // FEATURE_COMINTEROP
+
+    if (pMT->IsEnum())
+        return GetVarTypeForCorElementType(type.GetInternalCorElementType());
+
+    if (pMT->IsValueType())
+        return VT_RECORD;
+
+    if (pMT->IsArray())
+        return VT_ARRAY;
+
+#ifdef FEATURE_COMINTEROP
+    // There is no VT corresponding to SafeHandles as they cannot be stored in
+    // VARIANTs or Arrays. The same applies to CriticalHandle.
+    if (type.CanCastTo(TypeHandle(CoreLibBinder::GetClass(CLASS__SAFE_HANDLE))))
+        COMPlusThrow(kArgumentException, IDS_EE_COM_UNSUPPORTED_SIG);
+    if (type.CanCastTo(TypeHandle(CoreLibBinder::GetClass(CLASS__CRITICAL_HANDLE))))
+        COMPlusThrow(kArgumentException, IDS_EE_COM_UNSUPPORTED_SIG);
+
+    if (pMT->IsInterface())
+    {
+        CorIfaceAttr ifaceType = pMT->GetComInterfaceType();
+        return static_cast<VARTYPE>(IsDispatchBasedItf(ifaceType) ? VT_DISPATCH : VT_UNKNOWN);
+    }
+
+    TypeHandle hndDefItfClass;
+    DefaultInterfaceType DefItfType = GetDefaultInterfaceForClassWrapper(type, &hndDefItfClass);
+    switch (DefItfType)
+    {
+        case DefaultInterfaceType_Explicit:
+        {
+            CorIfaceAttr ifaceType = hndDefItfClass.GetMethodTable()->GetComInterfaceType();
+            return static_cast<VARTYPE>(IsDispatchBasedItf(ifaceType) ? VT_DISPATCH : VT_UNKNOWN);
+        }
+
+        case DefaultInterfaceType_AutoDual:
+        {
+            return VT_DISPATCH;
+        }
+
+        case DefaultInterfaceType_IUnknown:
+        case DefaultInterfaceType_BaseComClass:
+        {
+            return VT_UNKNOWN;
+        }
+
+        case DefaultInterfaceType_AutoDispatch:
+        {
+            return VT_DISPATCH;
+        }
+
+        default:
+        {
+            _ASSERTE(!"Invalid default interface type!");
+        }
+    }
+#endif // FEATURE_COMINTEROP
+
+    return VT_UNKNOWN;
+}
+
+MethodTable* GetNativeMethodTableForVarType(VARTYPE vt, MethodTable* pManagedMT)
+{
+    CONTRACTL
+    {
+        THROWS;
+        GC_TRIGGERS;
+        MODE_ANY;
+    }
+    CONTRACTL_END;
+
+    if (vt & VT_ARRAY)
+    {
+        return CoreLibBinder::GetClass(CLASS__INTPTR);
+    }
+
+    switch (vt)
+    {
+        case VT_DATE:
+            return CoreLibBinder::GetClass(CLASS__DOUBLE);
+        case VT_CY:
+            return CoreLibBinder::GetClass(CLASS__CURRENCY);
+        case VT_BOOL:
+            return CoreLibBinder::GetClass(CLASS__INT16);
+        case VT_DISPATCH:
+        case VT_UNKNOWN:
+        case VT_LPSTR:
+        case VT_LPWSTR:
+        case VT_BSTR:
+        case VT_USERDEFINED:
+        case VT_SAFEARRAY:
+        case VT_CARRAY:
+            return CoreLibBinder::GetClass(CLASS__INTPTR);
+        case VT_VARIANT:
+            return CoreLibBinder::GetClass(CLASS__COMVARIANT);
+        case VT_UI2:
+            // When CharSet = CharSet.Unicode, System.Char arrays are marshaled as VT_UI2.
+            // However, since System.Char itself is CharSet.Ansi, the native size of
+            // System.Char is 1 byte instead of 2. So here we explicitly return System.UInt16's
+            // MethodTable to ensure the correct size.
+            return CoreLibBinder::GetClass(CLASS__UINT16);
+        case VT_DECIMAL:
+            return CoreLibBinder::GetClass(CLASS__DECIMAL);
+        default:
+            _ASSERTE(pManagedMT != NULL);
+            return pManagedMT;
+    }
+}
 
 VOID ParseNativeType(Module*                     pModule,
                      SigPointer                  sig,
@@ -49,7 +254,6 @@ VOID ParseNativeType(Module*                     pModule,
         THROWS;
         GC_TRIGGERS;
         MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM());
         PRECONDITION(CheckPointer(pNFD));
     }
     CONTRACTL_END;
@@ -131,9 +335,7 @@ VOID ParseNativeType(Module*                     pModule,
             *pNFD = NativeFieldDescriptor(pFD, CoreLibBinder::GetClass(CLASS__CURRENCY));
             break;
         case MarshalInfo::MARSHAL_TYPE_DECIMAL:
-            // The decimal type can't be blittable since the managed and native alignment requirements differ.
-            // Native needs 8-byte alignment since one field is a 64-bit integer, but managed only needs 4-byte alignment since all fields are ints.
-            *pNFD = NativeFieldDescriptor(pFD, CoreLibBinder::GetClass(CLASS__NATIVEDECIMAL));
+            *pNFD = NativeFieldDescriptor(pFD, CoreLibBinder::GetClass(CLASS__DECIMAL));
             break;
         case MarshalInfo::MARSHAL_TYPE_GUID:
             *pNFD = NativeFieldDescriptor(pFD, CoreLibBinder::GetClass(CLASS__GUID));
@@ -167,7 +369,7 @@ VOID ParseNativeType(Module*                     pModule,
             break;
 #ifdef FEATURE_COMINTEROP
         case MarshalInfo::MARSHAL_TYPE_OBJECT:
-            *pNFD = NativeFieldDescriptor(pFD, CoreLibBinder::GetClass(CLASS__NATIVEVARIANT));
+            *pNFD = NativeFieldDescriptor(pFD, CoreLibBinder::GetClass(CLASS__COMVARIANT));
             break;
 #endif
         case MarshalInfo::MARSHAL_TYPE_SAFEHANDLE:
@@ -179,14 +381,29 @@ VOID ParseNativeType(Module*                     pModule,
             CREATE_MARSHALER_CARRAY_OPERANDS mops;
             mlInfo.GetMops(&mops);
 
-            MethodTable *pMT = mops.methodTable;
+            MethodTable *pMT = mops.elementTypeHandle.GetMethodTable();
 
             if (pMT->IsEnum())
             {
                 pMT = CoreLibBinder::GetElementType(pMT->GetInternalCorElementType());
             }
 
-            *pNFD = NativeFieldDescriptor(pFD, OleVariant::GetNativeMethodTableForVarType(mops.elementType, pMT), mops.additive);
+            MethodTable *pNativeMT;
+            switch (mops.elementNativeType)
+            {
+            case NATIVE_TYPE_BOOLEAN:
+                pNativeMT = CoreLibBinder::GetClass(CLASS__INT32);
+                break;
+            case NATIVE_TYPE_I1:
+            case NATIVE_TYPE_U1:
+                pNativeMT = CoreLibBinder::GetClass(CLASS__BYTE);
+                break;
+            default:
+                pNativeMT = GetNativeMethodTableForVarType(mops.elementType, pMT);
+                break;
+            }
+
+            *pNFD = NativeFieldDescriptor(pFD, pNativeMT, mops.additive);
             break;
         }
         case MarshalInfo::MARSHAL_TYPE_FIXED_CSTR:
@@ -194,6 +411,9 @@ VOID ParseNativeType(Module*                     pModule,
             break;
         case MarshalInfo::MARSHAL_TYPE_FIXED_WSTR:
             *pNFD = NativeFieldDescriptor(pFD, CoreLibBinder::GetClass(CLASS__UINT16), pargs->fs.fixedStringLength);
+            break;
+        case MarshalInfo::MARSHAL_TYPE_POINTER:
+            *pNFD = NativeFieldDescriptor(pFD, NativeFieldCategory::INTEGER, sizeof(void*), sizeof(void*));
             break;
         case MarshalInfo::MARSHAL_TYPE_UNKNOWN:
         default:
@@ -205,11 +425,13 @@ VOID ParseNativeType(Module*                     pModule,
 bool IsFieldBlittable(
     Module* pModule,
     mdFieldDef fd,
-    SigPointer fieldSig,
-    const SigTypeContext* pTypeContext,
+    CorElementType corElemType,
+    TypeHandle valueTypeHandle,
     ParseNativeTypeFlags flags
 )
 {
+    STANDARD_VM_CONTRACT;
+
     PCCOR_SIGNATURE marshalInfoSig;
     ULONG marshalInfoSigLength;
 
@@ -222,75 +444,63 @@ bool IsFieldBlittable(
 
     bool isBlittable = false;
 
-    EX_TRY
+    switch (corElemType)
     {
-        TypeHandle valueTypeHandle;
-        CorElementType corElemType = fieldSig.PeekElemTypeNormalized(pModule, pTypeContext, &valueTypeHandle);
-
-        switch (corElemType)
+    case ELEMENT_TYPE_CHAR:
+        isBlittable = (nativeType == NATIVE_TYPE_DEFAULT && flags != ParseNativeTypeFlags::IsAnsi) || (nativeType == NATIVE_TYPE_I2) || (nativeType == NATIVE_TYPE_U2);
+        break;
+    case ELEMENT_TYPE_I1:
+    case ELEMENT_TYPE_U1:
+        isBlittable = (nativeType == NATIVE_TYPE_DEFAULT) || (nativeType == NATIVE_TYPE_I1) || (nativeType == NATIVE_TYPE_U1);
+        break;
+    case ELEMENT_TYPE_I2:
+    case ELEMENT_TYPE_U2:
+        isBlittable = (nativeType == NATIVE_TYPE_DEFAULT) || (nativeType == NATIVE_TYPE_I2) || (nativeType == NATIVE_TYPE_U2);
+        break;
+    case ELEMENT_TYPE_I4:
+    case ELEMENT_TYPE_U4:
+        isBlittable = (nativeType == NATIVE_TYPE_DEFAULT) || (nativeType == NATIVE_TYPE_I4) || (nativeType == NATIVE_TYPE_U4) || (nativeType == NATIVE_TYPE_ERROR);
+        break;
+    case ELEMENT_TYPE_I8:
+    case ELEMENT_TYPE_U8:
+        isBlittable = (nativeType == NATIVE_TYPE_DEFAULT) || (nativeType == NATIVE_TYPE_I8) || (nativeType == NATIVE_TYPE_U8);
+        break;
+    case ELEMENT_TYPE_R4:
+        isBlittable = (nativeType == NATIVE_TYPE_DEFAULT) || (nativeType == NATIVE_TYPE_R4);
+        break;
+    case ELEMENT_TYPE_R8:
+        isBlittable = (nativeType == NATIVE_TYPE_DEFAULT) || (nativeType == NATIVE_TYPE_R8);
+        break;
+    case ELEMENT_TYPE_I:
+    case ELEMENT_TYPE_U:
+        isBlittable = (nativeType == NATIVE_TYPE_DEFAULT) || (nativeType == NATIVE_TYPE_INT) || (nativeType == NATIVE_TYPE_UINT);
+        break;
+    case ELEMENT_TYPE_PTR:
+        isBlittable = nativeType == NATIVE_TYPE_DEFAULT;
+        break;
+    case ELEMENT_TYPE_FNPTR:
+        isBlittable = nativeType == NATIVE_TYPE_DEFAULT || nativeType == NATIVE_TYPE_FUNC;
+        break;
+    case ELEMENT_TYPE_VALUETYPE:
+        if (nativeType != NATIVE_TYPE_DEFAULT && nativeType != NATIVE_TYPE_STRUCT)
         {
-        case ELEMENT_TYPE_CHAR:
-            isBlittable = (nativeType == NATIVE_TYPE_DEFAULT && flags != ParseNativeTypeFlags::IsAnsi) || (nativeType == NATIVE_TYPE_I2) || (nativeType == NATIVE_TYPE_U2);
-            break;
-        case ELEMENT_TYPE_I1:
-        case ELEMENT_TYPE_U1:
-            isBlittable = (nativeType == NATIVE_TYPE_DEFAULT) || (nativeType == NATIVE_TYPE_I1) || (nativeType == NATIVE_TYPE_U1);
-            break;
-        case ELEMENT_TYPE_I2:
-        case ELEMENT_TYPE_U2:
-            isBlittable = (nativeType == NATIVE_TYPE_DEFAULT) || (nativeType == NATIVE_TYPE_I2) || (nativeType == NATIVE_TYPE_U2);
-            break;
-        case ELEMENT_TYPE_I4:
-        case ELEMENT_TYPE_U4:
-            isBlittable = (nativeType == NATIVE_TYPE_DEFAULT) || (nativeType == NATIVE_TYPE_I4) || (nativeType == NATIVE_TYPE_U4) || (nativeType == NATIVE_TYPE_ERROR);
-            break;
-        case ELEMENT_TYPE_I8:
-        case ELEMENT_TYPE_U8:
-            isBlittable = (nativeType == NATIVE_TYPE_DEFAULT) || (nativeType == NATIVE_TYPE_I8) || (nativeType == NATIVE_TYPE_U8);
-            break;
-        case ELEMENT_TYPE_R4:
-            isBlittable = (nativeType == NATIVE_TYPE_DEFAULT) || (nativeType == NATIVE_TYPE_R4);
-            break;
-        case ELEMENT_TYPE_R8:
-            isBlittable = (nativeType == NATIVE_TYPE_DEFAULT) || (nativeType == NATIVE_TYPE_R8);
-            break;
-        case ELEMENT_TYPE_I:
-        case ELEMENT_TYPE_U:
-            isBlittable = (nativeType == NATIVE_TYPE_DEFAULT) || (nativeType == NATIVE_TYPE_INT) || (nativeType == NATIVE_TYPE_UINT);
-            break;
-        case ELEMENT_TYPE_PTR:
-            isBlittable = nativeType == NATIVE_TYPE_DEFAULT;
-            break;
-        case ELEMENT_TYPE_FNPTR:
-            isBlittable = nativeType == NATIVE_TYPE_DEFAULT || nativeType == NATIVE_TYPE_FUNC;
-            break;
-        case ELEMENT_TYPE_VALUETYPE:
-            if (nativeType != NATIVE_TYPE_DEFAULT && nativeType != NATIVE_TYPE_STRUCT)
-            {
-                isBlittable = false;
-            }
-            else if (valueTypeHandle.GetMethodTable() == CoreLibBinder::GetClass(CLASS__DECIMAL))
-            {
-                // The alignment requirements of the managed System.Decimal type do not match the native DECIMAL type.
-                // As a result, a field of type System.Decimal can't be blittable.
-                isBlittable = false;
-            }
-            else
-            {
-                isBlittable = valueTypeHandle.GetMethodTable()->IsBlittable();
-            }
-            break;
-        default:
             isBlittable = false;
-            break;
         }
+        else if (valueTypeHandle.GetMethodTable() == CoreLibBinder::GetClass(CLASS__DECIMAL))
+        {
+            // The alignment requirements of the managed System.Decimal type do not match the native DECIMAL type.
+            // As a result, a field of type System.Decimal can't be blittable.
+            isBlittable = false;
+        }
+        else
+        {
+            isBlittable = valueTypeHandle.GetMethodTable()->IsBlittable();
+        }
+        break;
+    default:
+        isBlittable = false;
+        break;
     }
-    EX_CATCH
-    {
-        // We were unable to determine the native type, likely because there is a mutually recursive type reference
-        // in this field's type. A mutually recursive object would never be blittable, so we don't need to do anything.
-    }
-    EX_END_CATCH(RethrowTerminalExceptions);
     return isBlittable;
 }
 
@@ -323,7 +533,7 @@ BOOL IsStructMarshalable(TypeHandle th)
         return FALSE;
 
     MethodTable *pMT= th.GetMethodTable();
-    PREFIX_ASSUME(pMT != NULL);
+    _ASSERTE(pMT != NULL);
 
     return pMT->GetNativeLayoutInfo()->IsMarshalable() ? TRUE : FALSE;
 }
@@ -415,7 +625,7 @@ UINT32 NativeFieldDescriptor::AlignmentRequirement() const
         MethodTable* pMT = GetNestedNativeMethodTable();
         if (pMT->IsBlittable())
         {
-            return pMT->GetLayoutInfo()->m_ManagedLargestAlignmentRequirementOfAllMembers;
+            return pMT->GetLayoutInfo()->GetAlignmentRequirement();
         }
         return pMT->GetNativeLayoutInfo()->GetLargestAlignmentRequirement();
     }
@@ -425,31 +635,15 @@ UINT32 NativeFieldDescriptor::AlignmentRequirement() const
     }
 }
 
-PTR_MethodTable NativeFieldDescriptor::GetNestedNativeMethodTable() const
-{
-    CONTRACT(PTR_MethodTable)
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-        PRECONDITION(IsNestedType());
-        POSTCONDITION(CheckPointer(RETVAL));
-    }
-    CONTRACT_END;
-
-    RETURN nestedTypeAndCount.m_pNestedType;
-}
-
 PTR_FieldDesc NativeFieldDescriptor::GetFieldDesc() const
 {
-    CONTRACT(PTR_FieldDesc)
+    CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
         MODE_ANY;
-        POSTCONDITION(CheckPointer(RETVAL, NULL_OK));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
-    RETURN m_pFD;
+    return m_pFD;
 }

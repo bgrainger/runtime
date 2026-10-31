@@ -2,7 +2,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 //
 
+namespace JitTest_Directed_StrAccess_straccess1;
+
 using System;
+using Xunit;
 
 internal struct VT
 {
@@ -16,7 +19,7 @@ internal class CL
     public char b0, b1, b2, b3, b4, b5, b6;
 }
 
-internal class StrAccess1
+public class StrAccess1
 {
     public static String str1 = "test string";
     public static String[,] str2darr = { { "test string" } };
@@ -35,7 +38,8 @@ internal class StrAccess1
     };
 
     public static Random rand = new Random(Seed);
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         bool passed = true;
         String str2 = "test string";
@@ -217,7 +221,6 @@ internal class StrAccess1
         }
     }
 }
-
 
 
 

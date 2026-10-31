@@ -36,7 +36,7 @@ class RegSet
     friend class CodeGenInterface;
 
 private:
-    Compiler* m_rsCompiler;
+    Compiler* m_compiler;
     GCInfo&   m_rsGCInfo;
 
 public:
@@ -58,7 +58,7 @@ private:
         TempDsc*  spillTemp; // the temp holding the spilled value
 
         static SpillDsc* alloc(Compiler* pComp, RegSet* regSet, var_types type);
-        static void freeDsc(RegSet* regSet, SpillDsc* spillDsc);
+        static void      freeDsc(RegSet* regSet, SpillDsc* spillDsc);
     };
 
     //-------------------------------------------------------------------------
@@ -74,11 +74,40 @@ private:
     bool rsModifiedRegsMaskInitialized; // Has rsModifiedRegsMask been initialized? Guards against illegal use.
 #endif                                  // DEBUG
 
+    regMaskTP rsAllCalleeSavedMask = RBM_CALLEE_SAVED;
+    regMaskTP rsIntCalleeSavedMask = RBM_INT_CALLEE_SAVED;
+
 public:
     regMaskTP rsGetModifiedRegsMask() const
     {
         assert(rsModifiedRegsMaskInitialized);
         return rsModifiedRegsMask;
+    }
+
+    regMaskTP rsGetModifiedCalleeSavedRegsMask() const
+    {
+        assert(rsModifiedRegsMaskInitialized);
+        return (rsModifiedRegsMask & rsAllCalleeSavedMask);
+    }
+
+    regMaskTP rsGetModifiedIntCalleeSavedRegsMask() const
+    {
+        assert(rsModifiedRegsMaskInitialized);
+        return (rsModifiedRegsMask & rsIntCalleeSavedMask);
+    }
+
+#ifdef TARGET_AMD64
+    regMaskTP rsGetModifiedOsrIntCalleeSavedRegsMask() const
+    {
+        assert(rsModifiedRegsMaskInitialized);
+        return (rsModifiedRegsMask & (rsIntCalleeSavedMask | RBM_EBP));
+    }
+#endif // TARGET_AMD64
+
+    regMaskTP rsGetModifiedFltCalleeSavedRegsMask() const
+    {
+        assert(rsModifiedRegsMaskInitialized);
+        return (rsModifiedRegsMask & RBM_FLT_CALLEE_SAVED);
     }
 
     void rsClearRegsModified();
@@ -90,7 +119,7 @@ public:
     bool rsRegsModified(regMaskTP mask) const
     {
         assert(rsModifiedRegsMaskInitialized);
-        return (rsModifiedRegsMask & mask) != 0;
+        return (rsModifiedRegsMask & mask).IsNonEmpty();
     }
 
     void verifyRegUsed(regNumber reg);
@@ -123,9 +152,10 @@ public:
 private:
     regMaskTP _rsMaskVars; // backing store for rsMaskVars property
 
-#ifdef TARGET_ARMARCH
+#if defined(TARGET_ARMARCH) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+    // TODO: the funclet's callee-saved registers should not shared with main function.
     regMaskTP rsMaskCalleeSaved; // mask of the registers pushed/popped in the prolog/epilog
-#endif                           // TARGET_ARM
+#endif                           // TARGET_ARMARCH || TARGET_LOONGARCH64 || TARGET_RISCV64
 
 public:                    // TODO-Cleanup: Should be private, but Compiler uses it
     regMaskTP rsMaskResvd; // mask of the registers that are reserved for special purposes (typically empty)
@@ -179,14 +209,16 @@ public:
     };
 
     static var_types tmpNormalizeType(var_types type);
-    TempDsc* tmpGetTemp(var_types type); // get temp for the given type
-    void tmpRlsTemp(TempDsc* temp);
-    TempDsc* tmpFindNum(int temp, TEMP_USAGE_TYPE usageType = TEMP_USAGE_FREE) const;
+    TempDsc*         tmpGetTemp(var_types type); // get temp for the given type
+    void             tmpRlsTemp(TempDsc* temp);
+    TempDsc*         tmpFindNum(int temp, TEMP_USAGE_TYPE usageType = TEMP_USAGE_FREE) const;
+    TempDsc*         tmpGetNum(int temp) const;
+    bool             tmpIsUnknownSizeTemp(int tnum) const;
 
     void     tmpEnd();
     TempDsc* tmpListBeg(TEMP_USAGE_TYPE usageType = TEMP_USAGE_FREE) const;
     TempDsc* tmpListNxt(TempDsc* curTemp, TEMP_USAGE_TYPE usageType = TEMP_USAGE_FREE) const;
-    void tmpDone();
+    void     tmpDone();
 
 #ifdef DEBUG
     bool tmpAllFree() const;
@@ -216,24 +248,30 @@ private:
     // Used by RegSet::rsSpillChk()
     unsigned tmpGetCount; // Temps which haven't been released yet
 #endif
-    static unsigned tmpSlot(unsigned size); // which slot in tmpFree[] or tmpUsed[] to use
+    static unsigned tmpSlot(var_types type); // which slot in tmpFree[] or tmpUsed[] to use
 
     enum TEMP_CONSTANTS : unsigned
     {
 #if defined(FEATURE_SIMD)
 #if defined(TARGET_XARCH)
-        TEMP_MAX_SIZE = YMM_REGSIZE_BYTES,
-#elif defined(TARGET_ARM64)
+        TEMP_MAX_SIZE = ZMM_REGSIZE_BYTES,
+#elif defined(TARGET_ARM64) || defined(TARGET_WASM)
         TEMP_MAX_SIZE = FP_REGSIZE_BYTES,
-#endif // defined(TARGET_XARCH) || defined(TARGET_ARM64)
+#endif // defined(TARGET_XARCH) || defined(TARGET_ARM64) || defined(TARGET_WASM)
 #else  // !FEATURE_SIMD
         TEMP_MAX_SIZE = sizeof(double),
 #endif // !FEATURE_SIMD
+
+#if defined(TARGET_ARM64) && defined(FEATURE_SIMD)
+        // There are two extra slots for temps with unknown size (TYP_SIMD/TYP_MASK)
+        TEMP_SLOT_COUNT = (TEMP_MAX_SIZE / sizeof(int)) + 2
+#else
         TEMP_SLOT_COUNT = (TEMP_MAX_SIZE / sizeof(int))
+#endif
     };
 
-    TempDsc* tmpFree[TEMP_MAX_SIZE / sizeof(int)];
-    TempDsc* tmpUsed[TEMP_MAX_SIZE / sizeof(int)];
+    TempDsc* tmpFree[TEMP_SLOT_COUNT];
+    TempDsc* tmpUsed[TEMP_SLOT_COUNT];
 };
 
 #endif // _REGSET_H

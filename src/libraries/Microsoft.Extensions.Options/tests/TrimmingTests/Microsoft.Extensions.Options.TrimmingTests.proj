@@ -3,11 +3,10 @@
 
   <PropertyGroup>
     <AdditionalProjectReferences>
-      Microsoft.Extensions.Options;
       Microsoft.Extensions.DependencyInjection
     </AdditionalProjectReferences>
   </PropertyGroup>
-  
+
   <ItemGroup>
     <TestConsoleAppSourceFiles Include="ConfigureTests.cs" />
   </ItemGroup>

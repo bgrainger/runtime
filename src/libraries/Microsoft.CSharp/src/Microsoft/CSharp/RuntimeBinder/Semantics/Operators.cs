@@ -80,7 +80,11 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         // Method pointers must be in the order of the corresponding enums. We check this when the full signature is set.
         // When the binding method is looked up in these arrays we ASSERT
         // if the array is out of bounds of the corresponding array.
-        private static readonly BinOpSig[] s_binopSignatures =
+        private static readonly BinOpSig[] s_binopSignatures = InitBinopSignatures();
+
+        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL3050:RequiresDynamicCode",
+            Justification = "We can't annotate static constructors on structs, but everything else in this type is annotated.")]
+        private static BinOpSig[] InitBinopSignatures() => new[]
         {
             new BinOpSig (PredefinedType.PT_INT,        PredefinedType.PT_INT,      BinOpMask.Integer,  8, BindIntBinOp,            OpSigFlags.Value,       BinOpFuncKind.IntBinOp      ),
             new BinOpSig (PredefinedType.PT_UINT,       PredefinedType.PT_UINT,     BinOpMask.Integer,  7, BindIntBinOp,            OpSigFlags.Value,       BinOpFuncKind.IntBinOp      ),
@@ -113,7 +117,11 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         // since they lose precision. See the language spec.
 
         // Increment and decrement operators are special.
-        private static readonly UnaOpSig[] s_rguos =
+        private static readonly UnaOpSig[] s_rguos = InitUnaOpSignatures();
+
+        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL3050:RequiresDynamicCode",
+            Justification = "We can't annotate static constructors on structs, but everything else in this type is annotated.")]
+        private static UnaOpSig[] InitUnaOpSignatures() => new[]
         {
             new UnaOpSig( PredefinedType.PT_INT,        UnaOpMask.Signed,   7, BindIntUnaOp,    UnaOpFuncKind.IntUnaOp  ),
             new UnaOpSig( PredefinedType.PT_UINT,       UnaOpMask.Unsigned, 6, BindIntUnaOp,    UnaOpFuncKind.IntUnaOp  ),
@@ -135,6 +143,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         };
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private ExprBinOp BindUserDefinedBinOp(ExpressionKind ek, BinOpArgInfo info)
         {
             MethPropWithInst pmpwi;
@@ -172,6 +181,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         // Adds special signatures to the candidate list.  If we find an exact match
         // then it will be the last item on the list and we return true.
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private bool GetSpecialBinopSignatures(List<BinOpFullSig> prgbofs, BinOpArgInfo info)
         {
             Debug.Assert(prgbofs != null);
@@ -188,6 +198,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         // then it will be the last item on the list and we return true.
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private bool GetStandardAndLiftedBinopSignatures(List<BinOpFullSig> rgbofs, BinOpArgInfo info)
         {
             Debug.Assert(rgbofs != null);
@@ -245,11 +256,11 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
                         switch (GetConvKind(info.ptRaw1, bos.pt1))
                         {
                             default:
-                                grflt = grflt | LiftFlags.Convert1;
+                                grflt |= LiftFlags.Convert1;
                                 break;
                             case ConvKind.Implicit:
                             case ConvKind.Identity:
-                                grflt = grflt | LiftFlags.Lift1;
+                                grflt |= LiftFlags.Lift1;
                                 break;
                         }
                         break;
@@ -272,11 +283,11 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
                         switch (GetConvKind(info.ptRaw1, bos.pt1))
                         {
                             default:
-                                grflt = grflt | LiftFlags.Convert1;
+                                grflt |= LiftFlags.Convert1;
                                 break;
                             case ConvKind.Implicit:
                             case ConvKind.Identity:
-                                grflt = grflt | LiftFlags.Lift1;
+                                grflt |= LiftFlags.Lift1;
                                 break;
                         }
                         break;
@@ -285,7 +296,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
                     case ConvKind.Identity:
                         if (cv2 == ConvKind.Identity)
                         {
-                            BinOpFullSig newsig = new BinOpFullSig(this, bos);
+                            BinOpFullSig newsig = new BinOpFullSig(bos);
                             if (newsig.Type1() != null && newsig.Type2() != null)
                             {
                                 // Exact match.
@@ -330,11 +341,11 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
                         switch (GetConvKind(info.ptRaw2, bos.pt2))
                         {
                             default:
-                                grflt = grflt | LiftFlags.Convert2;
+                                grflt |= LiftFlags.Convert2;
                                 break;
                             case ConvKind.Implicit:
                             case ConvKind.Identity:
-                                grflt = grflt | LiftFlags.Lift2;
+                                grflt |= LiftFlags.Lift2;
                                 break;
                         }
                         break;
@@ -357,11 +368,11 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
                         switch (GetConvKind(info.ptRaw2, bos.pt2))
                         {
                             default:
-                                grflt = grflt | LiftFlags.Convert2;
+                                grflt |= LiftFlags.Convert2;
                                 break;
                             case ConvKind.Implicit:
                             case ConvKind.Identity:
-                                grflt = grflt | LiftFlags.Lift2;
+                                grflt |= LiftFlags.Lift2;
                                 break;
                         }
                         break;
@@ -383,7 +394,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
                 else
                 {
                     // Record it as applicable and skip accordingly.
-                    rgbofs.Add(new BinOpFullSig(this, bos));
+                    rgbofs.Add(new BinOpFullSig(bos));
                     ibos += bos.cbosSkip;
                 }
             }
@@ -392,6 +403,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
 
         // Returns the index of the best match, or -1 if there is no best match.
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private int FindBestSignatureInList(
                 List<BinOpFullSig> binopSignatures,
                 BinOpArgInfo info)
@@ -449,6 +461,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static ExprBinOp BindNullEqualityComparison(ExpressionKind ek, BinOpArgInfo info)
         {
             Expr arg1 = info.arg1;
@@ -483,6 +496,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         */
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         public Expr BindStandardBinop(ExpressionKind ek, Expr arg1, Expr arg2)
         {
             Debug.Assert(arg1 != null);
@@ -558,6 +572,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private Expr BindStandardBinopCore(BinOpArgInfo info, BinOpFullSig bofs, ExpressionKind ek, EXPRFLAG flags)
         {
             if (bofs.pfn == null)
@@ -600,6 +615,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private ExprBinOp BindLiftedStandardBinOp(BinOpArgInfo info, BinOpFullSig bofs, ExpressionKind ek, EXPRFLAG flags)
         {
             Debug.Assert(bofs.Type1() is NullableType || bofs.Type2() is NullableType);
@@ -654,6 +670,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         /////////////////////////////////////////////////////////////////////////////////
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private void LiftArgument(Expr pArgument, CType pParameterType, bool bConvertBeforeLift,
                                             out Expr ppLiftedArgument, out Expr ppNonLiftedArgument)
         {
@@ -689,6 +706,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             Returns true iff an exact signature match is found.
         */
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private bool GetDelBinOpSigs(List<BinOpFullSig> prgbofs, BinOpArgInfo info)
         {
             if (!info.ValidForDelegate() || !info.type1.IsDelegateType && !info.type2.IsDelegateType)
@@ -729,6 +747,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             scenario or lifted scenario. Sets pgrflt, ptypeSig1 and ptypeSig2 accordingly.
         */
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private bool CanConvertArg1(BinOpArgInfo info, CType typeDst, out LiftFlags pgrflt,
                                       out CType ptypeSig1, out CType ptypeSig2)
         {
@@ -750,7 +769,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
 
             if (info.type2 is NullableType)
             {
-                pgrflt = pgrflt | LiftFlags.Lift2;
+                pgrflt |= LiftFlags.Lift2;
                 ptypeSig2 = TypeManager.GetNullable(info.typeRaw2);
             }
             else
@@ -764,6 +783,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             Same as CanConvertArg1 but with the indices interchanged!
         */
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private bool CanConvertArg2(BinOpArgInfo info, CType typeDst, out LiftFlags pgrflt,
                                       out CType ptypeSig1, out CType ptypeSig2)
         {
@@ -785,7 +805,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
 
             if (info.type1 is NullableType)
             {
-                pgrflt = pgrflt | LiftFlags.Lift1;
+                pgrflt |= LiftFlags.Lift1;
                 ptypeSig1 = TypeManager.GetNullable(info.typeRaw1);
             }
             else
@@ -800,6 +820,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             that any NullableType valued args should be lifted.
         */
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static void RecordBinOpSigFromArgs(List<BinOpFullSig> prgbofs, BinOpArgInfo info)
         {
             LiftFlags grflt = LiftFlags.None;
@@ -809,7 +830,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             if (info.type1 != info.typeRaw1)
             {
                 Debug.Assert(info.type1 is NullableType);
-                grflt = grflt | LiftFlags.Lift1;
+                grflt |= LiftFlags.Lift1;
                 typeSig1 = TypeManager.GetNullable(info.typeRaw1);
             }
             else
@@ -820,7 +841,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             if (info.type2 != info.typeRaw2)
             {
                 Debug.Assert(info.type2 is NullableType);
-                grflt = grflt | LiftFlags.Lift2;
+                grflt |= LiftFlags.Lift2;
                 typeSig2 = TypeManager.GetNullable(info.typeRaw2);
             }
             else
@@ -836,6 +857,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             we find an exact match.
         */
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private bool GetEnumBinOpSigs(List<BinOpFullSig> prgbofs, BinOpArgInfo info)
         {
             if (!info.typeRaw1.IsEnumType && !info.typeRaw2.IsEnumType)
@@ -908,6 +930,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             it has special rules as well.
         */
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private bool GetRefEqualSigs(List<BinOpFullSig> prgbofs, BinOpArgInfo info)
         {
             if (info.mask != BinOpMask.Equal)
@@ -1029,6 +1052,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         */
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private int WhichBofsIsBetter(BinOpFullSig bofs1, BinOpFullSig bofs2, CType type1, CType type2)
         {
             BetterType bt1;
@@ -1046,8 +1070,8 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
                 bt2 = WhichTypeIsBetter(bofs1.Type2(), bofs2.Type2(), type2);
             }
 
-            Debug.Assert(Enum.IsDefined(typeof(BetterType), bt1));
-            Debug.Assert(Enum.IsDefined(typeof(BetterType), bt2));
+            Debug.Assert(Enum.IsDefined(bt1));
+            Debug.Assert(Enum.IsDefined(bt2));
             int res = bt1 switch
             {
                 BetterType.Left => -1,
@@ -1151,6 +1175,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         public Expr BindStandardUnaryOperator(OperatorKind op, Expr pArgument)
         {
             Debug.Assert(pArgument != null);
@@ -1283,11 +1308,9 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             }
 
             // Try the conversion - if it fails, do a cast without user defined casts.
-            Expr arg = tryConvert(pArgument, uofs.GetType());
-            if (arg == null)
-            {
-                arg = mustCast(pArgument, uofs.GetType(), CONVERTTYPE.NOUDC);
-            }
+            Expr arg =
+                tryConvert(pArgument, uofs.GetType()) ??
+                mustCast(pArgument, uofs.GetType(), CONVERTTYPE.NOUDC);
 
             return uofs.pfn(this, ek, flags, arg);
         }
@@ -1295,6 +1318,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         /////////////////////////////////////////////////////////////////////////////////
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private UnaryOperatorSignatureFindResult PopulateSignatureList(Expr pArgument, UnaOpKind unaryOpKind, UnaOpMask unaryOpMask, ExpressionKind exprKind, EXPRFLAG flags, List<UnaOpFullSig> pSignatures, out Expr ppResult)
         {
             // We should have already checked argument != null and argument.type != null.
@@ -1386,6 +1410,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         /////////////////////////////////////////////////////////////////////////////////
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private bool FindApplicableSignatures(
                 Expr pArgument,
                 UnaOpMask unaryOpMask,
@@ -1464,7 +1489,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
 
                     case ConvKind.Identity:
                         {
-                            UnaOpFullSig result = new UnaOpFullSig(this, uos);
+                            UnaOpFullSig result = new UnaOpFullSig(uos);
                             if (result.GetType() != null)
                             {
                                 pSignatures.Add(result);
@@ -1482,11 +1507,11 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
                     switch (GetConvKind(ptRaw, uos.pt))
                     {
                         default:
-                            grflt = grflt | LiftFlags.Convert1;
+                            grflt |= LiftFlags.Convert1;
                             break;
                         case ConvKind.Implicit:
                         case ConvKind.Identity:
-                            grflt = grflt | LiftFlags.Lift1;
+                            grflt |= LiftFlags.Lift1;
                             break;
                     }
 
@@ -1500,7 +1525,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
                 else
                 {
                     // Record it as applicable and skip accordingly.
-                    UnaOpFullSig newResult = new UnaOpFullSig(this, uos);
+                    UnaOpFullSig newResult = new UnaOpFullSig(uos);
                     if (newResult.GetType() != null)
                     {
                         pSignatures.Add(newResult);
@@ -1512,6 +1537,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private ExprOperator BindLiftedStandardUnop(ExpressionKind ek, EXPRFLAG flags, Expr arg, UnaOpFullSig uofs)
         {
             NullableType type = uofs.GetType() as NullableType;
@@ -1538,6 +1564,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             Returns negative if iuos1 is better, positive if iuos2 is better, 0 if neither.
         */
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private int WhichUofsIsBetter(UnaOpFullSig uofs1, UnaOpFullSig uofs2, CType typeArg)
         {
             BetterType bt;
@@ -1552,7 +1579,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
                 bt = WhichTypeIsBetter(uofs1.GetType(), uofs2.GetType(), typeArg);
             }
 
-            Debug.Assert(Enum.IsDefined(typeof(BetterType), bt));
+            Debug.Assert(Enum.IsDefined(bt));
             return bt switch
             {
                 BetterType.Left => -1,
@@ -1564,6 +1591,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         /*
             Handles standard binary integer based operators.
         */
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static ExprOperator BindIntBinOp(ExpressionBinder binder, ExpressionKind ek, EXPRFLAG flags, Expr arg1, Expr arg2)
         {
             Debug.Assert(arg1.Type.IsPredefined && arg2.Type.IsPredefined && arg1.Type.PredefinedType == arg2.Type.PredefinedType);
@@ -1574,6 +1602,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         /*
             Handles standard unary integer based operators.
         */
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static ExprOperator BindIntUnaOp(ExpressionBinder binder, ExpressionKind ek, EXPRFLAG flags, Expr arg)
         {
             Debug.Assert(arg.Type.IsPredefined);
@@ -1584,6 +1613,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         /*
             Handles standard binary floating point (float, double) based operators.
         */
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static ExprOperator BindRealBinOp(ExpressionBinder binder, ExpressionKind ek, EXPRFLAG _, Expr arg1, Expr arg2)
         {
             Debug.Assert(arg1.Type.IsPredefined && arg2.Type.IsPredefined && arg1.Type.PredefinedType == arg2.Type.PredefinedType);
@@ -1594,6 +1624,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         /*
             Handles standard unary floating point (float, double) based operators.
         */
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static ExprOperator BindRealUnaOp(ExpressionBinder binder, ExpressionKind ek, EXPRFLAG _, Expr arg)
         {
             Debug.Assert(arg.Type.IsPredefined);
@@ -1605,6 +1636,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             Handles standard increment and decrement operators.
         */
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private Expr BindIncOp(ExpressionKind ek, EXPRFLAG flags, Expr arg, UnaOpFullSig uofs)
         {
             Debug.Assert(ek == ExpressionKind.Add || ek == ExpressionKind.Subtract);
@@ -1629,6 +1661,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private Expr BindIncOpCore(ExpressionKind ek, EXPRFLAG flags, Expr exprVal, CType type)
         {
             Debug.Assert(ek == ExpressionKind.Add || ek == ExpressionKind.Subtract);
@@ -1687,6 +1720,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private Expr LScalar(ExpressionKind ek, EXPRFLAG flags, Expr exprVal, CType type, ConstVal cv, CType typeTmp)
         {
             CType typeOne = type;
@@ -1701,6 +1735,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private ExprMulti BindNonliftedIncOp(ExpressionKind ek, EXPRFLAG flags, Expr arg, UnaOpFullSig uofs)
         {
             Debug.Assert(ek == ExpressionKind.Add || ek == ExpressionKind.Subtract);
@@ -1728,6 +1763,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private ExprMulti BindLiftedIncOp(ExpressionKind ek, EXPRFLAG flags, Expr arg, UnaOpFullSig uofs)
         {
             Debug.Assert(ek == ExpressionKind.Add || ek == ExpressionKind.Subtract);
@@ -1762,6 +1798,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         */
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
             Justification = "All types used here are builtin and will not be trimmed.")]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static ExprBinOp BindDecBinOp(ExpressionBinder _, ExpressionKind ek, EXPRFLAG flags, Expr arg1, Expr arg2)
         {
             Debug.Assert(arg1.Type.IsPredefType(PredefinedType.PT_DECIMAL) && arg2.Type.IsPredefType(PredefinedType.PT_DECIMAL));
@@ -1804,6 +1841,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
 
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
             Justification = "All types used here are builtin and will not be trimmed.")]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static ExprUnaryOp BindDecUnaOp(ExpressionBinder _, ExpressionKind ek, EXPRFLAG flags, Expr arg)
         {
             Debug.Assert(arg.Type.IsPredefType(PredefinedType.PT_DECIMAL));
@@ -1824,6 +1862,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         /*
             Handles string concatenation.
         */
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static Expr BindStrBinOp(ExpressionBinder _, ExpressionKind ek, EXPRFLAG flags, Expr arg1, Expr arg2)
         {
             Debug.Assert(ek == ExpressionKind.Add);
@@ -1836,8 +1875,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             Bind a shift operator: <<, >>. These can have integer or long first operands,
             and second operand must be int.
         */
-        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
-            Justification = "All types used here are builtin and will not be trimmed.")]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static ExprBinOp BindShiftOp(ExpressionBinder _, ExpressionKind ek, EXPRFLAG flags, Expr arg1, Expr arg2)
         {
             Debug.Assert(ek == ExpressionKind.LeftShirt || ek == ExpressionKind.RightShift);
@@ -1856,6 +1894,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         */
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
             Justification = "All types used here are builtin and will not be trimmed.")]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static ExprBinOp BindBoolBinOp(ExpressionBinder _, ExpressionKind ek, EXPRFLAG flags, Expr arg1, Expr arg2)
         {
             Debug.Assert(arg1 != null);
@@ -1867,6 +1906,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private ExprOperator BindBoolBitwiseOp(ExpressionKind ek, EXPRFLAG flags, Expr expr1, Expr expr2)
         {
             Debug.Assert(ek == ExpressionKind.BitwiseAnd || ek == ExpressionKind.BitwiseOr);
@@ -1904,8 +1944,6 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             return BindBoolBinOp(this, ek, flags, expr1, expr2);
         }
 
-        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
-            Justification = "All types used here are builtin and will not be trimmed.")]
         private static Expr BindLiftedBoolBitwiseOp(ExpressionBinder _, ExpressionKind ek, EXPRFLAG flags, Expr expr1, Expr expr2) => null;
 
         /*
@@ -1913,6 +1951,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         */
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
             Justification = "All types used here are builtin and will not be trimmed.")]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static Expr BindBoolUnaOp(ExpressionBinder _, ExpressionKind ek, EXPRFLAG flags, Expr arg)
         {
             Debug.Assert(arg.Type.IsPredefType(PredefinedType.PT_BOOL));
@@ -1938,6 +1977,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         */
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
             Justification = "All types used here are builtin and will not be trimmed.")]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static ExprBinOp BindStrCmpOp(ExpressionBinder _, ExpressionKind ek, EXPRFLAG flags, Expr arg1, Expr arg2)
         {
             Debug.Assert(ek == ExpressionKind.Eq || ek == ExpressionKind.NotEq);
@@ -1956,6 +1996,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             Handles reference equality operators. Type variables come through here.
         */
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static ExprBinOp BindRefCmpOp(ExpressionBinder binder, ExpressionKind ek, EXPRFLAG flags, Expr arg1, Expr arg2)
         {
             Debug.Assert(ek == ExpressionKind.Eq || ek == ExpressionKind.NotEq);
@@ -1972,6 +2013,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             Handles delegate binary operators.
         */
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static Expr BindDelBinOp(ExpressionBinder _, ExpressionKind ek, EXPRFLAG flags, Expr arg1, Expr arg2)
         {
             Debug.Assert(ek == ExpressionKind.Add || ek == ExpressionKind.Subtract || ek == ExpressionKind.Eq || ek == ExpressionKind.NotEq);
@@ -2013,6 +2055,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             Handles enum binary operators.
         */
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static Expr BindEnumBinOp(ExpressionBinder binder, ExpressionKind ek, EXPRFLAG flags, Expr arg1, Expr arg2)
         {
             AggregateType typeDst = GetEnumBinOpType(ek, arg1.Type, arg2.Type, out AggregateType typeEnum);
@@ -2042,6 +2085,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private Expr BindLiftedEnumArithmeticBinOp(ExpressionKind ek, EXPRFLAG flags, Expr arg1, Expr arg2)
         {
             Debug.Assert(ek == ExpressionKind.Add || ek == ExpressionKind.Subtract);
@@ -2089,6 +2133,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             Handles enum unary operator (~).
         */
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static Expr BindEnumUnaOp(ExpressionBinder binder, ExpressionKind ek, EXPRFLAG flags, Expr arg)
         {
             Debug.Assert(ek == ExpressionKind.BitwiseNot);
@@ -2190,6 +2235,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         */
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
             Justification = "All types used here are builtin and will not be trimmed.")]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private ExprOperator BindIntOp(ExpressionKind kind, EXPRFLAG flags, Expr op1, Expr op2, PredefinedType ptOp)
         {
             //Debug.Assert(kind.isRelational() || kind.isArithmetic() || kind.isBitwise());
@@ -2215,6 +2261,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
 
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
             Justification = "All types used here are builtin and will not be trimmed.")]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private ExprOperator BindIntegerNeg(EXPRFLAG flags, Expr op, PredefinedType ptOp)
         {
             // 14.6.2 Unary minus operator
@@ -2275,6 +2322,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
 
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
             Justification = "All types used here are builtin and will not be trimmed.")]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static ExprOperator BindFloatOp(ExpressionKind kind, Expr op1, Expr op2)
         {
             //Debug.Assert(kind.isRelational() || kind.isArithmetic());
@@ -2292,6 +2340,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
 
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
             Justification = "All types used here are builtin and will not be trimmed.")]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static ExprConcat BindStringConcat(Expr op1, Expr op2)
         {
             // If the concatenation consists solely of two constants then we must
@@ -2318,6 +2367,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         /*
           Report an ambiguous operator types error.
          */
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static RuntimeBinderException AmbiguousOperatorError(Expr op1, Expr op2)
         {
             Debug.Assert(op1 != null);
@@ -2333,6 +2383,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private Expr BindUserBoolOp(ExpressionKind kind, ExprCall pCall)
         {
             Debug.Assert(pCall != null);
@@ -2388,6 +2439,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             return null;
         }
 
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static int GetUserDefinedBinopArgumentTypes(CType type1, CType type2, AggregateType[] rgats)
         {
             int cats = 0;
@@ -2409,6 +2461,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             return cats;
         }
 
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static bool UserDefinedBinaryOperatorCanBeLifted(ExpressionKind ek, MethodSymbol method, AggregateType ats,
             TypeArray Params)
         {
@@ -2453,6 +2506,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         // If the operator is applicable in either its regular or lifted forms,
         // add it to the candidate set and return true, otherwise return false.
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private bool UserDefinedBinaryOperatorIsApplicable(List<CandidateFunctionMember> candidateList,
             ExpressionKind ek, MethodSymbol method, AggregateType ats, Expr arg1, Expr arg2, bool fDontLift)
         {
@@ -2491,6 +2545,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private bool GetApplicableUserDefinedBinaryOperatorCandidates(
             List<CandidateFunctionMember> candidateList, ExpressionKind ek, AggregateType type,
             Expr arg1, Expr arg2, bool fDontLift)
@@ -2511,6 +2566,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private AggregateType GetApplicableUserDefinedBinaryOperatorCandidatesInBaseTypes(
             List<CandidateFunctionMember> candidateList, ExpressionKind ek, AggregateType type,
             Expr arg1, Expr arg2, bool fDontLift, AggregateType atsStop)
@@ -2527,6 +2583,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private ExprCall BindUDBinop(ExpressionKind ek, Expr arg1, Expr arg2, bool fDontLift, out MethPropWithInst ppmpwi)
         {
             List<CandidateFunctionMember> methFirst = new List<CandidateFunctionMember>();
@@ -2586,6 +2643,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private ExprCall BindUDBinopCall(Expr arg1, Expr arg2, TypeArray Params, CType typeRet, MethPropWithInst mpwi)
         {
             arg1 = mustConvert(arg1, Params[0]);
@@ -2605,6 +2663,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private ExprCall BindLiftedUDBinop(ExpressionKind ek, Expr arg1, Expr arg2, TypeArray Params, MethPropWithInst mpwi)
         {
             Expr exprVal1 = arg1;
@@ -2683,6 +2742,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static AggregateType GetEnumBinOpType(ExpressionKind ek, CType argType1, CType argType2, out AggregateType ppEnumType)
         {
             Debug.Assert(argType1.IsEnumType || argType2.IsEnumType);
@@ -2725,6 +2785,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static ExprBinOp CreateBinopForPredefMethodCall(ExpressionKind ek, PREDEFMETH predefMeth, CType RetType, Expr arg1, Expr arg2)
         {
             MethodSymbol methSym = PredefinedMembers.GetMethod(predefMeth);
@@ -2740,6 +2801,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static ExprUnaryOp CreateUnaryOpForPredefMethodCall(ExpressionKind ek, PREDEFMETH predefMeth, CType pRetType, Expr pArg)
         {
             MethodSymbol methSym = PredefinedMembers.GetMethod(predefMeth);

@@ -3,15 +3,12 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
 
-#if ES_BUILD_STANDALONE
-namespace Microsoft.Diagnostics.Tracing
-#else
 namespace System.Diagnostics.Tracing
-#endif
 {
     /// <summary>
     /// TraceLogging: Constants and utility functions.
@@ -32,13 +29,13 @@ namespace System.Diagnostics.Tracing
         public const byte OutTypeChainFlag = 128;
         public const EventTags EventTagsMask = (EventTags)0xfffffff;
 
-        public static readonly TraceLoggingDataType IntPtrType = IntPtr.Size == 8
+        public static TraceLoggingDataType IntPtrType => IntPtr.Size == 8
             ? TraceLoggingDataType.Int64
             : TraceLoggingDataType.Int32;
-        public static readonly TraceLoggingDataType UIntPtrType = IntPtr.Size == 8
+        public static TraceLoggingDataType UIntPtrType => IntPtr.Size == 8
             ? TraceLoggingDataType.UInt64
             : TraceLoggingDataType.UInt32;
-        public static readonly TraceLoggingDataType HexIntPtrType = IntPtr.Size == 8
+        public static TraceLoggingDataType HexIntPtrType => IntPtr.Size == 8
             ? TraceLoggingDataType.HexInt64
             : TraceLoggingDataType.HexInt32;
 
@@ -87,7 +84,7 @@ namespace System.Diagnostics.Tracing
             int suffixSize,
             int additionalSize)
         {
-            Statics.CheckName(name);
+            CheckName(name);
             int metadataSize = Encoding.UTF8.GetByteCount(name) + 3 + prefixSize + suffixSize;
             var metadata = new byte[metadataSize];
             ushort totalSize = checked((ushort)(metadataSize + additionalSize));
@@ -119,10 +116,7 @@ namespace System.Diagnostics.Tracing
                 current |= (byte)(more ? 0x80 : 0x00);
                 tagsLeft <<= 7;
 
-                if (metadata != null)
-                {
-                    metadata[pos] = current;
-                }
+                metadata?[pos] = current;
                 pos++;
             }
             while (more);
@@ -169,7 +163,7 @@ namespace System.Diagnostics.Tracing
 
         public static void CheckName(string? name)
         {
-            if (name != null && 0 <= name.IndexOf('\0'))
+            if (name != null && name.Contains('\0'))
             {
                 throw new ArgumentOutOfRangeException(nameof(name));
             }
@@ -359,9 +353,7 @@ namespace System.Diagnostics.Tracing
         }
 
         public static Type? FindEnumerableElementType(
-#if !ES_BUILD_STANDALONE
-            [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.Interfaces)]
-#endif
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
             Type type)
         {
             Type? elementType = null;
@@ -395,9 +387,7 @@ namespace System.Diagnostics.Tracing
             return type.IsGenericType && type.GetGenericTypeDefinition() == (Type?)openType;
         }
 
-#if !ES_BUILD_STANDALONE
-        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("EventSource WriteEvent will serialize the whole object graph. Trimmer will not safely handle this case because properties may be trimmed. This can be suppressed if the object is a primitive type")]
-#endif
+        [RequiresUnreferencedCode("EventSource WriteEvent will serialize the whole object graph. Trimmer will not safely handle this case because properties may be trimmed. This can be suppressed if the object is a primitive type")]
         public static TraceLoggingTypeInfo CreateDefaultTypeInfo(
             Type dataType,
             List<Type> recursionCheck)
@@ -411,9 +401,9 @@ namespace System.Diagnostics.Tracing
 
             recursionCheck.Add(dataType);
 
-            EventDataAttribute? eventAttrib = Statics.GetCustomAttribute<EventDataAttribute>(dataType);
+            EventDataAttribute? eventAttrib = GetCustomAttribute<EventDataAttribute>(dataType);
             if (eventAttrib != null ||
-                Statics.GetCustomAttribute<CompilerGeneratedAttribute>(dataType) != null ||
+                GetCustomAttribute<CompilerGeneratedAttribute>(dataType) != null ||
                 IsGenericMatch(dataType, typeof(KeyValuePair<,>)))
             {
                 var analysis = new TypeAnalysis(dataType, eventAttrib, recursionCheck);

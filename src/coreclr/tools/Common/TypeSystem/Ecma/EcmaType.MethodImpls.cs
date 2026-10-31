@@ -3,12 +3,11 @@
 
 using System;
 using System.Collections.Generic;
-using System.Reflection;
 using System.Reflection.Metadata;
-using System.Threading;
-using Debug = System.Diagnostics.Debug;
 
-using Internal.TypeSystem;
+using Internal.Text;
+
+using Debug = System.Diagnostics.Debug;
 
 namespace Internal.TypeSystem.Ecma
 {
@@ -17,11 +16,10 @@ namespace Internal.TypeSystem.Ecma
     public sealed partial class EcmaType : MetadataType
     {
         // Virtual function related functionality
-        public override MethodImplRecord[] FindMethodsImplWithMatchingDeclName(string declName)
+        public override MethodImplRecord[] FindMethodsImplWithMatchingDeclName(Utf8Span declName)
         {
             MetadataReader metadataReader = _module.MetadataReader;
-            var stringComparer = metadataReader.StringComparer;
-            ArrayBuilder<MethodImplRecord> foundRecords = new ArrayBuilder<MethodImplRecord>();
+            ArrayBuilder<MethodImplRecord> foundRecords = default(ArrayBuilder<MethodImplRecord>);
 
             foreach (var methodImplHandle in _typeDefinition.GetMethodImplementations())
             {
@@ -38,30 +36,14 @@ namespace Internal.TypeSystem.Ecma
                     methodDeclHandleKind = methodDeclCheckHandle.Kind;
                 }
 
-                bool foundRecord = false;
-
-                switch (methodDeclHandleKind)
+                StringHandle foundDeclNameHandle = methodDeclHandleKind switch
                 {
-                    case HandleKind.MethodDefinition:
-                        if (stringComparer.Equals(metadataReader.GetMethodDefinition((MethodDefinitionHandle)methodDeclCheckHandle).Name, declName))
-                        {
-                            foundRecord = true;
-                        }
-                        break;
+                    HandleKind.MethodDefinition => metadataReader.GetMethodDefinition((MethodDefinitionHandle)methodDeclCheckHandle).Name,
+                    HandleKind.MemberReference => metadataReader.GetMemberReference((MemberReferenceHandle)methodDeclCheckHandle).Name,
+                    _ => default
+                };
 
-                    case HandleKind.MemberReference:
-                        if (stringComparer.Equals(metadataReader.GetMemberReference((MemberReferenceHandle)methodDeclCheckHandle).Name, declName))
-                        {
-                            foundRecord = true;
-                        }
-                        break;
-
-                    default:
-                        Debug.Fail("unexpected methodDeclHandleKind");
-                        break;
-                }
-
-                if (foundRecord)
+                if (metadataReader.StringEquals(foundDeclNameHandle, declName))
                 {
                     MethodImplRecord newRecord = new MethodImplRecord(
                         (MethodDesc)_module.GetObject(methodImpl.MethodDeclaration),
@@ -79,7 +61,7 @@ namespace Internal.TypeSystem.Ecma
 
         protected override MethodImplRecord[] ComputeVirtualMethodImplsForType()
         {
-            ArrayBuilder<MethodImplRecord> records = new ArrayBuilder<MethodImplRecord>();
+            ArrayBuilder<MethodImplRecord> records = default(ArrayBuilder<MethodImplRecord>);
 
             MetadataReader metadataReader = _module.MetadataReader;
 
@@ -90,8 +72,8 @@ namespace Internal.TypeSystem.Ecma
                 EntityHandle methodDeclCheckHandle = methodImpl.MethodDeclaration;
                 HandleKind methodDeclHandleKind = methodDeclCheckHandle.Kind;
 
-                // We want to check that the type is not an interface matches before actually getting the MethodDesc. 
-                // For MethodSpecifications we need to dereference that handle to the underlying member reference to 
+                // We want to check that the type is not an interface matches before actually getting the MethodDesc.
+                // For MethodSpecifications we need to dereference that handle to the underlying member reference to
                 // look at the owning type.
                 if (methodDeclHandleKind == HandleKind.MethodSpecification)
                 {

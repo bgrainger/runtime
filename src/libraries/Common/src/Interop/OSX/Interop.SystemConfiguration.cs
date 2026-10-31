@@ -1,13 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Microsoft.Win32.SafeHandles;
 using System;
 using System.Runtime.InteropServices;
-
-using CFStringRef = System.IntPtr;
+using Microsoft.Win32.SafeHandles;
 using CFArrayRef = System.IntPtr;
 using CFIndex = System.IntPtr;
+using CFStringRef = System.IntPtr;
 using SCDynamicStoreRef = System.IntPtr;
 
 internal static partial class Interop
@@ -34,7 +33,7 @@ internal static partial class Interop
         /// Pass null if no callouts are desired.</param>
         /// <param name="context">The context associated with the callout.</param>
         /// <returns>A reference to the new dynamic store session.</returns>
-        [GeneratedDllImport(Libraries.SystemConfigurationLibrary)]
+        [LibraryImport(Libraries.SystemConfigurationLibrary)]
         private static unsafe partial SafeCreateHandle SCDynamicStoreCreate(
             IntPtr allocator,
             CFStringRef name,
@@ -67,7 +66,7 @@ internal static partial class Interop
         /// <param name="serviceID">The service ID or a regular expression pattern.</param>
         /// <param name="entity">The specific global entity, such as IPv4 or DNS.</param>
         /// <returns>A string containing the formatted key.</returns>
-        [GeneratedDllImport(Libraries.SystemConfigurationLibrary)]
+        [LibraryImport(Libraries.SystemConfigurationLibrary)]
         private static partial SafeCreateHandle SCDynamicStoreKeyCreateNetworkServiceEntity(
             IntPtr allocator,
             CFStringRef domain,
@@ -99,7 +98,7 @@ internal static partial class Interop
         /// <param name="order">The order in which the sources that are ready to be processed are handled,
         /// on platforms that support it and for source versions that support it.</param>
         /// <returns>The new run loop source object.</returns>
-        [GeneratedDllImport(Libraries.SystemConfigurationLibrary)]
+        [LibraryImport(Libraries.SystemConfigurationLibrary)]
         private static partial SafeCreateHandle SCDynamicStoreCreateRunLoopSource(
             IntPtr allocator,
             SCDynamicStoreRef store,
@@ -126,7 +125,8 @@ internal static partial class Interop
         /// <param name="patterns">An array of POSIX regex pattern strings used to match keys to be monitored,
         /// or IntPtr.Zero if no key patterns are to be monitored.</param>
         /// <returns>Non-zero if the set of notification keys and patterns was successfully updated; zero otherwise.</returns>
-        [GeneratedDllImport(Libraries.SystemConfigurationLibrary)]
+        [LibraryImport(Libraries.SystemConfigurationLibrary)]
+        [return: MarshalAs(UnmanagedType.Bool)]
         internal static partial bool SCDynamicStoreSetNotificationKeys(SCDynamicStoreRef store, CFArrayRef keys, CFArrayRef patterns);
     }
 }

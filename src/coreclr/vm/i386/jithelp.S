@@ -109,7 +109,7 @@ PATCH_LABEL JIT_DebugWriteBarrier\rg
     mov     [edx], edx
     cmp     ecx, [edx]
     pop     edx
-    ja      LOCAL_LABEL(WriteBarrier_NoShadow_\rg)
+    jae     LOCAL_LABEL(WriteBarrier_NoShadow_\rg)
 
     // TODO: In Orcas timeframe if we move to P4+ only on X86 we should enable
     // mfence barriers on either side of these two writes to make sure that
@@ -204,172 +204,6 @@ NESTED_END JIT_CheckedWriteBarrier\rg, _TEXT
 .endm
 
 
-// ***
-// JIT_ByRefWriteBarrier* - GC write barrier helper
-//
-// Purpose:
-//    Helper calls in order to assign an object to a byref field
-//    Enables book-keeping of the GC.
-//
-// Entry:
-//    EDI - address of ref-field (assigned to)
-//    ESI - address of the data  (source)
-//    ECX can be trashed
-//
-// Exit:
-//
-// Uses:
-//    EDI and ESI are incremented by a DWORD
-//
-// Exceptions:
-//
-// *******************************************************************************
-//
-//  The code here is tightly coupled with AdjustContextForJITHelpers, if you change
-//  anything here, you might need to change AdjustContextForJITHelpers as well
-//
-.macro ByRefWriteBarrierHelper
-.align 4
-
-LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
-    // test for dest in range
-    mov     ecx, [esi]
-    push    eax
-    PREPARE_EXTERNAL_VAR g_lowest_address, eax
-    cmp     edi, [eax]
-    pop     eax
-    jb      LOCAL_LABEL(ByRefWriteBarrier_NotInHeap)
-    push    eax
-    PREPARE_EXTERNAL_VAR g_highest_address, eax
-    cmp     edi, [eax]
-    pop     eax
-    jae     LOCAL_LABEL(ByRefWriteBarrier_NotInHeap)
-
-#ifndef WRITE_BARRIER_CHECK
-    // write barrier
-    mov     [edi], ecx
-#endif // !WRITE_BARRIER_CHECK
-
-#ifdef WRITE_BARRIER_CHECK
-    // Test dest here so if it is bad AV would happen before we change register/stack
-    // status. This makes job of AdjustContextForJITHelpers easier.
-    cmp     BYTE PTR [edi], 0
-
-    // ALSO update the shadow GC heap if that is enabled
-
-    // use edx for address in GC Shadow,
-    push    edx
-
-    // if g_GCShadow is 0, don't do the update
-    push    ebx
-    PREPARE_EXTERNAL_VAR g_GCShadow, ebx
-    cmp     DWORD PTR [ebx], 0
-    pop     ebx
-    je      LOCAL_LABEL(ByRefWriteBarrier_NoShadow)
-
-    mov     edx, edi
-    push    ebx
-    PREPARE_EXTERNAL_VAR g_lowest_address, ebx
-    sub     edx, [ebx] // U/V
-    pop     ebx
-    jb      LOCAL_LABEL(ByRefWriteBarrier_NoShadow)
-    push    eax
-    PREPARE_EXTERNAL_VAR g_GCShadow, eax
-    mov     eax, [eax]
-    add     edx, [eax]
-    PREPARE_EXTERNAL_VAR g_GCShadowEnd, eax
-    mov     eax, [eax]
-    cmp     edx, [eax]
-    pop     eax
-    ja      LOCAL_LABEL(ByRefWriteBarrier_NoShadow)
-
-    // TODO: In Orcas timeframe if we move to P4+ only on X86 we should enable
-    // mfence barriers on either side of these two writes to make sure that
-    // they stay as close together as possible
-
-    // edi contains address in GC
-    // edx contains address in ShadowGC
-    // ecx is the value to assign
-
-    // When we're writing to the shadow GC heap we want to be careful to minimize
-    // the risk of a race that can occur here where the GC and ShadowGC don't match
-    mov     DWORD PTR [edi], ecx
-    mov     DWORD PTR [edx], ecx
-
-    // We need a scratch register to verify the shadow heap.  We also need to
-    // construct a memory barrier so that the write to the shadow heap happens
-    // before the read from the GC heap.  We can do both by using SUB/XCHG
-    // rather than PUSH.
-    //
-    // TODO: Should be changed to a push if the mfence described above is added.
-    //
-    sub     esp, 4
-    xchg    [esp], eax
-
-    // As part of our race avoidance (see above) we will now check whether the values
-    // in the GC and ShadowGC match. There is a possibility that we're wrong here but
-    // being overaggressive means we might mask a case where someone updates GC refs
-    // without going to a write barrier, but by its nature it will be indeterminant
-    // and we will find real bugs whereas the current implementation is indeterminant
-    // but only leads to investigations that find that this code is fundamentally flawed
-
-    mov     eax, [edi]
-    cmp     [edx], eax
-    je      LOCAL_LABEL(ByRefWriteBarrier_CleanupShadowCheck)
-    mov     DWORD PTR [edx], INVALIDGCVALUE
-LOCAL_LABEL(ByRefWriteBarrier_CleanupShadowCheck):
-    pop     eax
-    jmp     LOCAL_LABEL(ByRefWriteBarrier_ShadowCheckEnd)
-
-LOCAL_LABEL(ByRefWriteBarrier_NoShadow):
-    // If we come here then we haven't written the value to the GC and need to.
-    mov     DWORD PTR [edi], ecx
-
-LOCAL_LABEL(ByRefWriteBarrier_ShadowCheckEnd):
-    pop     edx
-#endif // WRITE_BARRIER_CHECK
-
-    // test for *src in ephemeral segement
-    push    eax
-    PREPARE_EXTERNAL_VAR g_ephemeral_low, eax
-    cmp     ecx, [eax]
-    pop     eax
-    jb      LOCAL_LABEL(ByRefWriteBarrier_NotInEphemeral)
-    push    eax
-    PREPARE_EXTERNAL_VAR g_ephemeral_high, eax
-    cmp     ecx, [eax]
-    pop     eax
-    jae     LOCAL_LABEL(ByRefWriteBarrier_NotInEphemeral)
-
-    mov     ecx, edi
-    add     esi, 4
-    add     edi, 4
-
-    shr     ecx, 10
-    push    eax
-    PREPARE_EXTERNAL_VAR g_card_table, eax
-    add     ecx, [eax]
-    pop     eax
-    cmp     BYTE PTR [ecx], 0xFF
-    jne     LOCAL_LABEL(ByRefWriteBarrier_UpdateCardTable)
-    ret
-LOCAL_LABEL(ByRefWriteBarrier_UpdateCardTable):
-    mov     BYTE PTR [ecx], 0xFF
-    ret
-
-LOCAL_LABEL(ByRefWriteBarrier_NotInHeap):
-    // If it wasn't in the heap then we haven't updated the dst in memory yet
-    mov     [edi], ecx
-LOCAL_LABEL(ByRefWriteBarrier_NotInEphemeral):
-    // If it is in the GC Heap but isn't in the ephemeral range we've already
-    // updated the Heap with the Object*.
-    add     esi, 4
-    add     edi, 4
-    ret
-NESTED_END JIT_ByRefWriteBarrier, _TEXT
-
-.endm
-
 // JIT_WriteBarrierGroup and JIT_WriteBarrierGroup_End are used
 // to determine bounds of WriteBarrier functions so can determine if got AV in them.
 //
@@ -384,23 +218,6 @@ LEAF_END JIT_WriteBarrierGroup, _TEXT
 C_FUNC(JIT_WriteBarrierEAX_Loc):
     .word 0
     .text
-
-LEAF_ENTRY JIT_WriteBarrier_Callable, _TEXT
-    mov eax, edx
-    mov edx, ecx
-    push    eax
-    call    1f
-1:
-    pop     eax
-2:
-.att_syntax
-    addl     $_GLOBAL_OFFSET_TABLE_+(2b-1b), %eax
-.intel_syntax noprefix
-    mov     eax, dword ptr [eax + C_FUNC(JIT_WriteBarrierEAX_Loc)@GOT]
-    mov     eax, [eax]
-    xchg    eax, dword ptr [esp]
-    ret
-LEAF_END JIT_WriteBarrier_Callable, _TEXT
 
 .macro UniversalWriteBarrierHelper name
 .align 4
@@ -431,243 +248,10 @@ WriteBarrierHelper ESI
 WriteBarrierHelper EDI
 WriteBarrierHelper EBP
 
-ByRefWriteBarrierHelper
-
 // This is the first function outside the "keep together range". Used by BBT scripts.
 LEAF_ENTRY JIT_WriteBarrierGroup_End, _TEXT
     ret
 LEAF_END JIT_WriteBarrierGroup_End, _TEXT
-
-// *********************************************************************/
-// llshl - long shift left
-//
-// Purpose:
-//    Does a Long Shift Left (signed and unsigned are identical)
-//    Shifts a long left any number of bits.
-//
-//        NOTE:  This routine has been adapted from the Microsoft CRTs.
-//
-// Entry:
-//    EDX:EAX - long value to be shifted
-//        ECX - number of bits to shift by
-//
-// Exit:
-//    EDX:EAX - shifted value
-//
-.align 16
-LEAF_ENTRY JIT_LLsh, _TEXT
-    // Reduce shift amount mod 64
-    and     ecx, 63
-
-    cmp     ecx, 32
-    jae     LOCAL_LABEL(LLshMORE32)
-
-    // Handle shifts of between bits 0 and 31
-    shld    edx, eax, cl
-    shl     eax, cl
-    ret
-
-LOCAL_LABEL(LLshMORE32):
-    // Handle shifts of between bits 32 and 63
-    // The x86 shift instructions only use the lower 5 bits.
-    mov     edx, eax
-    xor     eax, eax
-    shl     edx, cl
-    ret
-LEAF_END JIT_LLsh, _TEXT
-
-// *********************************************************************/
-// LRsh - long shift right
-//
-// Purpose:
-//    Does a signed Long Shift Right
-//    Shifts a long right any number of bits.
-//
-//        NOTE:  This routine has been adapted from the Microsoft CRTs.
-//
-// Entry:
-//    EDX:EAX - long value to be shifted
-//        ECX - number of bits to shift by
-//
-// Exit:
-//    EDX:EAX - shifted value
-//
-.align 16
-LEAF_ENTRY JIT_LRsh, _TEXT
-    // Reduce shift amount mod 64
-    and     ecx, 63
-
-    cmp     ecx, 32
-    jae     LOCAL_LABEL(LRshMORE32)
-
-    // Handle shifts of between bits 0 and 31
-    shrd    eax, edx, cl
-    sar     edx, cl
-    ret
-
-LOCAL_LABEL(LRshMORE32):
-    // Handle shifts of between bits 32 and 63
-    // The x86 shift instructions only use the lower 5 bits.
-    mov     eax, edx
-    sar     edx, 31
-    sar     eax, cl
-    ret
-LEAF_END JIT_LRsh, _TEXT
-
-// *********************************************************************/
-//  LRsz:
-// Purpose:
-//    Does a unsigned Long Shift Right
-//    Shifts a long right any number of bits.
-//
-//        NOTE:  This routine has been adapted from the Microsoft CRTs.
-//
-// Entry:
-//    EDX:EAX - long value to be shifted
-//        ECX - number of bits to shift by
-//
-// Exit:
-//    EDX:EAX - shifted value
-//
-.align 16
-LEAF_ENTRY JIT_LRsz, _TEXT
-    // Reduce shift amount mod 64
-    and     ecx, 63
-
-    cmp     ecx, 32
-    jae     LOCAL_LABEL(LRszMORE32)
-
-    // Handle shifts of between bits 0 and 31
-    shrd    eax, edx, cl
-    shr     edx, cl
-    ret
-
-LOCAL_LABEL(LRszMORE32):
-    // Handle shifts of between bits 32 and 63
-    // The x86 shift instructions only use the lower 5 bits.
-    mov     eax, edx
-    xor     edx, edx
-    shr     eax, cl
-    ret
-LEAF_END JIT_LRsz, _TEXT
-
-// *********************************************************************/
-//  JIT_Dbl2LngP4x87
-//
-// Purpose:
-//   converts a double to a long truncating toward zero (C semantics)
-//
-// uses stdcall calling conventions
-//
-//   This code is faster on a P4 than the Dbl2Lng code above, but is
-//   slower on a PIII.  Hence we choose this code when on a P4 or above.
-//
-LEAF_ENTRY JIT_Dbl2LngP4x87, _TEXT
-    // get some local space
-    sub 	esp, 8
-
-    #define arg1 [esp + 0x0C]
-    fld     QWORD PTR arg1          // fetch arg
-    fnstcw  WORD PTR arg1           // store FPCW
-    movzx   eax, WORD PTR arg1      // zero extend - wide
-    or      ah, 0x0C                // turn on OE and DE flags
-    mov     DWORD PTR [esp], eax    // store new FPCW bits
-    fldcw   WORD PTR  [esp]         // reload FPCW with new bits
-    fistp   QWORD PTR [esp]         // convert
-
-    // reload FP result
-    mov	    eax, DWORD PTR [esp]
-    mov	    edx, DWORD PTR [esp + 4]
-
-    // reload original FPCW value
-    fldcw   WORD PTR arg1
-    #undef arg1
-
-    // restore stack
-    add     esp, 8
-
-    ret
-LEAF_END JIT_Dbl2LngP4x87, _TEXT
-
-// *********************************************************************/
-//  JIT_Dbl2LngSSE3
-//
-// Purpose:
-//    converts a double to a long truncating toward zero (C semantics)
-//
-//  uses stdcall calling conventions
-//
-//    This code is faster than the above P4 x87 code for Intel processors
-//    equal or later than Core2 and Atom that have SSE3 support
-//
-LEAF_ENTRY JIT_Dbl2LngSSE3, _TEXT
-    // get some local space
-    sub     esp, 8
-
-    fld     QWORD PTR [esp + 0x0C]   // fetch arg
-    fisttp  QWORD PTR [esp]         // convert
-    mov     eax, DWORD PTR [esp]    // reload FP result
-    mov     edx, DWORD PTR [esp + 4]
-
-    // restore stack
-    add     esp, 8
-
-    ret
-LEAF_END JIT_Dbl2LngSSE3, _TEXT
-
-// *********************************************************************/
-// JIT_Dbl2IntSSE2
-//
-// Purpose:
-//  converts a double to a long truncating toward zero (C semantics)
-//
-// uses stdcall calling conventions
-//
-// This code is even faster than the P4 x87 code for Dbl2LongP4x87,
-// but only returns a 32 bit value (only good for int).
-//
-LEAF_ENTRY JIT_Dbl2IntSSE2, _TEXT
-    movsd     xmm0, [esp + 4]
-    cvttsd2si eax, xmm0
-    ret
-LEAF_END JIT_Dbl2IntSSE2, _TEXT
-
-// *********************************************************************/
-// JIT_StackProbe
-//
-// Purpose:
-//   the helper will access ("probe") a word on each page of the stack
-//   starting with the page right beneath esp down to the one pointed to by eax.
-//   The procedure is needed to make sure that the "guard" page is pushed down below the allocated stack frame.
-//   The call to the helper will be emitted by JIT in the function prolog when large (larger than 0x3000 bytes) stack frame is required.
-//
-// NOTE: this helper will modify a value of esp and must establish the frame pointer.
-// NOTE: On Linux we must advance the stack pointer as we probe - it is not allowed to access 65535 bytes below esp.
-//
-#define PROBE_PAGE_SIZE 0x1000
-NESTED_ENTRY JIT_StackProbe, _TEXT, NoHandler
-    // On entry:
-    //   eax - the lowest address of the stack frame being allocated (i.e. [InitialSp - FrameSize])
-    //
-    // NOTE: this helper will probe at least one page below the one pointed by esp.
-    PROLOG_BEG
-    PROLOG_END
-
-    and     esp, -PROBE_PAGE_SIZE  // esp points to the **lowest address** on the last probed page
-                                   // This is done to make the loop end condition simpler.
-
-LOCAL_LABEL(ProbeLoop):
-    sub     esp, PROBE_PAGE_SIZE   // esp points to the lowest address of the **next page** to probe
-    test    [esp], eax             // esp points to the lowest address on the **last probed** page
-    cmp     esp, eax
-    jg      LOCAL_LABEL(ProbeLoop) // if esp > eax, then we need to probe at least one more page.
-
-    EPILOG_BEG
-    mov     esp, ebp
-    EPILOG_END
-    ret
-
-NESTED_END JIT_StackProbe, _TEXT
 
 // *********************************************************************/
 //  This is the small write barrier thunk we use when we know the
@@ -679,7 +263,7 @@ NESTED_END JIT_StackProbe, _TEXT
 //  the compares just for EAX, which won't work for other registers.
 //
 //  READ THIS!!!!!!
-//  it is imperative that the addresses of of the values that we overwrite
+//  it is imperative that the addresses of the values that we overwrite
 //  (card table, ephemeral region ranges, etc) are naturally aligned since
 //  there are codepaths that will overwrite these values while the EE is running.
 //
@@ -738,6 +322,7 @@ LEAF_END JIT_WriteBarrierReg_PostGrow,_TEXT
 // PatchedCodeStart and PatchedCodeEnd are used to determine bounds of patched code.
 //
 
+.align 4
 LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
     ret
 LEAF_END JIT_PatchedCodeStart, _TEXT
@@ -745,6 +330,7 @@ LEAF_END JIT_PatchedCodeStart, _TEXT
 // **********************************************************************
 // Write barriers generated at runtime
 
+.align 4
 LEAF_ENTRY JIT_PatchedWriteBarrierGroup, _TEXT
     ret
 LEAF_END JIT_PatchedWriteBarrierGroup, _TEXT
@@ -753,7 +339,7 @@ LEAF_END JIT_PatchedWriteBarrierGroup, _TEXT
 .align 8
 LEAF_ENTRY JIT_WriteBarrier\rg, _TEXT
     // Just allocate space that will be filled in at runtime
-    .space 0xCC, 48
+    .space 48, 0xCC
 LEAF_END JIT_WriteBarrier\rg, _TEXT
 
 .endm
@@ -773,3 +359,13 @@ LEAF_END JIT_PatchedWriteBarrierGroup_End, _TEXT
 LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
     ret
 LEAF_END JIT_PatchedCodeLast, _TEXT
+
+LEAF_ENTRY RhpGcPoll, _TEXT
+    PREPARE_EXTERNAL_VAR g_TrapReturningThreads, eax
+    cmp DWORD PTR [eax], 0
+    jnz LOCAL_LABEL(RhpGcPoll_RarePath)
+    ret
+LOCAL_LABEL(RhpGcPoll_RarePath):
+    PREPARE_EXTERNAL_VAR g_pPollGC, eax
+    jmp [eax]
+LEAF_END RhpGcPoll, _TEXT

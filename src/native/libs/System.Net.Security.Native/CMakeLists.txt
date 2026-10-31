@@ -1,5 +1,9 @@
 project(System.Net.Security.Native C)
 
+if(CLR_CMAKE_TARGET_ARCH_WASM)
+    message(FATAL_ERROR "Not implemented for WASM")
+endif()
+
 add_compile_options(-Wno-incompatible-pointer-types-discards-qualifiers)
 
 include(${CMAKE_CURRENT_LIST_DIR}/extra_libs.cmake)
@@ -19,7 +23,7 @@ if (GEN_SHARED_LIB)
     )
 endif()
 
-if (NOT GEN_SHARED_LIB AND NOT CLR_CMAKE_TARGET_MACCATALYST AND NOT CLR_CMAKE_TARGET_IOS AND NOT CLR_CMAKE_TARGET_TVOS AND NOT CLR_CMAKE_TARGET_ANDROID AND NOT CLR_CMAKE_TARGET_BROWSER)
+if (NOT GEN_SHARED_LIB AND NOT CLR_CMAKE_TARGET_APPLE_MOBILE AND NOT CLR_CMAKE_TARGET_ANDROID AND NOT CLR_CMAKE_TARGET_BROWSER AND NOT CLR_CMAKE_TARGET_WASI)
     set(NATIVEGSS_SOURCES ${NATIVEGSS_SOURCES} entrypoints.c)
 endif()
 
@@ -32,10 +36,11 @@ set_target_properties(System.Net.Security.Native-Static PROPERTIES OUTPUT_NAME S
 
 if (GEN_SHARED_LIB)
     target_link_libraries(System.Net.Security.Native
+        PRIVATE
         ${NATIVE_LIBS_EXTRA}
     )
 
-    if (NOT CLR_CMAKE_TARGET_IOS AND NOT CLR_CMAKE_TARGET_MACCATALYST AND NOT CLR_CMAKE_TARGET_TVOS AND NOT CLR_CMAKE_TARGET_ANDROID AND NOT CLR_CMAKE_TARGET_BROWSER)
+    if (NOT CLR_CMAKE_TARGET_APPLE_MOBILE AND NOT CLR_CMAKE_TARGET_ANDROID AND NOT CLR_CMAKE_TARGET_BROWSER AND NOT CLR_CMAKE_TARGET_WASI)
         add_custom_command(TARGET System.Net.Security.Native POST_BUILD
             COMMENT "Verifying System.Net.Security.Native entry points against entrypoints.c "
             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../verify-entrypoints.sh

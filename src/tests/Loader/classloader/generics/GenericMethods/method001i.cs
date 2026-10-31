@@ -2,6 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using Xunit;
+using TestLibrary;
 
 public abstract class Base<U>
 {
@@ -49,7 +51,9 @@ public class Test_method001i
 	
 	}
 	
-	public static int Main()
+ [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+	[Fact]
+	public static int TestEntryPoint()
 	{
 		Base<int> fInt = new FooInt();
 		Eval(fInt.Function<int>(1).Equals(1));

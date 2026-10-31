@@ -77,14 +77,15 @@ struct SeqPointInfo {
 #define MONO_ARCH_HAVE_OP_GENERIC_CLASS_INIT		1
 #define MONO_ARCH_HAVE_SETUP_ASYNC_CALLBACK		1
 #define MONO_ARCH_HAVE_TRACK_FPREGS			1
-#define MONO_ARCH_HAVE_OPTIMIZED_DIV			1
 #define MONO_ARCH_HAVE_OP_TAILCALL_MEMBASE		1
 #define MONO_ARCH_HAVE_OP_TAILCALL_REG			1
 #define MONO_ARCH_HAVE_SDB_TRAMPOLINES			1
 #define MONO_ARCH_HAVE_SETUP_RESUME_FROM_SIGNAL_HANDLER_CTX	1
 #define MONO_ARCH_HAVE_UNWIND_BACKTRACE 		1
 #define MONO_ARCH_FLOAT32_SUPPORTED			1
-
+#define MONO_ARCH_SIMD_INTRINSICS			1
+#define MONO_ARCH_NEED_SIMD_BANK			1
+#define MONO_ARCH_USE_SHARED_FP_SIMD_BANK		1
 #define S390_STACK_ALIGNMENT		 8
 #define S390_FIRST_ARG_REG 		s390_r2
 #define S390_LAST_ARG_REG 		s390_r6
@@ -129,8 +130,6 @@ struct SeqPointInfo {
 
 #define MONO_ARCH_CALLEE_SAVED_FREGS 0
 
-#define MONO_ARCH_USE_FPSTACK FALSE
-
 #define MONO_ARCH_INST_FIXED_REG(desc) ((desc == 'o') ? s390_r2 : 		\
 					((desc == 'g') ? s390_f0 : 		\
 					((desc == 'A') ? S390_FIRST_ARG_REG : -1)))
@@ -150,9 +149,9 @@ struct SeqPointInfo {
 /*-----------------------------------------------*/
 /* SIMD Related Definitions                      */
 /*-----------------------------------------------*/
-
+/* f0 overlaps with v0 and vr16 is used internally */
 #define MONO_MAX_XREGS			31
-#define MONO_ARCH_CALLEE_XREGS		0x0
+#define MONO_ARCH_CALLEE_XREGS		0xFFFFFFFE
 #define MONO_ARCH_CALLEE_SAVED_XREGS	0x0
 
 // Does the ABI have a volatile non-parameter register, so tailcall
@@ -192,7 +191,7 @@ static void inline
 s390_patch_rel (guchar *code, guint64 target)
 {
 	guint32 *offset = (guint32 *) code;
-	
+
 	if (target != 0) {
 		*offset = (guint32) target;
 	}
@@ -212,7 +211,7 @@ static void inline
 s390_patch_addr (guchar *code, guint64 target)
 {
 	guint64 *offset = (guint64 *) code;
-	
+
 	if (target != 0) {
 		*offset = target;
 	}
@@ -296,6 +295,21 @@ s390_patch_addr (guchar *code, guint64 target)
 		s390_##op (loc, r, 0, s390_r13, 0);			\
 	}
 
+#define S390_LONG_VEC(loc, opy, op, r, off, ix, br)                    \
+       if (s390_is_imm12(off)) {                                       \
+               s390_##opy (loc, r, ix, br, off);                       \
+       } else {                                                        \
+               if (ix == 0) {                                          \
+                       S390_SET(loc, s390_r13, off);                   \
+                       s390_la (loc, s390_r13, s390_r13, br, 0);       \
+               } else {                                                \
+                       s390_la   (loc, s390_r13, ix, br, 0);           \
+                       S390_SET  (loc, s390_r0, off);                  \
+                       s390_agr  (loc, s390_r13, s390_r0);             \
+               }                                                       \
+               s390_##op (loc, r, 0, s390_r13, 0);                     \
+       }
+
 #define S390_SET_MASK(loc, dr, v)				\
 	do {							\
 		if (s390_is_imm16 (v)) {			\
@@ -350,4 +364,4 @@ s390_patch_addr (guchar *code, guint64 target)
 		*(guint32 *) p = lo;				\
 	} while (0)
 
-#endif /* __MONO_MINI_S390X_H__ */  
+#endif /* __MONO_MINI_S390X_H__ */

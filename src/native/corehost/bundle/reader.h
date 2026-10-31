@@ -17,6 +17,10 @@
 
 #if defined(TARGET_ARM64)
 #define TARGET_CPU_TYPE CPU_TYPE_ARM64
+#elif defined(TARGET_LOONGARCH64)
+#define TARGET_CPU_TYPE CPU_TYPE_LOONGARCH64
+#elif defined(TARGET_RISCV64)
+#define TARGET_CPU_TYPE CPU_TYPE_RISCV64
 #else
 #define TARGET_CPU_TYPE CPU_TYPE_X86_64
 #endif
@@ -60,12 +64,12 @@ namespace bundle
             if (magic == FAT_MAGIC)
             {
                 m_offset_in_file = OSSwapBigToHostInt32(*(uint32_t*)offset_in_FAT_universal_binary<fat_arch>(base_ptr));
-                trace::info(_X("FAT container detected. Offset in file:[%lx]"), m_offset_in_file);
+                trace::info(_X("FAT container detected. Offset in file:[%llx]"), (unsigned long long)m_offset_in_file);
             }
             else if (magic == FAT_MAGIC_64)
             {
                 m_offset_in_file = OSSwapBigToHostInt64(*(uint64_t*)offset_in_FAT_universal_binary<fat_arch_64>(base_ptr));
-                trace::info(_X("FAT64 container detected. Offset in file:[%lx]"), m_offset_in_file);
+                trace::info(_X("FAT64 container detected. Offset in file:[%llx]"), (unsigned long long)m_offset_in_file);
             }
 #endif
 
@@ -81,7 +85,7 @@ namespace bundle
             return m_ptr;
         }
 
-        int8_t read()
+        int8_t read_byte()
         {
             bounds_check();
             return *m_ptr++;
@@ -98,16 +102,6 @@ namespace bundle
             bounds_check(len);
             memcpy(dest, m_ptr, to_size_t_dbgchecked(len));
             m_ptr += len;
-        }
-
-        // Return a pointer to the requested bytes within the memory-mapped file.
-        // Skip over len bytes.
-        const char* read_direct(int64_t len)
-        {
-            bounds_check(len);
-            const char *ptr = m_ptr;
-            m_ptr += len;
-            return ptr;
         }
 
         size_t read_path_length();

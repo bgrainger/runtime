@@ -32,7 +32,7 @@ namespace System.IO.Pipelines.Tests
         [Fact]
         public async Task CancellingBeforeAdvance()
         {
-            byte[] bytes = Encoding.ASCII.GetBytes("Hello World");
+            byte[] bytes = "Hello World"u8.ToArray();
             PipeWriter output = Pipe.Writer;
             output.Write(bytes);
             await output.FlushAsync();
@@ -65,7 +65,7 @@ namespace System.IO.Pipelines.Tests
         [Fact]
         public async Task CancellingPendingAfterReadAsync()
         {
-            byte[] bytes = Encoding.ASCII.GetBytes("Hello World");
+            byte[] bytes = "Hello World"u8.ToArray();
             PipeWriter output = Pipe.Writer;
             output.Write(bytes);
 
@@ -116,7 +116,7 @@ namespace System.IO.Pipelines.Tests
             Assert.True(result.IsCanceled);
             Assert.True(buffer.IsEmpty);
 
-            byte[] bytes = Encoding.ASCII.GetBytes("Hello World");
+            byte[] bytes = "Hello World"u8.ToArray();
             PipeWriter output = Pipe.Writer;
             output.Write(bytes);
             await output.FlushAsync();
@@ -134,7 +134,7 @@ namespace System.IO.Pipelines.Tests
             Pipe.Reader.AdvanceTo(buffer.Start, buffer.Start);
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public void ReadAsyncCancellationDeadlock()
         {
             var cts = new CancellationTokenSource();
@@ -385,7 +385,7 @@ namespace System.IO.Pipelines.Tests
             Pipe.Reader.AdvanceTo(result.Buffer.Start);
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public async Task ReadingCanBeCanceled()
         {
             var cts = new CancellationTokenSource();
@@ -407,7 +407,7 @@ namespace System.IO.Pipelines.Tests
         [Fact]
         public async Task WriteAndCancellingPendingReadBeforeReadAsync()
         {
-            byte[] bytes = Encoding.ASCII.GetBytes("Hello World");
+            byte[] bytes = "Hello World"u8.ToArray();
             PipeWriter output = Pipe.Writer;
             output.Write(bytes);
             await output.FlushAsync();

@@ -20,9 +20,6 @@ class Disp :
 #else
     public IMetaDataDispenserEx2
 #endif
-#ifdef FEATURE_METADATA_CUSTOM_DATA_SOURCE
-    , IMetaDataDispenserCustom
-#endif
 {
 public:
     Disp();
@@ -69,7 +66,7 @@ public:
         IUnknown    **ppIUnk);              // [out] Return interface on success.
 
     STDMETHODIMP GetCORSystemDirectory(     // Return code.
-         __out_ecount (cchBuffer) LPWSTR szBuffer,  // [out] Buffer for the directory name
+         _Out_writes_ (cchBuffer) LPWSTR szBuffer,  // [out] Buffer for the directory name
          DWORD       cchBuffer,             // [in] Size of the buffer
          DWORD*      pchBuffer);            // [OUT] Number of characters returned
 
@@ -80,7 +77,7 @@ public:
         LPCWSTR  szAssemblyName,            // [IN] required - this is the assembly you are requesting
         LPCWSTR  szName,                    // [OUT] buffer - to hold name
         ULONG    cchName,                   // [IN] the name buffer's size
-        ULONG    *pcName);                  // [OUT] the number of characters returend in the buffer
+        ULONG    *pcName);                  // [OUT] the number of characters returned in the buffer
 
     STDMETHODIMP FindAssemblyModule(        // S_OK or error
         LPCWSTR  szAppBase,                 // [IN] optional - can be NULL
@@ -88,9 +85,9 @@ public:
         LPCWSTR  szGlobalBin,               // [IN] optional - can be NULL
         LPCWSTR  szAssemblyName,            // [IN] required - this is the assembly you are requesting
         LPCWSTR  szModuleName,              // [IN] required - the name of the module
-        __out_ecount (cchName)LPWSTR szName,// [OUT] buffer - to hold name
+        _Out_writes_ (cchName)LPWSTR szName,// [OUT] buffer - to hold name
         ULONG    cchName,                   // [IN]  the name buffer's size
-        ULONG    *pcName);                  // [OUT] the number of characters returend in the buffer
+        ULONG    *pcName);                  // [OUT] the number of characters returned in the buffer
 
 #ifdef FEATURE_METADATA_EMIT_PORTABLE_PDB
     STDMETHODIMP DefinePortablePdbScope(    // Return code.
@@ -98,15 +95,6 @@ public:
         DWORD       dwCreateFlags,          // [in] Flags on the create.
         REFIID      riid,                   // [in] The interface desired.
         IUnknown** ppIUnk);                 // [out] Return interface on success.
-#endif
-
-#ifdef FEATURE_METADATA_CUSTOM_DATA_SOURCE
-    // *** IMetaDataDispenserCustom methods ***
-    STDMETHODIMP OpenScopeOnCustomDataSource(  // S_OK or error
-        IMDCustomDataSource  *pCustomSource, // [in] The scope to open.
-        DWORD                dwOpenFlags,    // [in] Open mode flags.
-        REFIID               riid,           // [in] The interface desired.
-        IUnknown             **ppIUnk);      // [out] Return interface on success.
 #endif
 
     // Class factory hook-up.
@@ -125,15 +113,6 @@ private:
         DWORD       dwOpenFlags,            // [in] Open mode flags.
         REFIID      riid,                   // [in] The interface desired.
         IUnknown    **ppIUnk);              // [out] Return interface on success.
-
-#ifdef FEATURE_METADATA_CUSTOM_DATA_SOURCE
-    HRESULT OpenRawScopeOnCustomDataSource( // Return code.
-        IMDCustomDataSource*  pDataSource,  // [in] scope data.
-        DWORD       dwOpenFlags,            // [in] Open mode flags.
-        REFIID      riid,                   // [in] The interface desired.
-        IUnknown    **ppIUnk);              // [out] Return interface on success.
-#endif
-
 
 private:
     LONG        m_cRef;                 // Ref count

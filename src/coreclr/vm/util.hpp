@@ -1,244 +1,69 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-//
+
 // util.hpp
 //
-
-//
 // Miscellaneous useful functions
-//
 
 #ifndef _H_UTIL
 #define _H_UTIL
 
 #include "utilcode.h"
 #include "metadata.h"
-#include "holderinst.h"
 #include "clrdata.h"
 #include "xclrdata.h"
 #include "posterror.h"
-#include "clr_std/type_traits"
+#include <type_traits>
+#include "minipal/time.h"
 
-
-// Prevent the use of UtilMessageBox and WszMessageBox from inside the EE.
-#undef UtilMessageBoxCatastrophic
-#undef UtilMessageBoxCatastrophicNonLocalized
-#undef UtilMessageBoxCatastrophic
-#undef UtilMessageBoxCatastrophicNonLocalizedVA
-#undef UtilMessageBox
-#undef UtilMessageBoxNonLocalized
-#undef UtilMessageBoxVA
-#undef UtilMessageBoxNonLocalizedVA
-#undef WszMessageBox
-#define UtilMessageBoxCatastrophic __error("Use one of the EEMessageBox APIs (defined in eemessagebox.h) from inside the EE")
-#define UtilMessageBoxCatastrophicNonLocalized __error("Use one of the EEMessageBox APIs (defined in eemessagebox.h) from inside the EE")
-#define UtilMessageBoxCatastrophicVA __error("Use one of the EEMessageBox APIs (defined in eemessagebox.h) from inside the EE")
-#define UtilMessageBoxCatastrophicNonLocalizedVA __error("Use one of the EEMessageBox APIs (defined in eemessagebox.h) from inside the EE")
-#define UtilMessageBox __error("Use one of the EEMessageBox APIs (defined in eemessagebox.h) from inside the EE")
-#define UtilMessageBoxNonLocalized __error("Use one of the EEMessageBox APIs (defined in eemessagebox.h) from inside the EE")
-#define UtilMessageBoxVA __error("Use one of the EEMessageBox APIs (defined in eemessagebox.h) from inside the EE")
-#define UtilMessageBoxNonLocalizedVA __error("Use one of the EEMessageBox APIs (defined in eemessagebox.h) from inside the EE")
-#define WszMessageBox __error("Use one of the EEMessageBox APIs (defined in eemessagebox.h) from inside the EE")
-
-// Hot cache lines need to be aligned to cache line size to improve performance
-#if defined(TARGET_ARM64)
-#define MAX_CACHE_LINE_SIZE 128
-#else
-#define MAX_CACHE_LINE_SIZE 64
+#ifndef DACCESS_COMPILE
+#if defined(TARGET_WINDOWS) && defined(TARGET_ARM64)
+// Flag to check if atomics feature is available on
+// the machine
+extern bool g_arm64_atomics_present;
 #endif
-
-//========================================================================
-// More convenient names for integer types of a guaranteed size.
-//========================================================================
-
-typedef __int8              I1;
-typedef ArrayDPTR(I1)       PTR_I1;
-typedef unsigned __int8     U1;
-typedef __int16             I2;
-typedef unsigned __int16    U2;
-typedef __int32             I4;
-typedef unsigned __int32    U4;
-typedef __int64             I8;
-typedef unsigned __int64    U8;
-typedef float               R4;
-typedef double              R8;
-
-//
-// Forward the FastInterlock methods to the matching Win32 APIs. They are implemented
-// using compiler intrinsics so they are as fast as they can possibly be.
-//
-
-#define FastInterlockIncrement              InterlockedIncrement
-#define FastInterlockDecrement              InterlockedDecrement
-#define FastInterlockExchange               InterlockedExchange
-#define FastInterlockCompareExchange        InterlockedCompareExchange
-#define FastInterlockExchangeAdd            InterlockedExchangeAdd
-#define FastInterlockExchangeLong           InterlockedExchange64
-#define FastInterlockCompareExchangeLong    InterlockedCompareExchange64
-#define FastInterlockExchangeAddLong        InterlockedExchangeAdd64
-
-//
-// Forward FastInterlock[Compare]ExchangePointer to the
-// Utilcode Interlocked[Compare]ExchangeT.
-//
-#define FastInterlockExchangePointer        InterlockedExchangeT
-#define FastInterlockCompareExchangePointer InterlockedCompareExchangeT
-
-FORCEINLINE void FastInterlockOr(DWORD RAW_KEYWORD(volatile) *p, const int msk)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    InterlockedOr((LONG *)p, msk);
-}
-
-FORCEINLINE void FastInterlockAnd(DWORD RAW_KEYWORD(volatile) *p, const int msk)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    InterlockedAnd((LONG *)p, msk);
-}
+#endif
 
 #ifndef TARGET_UNIX
 // Copied from malloc.h: don't want to bring in the whole header file.
 void * __cdecl _alloca(size_t);
 #endif // !TARGET_UNIX
 
-#ifdef _PREFAST_
-// Suppress prefast warning #6255: alloca indicates failure by raising a stack overflow exception
-#pragma warning(disable:6255)
-#endif // _PREFAST_
-
-#define ISWWHITE(x) ((x)==W(' ') || (x)==W('\t') || (x)==W('\n') || (x)==W('\r') )
-
-BOOL inline FitsInI1(__int64 val)
+BOOL inline FitsInI1(int64_t val)
 {
     LIMITED_METHOD_DAC_CONTRACT;
-    return val == (__int64)(__int8)val;
+    return val == (int64_t)(int8_t)val;
 }
 
-BOOL inline FitsInI2(__int64 val)
+BOOL inline FitsInI2(int64_t val)
 {
     LIMITED_METHOD_CONTRACT;
-    return val == (__int64)(__int16)val;
+    return val == (int64_t)(int16_t)val;
 }
 
-BOOL inline FitsInI4(__int64 val)
+BOOL inline FitsInI4(int64_t val)
 {
     LIMITED_METHOD_DAC_CONTRACT;
-    return val == (__int64)(__int32)val;
+    return val == (int64_t)(int32_t)val;
 }
 
-BOOL inline FitsInU1(unsigned __int64 val)
+BOOL inline FitsInU1(uint64_t val)
 {
     LIMITED_METHOD_CONTRACT;
-    return val == (unsigned __int64)(unsigned __int8)val;
+    return val == (uint64_t)(uint8_t)val;
 }
 
-BOOL inline FitsInU2(unsigned __int64 val)
+BOOL inline FitsInU2(uint64_t val)
 {
     LIMITED_METHOD_CONTRACT;
-    return val == (unsigned __int64)(unsigned __int16)val;
+    return val == (uint64_t)(uint16_t)val;
 }
 
-BOOL inline FitsInU4(unsigned __int64 val)
+BOOL inline FitsInU4(uint64_t val)
 {
     LIMITED_METHOD_DAC_CONTRACT;
-    return val == (unsigned __int64)(unsigned __int32)val;
+    return val == (uint64_t)(uint32_t)val;
 }
-
-// returns FALSE if overflows 15 bits: otherwise, (*pa) is incremented by b
-BOOL inline SafeAddUINT15(UINT16 *pa, ULONG b)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    UINT16 a = *pa;
-    // first check if overflows 16 bits
-    if ( ((UINT16)b) != b )
-    {
-        return FALSE;
-    }
-    // now make sure that doesn't overflow 15 bits
-    if (((ULONG)a + b) > 0x00007FFF)
-    {
-        return FALSE;
-    }
-    (*pa) += (UINT16)b;
-    return TRUE;
-}
-
-
-// returns FALSE if overflows 16 bits: otherwise, (*pa) is incremented by b
-BOOL inline SafeAddUINT16(UINT16 *pa, ULONG b)
-{
-    UINT16 a = *pa;
-    if ( ((UINT16)b) != b )
-    {
-        return FALSE;
-    }
-    // now make sure that doesn't overflow 16 bits
-    if (((ULONG)a + b) > 0x0000FFFF)
-    {
-        return FALSE;
-    }
-    (*pa) += (UINT16)b;
-    return TRUE;
-}
-
-
-// returns FALSE if overflow: otherwise, (*pa) is incremented by b
-BOOL inline SafeAddUINT32(UINT32 *pa, UINT32 b)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    UINT32 a = *pa;
-    if ( ((UINT32)(a + b)) < a)
-    {
-        return FALSE;
-    }
-    (*pa) += b;
-    return TRUE;
-}
-
-// returns FALSE if overflow: otherwise, (*pa) is incremented by b
-BOOL inline SafeAddULONG(ULONG *pa, ULONG b)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    ULONG a = *pa;
-    if ( ((ULONG)(a + b)) < a)
-    {
-        return FALSE;
-    }
-    (*pa) += b;
-    return TRUE;
-}
-
-// returns FALSE if overflow: otherwise, (*pa) is multiplied by b
-BOOL inline SafeMulSIZE_T(SIZE_T *pa, SIZE_T b)
-{
-    LIMITED_METHOD_CONTRACT;
-
-#ifdef _DEBUG_IMPL
-    {
-        //Make sure SIZE_T is unsigned
-        SIZE_T m = ((SIZE_T)(-1));
-        SIZE_T z = 0;
-        _ASSERTE(m > z);
-    }
-#endif
-
-
-    SIZE_T a = *pa;
-    const SIZE_T m = ((SIZE_T)(-1));
-    if ( (m / b) < a )
-    {
-        return FALSE;
-    }
-    (*pa) *= b;
-    return TRUE;
-}
-
-
 
 //************************************************************************
 // CQuickHeap
@@ -247,7 +72,7 @@ BOOL inline SafeMulSIZE_T(SIZE_T *pa, SIZE_T b)
 // Destroying the heap frees all blocks allocated from the heap.
 // Blocks cannot be freed individually.
 //
-// The heap uses COM+ exceptions to report errors.
+// The heap uses exceptions to report errors.
 //
 // The heap does not use any internal synchronization so it is not
 // multithreadsafe.
@@ -297,14 +122,8 @@ class CQuickHeap
         QuickBlock      *m_pFirstBigQuickBlock;
 };
 
-void PrintToStdOutA(const char *pszString);
-void PrintToStdOutW(const WCHAR *pwzString);
 void PrintToStdErrA(const char *pszString);
 void PrintToStdErrW(const WCHAR *pwzString);
-void NPrintToStdOutA(const char *pszString, size_t nbytes);
-void NPrintToStdOutW(const WCHAR *pwzString, size_t nchars);
-void NPrintToStdErrA(const char *pszString, size_t nbytes);
-void NPrintToStdErrW(const WCHAR *pwzString, size_t nchars);
 
 #include "nativevaraccessors.h"
 
@@ -372,6 +191,73 @@ typedef GCAssert<FALSE>                 GCAssertPreemp;
 #define GCX_COOP_NO_DTOR_END()          __gcHolder.Leave();
 #endif
 
+// The GCX_*_REGION_BEGIN/END macros are the region form of the corresponding GCX_ holders.
+//
+// WHEN THE REGION FORM MUST BE USED
+// --------------------------------
+// A region must be used instead of the plain GCX_ holder whenever the foreign WebAssembly
+// exception tag used by RtlRestoreContext to resume a managed catch can unwind through the holder
+// while its GC mode transition is still active.
+//
+// This occurs in two principal shapes:
+//
+//   - The holder spans a transition into managed execution from which an exception can be handled
+//     by an older managed frame. Examples include CallDescrWorker, interpreter-to-managed calls,
+//     and UnmanagedCallersOnlyCaller::InvokeDirect when invoking Ex::RhThrowEx, Ex::RhThrowHwEx,
+//     or Ex::RhRethrow. The foreign tag bypasses native typed catches while unwinding toward the
+//     managed catch continuation.
+//
+//   - The holder's scope contains a complete INSTALL/UNINSTALL_UNWIND_AND_CONTINUE_HANDLER or
+//     INSTALL/UNINSTALL_MANAGED_EXCEPTION_DISPATCHER pair using the default uninstall form or
+//     _EX(false), or calls a function that performs equivalent redispatch while the holder remains
+//     active. The UNINSTALL catches an ordinary native exception and redispatches it as a managed
+//     exception before the outer holder leaves its scope.
+//
+// The containment direction matters. A holder nested entirely inside an installed handler span
+// is not made unsafe merely by that span: an ordinary native exception unwinds the holder before
+// reaching the matching catch. This does not make the holder safe if it independently spans a
+// transition into managed execution; in that case the foreign tag can bypass the installed native
+// catch and unwind directly through the holder.
+//
+// UnmanagedCallersOnlyCaller::InvokeThrowing/InvokeThrowing_Ret do not themselves require region
+// form for their inner GCX_PREEMP holder. Their calling convention marshals managed exceptions
+// through an exception out-parameter, and that holder ends before COMPlusThrow raises the
+// corresponding ordinary native exception. This does not make an outer holder containing a
+// complete dispatcher INSTALL/UNINSTALL pair safe.
+//
+// Type loading, JIT compilation, entrypoint acquisition, or other GC-triggering work does not by
+// itself require region form. It does so only if its dynamic call path can enter managed execution
+// or redispatch a managed exception while the holder remains active.
+//
+// On WASM, Clang lowers a C++ destructor cleanup to a catch_all, which intercepts the foreign tag,
+// runs the destructor, and rethrows. A plain GCX_ holder on such a frame would therefore change
+// the thread's GC mode as the tag passes through. Clang lowers an explicit catch (...) to a catch
+// of the C++ exception tag only, so a region built from try/catch (...) does not misfire.
+//
+// Do not confuse the exception-dispatcher macros above with
+// INSTALL_RESUME_AFTER_CATCH_HANDLER_WITH_FRAME/_CONTEXT. The latter are guarded by
+// `#if defined(FEATURE_INTERPRETER) && !defined(HOST_WASM)`, are no-ops on WASM, and are unrelated
+// to this hazard.
+//
+// It is always correct to use the plain GCX_ holder when none of the above applies; the region
+// form simply carries the restriction below, so prefer the holder where there is a choice.
+//
+// RESTRICTION
+// -----------
+// Semantically a region is equivalent to the corresponding GCX_ holder, as long as the region
+// does not contain an early return, break, continue, or goto out of the region. Such a jump
+// skips the _END macro and leaks the mode transition; restructure the code to fall out of the
+// region instead (for example by assigning to a result variable declared before the _BEGIN).
+#ifdef TARGET_WASM
+// On WASM, this prevents the COOP transition from being triggered as part of RtlRestoreContext.
+// THERE MUST NOT BE A return, break, goto, or continue that escapes from a GCX_COOP_REGION_BEGIN/END block.
+#define GCX_COOP_REGION_BEGIN()         { GCX_COOP_NO_DTOR(); try { do {} while (0)
+#define GCX_COOP_REGION_END()           } catch (...) { GCX_COOP_NO_DTOR_END(); throw; } GCX_COOP_NO_DTOR_END(); } do {} while (0)
+#else
+#define GCX_COOP_REGION_BEGIN()         { GCX_COOP(); { do {} while (0)
+#define GCX_COOP_REGION_END()           } } do {} while (0)
+#endif
+
 #ifdef ENABLE_CONTRACTS_IMPL
 #define GCX_PREEMP()                                    GCPreemp __gcHolder("GCX_PREEMP", __FUNCTION__, __FILE__, __LINE__)
 #define GCX_PREEMP_NO_DTOR()                            GCPreempNoDtor __gcHolder; __gcHolder.Enter(TRUE, "GCX_PREEMP_NO_DTOR", __FUNCTION__, __FILE__, __LINE__)
@@ -382,6 +268,18 @@ typedef GCAssert<FALSE>                 GCAssertPreemp;
 #define GCX_PREEMP_NO_DTOR_HAVE_THREAD(curThreadNullOk) GCPreempNoDtor __gcHolder; __gcHolder.Enter(curThreadNullOk, TRUE)
 #define GCX_PREEMP_NO_DTOR()                            GCPreempNoDtor __gcHolder; __gcHolder.Enter(TRUE)
 #define GCX_PREEMP_NO_DTOR_END()                        __gcHolder.Leave()
+#endif
+
+#ifdef TARGET_WASM
+// On WASM, this prevents the PREEMP transition from being triggered as part of RtlRestoreContext.
+// See the comment on GCX_COOP_REGION_BEGIN above for when the region form must be used instead of
+// the plain GCX_PREEMP holder.
+// THERE MUST NOT BE A return, break, goto, or continue that escapes from a GCX_PREEMP_REGION_BEGIN/END block.
+#define GCX_PREEMP_REGION_BEGIN()       { GCX_PREEMP_NO_DTOR(); try { do {} while (0)
+#define GCX_PREEMP_REGION_END()         } catch (...) { GCX_PREEMP_NO_DTOR_END(); throw; } GCX_PREEMP_NO_DTOR_END(); } do {} while (0)
+#else
+#define GCX_PREEMP_REGION_BEGIN()       { GCX_PREEMP(); { do {} while (0)
+#define GCX_PREEMP_REGION_END()         } } do {} while (0)
 #endif
 
 #ifdef ENABLE_CONTRACTS_IMPL
@@ -404,6 +302,18 @@ typedef GCAssert<FALSE>                 GCAssertPreemp;
 #define GCX_MAYBE_COOP(_cond)                             GCCoop __gcHolder(_cond)
 #define GCX_MAYBE_COOP_NO_DTOR(_cond)   GCCoopNoDtor __gcHolder; __gcHolder.Enter(_cond)
 #define GCX_MAYBE_COOP_NO_DTOR_END()    __gcHolder.Leave();
+#endif
+
+#ifdef TARGET_WASM
+// On WASM, this prevents the COOP transition from being triggered as part of RtlRestoreContext.
+// See the comment on GCX_COOP_REGION_BEGIN above for when the region form must be used instead of
+// the plain GCX_MAYBE_COOP holder.
+// THERE MUST NOT BE A return, break, goto, or continue that escapes from a GCX_MAYBE_COOP_REGION_BEGIN/END block.
+#define GCX_MAYBE_COOP_REGION_BEGIN(_cond)  { GCX_MAYBE_COOP_NO_DTOR(_cond); try { do {} while (0)
+#define GCX_MAYBE_COOP_REGION_END()         } catch (...) { GCX_MAYBE_COOP_NO_DTOR_END(); throw; } GCX_MAYBE_COOP_NO_DTOR_END(); } do {} while (0)
+#else
+#define GCX_MAYBE_COOP_REGION_BEGIN(_cond)  { GCX_MAYBE_COOP(_cond); { do {} while (0)
+#define GCX_MAYBE_COOP_REGION_END()         } } do {} while (0)
 #endif
 
 #ifdef ENABLE_CONTRACTS_IMPL
@@ -450,15 +360,39 @@ typedef GCAssert<FALSE>                 GCAssertPreemp;
 #define GCX_COOP_NO_DTOR()
 #define GCX_COOP_NO_DTOR_END()
 
+// On WASM, this prevents the COOP transition from being triggered as part of RtlRestoreContext.
+// Semantically it's equivalent to the corresponding GCX_ holder on other platforms, as long as
+// the region does not contain an early return, break, continue, or goto out of the region. Such
+// a jump skips the _END macro and leaks the mode transition; restructure the code to fall out of
+// the region instead (for example by assigning to a result variable declared before the _BEGIN).
+#define GCX_COOP_REGION_BEGIN()         { do {} while (0)
+#define GCX_COOP_REGION_END()           } do {} while (0)
+
 #define GCX_PREEMP()
 #define GCX_PREEMP_NO_DTOR()
 #define GCX_PREEMP_NO_DTOR_HAVE_THREAD(curThreadNullOk)
 #define GCX_PREEMP_NO_DTOR_END()
 
+// On WASM, this prevents the PREEMP transition from being triggered as part of RtlRestoreContext.
+// Semantically it's equivalent to the corresponding GCX_ holder on other platforms, as long as
+// the region does not contain an early return, break, continue, or goto out of the region. Such
+// a jump skips the _END macro and leaks the mode transition; restructure the code to fall out of
+// the region instead (for example by assigning to a result variable declared before the _BEGIN).
+#define GCX_PREEMP_REGION_BEGIN()       { do {} while (0)
+#define GCX_PREEMP_REGION_END()         } do {} while (0)
+
 #define GCX_MAYBE_PREEMP(_cond)
 
 #define GCX_COOP_NO_THREAD_BROKEN()
 #define GCX_MAYBE_COOP_NO_THREAD_BROKEN(_cond)
+
+// On WASM, this prevents the COOP transition from being triggered as part of RtlRestoreContext.
+// Semantically it's equivalent to the corresponding GCX_ holder on other platforms, as long as
+// the region does not contain an early return, break, continue, or goto out of the region. Such
+// a jump skips the _END macro and leaks the mode transition; restructure the code to fall out of
+// the region instead (for example by assigning to a result variable declared before the _BEGIN).
+#define GCX_MAYBE_COOP_REGION_BEGIN(_cond)  { do {} while (0)
+#define GCX_MAYBE_COOP_REGION_END()         } do {} while (0)
 
 #define GCX_PREEMP_THREAD_EXISTS(curThread)
 #define GCX_COOP_THREAD_EXISTS(curThread)
@@ -545,11 +479,11 @@ extern LockOwner g_lockTrustMeIAmThreadSafe;
 class EEThreadId
 {
 private:
-    void *m_FiberPtrId;
+    static SIZE_T const UNKNOWN_ID = INVALID_POINTER_CD;
+    SIZE_T m_FiberPtrId;
 public:
 #ifdef _DEBUG
-    EEThreadId()
-    : m_FiberPtrId(NULL)
+    EEThreadId() : m_FiberPtrId(UNKNOWN_ID)
     {
         LIMITED_METHOD_CONTRACT;
     }
@@ -559,28 +493,27 @@ public:
     {
         WRAPPER_NO_CONTRACT;
 
-        m_FiberPtrId = ClrTeb::GetFiberPtrId();
+        m_FiberPtrId = (SIZE_T)ClrTeb::GetFiberPtrId();
     }
 
     bool IsCurrentThread() const
     {
         WRAPPER_NO_CONTRACT;
 
-        return (m_FiberPtrId == ClrTeb::GetFiberPtrId());
+        return (m_FiberPtrId == (SIZE_T)ClrTeb::GetFiberPtrId());
     }
-
 
 #ifdef _DEBUG
     bool IsUnknown() const
     {
         LIMITED_METHOD_CONTRACT;
-        return m_FiberPtrId == NULL;
+        return m_FiberPtrId == UNKNOWN_ID;
     }
 #endif
-    void Clear()
+    void Clear() noexcept
     {
         LIMITED_METHOD_CONTRACT;
-        m_FiberPtrId = NULL;
+        m_FiberPtrId = UNKNOWN_ID;
     }
 };
 
@@ -592,35 +525,7 @@ HMODULE CLRLoadLibrary(LPCWSTR lpLibFileName);
 
 BOOL CLRFreeLibrary(HMODULE hModule);
 
-LPVOID
-CLRMapViewOfFile(
-    IN HANDLE hFileMappingObject,
-    IN DWORD dwDesiredAccess,
-    IN DWORD dwFileOffsetHigh,
-    IN DWORD dwFileOffsetLow,
-    IN SIZE_T dwNumberOfBytesToMap,
-    IN LPVOID lpBaseAddress = NULL);
-
-BOOL
-CLRUnmapViewOfFile(
-    IN LPVOID lpBaseAddress
-    );
-
-#ifndef DACCESS_COMPILE
-FORCEINLINE void VoidCLRUnmapViewOfFile(void *ptr) { CLRUnmapViewOfFile(ptr); }
-typedef Wrapper<void *, DoNothing, VoidCLRUnmapViewOfFile> CLRMapViewHolder;
-#else
-typedef Wrapper<void *, DoNothing, DoNothing> CLRMapViewHolder;
-#endif
-
-#ifdef TARGET_UNIX
-#ifndef DACCESS_COMPILE
-FORCEINLINE void VoidPALUnloadPEFile(void *ptr) { PAL_LOADUnloadPEFile(ptr); }
-typedef Wrapper<void *, DoNothing, VoidPALUnloadPEFile> PALPEFileHolder;
-#else
-typedef Wrapper<void *, DoNothing, DoNothing> PALPEFileHolder;
-#endif
-#endif // TARGET_UNIX
+BOOL IsIPInModule(PTR_VOID pModuleBaseAddress, PCODE ip);
 
 #define SetupThreadForComCall(OOMRetVal)            \
     MAKE_CURRENT_THREAD_AVAILABLE_EX(GetThreadNULLOk()); \
@@ -635,55 +540,33 @@ typedef Wrapper<void *, DoNothing, DoNothing> PALPEFileHolder;
 #define SetupForComCallDWORD() SetupThreadForComCall(ERROR_OUTOFMEMORY)
 
 // A holder for NATIVE_LIBRARY_HANDLE.
-FORCEINLINE void VoidFreeNativeLibrary(NATIVE_LIBRARY_HANDLE h)
+struct NativeLibraryHandleTraits final
 {
-    WRAPPER_NO_CONTRACT;
+    using Type = NATIVE_LIBRARY_HANDLE;
+    static constexpr Type Default() { return NULL; }
+    static void Free(Type h) noexcept
+    {
+        STATIC_CONTRACT_WRAPPER;
 
-    if (h == NULL)
-        return;
+        if (h == NULL)
+            return;
 
 #ifdef HOST_UNIX
-    PAL_FreeLibraryDirect(h);
+        PAL_FreeLibraryDirect(h);
 #else
-    FreeLibrary(h);
+        FreeLibrary(h);
 #endif
-}
+    }
+};
 
-typedef Wrapper<NATIVE_LIBRARY_HANDLE, DoNothing<NATIVE_LIBRARY_HANDLE>, VoidFreeNativeLibrary, NULL> NativeLibraryHandleHolder;
+using NativeLibraryHandleHolder = LifetimeHolder<NativeLibraryHandleTraits>;
 
-extern thread_local size_t t_CantStopCount;
+BOOL IsValidMethodCodeNotification(ULONG32 Notification);
 
-// For debugging, we can track arbitrary Can't-Stop regions.
-// In V1.0, this was on the Thread object, but we need to track this for threads w/o a Thread object.
-FORCEINLINE void IncCantStopCount()
-{
-    t_CantStopCount++;
-}
-
-FORCEINLINE void DecCantStopCount()
-{
-    t_CantStopCount--;
-}
-
-typedef StateHolder<IncCantStopCount, DecCantStopCount> CantStopHolder;
-
-#ifdef _DEBUG
-// For debug-only, this can be used w/ a holder to ensure that we're keeping our CS count balanced.
-// We should never use this w/ control flow.
-inline size_t GetCantStopCount()
-{
-    return t_CantStopCount;
-}
-
-// At places where we know we're calling out to native code, we can assert that we're NOT in a CS region.
-// This is _debug only since we only use it for asserts; not for real code-flow control in a retail build.
-inline bool IsInCantStopRegion()
-{
-    return (GetCantStopCount() > 0);
-}
-#endif // _DEBUG
-
-BOOL IsValidMethodCodeNotification(USHORT Notification);
+// Number of usable JIT notification entries. The allocated table has
+// JIT_NOTIFICATION_TABLE_SIZE + 1 slots; slot 0 stores bookkeeping (length).
+// Referenced by the cDAC via CDAC_GLOBAL(JITNotificationTableSize, ...).
+constexpr UINT JIT_NOTIFICATION_TABLE_SIZE = 1000;
 
 typedef DPTR(struct JITNotification) PTR_JITNotification;
 struct JITNotification
@@ -694,7 +577,7 @@ struct JITNotification
 
     JITNotification() { SetFree(); }
     BOOL IsFree() { return state == CLRDATA_METHNOTIFY_NONE; }
-    void SetFree() { state = CLRDATA_METHNOTIFY_NONE; clrModule = NULL; methodToken = 0; }
+    void SetFree() { state = CLRDATA_METHNOTIFY_NONE; clrModule = 0; methodToken = 0; }
     void SetState(TADDR moduleIn, mdToken tokenIn, USHORT NType)
     {
         _ASSERTE(IsValidMethodCodeNotification(NType));
@@ -717,7 +600,7 @@ GVAL_DECL(ULONG32, g_dacNotificationFlags);
 inline void
 InitializeJITNotificationTable()
 {
-    g_pNotificationTable = new (nothrow) JITNotification[1001];
+    g_pNotificationTable = new (nothrow) JITNotification[JIT_NOTIFICATION_TABLE_SIZE + 1];
 }
 
 #endif // TARGET_UNIX && !DACCESS_COMPILE
@@ -750,111 +633,16 @@ private:
     JITNotification *m_jitTable;
 };
 
-typedef DPTR(struct GcNotification) PTR_GcNotification;
-
-inline
-BOOL IsValidGcNotification(GcEvt_t evType)
-{ return (evType < GC_EVENT_TYPE_MAX); }
-
-#define CLRDATA_GC_NONE  0
-
-struct GcNotification
+namespace GcNotifications
 {
-    GcEvtArgs ev;
-
-    GcNotification() { SetFree(); }
-    BOOL IsFree() { return ev.typ == CLRDATA_GC_NONE; }
-    void SetFree() { memset(this, 0, sizeof(*this)); ev.typ = (GcEvt_t) CLRDATA_GC_NONE; }
-    void Set(GcEvtArgs ev_)
-    {
-        _ASSERTE(IsValidGcNotification(ev_.typ));
-        ev = ev_;
-    }
-    BOOL IsMatch(GcEvtArgs ev_)
-    {
-        LIMITED_METHOD_CONTRACT;
-        if (ev.typ != ev_.typ)
-        {
-            return FALSE;
-        }
-        switch (ev.typ)
-        {
-        case GC_MARK_END:
-            if (ev_.condemnedGeneration == 0 ||
-                (ev.condemnedGeneration & ev_.condemnedGeneration) != 0)
-            {
-                return TRUE;
-            }
-            break;
-        default:
-            break;
-        }
-
-        return FALSE;
-    }
-};
-
-GPTR_DECL(GcNotification, g_pGcNotificationTable);
-
-class GcNotifications
-{
-public:
-    GcNotifications(GcNotification *gcTable);
-    BOOL SetNotification(GcEvtArgs ev);
-    GcEvtArgs* GetNotification(GcEvtArgs ev)
-    {
-        LIMITED_METHOD_CONTRACT;
-        UINT idx;
-        if (FindItem(ev, &idx))
-        {
-            return &m_gcTable[idx].ev;
-        }
-        else
-        {
-            return NULL;
-        }
-    }
-
-    // if clrModule is NULL, all active notifications are changed to NType
-    inline BOOL IsActive()
-    { return m_gcTable != NULL; }
-
-    UINT GetTableSize()
-    { return Size(); }
-
-#ifdef DACCESS_COMPILE
-    static GcNotification *InitializeNotificationTable(UINT TableSize);
-    // Updates target table from host copy
-    BOOL UpdateOutOfProcTable();
-#endif
-
-private:
-    UINT& Length()
-    {
-        LIMITED_METHOD_CONTRACT;
-        _ASSERTE(IsActive());
-        UINT *pLen = (UINT *) &(m_gcTable[-1].ev.typ);
-        return *pLen;
-    }
-    UINT& Size()
-    {
-        _ASSERTE(IsActive());
-        UINT *pLen = (UINT *) &(m_gcTable[-1].ev.typ);
-        return *(pLen+1);
-    }
-    void IncrementLength()
-    { ++Length(); }
-    void DecrementLength()
-    { --Length(); }
-
-    BOOL FindItem(GcEvtArgs ev, UINT *indexOut);
-
-    GcNotification *m_gcTable;
+    VOID SetNotification(GcEvtArgs ev);
+    BOOL GetNotification(GcEvtArgs ev);
 };
 
 
 class MethodDesc;
 class Module;
+class ModuleBase;
 
 class DACNotify
 {
@@ -864,7 +652,7 @@ public:
         MODULE_LOAD_NOTIFICATION=1,
         MODULE_UNLOAD_NOTIFICATION=2,
         JIT_NOTIFICATION=3,
-        JIT_PITCHING_NOTIFICATION=4,
+        __UNUSED__=4,
         EXCEPTION_NOTIFICATION=5,
         GC_NOTIFICATION= 6,
         CATCH_ENTER_NOTIFICATION = 7,
@@ -873,17 +661,14 @@ public:
 
     // called from the runtime
     static void DoJITNotification(MethodDesc *MethodDescPtr, TADDR NativeCodeLocation);
-    static void DoJITPitchingNotification(MethodDesc *MethodDescPtr);
     static void DoModuleLoadNotification(Module *Module);
     static void DoModuleUnloadNotification(Module *Module);
-    static void DoExceptionNotification(class Thread* ThreadPtr);
     static void DoGCNotification(const GcEvtArgs& evtargs);
     static void DoExceptionCatcherEnterNotification(MethodDesc *MethodDescPtr, DWORD nativeOffset);
 
     // called from the DAC
     static int GetType(TADDR Args[]);
     static BOOL ParseJITNotification(TADDR Args[], TADDR& MethodDescPtr, TADDR& NativeCodeLocation);
-    static BOOL ParseJITPitchingNotification(TADDR Args[], TADDR& MethodDescPtr);
     static BOOL ParseModuleLoadNotification(TADDR Args[], TADDR& ModulePtr);
     static BOOL ParseModuleUnloadNotification(TADDR Args[], TADDR& ModulePtr);
     static BOOL ParseExceptionNotification(TADDR Args[], TADDR& ThreadPtr);
@@ -891,9 +676,9 @@ public:
     static BOOL ParseExceptionCatcherEnterNotification(TADDR Args[], TADDR& MethodDescPtr, DWORD& nativeOffset);
 };
 
-void DACNotifyCompilationFinished(MethodDesc *pMethodDesc);
+void DACNotifyCompilationFinished(MethodDesc *pMethodDesc, PCODE pCode);
 
-// These wrap the SString:L:CompareCaseInsenstive function in a way that makes it
+// These wrap the SString:L:CompareCaseInsensitive function in a way that makes it
 // easy to fix code that uses _stricmp. _stricmp should be avoided as it uses the current
 // C-runtime locale rather than the invariance culture.
 //
@@ -906,18 +691,6 @@ BOOL DbgIsExecutable(LPVOID lpMem, SIZE_T length);
 
 int GetRandomInt(int maxVal);
 
-//
-//
-// COMCHARACTER
-//
-//
-class COMCharacter {
-public:
-    //These are here for support from native code.  They are never called from our managed classes.
-    static BOOL nativeIsWhiteSpace(WCHAR c);
-    static BOOL nativeIsDigit(WCHAR c);
-};
-
 // ======================================================================================
 // Simple, reusable 100ns timer for normalizing ticks. For use in Q/FCalls to avoid discrepency with
 // tick frequency between native and managed.
@@ -927,8 +700,8 @@ private:
     static const int64_t NormalizedTicksPerSecond = 10000000 /* 100ns ticks per second (1e7) */;
     static Volatile<double> s_frequency;
 
-    LARGE_INTEGER startTimestamp;
-    LARGE_INTEGER stopTimestamp;
+    int64_t startTimestamp;
+    int64_t stopTimestamp;
 
 #if _DEBUG
     bool isRunning = false;
@@ -941,15 +714,14 @@ public:
         if (s_frequency.Load() == -1)
         {
             double frequency;
-            LARGE_INTEGER qpfValue;
-            QueryPerformanceFrequency(&qpfValue);
-            frequency = static_cast<double>(qpfValue.QuadPart);
+            int64_t qpfValue = minipal_hires_tick_frequency();
+            frequency = static_cast<double>(qpfValue);
             frequency /= NormalizedTicksPerSecond;
             s_frequency.Store(frequency);
         }
 
-        startTimestamp.QuadPart = 0;
-        startTimestamp.QuadPart = 0;
+        startTimestamp = 0;
+        stopTimestamp = 0;
     }
 
     // ======================================================================================
@@ -959,7 +731,7 @@ public:
     {
         LIMITED_METHOD_CONTRACT;
         _ASSERTE(!isRunning);
-        QueryPerformanceCounter(&startTimestamp);
+        startTimestamp = minipal_hires_ticks();
 
 #if _DEBUG
         isRunning = true;
@@ -973,7 +745,7 @@ public:
     {
         LIMITED_METHOD_CONTRACT;
         _ASSERTE(isRunning);
-        QueryPerformanceCounter(&stopTimestamp);
+        stopTimestamp = minipal_hires_ticks();
 
 #if _DEBUG
         isRunning = false;
@@ -989,9 +761,9 @@ public:
     {
         LIMITED_METHOD_CONTRACT;
         _ASSERTE(!isRunning);
-        _ASSERTE(startTimestamp.QuadPart > 0);
-        _ASSERTE(stopTimestamp.QuadPart > 0);
-        return static_cast<int64_t>((stopTimestamp.QuadPart - startTimestamp.QuadPart) / s_frequency);
+        _ASSERTE(startTimestamp > 0);
+        _ASSERTE(stopTimestamp > 0);
+        return static_cast<int64_t>((stopTimestamp - startTimestamp) / s_frequency);
     }
 };
 
@@ -1005,5 +777,30 @@ public:
 // Extract the file version from an executable.
 HRESULT GetFileVersion(LPCWSTR wszFilePath, ULARGE_INTEGER* pFileVersion);
 #endif // !TARGET_UNIX
+
+#define ENUM_PAGE_SIZES \
+    ENUM_PAGE_SIZE(16384) \
+    ENUM_PAGE_SIZE(32768) \
+    ENUM_PAGE_SIZE(65536)
+
+void FillStubCodePage(BYTE* pageBase, const void* code, SIZE_T codeSize, SIZE_T pageSize);
+
+#ifdef TARGET_64BIT
+// We use modified Daniel Lemire's fastmod algorithm (https://github.com/dotnet/runtime/pull/406),
+// which allows to avoid the long multiplication if the divisor is less than 2**31.
+// This is a copy of HashHelpers.cs, see that impl (or linked PR) for more details
+inline UINT64 GetFastModMultiplier(UINT32 divisor)
+{
+    return UINT64_MAX / divisor + 1;
+}
+
+inline UINT32 FastMod(UINT32 value, UINT32 divisor, UINT64 multiplier)
+{
+    _ASSERTE(divisor <= INT_MAX);
+    UINT32 highbits = (UINT32)(((((multiplier * value) >> 32) + 1) * divisor) >> 32);
+    _ASSERTE(highbits == value % divisor);
+    return highbits;
+}
+#endif
 
 #endif /* _H_UTIL */

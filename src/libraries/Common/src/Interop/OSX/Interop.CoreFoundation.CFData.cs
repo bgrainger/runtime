@@ -7,16 +7,16 @@ using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
 // Declared as signed long, which has sizeof(void*) on OSX.
-using CFIndex=System.IntPtr;
+using CFIndex = System.IntPtr;
 
 internal static partial class Interop
 {
     internal static partial class CoreFoundation
     {
-        [GeneratedDllImport(Libraries.CoreFoundationLibrary)]
+        [LibraryImport(Libraries.CoreFoundationLibrary)]
         private static unsafe partial byte* CFDataGetBytePtr(SafeCFDataHandle cfData);
 
-        [GeneratedDllImport(Libraries.CoreFoundationLibrary)]
+        [LibraryImport(Libraries.CoreFoundationLibrary)]
         private static partial CFIndex CFDataGetLength(SafeCFDataHandle cfData);
 
         internal static unsafe Span<byte> CFDataDangerousGetSpan(SafeCFDataHandle cfData)

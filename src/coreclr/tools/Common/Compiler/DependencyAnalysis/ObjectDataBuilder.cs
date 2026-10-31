@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using Internal.TypeSystem;
 
@@ -9,6 +10,8 @@ using Debug = System.Diagnostics.Debug;
 
 namespace ILCompiler.DependencyAnalysis
 {
+    // There is small set of ObjectDataBuilder in at src/installer/managed/Microsoft.NET.HostModel/ObjectDataBuilder.cs
+    // only for ResourceData.WriteResources
     public struct ObjectDataBuilder
 #if !READYTORUN
         : Internal.Runtime.ITargetBinaryWriter
@@ -21,10 +24,10 @@ namespace ILCompiler.DependencyAnalysis
         public ObjectDataBuilder(TargetDetails target, bool relocsOnly)
         {
             _target = target;
-            _data = new ArrayBuilder<byte>();
-            _relocs = new ArrayBuilder<Relocation>();
+            _data = default(ArrayBuilder<byte>);
+            _relocs = default(ArrayBuilder<Relocation>);
             Alignment = 1;
-            _definedSymbols = new ArrayBuilder<ISymbolDefinitionNode>();
+            _definedSymbols = default(ArrayBuilder<ISymbolDefinitionNode>);
 #if DEBUG
             _numReservations = 0;
             _checkAllSymbolDependenciesMustBeMarked = !relocsOnly;
@@ -83,42 +86,27 @@ namespace ILCompiler.DependencyAnalysis
 
         public void EmitShort(short emit)
         {
-            EmitByte((byte)(emit & 0xFF));
-            EmitByte((byte)((emit >> 8) & 0xFF));
+            BinaryPrimitives.WriteInt16LittleEndian(_data.AppendSpan(sizeof(short)), emit);
         }
 
         public void EmitUShort(ushort emit)
         {
-            EmitByte((byte)(emit & 0xFF));
-            EmitByte((byte)((emit >> 8) & 0xFF));
+            BinaryPrimitives.WriteUInt16LittleEndian(_data.AppendSpan(sizeof(ushort)), emit);
         }
 
         public void EmitInt(int emit)
         {
-            EmitByte((byte)(emit & 0xFF));
-            EmitByte((byte)((emit >> 8) & 0xFF));
-            EmitByte((byte)((emit >> 16) & 0xFF));
-            EmitByte((byte)((emit >> 24) & 0xFF));
+            BinaryPrimitives.WriteInt32LittleEndian(_data.AppendSpan(sizeof(int)), emit);
         }
 
         public void EmitUInt(uint emit)
         {
-            EmitByte((byte)(emit & 0xFF));
-            EmitByte((byte)((emit >> 8) & 0xFF));
-            EmitByte((byte)((emit >> 16) & 0xFF));
-            EmitByte((byte)((emit >> 24) & 0xFF));
+            BinaryPrimitives.WriteUInt32LittleEndian(_data.AppendSpan(sizeof(uint)), emit);
         }
 
         public void EmitLong(long emit)
         {
-            EmitByte((byte)(emit & 0xFF));
-            EmitByte((byte)((emit >> 8) & 0xFF));
-            EmitByte((byte)((emit >> 16) & 0xFF));
-            EmitByte((byte)((emit >> 24) & 0xFF));
-            EmitByte((byte)((emit >> 32) & 0xFF));
-            EmitByte((byte)((emit >> 40) & 0xFF));
-            EmitByte((byte)((emit >> 48) & 0xFF));
-            EmitByte((byte)((emit >> 56) & 0xFF));
+            BinaryPrimitives.WriteInt64LittleEndian(_data.AppendSpan(sizeof(long)), emit);
         }
 
         public void EmitNaturalInt(int emit)
@@ -134,16 +122,16 @@ namespace ILCompiler.DependencyAnalysis
             }
         }
 
-        public void EmitHalfNaturalInt(short emit)
+        public void EmitHalfNaturalUInt(ushort emit)
         {
             if (_target.PointerSize == 8)
             {
-                EmitInt(emit);
+                EmitUInt(emit);
             }
             else
             {
                 Debug.Assert(_target.PointerSize == 4);
-                EmitShort(emit);
+                EmitUShort(emit);
             }
         }
 
@@ -213,7 +201,9 @@ namespace ILCompiler.DependencyAnalysis
             return ticket;
         }
 
+#pragma warning disable CA1822 // Mark members as static
         private int ReturnReservationTicket(Reservation reservation)
+#pragma warning restore CA1822 // Mark members as static
         {
 #if DEBUG
             Debug.Assert(_numReservations > 0);
@@ -241,8 +231,7 @@ namespace ILCompiler.DependencyAnalysis
         public void EmitShort(Reservation reservation, short emit)
         {
             int offset = ReturnReservationTicket(reservation);
-            _data[offset] = (byte)(emit & 0xFF);
-            _data[offset + 1] = (byte)((emit >> 8) & 0xFF);
+            BinaryPrimitives.WriteInt16LittleEndian(_data.AsSpan(offset), emit);
         }
 
         public Reservation ReserveInt()
@@ -253,19 +242,13 @@ namespace ILCompiler.DependencyAnalysis
         public void EmitInt(Reservation reservation, int emit)
         {
             int offset = ReturnReservationTicket(reservation);
-            _data[offset] = (byte)(emit & 0xFF);
-            _data[offset + 1] = (byte)((emit >> 8) & 0xFF);
-            _data[offset + 2] = (byte)((emit >> 16) & 0xFF);
-            _data[offset + 3] = (byte)((emit >> 24) & 0xFF);
+            BinaryPrimitives.WriteInt32LittleEndian(_data.AsSpan(offset), emit);
         }
 
         public void EmitUInt(Reservation reservation, uint emit)
         {
             int offset = ReturnReservationTicket(reservation);
-            _data[offset] = (byte)(emit & 0xFF);
-            _data[offset + 1] = (byte)((emit >> 8) & 0xFF);
-            _data[offset + 2] = (byte)((emit >> 16) & 0xFF);
-            _data[offset + 3] = (byte)((emit >> 24) & 0xFF);
+            BinaryPrimitives.WriteUInt32LittleEndian(_data.AsSpan(offset), emit);
         }
 
         public void EmitReloc(ISymbolNode symbol, RelocType relocType, int delta = 0)
@@ -284,15 +267,31 @@ namespace ILCompiler.DependencyAnalysis
             // And add space for the reloc
             switch (relocType)
             {
+                case RelocType.WASM_TABLE_INDEX_I32:
+                case RelocType.WASM_TABLE_INDEX_REL_I32:
+                case RelocType.WASM_METHOD_RELATIVE_VIRTUAL_IP_I32:
                 case RelocType.IMAGE_REL_BASED_REL32:
                 case RelocType.IMAGE_REL_BASED_RELPTR32:
                 case RelocType.IMAGE_REL_BASED_ABSOLUTE:
                 case RelocType.IMAGE_REL_BASED_HIGHLOW:
                 case RelocType.IMAGE_REL_SECREL:
+                case RelocType.IMAGE_REL_TLSGD:
+                case RelocType.IMAGE_REL_TPOFF:
                 case RelocType.IMAGE_REL_FILE_ABSOLUTE:
                 case RelocType.IMAGE_REL_BASED_ADDR32NB:
                 case RelocType.IMAGE_REL_SYMBOL_SIZE:
                     EmitInt(delta);
+                    break;
+                case RelocType.WASM_TYPE_INDEX_LEB:
+                case RelocType.WASM_ASYNC_RESUME_INFO_DELTA_ULEB:
+                    // Padded ULEB128, so the resolved value can be written in place
+                    uint value = checked((uint)delta);
+                    for (int i = 0; i < Relocation.GetSize(relocType) - 1; i++)
+                    {
+                        EmitByte((byte)((value & 0x7F) | 0x80));
+                        value >>= 7;
+                    }
+                    EmitByte(checked((byte)value));
                     break;
                 case RelocType.IMAGE_REL_BASED_DIR64:
                     EmitLong(delta);
@@ -300,13 +299,33 @@ namespace ILCompiler.DependencyAnalysis
                 case RelocType.IMAGE_REL_BASED_THUMB_BRANCH24:
                 case RelocType.IMAGE_REL_BASED_ARM64_BRANCH26:
                 case RelocType.IMAGE_REL_BASED_THUMB_MOV32:
+                case RelocType.IMAGE_REL_BASED_THUMB_MOV32_PCREL:
                 case RelocType.IMAGE_REL_BASED_ARM64_PAGEBASE_REL21:
                 case RelocType.IMAGE_REL_BASED_ARM64_PAGEOFFSET_12L:
                 case RelocType.IMAGE_REL_BASED_ARM64_PAGEOFFSET_12A:
+
+                case RelocType.IMAGE_REL_AARCH64_TLSDESC_ADR_PAGE21:
+                case RelocType.IMAGE_REL_AARCH64_TLSDESC_LD64_LO12:
+                case RelocType.IMAGE_REL_AARCH64_TLSDESC_ADD_LO12:
+                case RelocType.IMAGE_REL_AARCH64_TLSDESC_CALL:
+                case RelocType.IMAGE_REL_AARCH64_TLSLE_ADD_TPREL_HI12:
+                case RelocType.IMAGE_REL_AARCH64_TLSLE_ADD_TPREL_LO12_NC:
+
+                case RelocType.IMAGE_REL_BASED_LOONGARCH64_PC:
+                case RelocType.IMAGE_REL_BASED_LOONGARCH64_JIR:
+
+                case RelocType.IMAGE_REL_BASED_RISCV64_CALL_PLT:
+                case RelocType.IMAGE_REL_BASED_RISCV64_PCREL_I:
+                case RelocType.IMAGE_REL_BASED_RISCV64_PCREL_S:
                     Debug.Assert(delta == 0);
                     // Do not vacate space for this kind of relocation, because
                     // the space is embedded in the instruction.
-                    break;                    
+                    break;
+
+                case RelocType.IMAGE_REL_FILE_CHECKSUM_CALLBACK:
+                    EmitZeros(delta);
+                    break;
+
                 default:
                     throw new NotImplementedException();
             }
@@ -315,6 +334,11 @@ namespace ILCompiler.DependencyAnalysis
         public void EmitPointerReloc(ISymbolNode symbol, int delta = 0)
         {
             EmitReloc(symbol, (_target.PointerSize == 8) ? RelocType.IMAGE_REL_BASED_DIR64 : RelocType.IMAGE_REL_BASED_HIGHLOW, delta);
+        }
+
+        public void EmitChecksumReloc(IChecksumNode checksum)
+        {
+            EmitReloc(checksum, RelocType.IMAGE_REL_FILE_CHECKSUM_CALLBACK, checksum.ChecksumSize);
         }
 
         public ObjectNode.ObjectData ToObjectData()

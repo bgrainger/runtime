@@ -8,17 +8,26 @@ using System.Text.Json.Serialization.Tests;
 
 namespace System.Text.Json.SourceGeneration.Tests
 {
-    public partial class ConstructorTests_Metadata : ConstructorTests
+    public sealed class ConstructorTests_Metadata_String : ConstructorTests_Metadata
     {
-        public ConstructorTests_Metadata()
-            : this(
-                  new StringSerializerWrapper(ConstructorTestsContext_Metadata.Default, (options) => new ConstructorTestsContext_Metadata(options)),
-                  new StreamSerializerWrapper(ConstructorTestsContext_Metadata.Default, (options) => new ConstructorTestsContext_Metadata(options)))
+        public ConstructorTests_Metadata_String()
+            : base(new StringSerializerWrapper(ConstructorTestsContext_Metadata.Default))
         {
         }
+    }
 
-        protected ConstructorTests_Metadata(JsonSerializerWrapperForString stringWrapper, JsonSerializerWrapperForStream streamWrapper)
-            : base(stringWrapper, streamWrapper)
+    public sealed class ConstructorTests_Metadata_AsyncStream : ConstructorTests_Metadata
+    {
+        public ConstructorTests_Metadata_AsyncStream()
+            : base(new AsyncStreamSerializerWrapper(ConstructorTestsContext_Metadata.Default))
+        {
+        }
+    }
+
+    public abstract partial class ConstructorTests_Metadata : ConstructorTests
+    {
+        protected ConstructorTests_Metadata(JsonSerializerWrapper stringWrapper)
+            : base(stringWrapper)
         {
         }
 
@@ -30,8 +39,31 @@ namespace System.Text.Json.SourceGeneration.Tests
         [JsonSerializable(typeof(InternalParameterizedCtor))]
         [JsonSerializable(typeof(ProtectedParameterizedCtor))]
         [JsonSerializable(typeof(PrivateParameterizedCtor_WithAttribute))]
+        [JsonSerializable(typeof(PrivateParameterizedCtor_WithAttribute_And_RequiredProperty))]
+        [JsonSerializable(typeof(PrivateParameterizedCtor_WithAttribute<int>))]
+        [JsonSerializable(typeof(PrivateParameterizedCtor_WithAttribute<string>))]
+        [JsonSerializable(typeof(PrivateParameterizedStructCtor_WithAttribute<int>))]
+        [JsonSerializable(typeof(PrivateParameterizedStructCtor_WithAttribute<string>))]
+        [JsonSerializable(typeof(PrivateParameterlessCtor_WithAttribute<int>))]
+        [JsonSerializable(typeof(PrivateParameterlessCtor_WithAttribute<string>))]
+        [JsonSerializable(typeof(PrivateParameterizedCtor_WithAttribute_FixedParameter<int>))]
+        [JsonSerializable(typeof(PrivateParameterizedCtor_WithAttribute_FixedParameter<string>))]
+        [JsonSerializable(typeof(PrivateParameterizedCtor_WithAttribute_And_RequiredProperty<int>))]
+        [JsonSerializable(typeof(PrivateCtorWithMixedParameterTypes<int>))]
+        [JsonSerializable(typeof(PrivateCtorWithMixedParameterTypes<string>))]
+        [JsonSerializable(typeof(PrivateCtorWithGenericMembers<string>))]
+        [JsonSerializable(typeof(PrivateCtorWithCompositeGenericMembers<int>))]
+        [JsonSerializable(typeof(PrivateCtorWithCompositeGenericMembers<string>))]
+        [JsonSerializable(typeof(PrivateCtorWithInheritedGenericMembers<int>))]
+        [JsonSerializable(typeof(GenericConstructorOuter<int>.Nested))]
+        [JsonSerializable(typeof(GenericConstructorOuter<int>.Nested<string>))]
+        [JsonSerializable(typeof(GenericConstructorOuter<int>.Middle.Inner<string>))]
+        [JsonSerializable(typeof(GenericConstructorOuter<string>.Middle.Inner<int>))]
         [JsonSerializable(typeof(InternalParameterizedCtor_WithAttribute))]
         [JsonSerializable(typeof(ProtectedParameterizedCtor_WithAttribute))]
+        [JsonSerializable(typeof(PrivateParameterlessCtor_WithAttribute))]
+        [JsonSerializable(typeof(InternalParameterlessCtor_WithAttribute))]
+        [JsonSerializable(typeof(ProtectedParameterlessCtor_WithAttribute))]
         [JsonSerializable(typeof(SinglePublicParameterizedCtor))]
         [JsonSerializable(typeof(SingleParameterlessCtor_MultiplePublicParameterizedCtor))]
         [JsonSerializable(typeof(SingleParameterlessCtor_MultiplePublicParameterizedCtor_Struct))]
@@ -49,6 +81,7 @@ namespace System.Text.Json.SourceGeneration.Tests
         [JsonSerializable(typeof(Parameterized_WrapperForICollection))]
         [JsonSerializable(typeof(Point_2D_Struct))]
         [JsonSerializable(typeof(Point_2D_Struct_WithAttribute))]
+        [JsonSerializable(typeof(Point_2D_Struct_WithAttribute?))]
         [JsonSerializable(typeof(ObjWCtorMixedParams))]
         [JsonSerializable(typeof(Person_Class))]
         [JsonSerializable(typeof(Point_2D))]
@@ -99,6 +132,7 @@ namespace System.Text.Json.SourceGeneration.Tests
         [JsonSerializable(typeof(SimpleClassWithParameterizedCtor_Derived_GenericIDictionary_ObjectExt))]
         [JsonSerializable(typeof(Point_MembersHave_JsonInclude))]
         [JsonSerializable(typeof(ClassWithFiveArgs_MembersHave_JsonNumberHandlingAttributes))]
+        [JsonSerializable(typeof(Class_With_Parameters_Default_Values))]
         [JsonSerializable(typeof(Point_MembersHave_JsonPropertyName))]
         [JsonSerializable(typeof(Point_MembersHave_JsonConverter))]
         [JsonSerializable(typeof(Point_MembersHave_JsonIgnore))]
@@ -130,17 +164,71 @@ namespace System.Text.Json.SourceGeneration.Tests
         [JsonSerializable(typeof(LargeType_IgnoredProp_Bind_ParamWithDefaultValue))]
         [JsonSerializable(typeof(LargeType_IgnoredProp_Bind_Param))]
         [JsonSerializable(typeof(ClassWithIgnoredSameType))]
+        [JsonSerializable(typeof(ClassWithDefaultCtorParams))]
+        [JsonSerializable(typeof(StructWithPropertyInit))]
+        [JsonSerializable(typeof(StructWithFieldInit))]
+        [JsonSerializable(typeof(StructWithExplicitParameterlessCtor))]
+        [JsonSerializable(typeof(ClassWithManyConstructorParameters))]
+        [JsonSerializable(typeof(ClassWithInvalidArray))]
+        [JsonSerializable(typeof(ClassWithInvalidDictionary))]
+        [JsonSerializable(typeof(TypeWithEnumParameters))]
+        [JsonSerializable(typeof(ClassWithIgnoredPropertyDefaultParam))]
+        [JsonSerializable(typeof(ClassWithCustomConverterOnCtorParameter))]
+        [JsonSerializable(typeof(ClassWithConflictingCaseInsensitiveProperties))]
+        [JsonSerializable(typeof(Class_ExtraProperty_ExtData))]
+        [JsonSerializable(typeof(Class_ExtraProperty_JsonElementDictionaryExtData))]
+        [JsonSerializable(typeof(Class_ManyParameters_ExtraProperty_ExtData))]
+        [JsonSerializable(typeof(ClassWithRequiredProperty))]
+        [JsonSerializable(typeof(TypeWith_InParameters))]
+        [JsonSerializable(typeof(TypeWith_MixedByRefParameters))]
+        [JsonSerializable(typeof(TypeWith_LargeInParameters))]
+        [JsonSerializable(typeof(TypeWith_RefParameters))]
+        [JsonSerializable(typeof(TypeWith_OutParameters))]
+        [JsonSerializable(typeof(TypeWith_InParameter_Primitive))]
+        [JsonSerializable(typeof(TypeWith_InParameter_Struct))]
+        [JsonSerializable(typeof(TypeWith_InParameter_ReferenceType))]
+        [JsonSerializable(typeof(TypeWith_RefParameter_Primitive))]
+        [JsonSerializable(typeof(TypeWith_RefParameter_Struct))]
+        [JsonSerializable(typeof(TypeWith_RefParameter_ReferenceType))]
+        [JsonSerializable(typeof(TypeWith_OutParameter_Primitive))]
+        [JsonSerializable(typeof(TypeWith_OutParameter_Struct))]
+        [JsonSerializable(typeof(TypeWith_OutParameter_ReferenceType))]
+        [JsonSerializable(typeof(TypeWith_RefReadonlyParameter_Primitive))]
+        [JsonSerializable(typeof(TypeWith_RefReadonlyParameter_Struct))]
+        [JsonSerializable(typeof(TypeWith_RefReadonlyParameter_ReferenceType))]
+        [JsonSerializable(typeof(PrivateCtorWithInParameters))]
+        [JsonSerializable(typeof(PrivateCtorWithByRefParameters<int>))]
+        [JsonSerializable(typeof(PrivateCtorWithByRefParameters<string>))]
+        [JsonSerializable(typeof(PrivateStructCtorWithByRefParameters))]
+        [JsonSerializable(typeof(PrivateGenericStructCtorWithByRefParameters<int>))]
+        [JsonSerializable(typeof(PrivateGenericStructCtorWithByRefParameters<string>))]
+        [JsonSerializable(typeof(PrivateCtorWithOutParameters))]
+        [JsonSerializable(typeof(ParameterizedClass_WithStringProperty))]
+        [JsonSerializable(typeof(ParameterizedRecord_WithStringProperty))]
         internal sealed partial class ConstructorTestsContext_Metadata : JsonSerializerContext
         {
         }
     }
 
-    public partial class ConstructorTests_Default : ConstructorTests_Metadata
+    public sealed class ConstructorTests_Default_String : ConstructorTests_Default
     {
-        public ConstructorTests_Default()
-            : base(
-                  new StringSerializerWrapper(ConstructorTestsContext_Default.Default, (options) => new ConstructorTestsContext_Default(options)),
-                  new StreamSerializerWrapper(ConstructorTestsContext_Default.Default, (options) => new ConstructorTestsContext_Default(options)))
+        public ConstructorTests_Default_String()
+            : base(new StringSerializerWrapper(ConstructorTestsContext_Default.Default))
+        {
+        }
+    }
+
+    public sealed class ConstructorTests_Default_AsyncStream : ConstructorTests_Default
+    {
+        public ConstructorTests_Default_AsyncStream()
+            : base(new AsyncStreamSerializerWrapper(ConstructorTestsContext_Default.Default))
+        {
+        }
+    }
+
+    public abstract partial class ConstructorTests_Default : ConstructorTests_Metadata
+    {
+        public ConstructorTests_Default(JsonSerializerWrapper jsonSerializer) : base(jsonSerializer)
         {
         }
 
@@ -151,8 +239,31 @@ namespace System.Text.Json.SourceGeneration.Tests
         [JsonSerializable(typeof(InternalParameterizedCtor))]
         [JsonSerializable(typeof(ProtectedParameterizedCtor))]
         [JsonSerializable(typeof(PrivateParameterizedCtor_WithAttribute))]
+        [JsonSerializable(typeof(PrivateParameterizedCtor_WithAttribute_And_RequiredProperty))]
+        [JsonSerializable(typeof(PrivateParameterizedCtor_WithAttribute<int>))]
+        [JsonSerializable(typeof(PrivateParameterizedCtor_WithAttribute<string>))]
+        [JsonSerializable(typeof(PrivateParameterizedStructCtor_WithAttribute<int>))]
+        [JsonSerializable(typeof(PrivateParameterizedStructCtor_WithAttribute<string>))]
+        [JsonSerializable(typeof(PrivateParameterlessCtor_WithAttribute<int>))]
+        [JsonSerializable(typeof(PrivateParameterlessCtor_WithAttribute<string>))]
+        [JsonSerializable(typeof(PrivateParameterizedCtor_WithAttribute_FixedParameter<int>))]
+        [JsonSerializable(typeof(PrivateParameterizedCtor_WithAttribute_FixedParameter<string>))]
+        [JsonSerializable(typeof(PrivateParameterizedCtor_WithAttribute_And_RequiredProperty<int>))]
+        [JsonSerializable(typeof(PrivateCtorWithMixedParameterTypes<int>))]
+        [JsonSerializable(typeof(PrivateCtorWithMixedParameterTypes<string>))]
+        [JsonSerializable(typeof(PrivateCtorWithGenericMembers<string>))]
+        [JsonSerializable(typeof(PrivateCtorWithCompositeGenericMembers<int>))]
+        [JsonSerializable(typeof(PrivateCtorWithCompositeGenericMembers<string>))]
+        [JsonSerializable(typeof(PrivateCtorWithInheritedGenericMembers<int>))]
+        [JsonSerializable(typeof(GenericConstructorOuter<int>.Nested))]
+        [JsonSerializable(typeof(GenericConstructorOuter<int>.Nested<string>))]
+        [JsonSerializable(typeof(GenericConstructorOuter<int>.Middle.Inner<string>))]
+        [JsonSerializable(typeof(GenericConstructorOuter<string>.Middle.Inner<int>))]
         [JsonSerializable(typeof(InternalParameterizedCtor_WithAttribute))]
         [JsonSerializable(typeof(ProtectedParameterizedCtor_WithAttribute))]
+        [JsonSerializable(typeof(PrivateParameterlessCtor_WithAttribute))]
+        [JsonSerializable(typeof(InternalParameterlessCtor_WithAttribute))]
+        [JsonSerializable(typeof(ProtectedParameterlessCtor_WithAttribute))]
         [JsonSerializable(typeof(SinglePublicParameterizedCtor))]
         [JsonSerializable(typeof(SingleParameterlessCtor_MultiplePublicParameterizedCtor))]
         [JsonSerializable(typeof(SingleParameterlessCtor_MultiplePublicParameterizedCtor_Struct))]
@@ -170,6 +281,7 @@ namespace System.Text.Json.SourceGeneration.Tests
         [JsonSerializable(typeof(Parameterized_WrapperForICollection))]
         [JsonSerializable(typeof(Point_2D_Struct))]
         [JsonSerializable(typeof(Point_2D_Struct_WithAttribute))]
+        [JsonSerializable(typeof(Point_2D_Struct_WithAttribute?))]
         [JsonSerializable(typeof(ObjWCtorMixedParams))]
         [JsonSerializable(typeof(Person_Class))]
         [JsonSerializable(typeof(Point_2D))]
@@ -220,6 +332,7 @@ namespace System.Text.Json.SourceGeneration.Tests
         [JsonSerializable(typeof(SimpleClassWithParameterizedCtor_Derived_GenericIDictionary_ObjectExt))]
         [JsonSerializable(typeof(Point_MembersHave_JsonInclude))]
         [JsonSerializable(typeof(ClassWithFiveArgs_MembersHave_JsonNumberHandlingAttributes))]
+        [JsonSerializable(typeof(Class_With_Parameters_Default_Values))]
         [JsonSerializable(typeof(Point_MembersHave_JsonPropertyName))]
         [JsonSerializable(typeof(Point_MembersHave_JsonConverter))]
         [JsonSerializable(typeof(Point_MembersHave_JsonIgnore))]
@@ -251,6 +364,47 @@ namespace System.Text.Json.SourceGeneration.Tests
         [JsonSerializable(typeof(LargeType_IgnoredProp_Bind_ParamWithDefaultValue))]
         [JsonSerializable(typeof(LargeType_IgnoredProp_Bind_Param))]
         [JsonSerializable(typeof(ClassWithIgnoredSameType))]
+        [JsonSerializable(typeof(ClassWithDefaultCtorParams))]
+        [JsonSerializable(typeof(StructWithPropertyInit))]
+        [JsonSerializable(typeof(StructWithFieldInit))]
+        [JsonSerializable(typeof(StructWithExplicitParameterlessCtor))]
+        [JsonSerializable(typeof(ClassWithManyConstructorParameters))]
+        [JsonSerializable(typeof(ClassWithInvalidArray))]
+        [JsonSerializable(typeof(ClassWithInvalidDictionary))]
+        [JsonSerializable(typeof(TypeWithEnumParameters))]
+        [JsonSerializable(typeof(ClassWithIgnoredPropertyDefaultParam))]
+        [JsonSerializable(typeof(ClassWithCustomConverterOnCtorParameter))]
+        [JsonSerializable(typeof(ClassWithConflictingCaseInsensitiveProperties))]
+        [JsonSerializable(typeof(Class_ExtraProperty_ExtData))]
+        [JsonSerializable(typeof(Class_ExtraProperty_JsonElementDictionaryExtData))]
+        [JsonSerializable(typeof(Class_ManyParameters_ExtraProperty_ExtData))]
+        [JsonSerializable(typeof(ClassWithRequiredProperty))]
+        [JsonSerializable(typeof(TypeWith_InParameters))]
+        [JsonSerializable(typeof(TypeWith_MixedByRefParameters))]
+        [JsonSerializable(typeof(TypeWith_LargeInParameters))]
+        [JsonSerializable(typeof(TypeWith_RefParameters))]
+        [JsonSerializable(typeof(TypeWith_OutParameters))]
+        [JsonSerializable(typeof(TypeWith_InParameter_Primitive))]
+        [JsonSerializable(typeof(TypeWith_InParameter_Struct))]
+        [JsonSerializable(typeof(TypeWith_InParameter_ReferenceType))]
+        [JsonSerializable(typeof(TypeWith_RefParameter_Primitive))]
+        [JsonSerializable(typeof(TypeWith_RefParameter_Struct))]
+        [JsonSerializable(typeof(TypeWith_RefParameter_ReferenceType))]
+        [JsonSerializable(typeof(TypeWith_OutParameter_Primitive))]
+        [JsonSerializable(typeof(TypeWith_OutParameter_Struct))]
+        [JsonSerializable(typeof(TypeWith_OutParameter_ReferenceType))]
+        [JsonSerializable(typeof(TypeWith_RefReadonlyParameter_Primitive))]
+        [JsonSerializable(typeof(TypeWith_RefReadonlyParameter_Struct))]
+        [JsonSerializable(typeof(TypeWith_RefReadonlyParameter_ReferenceType))]
+        [JsonSerializable(typeof(PrivateCtorWithInParameters))]
+        [JsonSerializable(typeof(PrivateCtorWithByRefParameters<int>))]
+        [JsonSerializable(typeof(PrivateCtorWithByRefParameters<string>))]
+        [JsonSerializable(typeof(PrivateStructCtorWithByRefParameters))]
+        [JsonSerializable(typeof(PrivateGenericStructCtorWithByRefParameters<int>))]
+        [JsonSerializable(typeof(PrivateGenericStructCtorWithByRefParameters<string>))]
+        [JsonSerializable(typeof(PrivateCtorWithOutParameters))]
+        [JsonSerializable(typeof(ParameterizedClass_WithStringProperty))]
+        [JsonSerializable(typeof(ParameterizedRecord_WithStringProperty))]
         internal sealed partial class ConstructorTestsContext_Default : JsonSerializerContext
         {
         }

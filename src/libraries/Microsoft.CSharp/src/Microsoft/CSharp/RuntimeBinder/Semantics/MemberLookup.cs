@@ -34,6 +34,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
     //
     // Lookup must be called before any other methods.
 
+    [RequiresDynamicCode(Binder.DynamicCodeWarning)]
     internal sealed class MemberLookup
     {
         // The inputs to Lookup.
@@ -426,10 +427,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             AggregateType typeCur = typeStart;
             int itypeNext = 0;
 
-            if (typeCur == null)
-            {
-                typeCur = (AggregateType)types[itypeNext++];
-            }
+            typeCur ??= (AggregateType)types[itypeNext++];
             Debug.Assert(typeCur != null);
 
             // Loop through the interfaces.

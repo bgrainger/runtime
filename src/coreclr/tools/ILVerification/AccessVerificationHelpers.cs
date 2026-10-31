@@ -2,8 +2,13 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Linq;
 using System.Reflection;
+using System.Reflection.Metadata;
+using System.Runtime.InteropServices;
+
 using Internal.TypeSystem;
 using Internal.TypeSystem.Ecma;
 
@@ -39,7 +44,8 @@ namespace ILVerify
                 if ((targetTypeDef.Attributes & TypeAttributes.Public) != 0)
                     return true;
                 else
-                    return currentTypeDef.Module == targetTypeDef.Module || targetTypeDef.Module.GrantsFriendAccessTo(currentTypeDef.Module);
+                    return currentTypeDef.Module == targetTypeDef.Module || targetTypeDef.Module.GrantsFriendAccessTo(currentTypeDef.Module)
+                        || currentTypeDef.Module.IgnoresAccessChecksTo(targetTypeDef.Module);
             }
 
             // Target class is nested
@@ -51,7 +57,7 @@ namespace ILVerify
         }
 
         /// <summary>
-        /// Returns whether the class '<paramref name="currentClass"/>' can access the method '<paramref name="targetMethod"/>' through
+        /// Returns whether the class '<paramref name="currentType"/>' can access the method '<paramref name="targetMethod"/>' through
         /// the instance '<paramref name="instance"/>'. The instance can be null, if the method to be accessed is static.
         /// </summary>
         internal static bool CanAccess(this TypeDesc currentType, MethodDesc targetMethod, TypeDesc instance = null)
@@ -73,7 +79,7 @@ namespace ILVerify
         }
 
         /// <summary>
-        /// Returns whether the class '<paramref name="currentClass"/>' can access the field '<paramref name="targetField"/>' through
+        /// Returns whether the class '<paramref name="currentType"/>' can access the field '<paramref name="targetField"/>' through
         /// the instance '<paramref name="instance"/>'. The instance can be null, if the field to be accessed is static.
         /// </summary>
         internal static bool CanAccess(this TypeDesc currentType, FieldDesc targetField, TypeDesc instance = null)
@@ -102,6 +108,13 @@ namespace ILVerify
 
             var targetTypeDef = (MetadataType)targetType.GetTypeDefinition();
 
+            // Like the runtime, IgnoresAccessChecksTo is the last thing checked
+            return CanAccessMemberWithVisibility(currentType, targetTypeDef, memberVisibility, instance)
+                || currentType.Module.IgnoresAccessChecksTo(targetTypeDef.Module);
+        }
+
+        private static bool CanAccessMemberWithVisibility(MetadataType currentType, MetadataType targetTypeDef, MethodAttributes memberVisibility, TypeDesc instance)
+        {
             if (memberVisibility == MethodAttributes.Public)
                 return true;
 
@@ -202,6 +215,18 @@ namespace ILVerify
                     if (currentTypeDef == curInstTypeDef.GetTypeDefinition())
                     {
                         // At this point we know that the instance type is able to access the same family fields as current type
+                        if (targetTypeDef.IsInterface)
+                        {
+                            // Like ClassLoader::CanAccessFamily in the runtime, implementing any instantiation of the interface is enough
+                            foreach (DefType implementedInterface in currentTypeDef.RuntimeInterfaces)
+                            {
+                                if (implementedInterface.GetTypeDefinition() == targetTypeDef)
+                                    return true;
+                            }
+
+                            return false;
+                        }
+
                         // Now iterate through all super types of current type to see if current type can access family target type
                         while (currentTypeDef != null)
                         {
@@ -240,39 +265,48 @@ namespace ILVerify
                 {
                     return true;
                 }
-                var friendName = friendAssembly.GetName();
-
-                foreach (var attribute in assembly.GetDecodedCustomAttributes("System.Runtime.CompilerServices", "InternalsVisibleToAttribute"))
-                {
-                    AssemblyName friendAttributeName = new AssemblyName((string)attribute.FixedArguments[0].Value);
-                    if (!friendName.Name.Equals(friendAttributeName.Name, StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    // Comparing PublicKeyToken, since GetPublicKey returns null due to a bug
-                    if (IsSamePublicKey(friendAttributeName.GetPublicKeyToken(), friendName.GetPublicKeyToken()))
-                        return true;
-                }
+                return assembly.NamesAssembly("InternalsVisibleToAttribute", friendAssembly.GetName());
             }
             return false;
         }
 
-        private static bool IsSamePublicKey(byte[] key1, byte[] key2)
+        private static bool IgnoresAccessChecksTo(this ModuleDesc module, ModuleDesc targetModule)
         {
-            if (key1 == null)
-                return key2 == null || key2.Length == 0;
-            if (key2 == null)
-                return key1 == null || key1.Length == 0;
-
-            if (key1.Length != key2.Length)
-                return false;
-
-            for (int i = 0; i < key1.Length; ++i)
+            var assembly = module.ToEcmaAssembly();
+            if (assembly != null && module.Context is ILVerifyTypeSystemContext { AllowIgnoresAccessChecksTo: true })
             {
-                if (key1[i] != key2[i])
-                    return false;
+                var targetAssembly = targetModule.ToEcmaAssembly();
+                return assembly.NamesAssembly("IgnoresAccessChecksToAttribute", targetAssembly.GetName());
             }
+            return false;
+        }
 
-            return true;
+        private static bool NamesAssembly(this EcmaAssembly assembly, string attributeName, AssemblyNameInfo name)
+        {
+            foreach (var attribute in assembly.GetDecodedCustomAttributes("System.Runtime.CompilerServices", attributeName))
+            {
+                AssemblyNameInfo attributeAssemblyName = AssemblyNameInfo.Parse(((string)attribute.FixedArguments[0].Value).AsSpan());
+                if (!name.Name.Equals(attributeAssemblyName.Name, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                // Comparing PublicKeyToken for simplicity
+                if (GetPublicKeyToken(attributeAssemblyName).SequenceEqual(GetPublicKeyToken(name)))
+                    return true;
+
+                static ReadOnlySpan<byte> GetPublicKeyToken(AssemblyNameInfo assemblyName)
+                {
+                    ImmutableArray<byte> publicKeyOrToken = assemblyName.PublicKeyOrToken;
+                    if ((assemblyName.Flags & AssemblyNameFlags.PublicKey) != 0)
+                    {
+                        // Use AssemblyName to convert PublicKey to PublicKeyToken to avoid calling crypto APIs directly
+                        AssemblyName an = new();
+                        an.SetPublicKey(ImmutableCollectionsMarshal.AsArray<byte>(publicKeyOrToken));
+                        publicKeyOrToken = ImmutableCollectionsMarshal.AsImmutableArray<byte>(an.GetPublicKeyToken());
+                    }
+                    return publicKeyOrToken.AsSpan();
+                }
+            }
+            return false;
         }
 
         private static MethodAttributes NestedToMethodAccessAttribute(TypeAttributes nestedVisibility)

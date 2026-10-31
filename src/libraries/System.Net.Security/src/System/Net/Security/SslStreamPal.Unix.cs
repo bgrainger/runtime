@@ -18,61 +18,95 @@ namespace System.Net.Security
         }
 
         internal const bool StartMutualAuthAsAnonymous = false;
+        internal const bool CertValidationInCallback = true;
         internal const bool CanEncryptEmptyMessage = false;
+        internal const bool CanGenerateCustomAlerts = false;
+
+        internal static bool CanGenerateCustomAlertsForContext(SafeDeleteContext? _)
+        {
+            return CanGenerateCustomAlerts;
+        }
 
         public static void VerifyPackageInfo()
         {
         }
 
-        public static SecurityStatusPal AcceptSecurityContext(ref SafeFreeCredentials? credential, ref SafeDeleteSslContext? context,
-            ReadOnlySpan<byte> inputBuffer, ref byte[]? outputBuffer, SslAuthenticationOptions sslAuthenticationOptions)
+        public static SecurityStatusPal SelectApplicationProtocol(
+            SafeFreeCredentials? credentialsHandle,
+            SafeDeleteSslContext? context,
+            SslAuthenticationOptions sslAuthenticationOptions,
+            ReadOnlySpan<byte> clientProtocols)
         {
-            return HandshakeInternal(credential!, ref context, inputBuffer, ref outputBuffer, sslAuthenticationOptions);
+            throw new PlatformNotSupportedException(nameof(SelectApplicationProtocol));
         }
 
-        public static SecurityStatusPal InitializeSecurityContext(ref SafeFreeCredentials? credential, ref SafeDeleteSslContext? context, string? targetName,
-            ReadOnlySpan<byte> inputBuffer, ref byte[]? outputBuffer, SslAuthenticationOptions sslAuthenticationOptions)
+#pragma warning disable IDE0060
+        public static ProtocolToken AcceptSecurityContext(
+            ref SafeFreeCredentials? credential,
+            ref SafeDeleteSslContext? context,
+            ReadOnlySpan<byte> inputBuffer,
+            out int consumed,
+            SslAuthenticationOptions sslAuthenticationOptions)
         {
-            return HandshakeInternal(credential!, ref context, inputBuffer, ref outputBuffer, sslAuthenticationOptions);
+            return HandshakeInternal(ref context, inputBuffer, out consumed, sslAuthenticationOptions);
         }
 
-        public static SafeFreeCredentials AcquireCredentialsHandle(SslStreamCertificateContext? certificateContext,
-            SslProtocols protocols, EncryptionPolicy policy, bool isServer)
+        public static ProtocolToken InitializeSecurityContext(
+            ref SafeFreeCredentials? credential,
+            ref SafeDeleteSslContext? context,
+            string? _ /*targetName*/,
+            ReadOnlySpan<byte> inputBuffer,
+            out int consumed,
+            SslAuthenticationOptions sslAuthenticationOptions)
         {
-            return new SafeFreeSslCredentials(certificateContext, protocols, policy, isServer);
+            return HandshakeInternal(ref context, inputBuffer, out consumed, sslAuthenticationOptions);
         }
 
-        public static SecurityStatusPal EncryptMessage(SafeDeleteSslContext securityContext, ReadOnlyMemory<byte> input, int headerSize, int trailerSize, ref byte[] output, out int resultSize)
+        public static SafeFreeCredentials? AcquireCredentialsHandle(SslAuthenticationOptions _1, bool _2)
         {
+            return null;
+        }
+
+        public static ProtocolToken EncryptMessage(SafeDeleteSslContext securityContext, ReadOnlyMemory<byte> input, int _ /*headerSize*/, int _1 /*trailerSize*/)
+        {
+            ProtocolToken token = default;
+            token.RentBuffer = true;
             try
             {
-                resultSize = Interop.OpenSsl.Encrypt(securityContext.SslContext, input.Span, ref output, out Interop.Ssl.SslErrorCode errorCode);
-
-                return MapNativeErrorCode(errorCode);
+                Interop.Ssl.SslErrorCode errorCode = Interop.OpenSsl.Encrypt((SafeSslHandle)securityContext, input.Span, ref token);
+                token.Status = MapNativeErrorCode(errorCode);
             }
             catch (Exception ex)
             {
-                resultSize = 0;
-                return new SecurityStatusPal(SecurityStatusPalErrorCode.InternalError, ex);
+                token.Status = new SecurityStatusPal(SecurityStatusPalErrorCode.InternalError, ex);
             }
+
+            return token;
         }
 
-        public static SecurityStatusPal DecryptMessage(SafeDeleteSslContext securityContext, Span<byte> buffer, out int offset, out int count)
+        public static SecurityStatusPal DecryptMessage(
+            SafeDeleteSslContext securityContext,
+            Span<byte> encrypted,
+            Span<byte> destination,
+            out int bytesWritten,
+            out int leftoverOffset,
+            out int leftoverLength)
         {
-            offset = 0;
-            count = 0;
+            bytesWritten = 0;
+            leftoverOffset = 0;
+            leftoverLength = 0;
 
             try
             {
-                int resultSize = Interop.OpenSsl.Decrypt(securityContext.SslContext, buffer, out Interop.Ssl.SslErrorCode errorCode);
+                bytesWritten = Interop.OpenSsl.Decrypt(
+                    (SafeSslHandle)securityContext,
+                    encrypted,
+                    destination,
+                    out leftoverOffset,
+                    out leftoverLength,
+                    out Interop.Ssl.SslErrorCode errorCode);
 
                 SecurityStatusPal retVal = MapNativeErrorCode(errorCode);
-
-                if (retVal.ErrorCode == SecurityStatusPalErrorCode.OK ||
-                    retVal.ErrorCode == SecurityStatusPalErrorCode.Renegotiate)
-                {
-                    count = resultSize;
-                }
 
                 return retVal;
             }
@@ -87,6 +121,7 @@ namespace System.Net.Security
             {
                 Interop.Ssl.SslErrorCode.SSL_ERROR_RENEGOTIATE => new SecurityStatusPal(SecurityStatusPalErrorCode.Renegotiate),
                 Interop.Ssl.SslErrorCode.SSL_ERROR_ZERO_RETURN => new SecurityStatusPal(SecurityStatusPalErrorCode.ContextExpired),
+                Interop.Ssl.SslErrorCode.SSL_ERROR_WANT_X509_LOOKUP => new SecurityStatusPal(SecurityStatusPalErrorCode.CredentialsNeeded),
                 Interop.Ssl.SslErrorCode.SSL_ERROR_NONE or
                 Interop.Ssl.SslErrorCode.SSL_ERROR_WANT_READ => new SecurityStatusPal(SecurityStatusPalErrorCode.OK),
                 _ => new SecurityStatusPal(SecurityStatusPalErrorCode.InternalError, new Interop.OpenSsl.SslException((int)errorCode))
@@ -108,127 +143,135 @@ namespace System.Net.Security
             else
             {
                 bindingHandle = Interop.OpenSsl.QueryChannelBinding(
-                    securityContext.SslContext,
+                    (SafeSslHandle)securityContext,
                     attribute);
             }
 
             return bindingHandle;
         }
 
-        public static SecurityStatusPal Renegotiate(ref SafeFreeCredentials? credentialsHandle, ref SafeDeleteSslContext? securityContext, SslAuthenticationOptions sslAuthenticationOptions, out byte[]? outputBuffer)
+        public static ProtocolToken Renegotiate(
+            ref SafeFreeCredentials? credentialsHandle,
+            ref SafeDeleteSslContext context,
+            SslAuthenticationOptions sslAuthenticationOptions)
         {
-            var sslContext = ((SafeDeleteSslContext)securityContext!).SslContext;
-            SecurityStatusPal status = Interop.OpenSsl.SslRenegotiate(sslContext, out outputBuffer);
+            SecurityStatusPal status = Interop.OpenSsl.SslRenegotiate((SafeSslHandle)context, out _);
 
-            outputBuffer = Array.Empty<byte>();
             if (status.ErrorCode != SecurityStatusPalErrorCode.OK)
             {
-                return status;
+                return new ProtocolToken { Status = status };
             }
-            return HandshakeInternal(credentialsHandle!, ref securityContext, null, ref outputBuffer, sslAuthenticationOptions);
+
+            // Renegotiation resets peer verification. Require a certificate unless a callback can accept its absence.
+            Interop.Ssl.SslSetVerifyPeer((SafeSslHandle)context, failIfNoPeerCert: sslAuthenticationOptions.CertValidationDelegate is null);
+
+            return HandshakeInternal(ref context!, null, out _, sslAuthenticationOptions);
         }
 
-        public static void QueryContextStreamSizes(SafeDeleteContext? securityContext, out StreamSizes streamSizes)
+        public static void QueryContextStreamSizes(SafeDeleteContext? _ /*securityContext*/, out StreamSizes streamSizes)
         {
             streamSizes = StreamSizes.Default;
         }
 
-        public static void QueryContextConnectionInfo(SafeDeleteSslContext securityContext, out SslConnectionInfo connectionInfo)
+        public static void QueryContextConnectionInfo(SafeDeleteSslContext securityContext, ref SslConnectionInfo connectionInfo)
         {
-            connectionInfo = new SslConnectionInfo(securityContext.SslContext);
+            connectionInfo.UpdateSslConnectionInfo((SafeSslHandle)securityContext);
         }
 
-        public static byte[] ConvertAlpnProtocolListToByteArray(List<SslApplicationProtocol> applicationProtocols)
+        public static bool TryUpdateClintCertificate(
+            SafeFreeCredentials? _,
+            SafeDeleteSslContext? context,
+            SslAuthenticationOptions sslAuthenticationOptions)
         {
-            return Interop.Ssl.ConvertAlpnProtocolListToByteArray(applicationProtocols);
+            Interop.OpenSsl.UpdateClientCertificate((SafeSslHandle)context!, sslAuthenticationOptions);
+
+            return true;
         }
 
-        private static SecurityStatusPal HandshakeInternal(SafeFreeCredentials credential, ref SafeDeleteSslContext? context,
-            ReadOnlySpan<byte> inputBuffer, ref byte[]? outputBuffer, SslAuthenticationOptions sslAuthenticationOptions)
+        private static ProtocolToken HandshakeInternal(ref SafeDeleteSslContext? context,
+           ReadOnlySpan<byte> inputBuffer, out int consumed, SslAuthenticationOptions sslAuthenticationOptions)
         {
-            Debug.Assert(!credential.IsInvalid);
-
-            byte[]? output = null;
-            int outputSize = 0;
+            ProtocolToken token = default;
+            token.RentBuffer = true;
+            consumed = 0;
 
             try
             {
                 if ((null == context) || context.IsInvalid)
                 {
-                    context = new SafeDeleteSslContext((credential as SafeFreeSslCredentials)!, sslAuthenticationOptions);
+                    context = Interop.OpenSsl.AllocateSslHandle(sslAuthenticationOptions);
                 }
 
-                bool done = Interop.OpenSsl.DoSslHandshake(((SafeDeleteSslContext)context).SslContext, inputBuffer, out output, out outputSize);
-                // sometimes during renegotiation processing messgae does not yield new output.
+                SecurityStatusPalErrorCode errorCode = Interop.OpenSsl.DoSslHandshake((SafeSslHandle)context, inputBuffer, out consumed, ref token);
+
+                if (errorCode == SecurityStatusPalErrorCode.CredentialsNeeded)
+                {
+                    // this should happen only for clients
+                    Debug.Assert(sslAuthenticationOptions.IsClient);
+
+                    // if we don't have a client certificate ready, bubble up so
+                    // that the certificate selection routine runs again. This
+                    // happens if the first call to LocalCertificateSelectionCallback
+                    // returns null.
+                    if (sslAuthenticationOptions.CertificateContext == null)
+                    {
+                        token.Status = new SecurityStatusPal(SecurityStatusPalErrorCode.CredentialsNeeded);
+                        return token;
+                    }
+
+                    // set the cert and continue
+                    TryUpdateClintCertificate(null, context, sslAuthenticationOptions);
+                    errorCode = Interop.OpenSsl.DoSslHandshake((SafeSslHandle)context, inputBuffer.Slice(consumed), out int c, ref token);
+                    consumed += c;
+                }
+
+                // sometimes during renegotiation processing message does not yield new output.
                 // That seems to be flaw in OpenSSL state machine and we have workaround to peek it and try it again.
-                if (outputSize == 0 && Interop.Ssl.IsSslRenegotiatePending(((SafeDeleteSslContext)context).SslContext))
+                if (token.Size == 0 && Interop.Ssl.IsSslRenegotiatePending((SafeSslHandle)context))
                 {
-                    done = Interop.OpenSsl.DoSslHandshake(((SafeDeleteSslContext)context).SslContext, ReadOnlySpan<byte>.Empty, out output, out outputSize);
+                    errorCode = Interop.OpenSsl.DoSslHandshake((SafeSslHandle)context, inputBuffer.Slice(consumed), out int c, ref token);
+                    consumed += c;
                 }
 
-                // When the handshake is done, and the context is server, check if the alpnHandle target was set to null during ALPN.
-                // If it was, then that indicates ALPN failed, send failure.
-                // We have this workaround, as openssl supports terminating handshake only from version 1.1.0,
-                // whereas ALPN is supported from version 1.0.2.
-                SafeSslHandle sslContext = context.SslContext;
-                if (done && sslAuthenticationOptions.IsServer
-                    && sslAuthenticationOptions.ApplicationProtocols != null && sslAuthenticationOptions.ApplicationProtocols.Count != 0
-                    && sslContext.AlpnHandle.IsAllocated && sslContext.AlpnHandle.Target == null)
-                {
-                    return new SecurityStatusPal(SecurityStatusPalErrorCode.InternalError, Interop.OpenSsl.CreateSslException(SR.net_alpn_failed));
-                }
-
-                outputBuffer =
-                    outputSize == 0 ? null :
-                    outputSize == output!.Length ? output :
-                    new Span<byte>(output, 0, outputSize).ToArray();
-
-                return new SecurityStatusPal(done ? SecurityStatusPalErrorCode.OK : SecurityStatusPalErrorCode.ContinueNeeded);
+                token.Status = new SecurityStatusPal(errorCode);
             }
-            catch (Exception exc)
+            catch (Exception exc) when (exc is not ArgumentException)
             {
-                // Even if handshake failed we may have Alert to sent.
-                if (outputSize > 0)
-                {
-                    outputBuffer = outputSize == output!.Length ? output : new Span<byte>(output, 0, outputSize).ToArray();
-                }
-
-                return new SecurityStatusPal(SecurityStatusPalErrorCode.InternalError, exc);
+                token.Status = new SecurityStatusPal(SecurityStatusPalErrorCode.InternalError, exc);
             }
+
+            return token;
         }
 
-        internal static byte[]? GetNegotiatedApplicationProtocol(SafeDeleteSslContext? context)
-        {
-            if (context == null)
-                return null;
-
-            return Interop.Ssl.SslGetAlpnSelected(context.SslContext);
-        }
-
-        public static SecurityStatusPal ApplyAlertToken(ref SafeFreeCredentials? credentialsHandle, SafeDeleteContext? securityContext, TlsAlertType alertType, TlsAlertMessage alertMessage)
+        public static SecurityStatusPal ApplyAlertToken(
+            SafeDeleteContext? securityContext,
+            TlsAlertType alertType,
+            TlsAlertMessage alertMessage)
         {
             // There doesn't seem to be an exposed API for writing an alert,
             // the API seems to assume that all alerts are generated internally by
             // SSLHandshake.
+            Debug.Assert(CanGenerateCustomAlerts);
             return new SecurityStatusPal(SecurityStatusPalErrorCode.OK);
         }
+#pragma warning restore IDE0060
 
-        public static SecurityStatusPal ApplyShutdownToken(ref SafeFreeCredentials? credentialsHandle, SafeDeleteSslContext sslContext)
+        public static SecurityStatusPal ApplyShutdownToken(SafeDeleteSslContext context)
         {
             // Unset the quiet shutdown option initially configured.
-            Interop.Ssl.SslSetQuietShutdown(sslContext.SslContext, 0);
+            Interop.Ssl.SslSetQuietShutdown((SafeSslHandle)context, 0);
 
-            int status = Interop.Ssl.SslShutdown(sslContext.SslContext);
+            int status = Interop.Ssl.SslShutdown((SafeSslHandle)context);
             if (status == 0)
             {
                 // Call SSL_shutdown again for a bi-directional shutdown.
-                status = Interop.Ssl.SslShutdown(sslContext.SslContext);
+                status = Interop.Ssl.SslShutdown((SafeSslHandle)context);
             }
 
             if (status == 1)
                 return new SecurityStatusPal(SecurityStatusPalErrorCode.OK);
 
-            Interop.Ssl.SslErrorCode code = Interop.Ssl.SslGetError(sslContext.SslContext, status);
+            Interop.Ssl.SslErrorCode code = Interop.Ssl.SslGetError((SafeSslHandle)context, status);
             if (code == Interop.Ssl.SslErrorCode.SSL_ERROR_WANT_READ ||
                 code == Interop.Ssl.SslErrorCode.SSL_ERROR_WANT_WRITE)
             {

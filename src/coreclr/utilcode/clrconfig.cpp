@@ -110,19 +110,19 @@ namespace
     bool CheckLookupOption(const ConfigDWORDInfo & info, LookupOptions option)
     {
         LIMITED_METHOD_CONTRACT;
-        return ((info.options & option) == option);
+        return (info.options & option) == option;
     }
 
     bool CheckLookupOption(const ConfigStringInfo & info, LookupOptions option)
     {
         LIMITED_METHOD_CONTRACT;
-        return ((info.options & option) == option);
+        return (info.options & option) == option;
     }
 
     bool CheckLookupOption(LookupOptions infoOptions, LookupOptions optionToCheck)
     {
         LIMITED_METHOD_CONTRACT;
-        return ((infoOptions & optionToCheck) == optionToCheck);
+        return (infoOptions & optionToCheck) == optionToCheck;
     }
 
     //*****************************************************************************
@@ -136,16 +136,17 @@ namespace
         {
             NOTHROW;
             GC_NOTRIGGER;
-            FORBID_FAULT;
             CANNOT_TAKE_LOCK;
         }
         CONTRACTL_END;
 
         WCHAR buff[64];
         const WCHAR* fallbackPrefix = NULL;
-        const size_t namelen = wcslen(name);
+        const size_t namelen = u16_strlen(name);
 
         bool noPrefix = CheckLookupOption(options, LookupOptions::DontPrependPrefix);
+        bool coreclrFallbackPrefix = CheckLookupOption(options, LookupOptions::CoreclrFallbackPrefix);
+
         if (noPrefix)
         {
             if (namelen >= ARRAY_SIZE(buff))
@@ -159,8 +160,9 @@ namespace
         else
         {
             bool dotnetValid = namelen < (size_t)(STRING_LENGTH(buff) - LEN_OF_DOTNET_PREFIX);
+            bool coreclrValid = namelen < (size_t)(STRING_LENGTH(buff) - LEN_OF_CORECLR_PREFIX);
             bool complusValid = namelen < (size_t)(STRING_LENGTH(buff) - LEN_OF_COMPLUS_PREFIX);
-            if(!dotnetValid || !complusValid)
+            if(!dotnetValid || !coreclrValid || !complusValid)
             {
                 _ASSERTE(!"Environment variable name too long.");
                 return NULL;
@@ -170,14 +172,12 @@ namespace
             if (!EnvCacheValueNameSeenPerhaps(name))
                 return NULL;
 
-            // Priority order is DOTNET_ and then COMPlus_.
+            // Priority order is DOTNET_, then (CORECLR_ or COMPlus_).
             wcscpy_s(buff, ARRAY_SIZE(buff), DOTNET_PREFIX);
-            fallbackPrefix = COMPLUS_PREFIX;
+            fallbackPrefix = coreclrFallbackPrefix ? CORECLR_PREFIX : COMPLUS_PREFIX;
         }
 
         wcscat_s(buff, ARRAY_SIZE(buff), name);
-
-        FAULT_NOT_FATAL(); // We don't report OOM errors here, we return a default value.
 
         NewArrayHolder<WCHAR> ret = NULL;
         HRESULT hr = S_OK;
@@ -200,15 +200,15 @@ namespace
 #if defined(DEBUG) && !defined(SELF_NO_HOST)
                 // Validate the cache and no-cache logic result in the same answer
                 SString nameToConvert(name);
-                SString nameAsUTF8;
-                nameToConvert.ConvertToUTF8(nameAsUTF8);
-                SString valueAsUTF8;
-                temp.ConvertToUTF8(valueAsUTF8);
 
-                CLRConfigNoCache nonCache = CLRConfigNoCache::Get(nameAsUTF8.GetUTF8NoConvert(), noPrefix);
+#ifdef HOST_WINDOWS
+                CLRConfigNoCache nonCache = CLRConfigNoCache::Get(nameToConvert.GetUTF8(), noPrefix, nullptr, coreclrFallbackPrefix);
+#else
+                CLRConfigNoCache nonCache = CLRConfigNoCache::Get(nameToConvert.GetUTF8(), noPrefix, &PAL_getenv, coreclrFallbackPrefix);
+#endif
                 LPCSTR valueNoCache = nonCache.AsString();
 
-                _ASSERTE(SString::_stricmp(valueNoCache, valueAsUTF8.GetUTF8NoConvert()) == 0);
+                _ASSERTE(SString::_stricmp(valueNoCache, temp.GetUTF8()) == 0);
 #endif // defined(DEBUG) && !defined(SELF_NO_HOST)
             }
         }
@@ -228,21 +228,19 @@ namespace
     HRESULT GetConfigDWORD(
         LPCWSTR name,
         DWORD defValue,
-        __out DWORD *result,
+        _Out_ DWORD *result,
         LookupOptions options)
     {
         CONTRACTL
         {
             NOTHROW;
             GC_NOTRIGGER;
-            FORBID_FAULT;
             CANNOT_TAKE_LOCK;
         }
         CONTRACTL_END;
 
         SUPPORTS_DAC_HOST_ONLY;
 
-        FAULT_NOT_FATAL(); // We don't report OOM errors here, we return a default value.
 
         int radix = CheckLookupOption(options, LookupOptions::ParseIntegerAsBase10)
             ? 10
@@ -253,17 +251,17 @@ namespace
         {
             errno = 0;
             LPWSTR endPtr;
-            DWORD configMaybe = wcstoul(val, &endPtr, radix);
+            DWORD configMaybe = u16_strtoul(val, &endPtr, radix);
             BOOL fSuccess = ((errno != ERANGE) && (endPtr != val));
             if (fSuccess)
             {
                 *result = configMaybe;
-                return (S_OK);
+                return S_OK;
             }
         }
 
         *result = defValue;
-        return (E_FAIL);
+        return E_FAIL;
     }
 
     LPWSTR GetConfigString(
@@ -274,13 +272,11 @@ namespace
         {
             NOTHROW;
             GC_NOTRIGGER;
-            FORBID_FAULT;
         }
         CONTRACTL_END;
 
         NewArrayHolder<WCHAR> ret(NULL);
 
-        FAULT_NOT_FATAL(); // We don't report OOM errors here, we return a default value.
 
         ret = EnvGetString(name, options);
         if (ret != NULL)
@@ -288,7 +284,7 @@ namespace
             if (*ret != W('\0'))
             {
                 ret.SuppressRelease();
-                return(ret);
+                return ret;
             }
             ret.Clear();
         }
@@ -312,7 +308,7 @@ namespace
     // Return Value:
     //     HRESULT indicating success or failure.
     //
-    HRESULT TrimWhiteSpace(LPCWSTR wszOrig, __deref_out_z LPWSTR * pwszTrimmed)
+    HRESULT TrimWhiteSpace(LPCWSTR wszOrig, _Outptr_result_z_ LPWSTR * pwszTrimmed)
     {
         CONTRACTL
         {
@@ -328,7 +324,7 @@ namespace
         *pwszTrimmed = NULL;
 
         // Get pointers into internal string that show where to do the trimming.
-        size_t cchOrig = wcslen(wszOrig);
+        size_t cchOrig = u16_strlen(wszOrig);
         if (!FitsIn<DWORD>(cchOrig))
             return COR_E_OVERFLOW;
         DWORD cchAfterTrim = (DWORD) cchOrig;
@@ -374,13 +370,13 @@ namespace
 // Creating structs using the macro table in CLRConfigValues.h
 //
 
-// These macros intialize ConfigDWORDInfo structs.
+// These macros initialize ConfigDWORDInfo structs.
 #define RETAIL_CONFIG_DWORD_INFO(symbol, name, defaultValue, description) \
     const CLRConfig::ConfigDWORDInfo CLRConfig::symbol = {name, defaultValue, CLRConfig::LookupOptions::Default};
 #define RETAIL_CONFIG_DWORD_INFO_EX(symbol, name, defaultValue, description, lookupOptions) \
     const CLRConfig::ConfigDWORDInfo CLRConfig::symbol = {name, defaultValue, lookupOptions};
 
-// These macros intialize ConfigStringInfo structs.
+// These macros initialize ConfigStringInfo structs.
 #define RETAIL_CONFIG_STRING_INFO(symbol, name, description) \
     const CLRConfig::ConfigStringInfo CLRConfig::symbol = {name, CLRConfig::LookupOptions::Default};
 #define RETAIL_CONFIG_STRING_INFO_EX(symbol, name, description, lookupOptions) \
@@ -441,7 +437,6 @@ DWORD CLRConfig::GetConfigValue(const ConfigDWORDInfo & info, /* [Out] */ bool *
     {
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
     }
     CONTRACTL_END;
 
@@ -510,14 +505,12 @@ LPWSTR CLRConfig::GetConfigValue(const ConfigStringInfo & info)
     {
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
     }
     CONTRACTL_END;
 
     LPWSTR result = NULL;
 
     // TODO: We swallow OOM exception here. Is this OK?
-    FAULT_NOT_FATAL();
 
     // If this fails, result will stay NULL.
     GetConfigValue(info, &result);
@@ -537,14 +530,12 @@ LPWSTR CLRConfig::GetConfigValue(const ConfigStringInfo & info)
 //         not found.
 //
 // static
-HRESULT CLRConfig::GetConfigValue(const ConfigStringInfo & info, __deref_out_z LPWSTR * outVal)
+HRESULT CLRConfig::GetConfigValue(const ConfigStringInfo & info, _Outptr_result_z_ LPWSTR * outVal)
 {
-    CONTRACT(HRESULT) {
+    CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
-        INJECT_FAULT (CONTRACT_RETURN E_OUTOFMEMORY);
-        POSTCONDITION(CheckPointer(outVal, NULL_OK)); // TODO: Should this check be *outVal instead of outVal?
-    } CONTRACT_END;
+    } CONTRACTL_END;
 
     LPWSTR result = NULL;
 
@@ -565,7 +556,7 @@ HRESULT CLRConfig::GetConfigValue(const ConfigStringInfo & info, __deref_out_z L
     }
 
     *outVal = result;
-    RETURN S_OK;
+    return S_OK;
 }
 
 //
@@ -609,7 +600,7 @@ BOOL CLRConfig::IsConfigOptionSpecified(LPCWSTR name)
 // Deallocation function for code:CLRConfig::FreeConfigString
 //
 // static
-void CLRConfig::FreeConfigString(__in_z LPWSTR str)
+void CLRConfig::FreeConfigString(_In_z_ LPWSTR str) noexcept
 {
     LIMITED_METHOD_CONTRACT;
 
@@ -634,8 +625,8 @@ void CLRConfig::Initialize()
     if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_DisableConfigCache) != 0)
         return;
 
-    const WCHAR prefixC = towlower(COMPLUS_PREFIX[0]);
-    const WCHAR prefixD = towlower(DOTNET_PREFIX[0]);
+    const WCHAR prefixC = (WCHAR)towlower(COMPLUS_PREFIX[0]);
+    const WCHAR prefixD = (WCHAR)towlower(DOTNET_PREFIX[0]);
 
     // Create a cache of environment variables
     WCHAR* wszStrings = GetEnvironmentStringsW();
@@ -645,7 +636,7 @@ void CLRConfig::Initialize()
         // null terminated strings
         for(WCHAR *wszCurr = wszStrings; *wszCurr; wszCurr++)
         {
-            WCHAR wch = towlower(*wszCurr);
+            WCHAR wch = (WCHAR)towlower(*wszCurr);
 
             // Lets only cache env variables with targeted prefixes
             bool matchC = wch == prefixC;
@@ -661,11 +652,18 @@ void CLRConfig::Initialize()
                 if (*wszCurr == W('='))
                 {
                     // Check the prefix
-                    if(matchC
-                        && SString::_wcsnicmp(wszName, COMPLUS_PREFIX, LEN_OF_COMPLUS_PREFIX) == 0)
+                    if(matchC)
                     {
-                        wszName += LEN_OF_COMPLUS_PREFIX;
-                        s_EnvNames.Add(wszName, (DWORD) (wszCurr - wszName));
+                        if(SString::_wcsnicmp(wszName, COMPLUS_PREFIX, LEN_OF_COMPLUS_PREFIX) == 0)
+                        {
+                            wszName += LEN_OF_COMPLUS_PREFIX;
+                            s_EnvNames.Add(wszName, (DWORD) (wszCurr - wszName));
+                        }
+                        else if(SString::_wcsnicmp(wszName, CORECLR_PREFIX, LEN_OF_CORECLR_PREFIX) == 0)
+                        {
+                            wszName += LEN_OF_CORECLR_PREFIX;
+                            s_EnvNames.Add(wszName, (DWORD) (wszCurr - wszName));
+                        }
                     }
                     else if (matchD
                         && SString::_wcsnicmp(wszName, DOTNET_PREFIX, LEN_OF_DOTNET_PREFIX) == 0)

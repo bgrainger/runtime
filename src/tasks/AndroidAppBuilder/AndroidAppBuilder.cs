@@ -10,7 +10,7 @@ using Microsoft.Build.Utilities;
 public class AndroidAppBuilderTask : Task
 {
     [Required]
-    public string MonoRuntimeHeaders { get; set; } = ""!;
+    public string[] RuntimeHeaders { get; set; } = [];
 
     /// <summary>
     /// Target directory with *dll and other content to be AOT'd and/or bundled
@@ -29,9 +29,39 @@ public class AndroidAppBuilderTask : Task
     public ITaskItem[] Assemblies { get; set; } = Array.Empty<ITaskItem>();
 
     /// <summary>
+    /// The set of environment variables to provide to the native embedded application
+    /// </summary>
+    public ITaskItem[] EnvironmentVariables { get; set; } = Array.Empty<ITaskItem>();
+
+    /// <summary>
+    /// Additional linker arguments that apply to the app being built
+    /// </summary>
+    public ITaskItem[] ExtraLinkerArguments { get; set; } = Array.Empty<ITaskItem>();
+
+    /// <summary>
+    /// Additional native source files to compile alongside monodroid.c
+    /// </summary>
+    public ITaskItem[] ExtraNativeSources { get; set; } = Array.Empty<ITaskItem>();
+
+    /// <summary>
     /// Prefer FullAOT mode for Emulator over JIT
     /// </summary>
     public bool ForceAOT { get; set; }
+
+    /// <summary>
+    /// Indicates if we want to AOT all assemblies or not
+    /// </summary>
+    public bool ForceFullAOT { get; set; }
+
+    /// <summary>
+    /// Mode to control whether runtime is a self-contained library or not
+    /// </summary>
+    public bool IsLibraryMode { get; set; }
+
+    /// <summary>
+    /// Extra native dependencies to link into the app
+    /// </summary>
+    public string[] NativeDependencies { get; set; } = Array.Empty<string>();
 
     /// <summary>
     /// Static linked runtime
@@ -41,7 +71,7 @@ public class AndroidAppBuilderTask : Task
     /// <summary>
     /// List of enabled runtime components
     /// </summary>
-    public string? RuntimeComponents { get; set; } = ""!;
+    public string[] RuntimeComponents { get; set; } = Array.Empty<string>();
 
     /// <summary>
     /// Diagnostic ports configuration string
@@ -63,11 +93,15 @@ public class AndroidAppBuilderTask : Task
 
     public string? MinApiLevel { get; set; }
 
+    public string? TargetApiLevel { get; set; }
+
     public string? BuildApiLevel { get; set; }
 
     public string? BuildToolsVersion { get; set; }
 
     public bool StripDebugSymbols { get; set; }
+
+    public string RuntimeFlavor { get; set; } = nameof(RuntimeFlavorEnum.Mono);
 
     /// <summary>
     /// Path to a custom MainActivity.java with custom UI
@@ -79,6 +113,18 @@ public class AndroidAppBuilderTask : Task
 
     public bool ForceInterpreter { get; set; }
 
+    /// <summary>
+    /// Path to a network_security_config.xml file to include in the APK.
+    /// When set, enables custom trust anchors and certificate pinning via Android's network security config.
+    /// </summary>
+    public string? NetworkSecurityConfig { get; set; }
+
+    /// <summary>
+    /// Optional path to a resources directory containing additional files for the network security config
+    /// (e.g., res/raw/ with certificate files referenced by the config).
+    /// </summary>
+    public string? NetworkSecurityConfigResourcesDir { get; set; }
+
     [Output]
     public string ApkBundlePath { get; set; } = ""!;
 
@@ -87,8 +133,6 @@ public class AndroidAppBuilderTask : Task
 
     public override bool Execute()
     {
-        string abi = DetermineAbi();
-
         var apkBuilder = new ApkBuilder(Log);
         apkBuilder.ProjectName = ProjectName;
         apkBuilder.AppDir = AppDir;
@@ -96,6 +140,7 @@ public class AndroidAppBuilderTask : Task
         apkBuilder.AndroidSdk = AndroidSdk;
         apkBuilder.AndroidNdk = AndroidNdk;
         apkBuilder.MinApiLevel = MinApiLevel;
+        apkBuilder.TargetApiLevel = TargetApiLevel;
         apkBuilder.BuildApiLevel = BuildApiLevel;
         apkBuilder.BuildToolsVersion = BuildToolsVersion;
         apkBuilder.StripDebugSymbols = StripDebugSymbols;
@@ -103,22 +148,21 @@ public class AndroidAppBuilderTask : Task
         apkBuilder.KeyStorePath = KeyStorePath;
         apkBuilder.ForceInterpreter = ForceInterpreter;
         apkBuilder.ForceAOT = ForceAOT;
+        apkBuilder.ForceFullAOT = ForceFullAOT;
+        apkBuilder.EnvironmentVariables = EnvironmentVariables;
         apkBuilder.StaticLinkedRuntime = StaticLinkedRuntime;
         apkBuilder.RuntimeComponents = RuntimeComponents;
         apkBuilder.DiagnosticPorts = DiagnosticPorts;
         apkBuilder.Assemblies = Assemblies;
-        (ApkBundlePath, ApkPackageId) = apkBuilder.BuildApk(abi, MainLibraryFileName, MonoRuntimeHeaders);
+        apkBuilder.IsLibraryMode = IsLibraryMode;
+        apkBuilder.NativeDependencies = NativeDependencies;
+        apkBuilder.ExtraLinkerArguments = ExtraLinkerArguments;
+        apkBuilder.ExtraNativeSources = ExtraNativeSources;
+        apkBuilder.RuntimeFlavor = RuntimeFlavor;
+        apkBuilder.NetworkSecurityConfig = NetworkSecurityConfig;
+        apkBuilder.NetworkSecurityConfigResourcesDir = NetworkSecurityConfigResourcesDir;
+        (ApkBundlePath, ApkPackageId) = apkBuilder.BuildApk(RuntimeIdentifier, MainLibraryFileName, RuntimeHeaders);
 
         return true;
     }
-
-    private string DetermineAbi() =>
-        RuntimeIdentifier switch
-        {
-            "android-x86" => "x86",
-            "android-x64" => "x86_64",
-            "android-arm" => "armeabi-v7a",
-            "android-arm64" => "arm64-v8a",
-            _ => throw new ArgumentException($"{RuntimeIdentifier} is not supported for Android"),
-        };
 }

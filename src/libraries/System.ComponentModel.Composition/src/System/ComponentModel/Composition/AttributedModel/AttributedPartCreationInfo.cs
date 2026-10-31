@@ -2,10 +2,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
-using System.Composition.Diagnostics;
 using System.ComponentModel.Composition.Hosting;
 using System.ComponentModel.Composition.Primitives;
 using System.ComponentModel.Composition.ReflectionModel;
+using System.Composition.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
@@ -20,16 +20,13 @@ namespace System.ComponentModel.Composition.AttributedModel
         private readonly ICompositionElement? _origin;
         private PartCreationPolicyAttribute? _partCreationPolicy;
         private ConstructorInfo? _constructor;
-        private IEnumerable<ExportDefinition>? _exports;
-        private IEnumerable<ImportDefinition>? _imports;
+        private List<ExportDefinition>? _exports;
+        private List<ImportDefinition>? _imports;
         private HashSet<string>? _contractNamesOnNonInterfaces;
 
         public AttributedPartCreationInfo(Type type, PartCreationPolicyAttribute? partCreationPolicy, bool ignoreConstructorImports, ICompositionElement? origin)
         {
-            if (type == null)
-            {
-                throw new ArgumentNullException(nameof(type));
-            }
+            ArgumentNullException.ThrowIfNull(type);
 
             _type = type;
             _ignoreConstructorImports = ignoreConstructorImports;
@@ -178,10 +175,7 @@ namespace System.ComponentModel.Composition.AttributedModel
         {
             get
             {
-                if (_partCreationPolicy == null)
-                {
-                    _partCreationPolicy = _type.GetFirstAttribute<PartCreationPolicyAttribute>() ?? PartCreationPolicyAttribute.Default;
-                }
+                _partCreationPolicy ??= _type.GetFirstAttribute<PartCreationPolicyAttribute>() ?? PartCreationPolicyAttribute.Default;
 
                 return _partCreationPolicy.CreationPolicy;
             }
@@ -189,10 +183,7 @@ namespace System.ComponentModel.Composition.AttributedModel
 
         private static ConstructorInfo? SelectPartConstructor(Type type)
         {
-            if (type == null)
-            {
-                throw new ArgumentNullException(nameof(type));
-            }
+            ArgumentNullException.ThrowIfNull(type);
 
             if (type.IsAbstract)
             {
@@ -261,7 +252,7 @@ namespace System.ComponentModel.Composition.AttributedModel
             _imports = GetImportDefinitions();
         }
 
-        private IEnumerable<ExportDefinition> GetExportDefinitions()
+        private List<ExportDefinition> GetExportDefinitions()
         {
             List<ExportDefinition> exports = new List<ExportDefinition>();
 
@@ -275,7 +266,7 @@ namespace System.ComponentModel.Composition.AttributedModel
                 {
                     AttributedExportDefinition attributedExportDefinition = CreateExportDefinition(member, exportAttribute);
 
-                    if (exportAttribute.GetType() == CompositionServices.InheritedExportAttributeType)
+                    if (exportAttribute.GetType() == typeof(InheritedExportAttribute))
                     {
                         // Any InheritedExports on the type itself are contributed during this pass
                         // and we need to do the book keeping for those.
@@ -296,7 +287,7 @@ namespace System.ComponentModel.Composition.AttributedModel
             // The order of types returned here is important because it is used as a
             // priority list of which InhertedExport to choose if multiple exists with
             // the same contract name. Therefore ensure that we always return the types
-            // in the hiearchy from most derived to the lowest base type, followed
+            // in the hierarchy from most derived to the lowest base type, followed
             // by all the interfaces that this type implements.
             foreach (Type type in GetInheritedExports(_type))
             {
@@ -328,7 +319,7 @@ namespace System.ComponentModel.Composition.AttributedModel
             return new AttributedExportDefinition(this, member, exportAttribute, typeIdentityType, contractName);
         }
 
-        private IEnumerable<MemberInfo> GetExportMembers(Type type)
+        private static IEnumerable<MemberInfo> GetExportMembers(Type type)
         {
             BindingFlags flags = BindingFlags.DeclaredOnly | BindingFlags.Public |
                 BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
@@ -371,7 +362,7 @@ namespace System.ComponentModel.Composition.AttributedModel
             }
         }
 
-        private IEnumerable<Type> GetInheritedExports(Type type)
+        private static IEnumerable<Type> GetInheritedExports(Type type)
         {
             // If the type is abstract we aren't interested in type level exports
             if (type.IsAbstract)
@@ -382,7 +373,7 @@ namespace System.ComponentModel.Composition.AttributedModel
             // The order of types returned here is important because it is used as a
             // priority list of which InhertedExport to choose if multiple exists with
             // the same contract name. Therefore ensure that we always return the types
-            // in the hiearchy from most derived to the lowest base type, followed
+            // in the hierarchy from most derived to the lowest base type, followed
             // by all the interfaces that this type implements.
 
             Type? currentType = type.BaseType;
@@ -395,7 +386,7 @@ namespace System.ComponentModel.Composition.AttributedModel
             // Stopping at object instead of null to help with performance. It is a noticable performance
             // gain (~5%) if we don't have to try and pull the attributes we know don't exist on object.
             // We also need the null check in case we're passed a type that doesn't live in the runtime context.
-            while (currentType != null && currentType.UnderlyingSystemType != CompositionServices.ObjectType)
+            while (currentType != null && currentType.UnderlyingSystemType != typeof(object))
             {
                 if (IsInheritedExport(currentType))
                 {
@@ -423,7 +414,7 @@ namespace System.ComponentModel.Composition.AttributedModel
             return attributedProvider.IsAttributeDefined<InheritedExportAttribute>(false);
         }
 
-        private IEnumerable<ImportDefinition> GetImportDefinitions()
+        private List<ImportDefinition> GetImportDefinitions()
         {
             List<ImportDefinition> imports = new List<ImportDefinition>();
 
@@ -447,7 +438,7 @@ namespace System.ComponentModel.Composition.AttributedModel
             return imports;
         }
 
-        private IEnumerable<MemberInfo> GetImportMembers(Type type)
+        private static IEnumerable<MemberInfo> GetImportMembers(Type type)
         {
             if (type.IsAbstract)
             {
@@ -467,7 +458,7 @@ namespace System.ComponentModel.Composition.AttributedModel
                 // Stopping at object instead of null to help with performance. It is a noticable performance
                 // gain (~5%) if we don't have to try and pull the attributes we know don't exist on object.
                 // We also need the null check in case we're passed a type that doesn't live in the runtime context.
-                while (baseType != null && baseType.UnderlyingSystemType != CompositionServices.ObjectType)
+                while (baseType != null && baseType.UnderlyingSystemType != typeof(object))
                 {
                     foreach (MemberInfo member in GetDeclaredOnlyImportMembers(baseType))
                     {
@@ -478,7 +469,7 @@ namespace System.ComponentModel.Composition.AttributedModel
             }
         }
 
-        private IEnumerable<MemberInfo> GetDeclaredOnlyImportMembers(Type type)
+        private static IEnumerable<MemberInfo> GetDeclaredOnlyImportMembers(Type type)
         {
             BindingFlags flags = BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
 

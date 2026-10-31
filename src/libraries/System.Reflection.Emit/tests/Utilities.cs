@@ -1,7 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Buffers.Binary;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text;
 using Xunit;
 
 namespace System.Reflection.Emit.Tests
@@ -31,6 +34,73 @@ namespace System.Reflection.Emit.Tests
         public IntAllAttribute(int i) { _i = i; }
     }
 
+    [AttributeUsage(AttributeTargets.All, AllowMultiple = false)]
+    public class ObjectAllAttribute : Attribute
+    {
+        public object _o;
+        public ObjectAllAttribute(object o) { _o = o; }
+    }
+
+    // Builds raw ECMA-335 II.23.3 custom-attribute blobs for values that C# attribute syntax cannot express.
+    internal static class CustomAttributeBlob
+    {
+        internal const byte TagInt32 = 0x08;
+        internal const byte TagFloat = 0x0C;
+        internal const byte TagDouble = 0x0D;
+        internal const byte TagString = 0x0E;
+        internal const byte TagType = 0x50;
+        internal const byte TagField = 0x53;
+
+        internal static readonly byte[] Prolog = { 0x01, 0x00 };
+
+        internal static byte[] Concat(params byte[][] parts) => parts.SelectMany(p => p).ToArray();
+
+        internal static byte[] U2(ushort value)
+        {
+            byte[] bytes = new byte[2];
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes, value);
+            return bytes;
+        }
+
+        internal static byte[] I4(int value)
+        {
+            byte[] bytes = new byte[4];
+            BinaryPrimitives.WriteInt32LittleEndian(bytes, value);
+            return bytes;
+        }
+
+        internal static byte[] U8(ulong value)
+        {
+            byte[] bytes = new byte[8];
+            BinaryPrimitives.WriteUInt64LittleEndian(bytes, value);
+            return bytes;
+        }
+
+        internal static byte[] PackedString(string value)
+        {
+            byte[] utf8 = Encoding.UTF8.GetBytes(value);
+            int length = utf8.Length;
+            byte[] prefix;
+            if (length <= 0x7f)
+            {
+                prefix = new[] { (byte)length };
+            }
+            else if (length <= 0x3fff)
+            {
+                prefix = new[] { (byte)(0x80 | (length >> 8)), (byte)length };
+            }
+            else if (length <= 0x1fffffff)
+            {
+                prefix = new[] { (byte)(0xc0 | (length >> 24)), (byte)(length >> 16), (byte)(length >> 8), (byte)length };
+            }
+            else
+            {
+                throw new ArgumentOutOfRangeException(nameof(value));
+            }
+            return Concat(prefix, utf8);
+        }
+    }
+
     public static class TypeExtensions
     {
         public static Type AsType(this Type type)
@@ -41,6 +111,8 @@ namespace System.Reflection.Emit.Tests
 
     public static class Helpers
     {
+        public const string s_512Chars = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
         public const BindingFlags AllFlags = BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 
         public static AssemblyBuilder DynamicAssembly(string name = "TestAssembly", AssemblyBuilderAccess access = AssemblyBuilderAccess.Run)
@@ -54,9 +126,33 @@ namespace System.Reflection.Emit.Tests
             return DynamicAssembly(assemblyName).DefineDynamicModule(moduleName);
         }
 
-        public static TypeBuilder DynamicType(TypeAttributes attributes, string assemblyName = "TestAssembly", string moduleName = "TestModule", string typeName = "TestType")
+        public static TypeBuilder DynamicType(TypeAttributes attributes, string assemblyName = "TestAssembly", string moduleName = "TestModule", string typeName = "TestType", Type? baseType = null)
         {
-            return DynamicModule(assemblyName, moduleName).DefineType(typeName, attributes);
+            if (baseType is null)
+            {
+                return DynamicModule(assemblyName, moduleName).DefineType(typeName, attributes);
+            }
+            else
+            {
+                return DynamicModule(assemblyName, moduleName).DefineType(typeName, attributes, baseType);
+            }
+        }
+
+        public static unsafe byte[] GetFieldValueBytes(FieldInfo field, int size)
+        {
+            object value = field.GetValue(null);
+            Assert.NotNull(value);
+            GCHandle handle = GCHandle.Alloc(value, GCHandleType.Pinned);
+            try
+            {
+                byte[] bytes = new byte[size];
+                new ReadOnlySpan<byte>(handle.AddrOfPinnedObject().ToPointer(), size).CopyTo(bytes);
+                return bytes;
+            }
+            finally
+            {
+                handle.Free();
+            }
         }
 
         public static EnumBuilder DynamicEnum(TypeAttributes visibility, Type underlyingType, string enumName = "TestEnum", string assemblyName = "TestAssembly", string moduleName = "TestModule")
@@ -91,17 +187,16 @@ namespace System.Reflection.Emit.Tests
 
             if (declaringType == null && !type.IsInterface && (implementedInterfaces == null || implementedInterfaces.Length == 0))
             {
-                Type createdType = type.CreateTypeInfo().AsType();
+                Type createdType = type.CreateType();
                 Assert.Equal(createdType, module.GetType(name, false, false));
                 Assert.Equal(createdType, module.GetType(name, true, false));
 
                 Assert.Equal(type.AsType().GetNestedTypes(AllFlags), createdType.GetNestedTypes(AllFlags));
                 Assert.Equal(type.AsType().GetNestedType(name, AllFlags), createdType.GetNestedType(name, AllFlags));
 
-                // [ActiveIssue("https://github.com/dotnet/runtime/issues/18231", TestPlatforms.AnyUnix)]
-                // Assert.Equal(createdType, module.GetType(name, true, true));
-                // Assert.Equal(createdType, module.GetType(name.ToLowerInvariant(), true, true));
-                // Assert.Equal(createdType, module.GetType(name.ToUpperInvariant(), true, true));
+                Assert.Equal(createdType, module.GetType(name, true, true));
+                Assert.Equal(createdType, module.GetType(name.ToLowerInvariant(), true, true));
+                Assert.Equal(createdType, module.GetType(name.ToUpperInvariant(), true, true));
             }
         }
 
@@ -119,7 +214,7 @@ namespace System.Reflection.Emit.Tests
             Assert.Throws<NotSupportedException>(() => constructor.Invoke(null));
             Assert.Throws<NotSupportedException>(() => constructor.Invoke(null, null));
 
-            Type createdType = type.CreateTypeInfo().AsType();
+            Type createdType = type.CreateType();
             Assert.Equal(type.AsType().GetConstructors(AllFlags), createdType.GetConstructors(AllFlags));
             Assert.Equal(type.AsType().GetConstructor(parameterTypes), createdType.GetConstructor(parameterTypes));
 
@@ -155,5 +250,66 @@ namespace System.Reflection.Emit.Tests
             }
             return name;
         }
+    }
+
+    public static class ModifiedTypeHelpers
+    {
+        public class FunctionPointer : TypeDelegator
+        {
+            private readonly Type[] callingConventions;
+            private readonly Type returnType;
+            private readonly Type[] parameterTypes;
+            private readonly Type[] requiredModifiers;
+            private readonly Type[] optionalModifiers;
+
+            public FunctionPointer(
+                Type baseFunctionPointerType,
+                Type[]? conventions = null,
+                Type? customReturnType = null,
+                Type[]? customParameterTypes = null,
+                Type[]? fnPtrRequiredMods = null,
+                Type[]? fnPtrOptionalMods = null)
+                : base(baseFunctionPointerType)
+            {
+                callingConventions = conventions ?? [];
+                returnType = customReturnType ?? baseFunctionPointerType.GetFunctionPointerReturnType();
+                parameterTypes = customParameterTypes ?? baseFunctionPointerType.GetFunctionPointerParameterTypes();
+                requiredModifiers = fnPtrRequiredMods ?? [];
+                optionalModifiers = fnPtrOptionalMods ?? [];
+            }
+
+            public override Type[] GetFunctionPointerCallingConventions() => callingConventions;
+            public override Type GetFunctionPointerReturnType() => returnType;
+            public override Type[] GetFunctionPointerParameterTypes() => parameterTypes;
+            public override Type[] GetRequiredCustomModifiers() => requiredModifiers;
+            public override Type[] GetOptionalCustomModifiers() => optionalModifiers;
+        }
+
+        public class ModifiedType : TypeDelegator
+        {
+            private readonly Type[] requiredModifiers;
+            private readonly Type[] optionalModifiers;
+
+            public ModifiedType(Type delegatingType, Type[]? requiredMods = null, Type[]? optionalMods = null)
+                : base(delegatingType)
+            {
+                requiredModifiers = requiredMods ?? [];
+                optionalModifiers = optionalMods ?? [];
+            }
+
+            public override Type[] GetRequiredCustomModifiers() => requiredModifiers;
+            public override Type[] GetOptionalCustomModifiers() => optionalModifiers;
+        }
+    }
+
+    public unsafe class ClassWithFunctionPointers
+    {
+        public static delegate*<int, int, int> FuncManaged;
+        public static int Add(int a, int b) => a + b;
+        public static void Init() => FuncManaged = &Add;
+
+        public static delegate* unmanaged[Cdecl]<string, bool> FuncUnmanaged1;
+        public static delegate* unmanaged[Fastcall, SuppressGCTransition]<int, void> FuncUnmanaged2;
+        public static delegate* unmanaged[Swift]<delegate* unmanaged[Stdcall, MemberFunction]<short, bool>, string> FuncUnmanaged3;
     }
 }

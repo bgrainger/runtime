@@ -2,9 +2,9 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Text;
 
 internal static partial class Interop
 {
@@ -21,7 +21,7 @@ internal static partial class Interop
         // NOTE: `_isIPv6` cannot be of type `bool` because `bool` is not a blittable type and this struct is
         //       embedded in other structs for interop purposes.
         [StructLayout(LayoutKind.Sequential)]
-        internal unsafe struct IPAddress : IEquatable<IPAddress>
+        internal struct IPAddress : IEquatable<IPAddress>
         {
             public bool IsIPv6
             {
@@ -29,9 +29,19 @@ internal static partial class Interop
                 set { _isIPv6 = value ? 1u : 0u; }
             }
 
-            internal fixed byte Address[MAX_IP_ADDRESS_BYTES]; // Buffer to fit an IPv4 or IPv6 address
-            private  uint _isIPv6;                             // Non-zero if this is an IPv6 address; zero for IPv4.
-            internal uint ScopeId;                             // Scope ID (IPv6 only)
+            internal AddressBuffer Address; // Buffer to fit an IPv4 or IPv6 address
+            private  uint _isIPv6;          // Non-zero if this is an IPv6 address; zero for IPv4.
+            internal uint ScopeId;          // Scope ID (IPv6 only)
+
+            public override int GetHashCode()
+            {
+                HashCode h = default;
+                h.AddBytes(Address[..(IsIPv6 ? IPv6AddressBytes : IPv4AddressBytes)]);
+                return h.ToHashCode();
+            }
+
+            public override bool Equals([NotNullWhen(true)] object? obj) =>
+                obj is IPAddress other && Equals(other);
 
             public bool Equals(IPAddress other)
             {
@@ -59,18 +69,13 @@ internal static partial class Interop
                     addressByteCount = IPv4AddressBytes;
                 }
 
-                fixed (byte* thisAddress = Address)
-                {
-                    for (int i = 0; i < addressByteCount; i++)
-                    {
-                        if (thisAddress[i] != other.Address[i])
-                        {
-                            return false;
-                        }
-                    }
-                }
+                return Address[..addressByteCount].SequenceEqual(other.Address[..addressByteCount]);
+            }
 
-                return true;
+            [InlineArray(MAX_IP_ADDRESS_BYTES)]
+            internal struct AddressBuffer
+            {
+                private byte _element0;
             }
         }
     }

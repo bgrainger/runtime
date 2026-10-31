@@ -11,7 +11,7 @@ namespace System.Speech.Recognition.SrgsGrammar
     /// Base class for all SRGS object to build XML fragment corresponding to the object.
     /// </summary>
     [Serializable]
-    [DebuggerDisplay("SrgsElement Children:[{_items.Count}]")]
+    [DebuggerDisplay("SrgsElement Children = [{_items.Count}]")]
     [DebuggerTypeProxy(typeof(SrgsElementDebugDisplay))]
     public abstract class SrgsElement : MarshalByRefObject, IElement
     {
@@ -43,7 +43,7 @@ namespace System.Speech.Recognition.SrgsGrammar
             }
         }
 
-        void IElement.PostParse(IElement parent)
+        void IElement.PostParse(IElement? parent)
         {
         }
 

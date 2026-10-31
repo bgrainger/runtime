@@ -7,7 +7,7 @@ using System.Threading;
 
 namespace System.Speech.Internal.SapiInterop
 {
-    internal abstract class SapiProxy : IDisposable
+    internal abstract class SapiProxy(ISpRecognizer recognizer) : IDisposable
     {
         #region Constructors
 
@@ -20,7 +20,7 @@ namespace System.Speech.Internal.SapiInterop
 
         #region Internal Methods
 
-        internal abstract object Invoke(ObjectDelegate pfn);
+        internal abstract object? Invoke(ObjectDelegate pfn);
         internal abstract void Invoke2(VoidDelegate pfn);
 
         #endregion
@@ -35,37 +35,19 @@ namespace System.Speech.Internal.SapiInterop
             }
         }
 
-        internal ISpRecognizer2 Recognizer2
-        {
-            get
-            {
-                if (_recognizer2 == null)
-                {
-                    _recognizer2 = (ISpRecognizer2)_recognizer;
-                }
-                return _recognizer2;
-            }
-        }
+        internal ISpRecognizer2 Recognizer2 =>
+            _recognizer2 ??= (ISpRecognizer2)_recognizer;
 
-        internal ISpeechRecognizer SapiSpeechRecognizer
-        {
-            get
-            {
-                if (_speechRecognizer == null)
-                {
-                    _speechRecognizer = (ISpeechRecognizer)_recognizer;
-                }
-                return _speechRecognizer;
-            }
-        }
+        internal ISpeechRecognizer SapiSpeechRecognizer =>
+            _speechRecognizer ??= (ISpeechRecognizer)_recognizer;
 
         #endregion
 
         #region Protected Fields
 
-        protected ISpeechRecognizer _speechRecognizer;
-        protected ISpRecognizer2 _recognizer2;
-        protected ISpRecognizer _recognizer;
+        protected ISpeechRecognizer? _speechRecognizer;
+        protected ISpRecognizer2? _recognizer2;
+        protected ISpRecognizer _recognizer = recognizer;
 
         #endregion
 
@@ -76,8 +58,8 @@ namespace System.Speech.Internal.SapiInterop
             #region Constructors
 
             internal PassThrough(ISpRecognizer recognizer)
+                : base(recognizer)
             {
-                _recognizer = recognizer;
             }
 
             ~PassThrough()
@@ -100,7 +82,7 @@ namespace System.Speech.Internal.SapiInterop
 
             #region Internal Methods
 
-            internal override object Invoke(ObjectDelegate pfn)
+            internal override object? Invoke(ObjectDelegate pfn)
             {
                 return pfn.Invoke();
             }
@@ -124,13 +106,12 @@ namespace System.Speech.Internal.SapiInterop
             #endregion
         }
 
-#pragma warning disable 56500 // Remove all the catch all statements warnings used by the interop layer
-
         internal class MTAThread : SapiProxy, IDisposable
         {
             #region Constructors
 
             internal MTAThread(SapiRecognizer.RecognizerType type)
+                : base(null!) // Set _recognizer field instead of base constructor
             {
                 _mta = new Thread(new ThreadStart(SapiMTAThread));
                 if (!_mta.TrySetApartmentState(ApartmentState.MTA))
@@ -148,6 +129,7 @@ namespace System.Speech.Internal.SapiInterop
                 {
                     Invoke2(delegate { _recognizer = (ISpRecognizer)new SpSharedRecognizer(); });
                 }
+                System.Diagnostics.Debug.Assert(_recognizer is not null);
             }
 
             ~MTAThread()
@@ -171,7 +153,7 @@ namespace System.Speech.Internal.SapiInterop
 
             #region Internal Methods
 
-            internal override object Invoke(ObjectDelegate pfn)
+            internal override object? Invoke(ObjectDelegate pfn)
             {
                 lock (this)
                 {
@@ -236,7 +218,7 @@ namespace System.Speech.Internal.SapiInterop
                         }
                         else
                         {
-                            _doit2.Invoke();
+                            _doit2!.Invoke();
                             _doit2 = null;
                         }
                     }
@@ -262,15 +244,15 @@ namespace System.Speech.Internal.SapiInterop
             private Thread _mta;
             private AutoResetEvent _process = new(false);
             private AutoResetEvent _done = new(false);
-            private ObjectDelegate _doit;
-            private VoidDelegate _doit2;
-            private object _result;
-            private Exception _exception;
+            private ObjectDelegate? _doit;
+            private VoidDelegate? _doit2;
+            private object? _result;
+            private Exception? _exception;
 
             #endregion
         }
 
-        internal delegate object ObjectDelegate();
+        internal delegate object? ObjectDelegate();
         internal delegate void VoidDelegate();
     }
 

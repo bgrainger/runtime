@@ -24,6 +24,7 @@ typedef enum
     GetAddrInfoErrorFlags_EAI_BADARG = 6,   // One or more input arguments were invalid.
     GetAddrInfoErrorFlags_EAI_NOMORE = 7,   // No more entries are present in the list.
     GetAddrInfoErrorFlags_EAI_MEMORY = 8,   // Out of memory.
+    GetAddrInfoErrorFlags_EAI_SYSTEM = 9,   // Other system error; errno is set to indicate the error.
 } GetAddrInfoErrorFlags;
 
 /**
@@ -65,6 +66,7 @@ typedef enum
     AddressFamily_AF_UNIX = 1,     // System.Net.AddressFamily.Unix
     AddressFamily_AF_INET = 2,     // System.Net.AddressFamily.InterNetwork
     AddressFamily_AF_INET6 = 23,   // System.Net.AddressFamily.InterNetworkV6
+    AddressFamily_AF_LINK = 13,       // System.Net.AddressFamily.DataLink
     AddressFamily_AF_PACKET = 65536,  // System.Net.AddressFamily.Packet
     AddressFamily_AF_CAN = 65537,     // System.Net.AddressFamily.ControllerAreaNetwork
 } AddressFamily;
@@ -184,6 +186,7 @@ typedef enum
     SocketOptionName_SO_TCP_KEEPALIVE_RETRYCOUNT = 16,
     SocketOptionName_SO_TCP_KEEPALIVE_TIME = 3,
     SocketOptionName_SO_TCP_KEEPALIVE_INTERVAL = 17,
+    SocketOptionName_SO_TCP_FASTOPEN = 15,
 
     // Names for SocketOptionLevel_SOL_UDP
     // SocketOptionName_SO_UDP_NOCHECKSUM = 1,
@@ -206,22 +209,10 @@ typedef enum
     SocketFlags_MSG_DONTROUTE = 0x0004, // SocketFlags.DontRoute
     SocketFlags_MSG_TRUNC = 0x0100,     // SocketFlags.Truncated
     SocketFlags_MSG_CTRUNC = 0x0200,    // SocketFlags.ControlDataTruncated
+    SocketFlags_MSG_DONTWAIT = 0x1000,  // used privately by Ping
+    SocketFlags_MSG_ERRQUEUE = 0x2000,  // used privately by Ping
 } SocketFlags;
 
-/*
- * Socket async events.
- */
-typedef enum
-{
-    SocketEvents_SA_NONE = 0x00,
-    SocketEvents_SA_READ = 0x01,
-    SocketEvents_SA_WRITE = 0x02,
-    SocketEvents_SA_READCLOSE = 0x04,
-    SocketEvents_SA_CLOSE = 0x08,
-    SocketEvents_SA_ERROR = 0x10,
-    // Force the enum to use int32_t instead of uint32_t
-    SocketEvents__IGNORE_SIGNED = -1,
-} SocketEvents;
 
 /**
  * IP address sizes.
@@ -287,13 +278,6 @@ typedef struct
     int32_t Flags;
 } MessageHeader;
 
-typedef struct
-{
-    uintptr_t Data;      // User data for this event
-    int32_t Events;      // Event flags
-    uint32_t Padding;    // Pad out to 8-byte alignment
-} SocketEvent;
-
 PALEXPORT int32_t SystemNative_GetHostEntryForName(const uint8_t* address, int32_t addressFamily, HostEntry* entry);
 
 PALEXPORT void SystemNative_FreeHostEntry(HostEntry* entry);
@@ -312,7 +296,7 @@ PALEXPORT int32_t SystemNative_GetDomainName(uint8_t* name, int32_t nameLength);
 
 PALEXPORT int32_t SystemNative_GetHostName(uint8_t* name, int32_t nameLength);
 
-PALEXPORT int32_t SystemNative_GetIPSocketAddressSizes(int32_t* ipv4SocketAddressSize, int32_t* ipv6SocketAddressSize);
+PALEXPORT int32_t SystemNative_GetSocketAddressSizes(int32_t* ipv4SocketAddressSize, int32_t* ipv6SocketAddressSize, int32_t* udsSocketAddressSize, int32_t* maxSocketAddressSize);
 
 PALEXPORT int32_t SystemNative_GetAddressFamily(const uint8_t* socketAddress, int32_t socketAddressLen, int32_t* addressFamily);
 
@@ -356,6 +340,8 @@ PALEXPORT int32_t SystemNative_Receive(intptr_t socket, void* buffer, int32_t bu
 
 PALEXPORT int32_t SystemNative_ReceiveMessage(intptr_t socket, MessageHeader* messageHeader, int32_t flags, int64_t* received);
 
+PALEXPORT int32_t SystemNative_ReceiveSocketError(intptr_t socket, MessageHeader* messageHeader);
+
 PALEXPORT int32_t SystemNative_Send(intptr_t socket, void* buffer, int32_t bufferLen, int32_t flags, int32_t* sent);
 
 PALEXPORT int32_t SystemNative_SendMessage(intptr_t socket, MessageHeader* messageHeader, int32_t flags, int64_t* sent);
@@ -365,6 +351,8 @@ PALEXPORT int32_t SystemNative_Accept(intptr_t socket, uint8_t* socketAddress, i
 PALEXPORT int32_t SystemNative_Bind(intptr_t socket, int32_t protocolType, uint8_t* socketAddress, int32_t socketAddressLen);
 
 PALEXPORT int32_t SystemNative_Connect(intptr_t socket, uint8_t* socketAddress, int32_t socketAddressLen);
+
+PALEXPORT int32_t SystemNative_Connectx(intptr_t socket, uint8_t* socketAddress, int32_t socketAddressLen, uint8_t* data, int32_t dataLen, int32_t tfo, int* sent);
 
 PALEXPORT int32_t SystemNative_GetPeerName(intptr_t socket, uint8_t* socketAddress, int32_t* socketAddressLen);
 
@@ -396,22 +384,11 @@ PALEXPORT int32_t SystemNative_GetAtOutOfBandMark(intptr_t socket, int32_t* avai
 
 PALEXPORT int32_t SystemNative_GetBytesAvailable(intptr_t socket, int32_t* available);
 
-PALEXPORT int32_t SystemNative_CreateSocketEventPort(intptr_t* port);
+PALEXPORT int32_t SystemNative_GetWasiSocketDescriptor(intptr_t socket, void** entry, int32_t* socketType);
 
-PALEXPORT int32_t SystemNative_CloseSocketEventPort(intptr_t port);
-
-PALEXPORT int32_t SystemNative_CreateSocketEventBuffer(int32_t count, SocketEvent** buffer);
-
-PALEXPORT int32_t SystemNative_FreeSocketEventBuffer(SocketEvent* buffer);
-
-PALEXPORT int32_t SystemNative_TryChangeSocketEventRegistration(
-    intptr_t port, intptr_t socket, int32_t currentEvents, int32_t newEvents, uintptr_t data);
-
-PALEXPORT int32_t SystemNative_WaitForSocketEvents(intptr_t port, SocketEvent* buffer, int32_t* count);
+PALEXPORT int32_t SystemNative_WasiSubscribeSocketPollable(int32_t kind, int32_t handle);
 
 PALEXPORT int32_t SystemNative_PlatformSupportsDualModeIPv4PacketInfo(void);
-
-PALEXPORT char* SystemNative_GetPeerUserName(intptr_t socket);
 
 PALEXPORT void SystemNative_GetDomainSocketSizes(int32_t* pathOffset, int32_t* pathSize, int32_t* addressSize);
 
@@ -422,3 +399,5 @@ PALEXPORT int32_t SystemNative_SendFile(intptr_t out_fd, intptr_t in_fd, int64_t
 PALEXPORT int32_t SystemNative_Disconnect(intptr_t socket);
 
 PALEXPORT uint32_t SystemNative_InterfaceNameToIndex(char* interfaceName);
+
+PALEXPORT int32_t SystemNative_Select(int* readFds, int readFdsCount, int* writeFds, int writeFdsCount,  int* errorFds, int errorFdsCount, int32_t microseconds, int32_t maxFd, int* triggered);

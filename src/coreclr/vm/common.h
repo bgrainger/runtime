@@ -1,11 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-//
-// common.h - precompiled headers include for the COM+ Execution Engine
-//
 
 //
-
+// common.h - precompiled headers include for the CLR Execution Engine
+//
 
 #ifndef _common_h_
 #define _common_h_
@@ -16,58 +14,14 @@
 #define COMMON_TURNED_FPO_ON 1
 #endif
 
-#define USE_COM_CONTEXT_DEF
-
 #if defined(_DEBUG)
 #define DEBUG_REGDISPLAY
 #endif
 
-#ifdef _MSC_VER
-
-    // These don't seem useful, so turning them off is no big deal
-#pragma warning(disable:4201)   // nameless struct/union
-#pragma warning(disable:4510)   // can't generate default constructor
-//#pragma warning(disable:4511)   // can't generate copy constructor
-#pragma warning(disable:4512)   // can't generate assignment constructor
-#pragma warning(disable:4610)   // user defined constructor required
-#pragma warning(disable:4211)   // nonstandard extention used (char name[0] in structs)
-#pragma warning(disable:4268)   // 'const' static/global data initialized with compiler generated default constructor fills the object with zeros
-#pragma warning(disable:4238)   // nonstandard extension used : class rvalue used as lvalue
-#pragma warning(disable:4291)   // no matching operator delete found
-#pragma warning(disable:4345)   // behavior change: an object of POD type constructed with an initializer of the form () will be default-initialized
-
-    // Depending on the code base, you may want to not disable these
-#pragma warning(disable:4245)   // assigning signed / unsigned
-//#pragma warning(disable:4146)   // unary minus applied to unsigned
-//#pragma warning(disable:4244)   // loss of data int -> char ..
-#pragma warning(disable:4127)   // conditional expression is constant
-#pragma warning(disable:4100)   // unreferenced formal parameter
-
-#pragma warning(1:4189)   // local variable initialized but not used
-
-#ifndef DEBUG
-#pragma warning(disable:4505)   // unreferenced local function has been removed
-//#pragma warning(disable:4702)   // unreachable code
-#pragma warning(disable:4313)   // 'format specifier' in format string conflicts with argument %d of type 'type'
-#endif // !DEBUG
-
-    // CONSIDER put these back in
-#pragma warning(disable:4063)   // bad switch value for enum (only in Disasm.cpp)
-#pragma warning(disable:4710)   // function not inlined
-#pragma warning(disable:4527)   // user-defined destructor required
-#pragma warning(disable:4513)   // destructor could not be generated
-
-    // <TODO>TODO we really probably need this one put back in!!!</TODO>
-//#pragma warning(disable:4701)   // local variable may be used without being initialized
-#endif // _MSC_VER
-
-#define _CRT_DEPENDENCY_   //this code depends on the crt file functions
-
-
 #include <stdint.h>
 #include <stddef.h>
 #include <winwrap.h>
-
+#include <algorithm>
 
 #include <windef.h>
 #include <winnt.h>
@@ -75,12 +29,21 @@
 #include <wchar.h>
 #include <objbase.h>
 #include <float.h>
-#include <math.h>
+#include <cmath>
 #include <time.h>
 #include <limits.h>
 #include <assert.h>
+#include <cstdint>
+#include <functional>
 
 #include <olectl.h>
+
+#if defined(HOST_AMD64) || defined(HOST_X86)
+#include <xmmintrin.h>
+#endif
+
+using std::max;
+using std::min;
 
 #ifdef _MSC_VER
 //non inline intrinsics are faster
@@ -93,46 +56,48 @@
 
 //-----------------------------------------------------------------------------------------------------------
 
-#include "stdmacros.h"
+#define POISONC ((UINT_PTR)((sizeof(int *) == 4)?0xCCCCCCCCL:0xCCCCCCCCCCCCCCCCLL))
 
-#define POISONC ((UINT_PTR)((sizeof(int *) == 4)?0xCCCCCCCCL:I64(0xCCCCCCCCCCCCCCCC)))
-
+#include <contract.h>
 #include "switches.h"
 #include "holder.h"
 #include "classnames.h"
 #include "util.hpp"
 #include "corpriv.h"
 
+#include <stdmacros.h>
+
 #include <daccess.h>
 
 typedef VPTR(class LoaderAllocator)     PTR_LoaderAllocator;
-typedef VPTR(class AppDomain)           PTR_AppDomain;
+typedef DPTR(PTR_LoaderAllocator)       PTR_PTR_LoaderAllocator;
+typedef DPTR(class AppDomain)           PTR_AppDomain;
 typedef DPTR(class ArrayBase)           PTR_ArrayBase;
 typedef DPTR(class Assembly)            PTR_Assembly;
 typedef DPTR(class AssemblyBaseObject)  PTR_AssemblyBaseObject;
 typedef DPTR(class AssemblyLoadContextBaseObject) PTR_AssemblyLoadContextBaseObject;
 typedef DPTR(class AssemblyBinder)      PTR_AssemblyBinder;
 typedef DPTR(class AssemblyNameBaseObject) PTR_AssemblyNameBaseObject;
-typedef VPTR(class BaseDomain)          PTR_BaseDomain;
 typedef DPTR(class ClassLoader)         PTR_ClassLoader;
 typedef DPTR(class ComCallMethodDesc)   PTR_ComCallMethodDesc;
-typedef DPTR(class ComPlusCallMethodDesc) PTR_ComPlusCallMethodDesc;
+typedef DPTR(class CLRToCOMCallMethodDesc) PTR_CLRToCOMCallMethodDesc;
 typedef VPTR(class DebugInterface)      PTR_DebugInterface;
 typedef DPTR(class Dictionary)          PTR_Dictionary;
-typedef VPTR(class DomainAssembly)      PTR_DomainAssembly;
-typedef VPTR(class DomainFile)          PTR_DomainFile;
-typedef VPTR(class DomainModule)        PTR_DomainModule;
 typedef DPTR(struct FailedAssembly)     PTR_FailedAssembly;
 typedef VPTR(class EditAndContinueModule) PTR_EditAndContinueModule;
 typedef DPTR(class EEClass)             PTR_EEClass;
 typedef DPTR(class DelegateEEClass)     PTR_DelegateEEClass;
-typedef DPTR(struct DomainLocalModule)  PTR_DomainLocalModule;
 typedef VPTR(class EECodeManager)       PTR_EECodeManager;
+#ifdef FEATURE_INTERPRETER
+typedef VPTR(class InterpreterCodeManager) PTR_InterpreterCodeManager;
+typedef DPTR(struct InterpThreadContext) PTR_InterpThreadContext;
+#endif
+typedef DPTR(class RangeSectionMap)     PTR_RangeSectionMap;
 typedef DPTR(class EEConfig)            PTR_EEConfig;
 typedef VPTR(class EEDbgInterfaceImpl)  PTR_EEDbgInterfaceImpl;
 typedef VPTR(class DebugInfoManager)    PTR_DebugInfoManager;
 typedef DPTR(class FieldDesc)           PTR_FieldDesc;
-typedef VPTR(class Frame)               PTR_Frame;
+typedef DPTR(class Frame)               PTR_Frame;
 typedef DPTR(class GCFrame)             PTR_GCFrame;
 typedef VPTR(class ICodeManager)        PTR_ICodeManager;
 typedef VPTR(class IJitManager)         PTR_IJitManager;
@@ -145,7 +110,7 @@ typedef DPTR(class MethodImpl)          PTR_MethodImpl;
 typedef DPTR(class MethodTable)         PTR_MethodTable;
 typedef DPTR(class CoreLibBinder)      PTR_CoreLibBinder;
 typedef VPTR(class Module)              PTR_Module;
-typedef DPTR(class NDirectMethodDesc)   PTR_NDirectMethodDesc;
+typedef DPTR(class PInvokeMethodDesc)   PTR_PInvokeMethodDesc;
 typedef DPTR(class Thread)              PTR_Thread;
 typedef DPTR(class Object)              PTR_Object;
 typedef DPTR(PTR_Object)                PTR_PTR_Object;
@@ -165,6 +130,7 @@ typedef DPTR(class TypeHandle)          PTR_TypeHandle;
 typedef VPTR(class VirtualCallStubManager) PTR_VirtualCallStubManager;
 typedef VPTR(class VirtualCallStubManagerManager) PTR_VirtualCallStubManagerManager;
 typedef VPTR(class IGCHeap)             PTR_IGCHeap;
+typedef VPTR(class ModuleBase)          PTR_ModuleBase;
 
 //
 // _UNCHECKED_OBJECTREF is for code that can't deal with DEBUG OBJECTREFs
@@ -180,8 +146,8 @@ typedef PTR_Object OBJECTREF;
 typedef DPTR(OBJECTREF) PTR_OBJECTREF;
 typedef DPTR(PTR_OBJECTREF) PTR_PTR_OBJECTREF;
 
-Thread* GetThread();
-Thread* GetThreadNULLOk();
+Thread* GetThread() noexcept;
+Thread* GetThreadNULLOk() noexcept;
 
 EXTERN_C Thread* STDCALL GetThreadHelper();
 
@@ -204,71 +170,16 @@ Thread * const CURRENT_THREAD = NULL;
     (void)CURRENT_THREAD_AVAILABLE; /* silence "local variable initialized but not used" warning */ \
 
 #ifndef DACCESS_COMPILE
-EXTERN_C AppDomain* STDCALL GetAppDomain();
+AppDomain* GetAppDomain();
 #endif //!DACCESS_COMPILE
-
-inline void RetailBreak()
-{
-#ifdef TARGET_X86
-    __asm int 3
-#else
-    DebugBreak();
-#endif
-}
 
 extern BOOL isMemoryReadable(const TADDR start, unsigned len);
 
-#ifndef memcpyUnsafe_f
-#define memcpyUnsafe_f
-
-// use this when you want to memcpy something that contains GC refs
-FORCEINLINE void* memcpyUnsafe(void *dest, const void *src, size_t len)
+FORCEINLINE void* memcpyNoGCRefs(void * dest, const void * src, size_t len)
 {
     WRAPPER_NO_CONTRACT;
     return memcpy(dest, src, len);
 }
-
-#endif // !memcpyUnsafe_f
-
-//
-// By default logging, and debug GC are enabled under debug
-//
-// These can be enabled in non-debug by removing the #ifdef _DEBUG
-// allowing one to log/check_gc a free build.
-//
-#if defined(_DEBUG) && !defined(DACCESS_COMPILE)
-
-    //If memcpy has been defined to PAL_memcpy, we undefine it so that this case
-    //can be covered by the if !defined(memcpy) block below
-    #ifdef HOST_UNIX
-    #if IS_REDEFINED_IN_PAL(memcpy)
-    #undef memcpy
-    #endif //IS_REDEFINED_IN_PAL
-    #endif //HOST_UNIX
-
-        // You should be using CopyValueClass if you are doing an memcpy
-        // in the CG heap.
-    #if !defined(memcpy)
-    FORCEINLINE void* memcpyNoGCRefs(void * dest, const void * src, size_t len) {
-            WRAPPER_NO_CONTRACT;
-
-            #ifdef HOST_UNIX
-                return PAL_memcpy(dest, src, len);
-            #else //HOST_UNIX
-                return memcpy(dest, src, len);
-            #endif //HOST_UNIX
-
-        }
-    extern "C" void *  __cdecl GCSafeMemCpy(void *, const void *, size_t);
-    #define memcpy(dest, src, len) GCSafeMemCpy(dest, src, len)
-    #endif // !defined(memcpy)
-#else // !_DEBUG && !DACCESS_COMPILE
-    FORCEINLINE void* memcpyNoGCRefs(void * dest, const void * src, size_t len) {
-            WRAPPER_NO_CONTRACT;
-
-            return memcpy(dest, src, len);
-        }
-#endif // !_DEBUG && !DACCESS_COMPILE
 
 namespace Loader
 {
@@ -280,30 +191,17 @@ namespace Loader
     } LoadFlag;
 }
 
-#if !defined(DACCESS_COMPILE)
-#if defined(TARGET_WINDOWS) && defined(TARGET_AMD64)
-EXTERN_C void STDCALL ClrRestoreNonvolatileContext(PCONTEXT ContextRecord);
-#elif !(defined(TARGET_WINDOWS) && defined(TARGET_X86)) // !(TARGET_WINDOWS && TARGET_AMD64) && !(TARGET_WINDOWS && TARGET_X86)
-inline void ClrRestoreNonvolatileContext(PCONTEXT ContextRecord)
-{
-    // Falling back to RtlRestoreContext() for now, though it should be possible to have simpler variants for these cases
-    RtlRestoreContext(ContextRecord, NULL);
-}
-#endif // TARGET_WINDOWS && TARGET_AMD64
-#endif // !DACCESS_COMPILE
-
 // src/inc
 #include "utilcode.h"
 #include "log.h"
 #include "loaderheap.h"
-#include "stgpool.h"
+#include "memorystreams.h"
 
 // src/vm
 #include "gcenv.interlocked.h"
 #include "gcenv.interlocked.inl"
 
 #include "util.hpp"
-#include "ibclogger.h"
 #include "eepolicy.h"
 
 #include "vars.hpp"
@@ -313,7 +211,6 @@ inline void ClrRestoreNonvolatileContext(PCONTEXT ContextRecord)
 #include "cgensys.h"
 #include "ceemain.h"
 #include "hash.h"
-#include "eecontract.h"
 #include "pedecoder.h"
 #include "sstring.h"
 #include "slist.h"
@@ -333,16 +230,13 @@ inline void ClrRestoreNonvolatileContext(PCONTEXT ContextRecord)
 #include "eehash.h"
 
 #include "vars.hpp"
-#include "eventstore.hpp"
 
 #include "synch.h"
 #include "regdisp.h"
 #include "stackframe.h"
-#include "gms.h"
 #include "fcall.h"
 #include "syncblk.h"
 #include "gcdesc.h"
-#include "specialstatics.h"
 #include "object.h"  // <NICE> We should not really need to put this so early... </NICE>
 #include "gchelpers.h"
 #include "peassembly.h"
@@ -359,6 +253,7 @@ inline void ClrRestoreNonvolatileContext(PCONTEXT ContextRecord)
 #include "threads.h"
 #include "clrex.inl"
 #include "loaderallocator.hpp"
+#include "callcounting.h"
 #include "appdomain.hpp"
 #include "appdomain.inl"
 #include "assembly.hpp"
@@ -378,6 +273,7 @@ inline void ClrRestoreNonvolatileContext(PCONTEXT ContextRecord)
 #include "dynamicmethod.h"
 
 #include "gcstress.h"
+#include "cdacstress.h"
 
 HRESULT EnsureRtlFunctions();
 
@@ -404,6 +300,14 @@ void* GetClrModuleBase();
 // use this when you want to memcpy something that contains GC refs
 void memmoveGCRefs(void *dest, const void *src, size_t len);
 
+// Struct often used as a parameter to callbacks.
+typedef struct
+{
+    promote_func*  f;
+    ScanContext*   sc;
+    CrawlFrame *   cf;
+    SetSHash<Object**, PtrSetSHashTraits<Object**> > *pScannedSlots;
+} GCCONTEXT;
 
 #if defined(_DEBUG)
 
@@ -419,7 +323,6 @@ extern DummyGlobalContract ___contract;
 
 #endif // defined(_DEBUG)
 
-
 // All files get to see all of these .inl files to make sure all files
 // get the benefit of inlining.
 #include "ceeload.inl"
@@ -429,9 +332,7 @@ extern DummyGlobalContract ___contract;
 #include "typehandle.inl"
 #include "object.inl"
 #include "clsload.inl"
-#include "domainfile.inl"
 #include "method.inl"
-#include "syncblk.inl"
 #include "threads.inl"
 #include "eehash.inl"
 #include "eventtrace.inl"
@@ -442,6 +343,8 @@ extern DummyGlobalContract ___contract;
 #undef FPO_ON
 #endif
 
-#endif // !_common_h_
+#include <minipal/types.h>
+void LogErrorToHost(const char* format, ...) MINIPAL_ATTR_FORMAT_PRINTF(1, 2);
 
+#endif // !_common_h_
 

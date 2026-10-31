@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using FluentAssertions;
+using System;
 using System.IO;
 using System.Reflection;
 using Xunit;
@@ -12,6 +13,7 @@ namespace Microsoft.Extensions.DependencyModel.Tests
     {
         [Fact]
         [SkipOnTargetFramework(TargetFrameworkMonikers.NetFramework, "GetEntryAssembly() returns null")]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/121209", typeof(PlatformDetection), nameof(PlatformDetection.IsNativeAot), nameof(PlatformDetection.IsAndroid))]
         public void LoadLoadsExtraPaths()
         {
             string appDepsPath = "appPath.deps.json";
@@ -76,7 +78,8 @@ namespace Microsoft.Extensions.DependencyModel.Tests
             context.RuntimeLibraries.Should().Contain(l => l.Name == "System.Banana");
         }
 
-        [Fact]
+        // Load method is marked RequiresAssemblyFiles so this test doesn't make sense on single file
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.HasAssemblyFiles))]
         public void LoadCanLoadANonEntryAssembly()
         {
             var loader = new DependencyContextLoader();

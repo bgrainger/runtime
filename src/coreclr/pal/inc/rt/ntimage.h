@@ -2,6 +2,9 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 //
 
+// This file is a verbatim copy of the Windows OS header with PE file structure definitions.
+
+
 //
 // ===========================================================================
 // File: ntimage.h
@@ -222,7 +225,7 @@ typedef struct _IMAGE_FILE_HEADER {
 #define IMAGE_FILE_MACHINE_SH4               0x01a6  // SH4 little-endian
 #define IMAGE_FILE_MACHINE_SH5               0x01a8  // SH5
 #define IMAGE_FILE_MACHINE_ARM               0x01c0  // ARM Little-Endian
-#define IMAGE_FILE_MACHINE_THUMB             0x01c2
+#define IMAGE_FILE_MACHINE_THUMB             0x01c2  // ARM Thumb/Thumb-2 Little-Endian
 #define IMAGE_FILE_MACHINE_ARMNT             0x01c4  // ARM Thumb-2 Little-Endian
 #define IMAGE_FILE_MACHINE_AM33              0x01d3
 #define IMAGE_FILE_MACHINE_POWERPC           0x01F0  // IBM PowerPC Little-Endian
@@ -238,7 +241,10 @@ typedef struct _IMAGE_FILE_HEADER {
 #define IMAGE_FILE_MACHINE_EBC               0x0EBC  // EFI Byte Code
 #define IMAGE_FILE_MACHINE_AMD64             0x8664  // AMD64 (K8)
 #define IMAGE_FILE_MACHINE_M32R              0x9041  // M32R little-endian
+#define IMAGE_FILE_MACHINE_ARM64             0xAA64  // ARM64 Little-Endian
 #define IMAGE_FILE_MACHINE_CEE               0xC0EE
+#define IMAGE_FILE_MACHINE_LOONGARCH64       0x6264  // LOONGARCH64.
+#define IMAGE_FILE_MACHINE_RISCV64           0x5064  // RISCV64
 
 //
 // Directory format.
@@ -401,7 +407,7 @@ typedef PIMAGE_NT_HEADERS32                 PIMAGE_NT_HEADERS;
 
 #define IMAGE_FIRST_SECTION( ntheader ) ((PIMAGE_SECTION_HEADER)        \
     ((ULONG_PTR)ntheader +                                              \
-     FIELD_OFFSET( IMAGE_NT_HEADERS, OptionalHeader ) +                 \
+     offsetof( IMAGE_NT_HEADERS, OptionalHeader ) +                 \
      VAL16(((PIMAGE_NT_HEADERS)(ntheader))->FileHeader.SizeOfOptionalHeader)  \
     ))
 
@@ -468,22 +474,6 @@ typedef PIMAGE_NT_HEADERS32                 PIMAGE_NT_HEADERS;
 #define IMAGE_DIRECTORY_ENTRY_IAT            12   // Import Address Table
 #define IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT   13   // Delay Load Import Descriptors
 #define IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR 14   // COM Runtime descriptor
-
-#ifdef _MSC_VER
-//
-// Non-COFF Object file header
-//
-
-typedef struct ANON_OBJECT_HEADER {
-    USHORT  Sig1;            // Must be IMAGE_FILE_MACHINE_UNKNOWN
-    USHORT  Sig2;            // Must be 0xffff
-    USHORT  Version;         // >= 1 (implies the CLSID field is present)
-    USHORT  Machine;
-    ULONG   TimeDateStamp;
-    CLSID   ClassID;         // Used to invoke CoCreateInstance
-    ULONG   SizeOfData;      // Size of data that follows the header
-} ANON_OBJECT_HEADER;
-#endif
 
 //
 // Section header format.
@@ -1172,6 +1162,15 @@ typedef IMAGE_BASE_RELOCATION UNALIGNED * PIMAGE_BASE_RELOCATION;
 
 #define IMAGE_REL_BASED_ARM_MOV32             5
 #define IMAGE_REL_BASED_THUMB_MOV32           7
+
+#ifdef FEATURE_WEBCIL
+//
+// Webcil-specific based relocation types.
+// The fixup adds a WASM table base offset to the value at the relocation address.
+//
+#define IMAGE_REL_BASED_WASM32_TABLE          12
+#define IMAGE_REL_BASED_WASM64_TABLE          13
+#endif // FEATURE_WEBCIL
 
 //
 // Archive format.

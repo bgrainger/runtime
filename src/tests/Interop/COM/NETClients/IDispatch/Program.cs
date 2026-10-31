@@ -1,10 +1,13 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using Xunit;
 namespace NetClient
 {
     using System;
+    using System.Drawing;
     using System.Globalization;
+    using System.Linq;
     using System.Reflection;
     using System.Runtime.InteropServices;
 
@@ -13,11 +16,11 @@ namespace NetClient
     using Server.Contract;
     using Server.Contract.Servers;
 
-    class Program
+    public class Program
     {
         static void Validate_Numeric_In_ReturnByRef()
         {
-            var dispatchTesting = (DispatchTesting)new DispatchTestingClass();
+            var dispatchTesting = new DispatchTesting();
 
             byte b1 = 1;
             byte b2 = b1;
@@ -72,7 +75,7 @@ namespace NetClient
 
         static void Validate_Float_In_ReturnAndUpdateByRef()
         {
-            var dispatchTesting = (DispatchTesting)new DispatchTestingClass();
+            var dispatchTesting = new DispatchTesting();
 
             float a = .1f;
             float b = .2f;
@@ -89,7 +92,7 @@ namespace NetClient
 
         static void Validate_Double_In_ReturnAndUpdateByRef()
         {
-            var dispatchTesting = (DispatchTesting)new DispatchTestingClass();
+            var dispatchTesting = new DispatchTesting();
 
             double a = .1;
             double b = .2;
@@ -106,21 +109,21 @@ namespace NetClient
 
         static int GetErrorCodeFromHResult(int hresult)
         {
-            // https://msdn.microsoft.com/en-us/library/cc231198.aspx
+            // https://msdn.microsoft.com/library/cc231198.aspx
             return hresult & 0xffff;
         }
 
         static void Validate_Exception()
         {
-            var dispatchTesting = (DispatchTesting)new DispatchTestingClass();
+            var dispatchTesting = new DispatchTesting();
 
-            int errorCode = 127;
+            int errorCode = 1127;
             string resultString = errorCode.ToString("x");
             try
             {
                 Console.WriteLine($"Calling {nameof(DispatchTesting.TriggerException)} with {nameof(IDispatchTesting_Exception.Disp)} {errorCode}...");
                 dispatchTesting.TriggerException(IDispatchTesting_Exception.Disp, errorCode);
-                Assert.True(false, "DISP exception not thrown properly");
+                Assert.Fail("DISP exception not thrown properly");
             }
             catch (COMException e)
             {
@@ -130,21 +133,49 @@ namespace NetClient
 
             try
             {
+                Console.WriteLine($"Calling {nameof(DispatchTesting.TriggerException)} with {nameof(IDispatchTesting_Exception.DispLegacy)} {errorCode}...");
+                dispatchTesting.TriggerException(IDispatchTesting_Exception.DispLegacy, errorCode);
+                Assert.Fail("DISP exception not thrown properly");
+            }
+            catch (COMException e)
+            {
+                Assert.Equal(e.ErrorCode, errorCode); // The legacy DISP exception returns the error code unmodified.
+                Assert.Equal(e.HResult, errorCode);
+                Assert.Equal(e.Message, resultString);
+            }
+
+            try
+            {
                 Console.WriteLine($"Calling {nameof(DispatchTesting.TriggerException)} with {nameof(IDispatchTesting_Exception.HResult)} {errorCode}...");
                 dispatchTesting.TriggerException(IDispatchTesting_Exception.HResult, errorCode);
-                Assert.True(false, "HRESULT exception not thrown properly");
+                Assert.Fail("HRESULT exception not thrown properly");
             }
             catch (COMException e)
             {
                 Assert.Equal(GetErrorCodeFromHResult(e.HResult), errorCode);
                 // Failing HRESULT exceptions contain CLR generated messages
             }
+
+            // Calling methods through IDispatch::Invoke() (i.e., late-bound) doesn't
+            // propagate the HRESULT when marked with PreserveSig. It is always 0.
+            {
+                Console.WriteLine($"Calling {nameof(DispatchTesting.TriggerException)} (PreserveSig) with {nameof(IDispatchTesting_Exception.Int)} {errorCode}...");
+                var dispatchTesting2 = (IDispatchTestingPreserveSig1)dispatchTesting;
+                Assert.Equal(0, dispatchTesting2.TriggerException(IDispatchTesting_Exception.Int, errorCode));
+            }
+
+            {
+                // Validate the HRESULT as a value type construct works for IDispatch.
+                Console.WriteLine($"Calling {nameof(DispatchTesting.TriggerException)} (PreserveSig, ValueType) with {nameof(IDispatchTesting_Exception.Int)} {errorCode}...");
+                var dispatchTesting3 = (IDispatchTestingPreserveSig2)dispatchTesting;
+                Assert.Equal(0, dispatchTesting3.TriggerException(IDispatchTesting_Exception.Int, errorCode).Value);
+            }
         }
 
         static void Validate_StructNotSupported()
         {
             Console.WriteLine($"IDispatch with structs not supported...");
-            var dispatchTesting = (DispatchTesting)new DispatchTestingClass();
+            var dispatchTesting = new DispatchTesting();
 
             var input = new HFA_4() { x = 1f, y = 2f, z = 3f, w = 4f };
             Assert.Throws<NotSupportedException>(() => dispatchTesting.DoubleHVAValues(ref input));
@@ -152,7 +183,7 @@ namespace NetClient
 
         static void Validate_LCID_Marshaled()
         {
-            var dispatchTesting = (DispatchTesting)new DispatchTestingClass();
+            var dispatchTesting = new DispatchTesting();
             CultureInfo oldCulture = CultureInfo.CurrentCulture;
             CultureInfo newCulture = new CultureInfo("es-ES", false);
             try
@@ -170,15 +201,24 @@ namespace NetClient
 
         static void Validate_Enumerator()
         {
-            var dispatchTesting = (DispatchTesting)new DispatchTestingClass();
+            var dispatchTesting = new DispatchTesting();
             var expected = System.Linq.Enumerable.Range(0, 10);
 
-            Console.WriteLine($"Calling {nameof(DispatchTesting.GetEnumerator)} ...");
-            var enumerator = dispatchTesting.GetEnumerator();
-            AssertExtensions.CollectionEqual(expected, GetEnumerable(enumerator));
+            {
+                Console.WriteLine($"Calling IEnumerable through cast ...");
+                var enumerable = (System.Collections.IEnumerable)dispatchTesting;
+                AssertExtensions.CollectionEqual(expected, ConvertEnumerable(enumerable));
+                AssertExtensions.CollectionEqual(expected, GetEnumerable(enumerable.GetEnumerator()));
+            }
 
-            enumerator.Reset();
-            AssertExtensions.CollectionEqual(expected, GetEnumerable(enumerator));
+            {
+                Console.WriteLine($"Calling {nameof(DispatchTesting.GetEnumerator)} ...");
+                var enumerator = dispatchTesting.GetEnumerator();
+                AssertExtensions.CollectionEqual(expected, GetEnumerable(enumerator));
+
+                enumerator.Reset();
+                AssertExtensions.CollectionEqual(expected, GetEnumerable(enumerator));
+            }
 
             Console.WriteLine($"Calling {nameof(DispatchTesting.ExplicitGetEnumerator)} ...");
             var enumeratorExplicit = dispatchTesting.ExplicitGetEnumerator();
@@ -187,7 +227,7 @@ namespace NetClient
             enumeratorExplicit.Reset();
             AssertExtensions.CollectionEqual(expected, GetEnumerable(enumeratorExplicit));
 
-            System.Collections.Generic.IEnumerable<int> GetEnumerable(System.Collections.IEnumerator e)
+            static System.Collections.Generic.IEnumerable<int> GetEnumerable(System.Collections.IEnumerator e)
             {
                var list = new System.Collections.Generic.List<int>();
                while (e.MoveNext())
@@ -197,12 +237,157 @@ namespace NetClient
 
                return list;
             }
+
+            static System.Collections.Generic.IEnumerable<int> ConvertEnumerable(System.Collections.IEnumerable e)
+            {
+               var list = new System.Collections.Generic.List<int>();
+               foreach (object i in e)
+               {
+                   list.Add((int)i);
+               }
+
+               return list;
+            }
         }
 
-        static int Main(string[] doNotUse)
+        static void Validate_ValueCoerce_ReturnToManaged()
+        {
+            var dispatchCoerceTesting = new DispatchCoerceTesting();
+
+            Console.WriteLine($"Calling {nameof(DispatchCoerceTesting.ReturnToManaged)} ...");
+
+            // Supported types
+            // See returned values in DispatchCoerceTesting.h
+            (VarEnum type, int expectedValue)[] supportedTypes =
+            {
+                (VarEnum.VT_EMPTY, 0),
+                (VarEnum.VT_I2, 123),
+                (VarEnum.VT_I4, 123),
+                (VarEnum.VT_R4, 1),
+                (VarEnum.VT_R8, 1),
+                (VarEnum.VT_CY, 123),
+                (VarEnum.VT_DATE, 1),
+                (VarEnum.VT_BSTR, 123),
+                (VarEnum.VT_ERROR, 123),
+                (VarEnum.VT_BOOL, -1),
+                (VarEnum.VT_DECIMAL, 123),
+            };
+
+            foreach (var (vt, expected) in supportedTypes)
+            {
+                Console.WriteLine($"Converting {vt} to int should be supported.");
+                int result = dispatchCoerceTesting.ReturnToManaged((short)vt);
+                Assert.Equal(expected, result);
+            }
+
+            // Not supported source or destination type: COMException { HResult: 0x80020005 }
+
+            // DISP_E_PARAMNOTFOUND: Converts to Missing
+            Console.WriteLine("Converting from VT_ERROR with DISP_E_PARAMNOTFOUND should be rejected.");
+            var comException = Assert.Throws<COMException>(() => dispatchCoerceTesting.ReturnToManaged(unchecked((short)((short)VarEnum.VT_ERROR | 0x8000))));
+            Assert.Equal(unchecked((int)0x80020005), comException.HResult);
+
+            // Types rejected by OAVariantLib
+            VarEnum[] unsupportedTypes =
+            {
+                VarEnum.VT_ERROR | (VarEnum)0x8000,
+            };
+
+            // Types rejected by VariantChangeTypeEx
+            VarEnum[] invalidCastTypes =
+            {
+                VarEnum.VT_UNKNOWN,
+                VarEnum.VT_NULL,
+            };
+
+            foreach (var vt in invalidCastTypes)
+            {
+                Console.WriteLine($"Converting {vt} to int should fail from VariantChangeTypeEx.");
+                Assert.Throws<InvalidCastException>(() => dispatchCoerceTesting.ReturnToManaged((short)vt));
+            }
+
+            // Invalid: Rejected before reaching coerce
+            Console.WriteLine("Invalid variant type should throw InvalidOleVariantTypeException.");
+            var variantException = Assert.Throws<InvalidOleVariantTypeException>(() => dispatchCoerceTesting.ReturnToManaged(0x7FFF));
+            Assert.Equal(unchecked((int)0x80131531), variantException.HResult);
+
+            Console.WriteLine("Invoking void-returning method should not allocate return buffer.");
+            // E_POINTER translates to NullReferenceException
+            Assert.Throws<NullReferenceException>(() => dispatchCoerceTesting.ReturnToManaged_Void(0));
+
+            Console.WriteLine("Converting int to double should be supported.");
+            Assert.Equal(1234d, dispatchCoerceTesting.ReturnToManaged_Double(1234));
+
+            Console.WriteLine("Converting int to string should be supported.");
+            Assert.Equal("1234", dispatchCoerceTesting.ReturnToManaged_String(1234));
+
+            Console.WriteLine("Converting int to decimal should be supported.");
+            Assert.Equal(1234m, dispatchCoerceTesting.ReturnToManaged_Decimal(1234));
+
+            Console.WriteLine("Converting int to DateTime should be supported.");
+            Assert.Equal(new DateTime(100, 1, 1), dispatchCoerceTesting.ReturnToManaged_DateTime(-657434));
+            Assert.Throws<OverflowException>(() => dispatchCoerceTesting.ReturnToManaged_DateTime(-657435));
+            Assert.Equal(new DateTime(9999, 12, 31), dispatchCoerceTesting.ReturnToManaged_DateTime(2958465));
+            Assert.Throws<OverflowException>(() => dispatchCoerceTesting.ReturnToManaged_DateTime(2958466));
+
+            Console.WriteLine("Converting int to System.Drawing.Color should be supported.");
+            Assert.Equal(Color.FromKnownColor(KnownColor.ActiveBorder), dispatchCoerceTesting.ReturnToManaged_Color(unchecked((int)0x8000000A)));
+            Assert.Equal(ColorTranslator.FromOle(1234), dispatchCoerceTesting.ReturnToManaged_Color(1234));
+
+            Console.WriteLine("Converting int to VT_MISSING should be rejected.");
+            comException = Assert.Throws<COMException>(() => dispatchCoerceTesting.ReturnToManaged_Missing(0));
+            Assert.Equal(unchecked((int)0x80020005), comException.HResult);
+
+            Console.WriteLine("Converting int to VT_NULL should be rejected.");
+            comException = Assert.Throws<COMException>(() => dispatchCoerceTesting.ReturnToManaged_DBNull(0));
+            Assert.Equal(unchecked((int)0x80020005), comException.HResult);
+
+            // LOCAL_BOOL
+            Console.WriteLine("VARIANT_BOOL should convert to non-numeric string.");
+            Assert.Equal("True", dispatchCoerceTesting.BoolToString());
+        }
+
+        static void Validate_Sum_IntArray_SafeArray()
+        {
+            var dispatchTesting = new DispatchTesting();
+
+            int[] data = [1, 2, 3, 4, 5];
+            int expectedSum = data.Sum();
+
+            Console.WriteLine($"Calling {nameof(IDispatchTesting.Sum_IntArray_SafeArray)} ...");
+            int sum = dispatchTesting.Sum_IntArray_SafeArray(data);
+            Console.WriteLine($"Call to {nameof(IDispatchTesting.Sum_IntArray_SafeArray)} complete: sum = {sum}");
+            Assert.Equal(expectedSum, sum);
+        }
+
+        static void Validate_GetDispId_Methods()
+        {
+            var dispatchTesting = new DispatchTesting();
+
+            Console.WriteLine($"Calling {nameof(DispatchTesting.GetDispIdAsString)} ...");
+            string result1 = dispatchTesting.GetDispIdAsString();
+            Assert.Equal("1000", result1);
+
+            Console.WriteLine($"Calling {nameof(DispatchTesting.GetDispIdAsString2)} ...");
+            string result2 = dispatchTesting.GetDispIdAsString2();
+            Assert.Equal("1001", result2);
+        }
+
+        static void Validate_PropertySetter()
+        {
+            var dispatchTesting = new DispatchTesting();
+
+            Console.WriteLine("Validating IDispatch property setter");
+            int expected = 42;
+            dispatchTesting.PropertySetterRegressionTest = expected;
+            Assert.Equal(expected, dispatchTesting.PropertySetterRegressionTest);
+        }
+
+        [Fact]
+        public static int TestEntryPoint()
         {
             // RegFree COM is not supported on Windows Nano
-            if (Utilities.IsWindowsNanoServer)
+            if (Utilities.IsWindowsNanoServer || Utilities.IsCoreClrInterpreter)
             {
                 return 100;
             }
@@ -216,6 +401,10 @@ namespace NetClient
                 Validate_StructNotSupported();
                 Validate_LCID_Marshaled();
                 Validate_Enumerator();
+                Validate_ValueCoerce_ReturnToManaged();
+                Validate_Sum_IntArray_SafeArray();
+                Validate_GetDispId_Methods();
+                Validate_PropertySetter();
             }
             catch (Exception e)
             {

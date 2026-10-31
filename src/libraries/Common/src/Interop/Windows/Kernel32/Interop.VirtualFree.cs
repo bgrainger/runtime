@@ -8,7 +8,9 @@ internal static partial class Interop
 {
     internal static partial class Kernel32
     {
-        [GeneratedDllImport(Libraries.Kernel32, ExactSpelling = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.Kernel32)]
+        [return: MarshalAs(UnmanagedType.Bool)]
         internal static unsafe partial bool VirtualFree(void* lpAddress, UIntPtr dwSize, int dwFreeType);
     }
 }

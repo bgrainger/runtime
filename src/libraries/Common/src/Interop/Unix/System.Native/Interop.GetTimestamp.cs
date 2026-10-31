@@ -7,8 +7,8 @@ internal static partial class Interop
 {
     internal static partial class Sys
     {
-        [GeneratedDllImport(Libraries.SystemNative, EntryPoint = "SystemNative_GetTimestamp", ExactSpelling = true)]
+        [LibraryImport(Libraries.SystemNative, EntryPoint = "SystemNative_GetTimestamp")]
         [SuppressGCTransition]
-        internal static partial ulong GetTimestamp();
+        internal static partial long GetTimestamp();
     }
 }

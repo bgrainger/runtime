@@ -1,16 +1,11 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-//
-// File: StubGen.h
-//
-
-//
-
 
 #ifndef __STUBGEN_H__
 #define __STUBGEN_H__
 
 #include "stublink.h"
+#include "sstring.h"
 
 struct ILStubEHClause;
 class ILStubLinker;
@@ -20,15 +15,9 @@ struct StructMarshalStubs
 {
     static const DWORD MANAGED_STRUCT_ARGIDX = 0;
     static const DWORD NATIVE_STRUCT_ARGIDX = 1;
-    static const DWORD OPERATION_ARGIDX = 2;
-    static const DWORD CLEANUP_WORK_LIST_ARGIDX = 3;
+    static const DWORD CLEANUP_WORK_LIST_ARGIDX = 2;
 
-    enum MarshalOperation
-    {
-        Marshal,
-        Unmarshal,
-        Cleanup
-    };
+    static bool TryGenerateStructMarshallingMethod(MethodDesc* pMD, DynamicResolver** resolver, COR_ILMETHOD_DECODER** methodILDecoder);
 };
 
 struct LocalDesc
@@ -39,13 +28,16 @@ struct LocalDesc
     size_t  cbType;
     TypeHandle InternalToken;  // only valid with ELEMENT_TYPE_INTERNAL
 
+    // only valid with ELEMENT_TYPE_CMOD_INTERNAL
+    bool InternalModifierRequired;
+    TypeHandle InternalModifierToken;
+
     // used only for E_T_FNPTR and E_T_ARRAY
     PCCOR_SIGNATURE pSig;
     union
     {
         Module*         pSigModule;
         size_t          cbArrayBoundsInfo;
-        BOOL            bIsCopyConstructed; // used for E_T_PTR
     };
 
     LocalDesc()
@@ -56,7 +48,6 @@ struct LocalDesc
     {
         ElementType[0]     = static_cast<BYTE>(elemType);
         cbType             = 1;
-        bIsCopyConstructed = FALSE;
     }
 
     inline LocalDesc(TypeHandle thType)
@@ -64,7 +55,6 @@ struct LocalDesc
         ElementType[0]     = ELEMENT_TYPE_INTERNAL;
         cbType             = 1;
         InternalToken      = thType;
-        bIsCopyConstructed = FALSE;
     }
 
     inline LocalDesc(MethodTable *pMT)
@@ -73,7 +63,6 @@ struct LocalDesc
         ElementType[0]     = ELEMENT_TYPE_INTERNAL;
         cbType             = 1;
         InternalToken      = TypeHandle(pMT);
-        bIsCopyConstructed = FALSE;
     }
 
     void MakeByRef()
@@ -94,24 +83,24 @@ struct LocalDesc
         ChangeType(ELEMENT_TYPE_SZARRAY);
     }
 
-    // makes the LocalDesc semantically equivalent to ET_TYPE_CMOD_REQD<IsCopyConstructed>/ET_TYPE_CMOD_REQD<NeedsCopyConstructorModifier>
-    void MakeCopyConstructedPointer()
-    {
-        LIMITED_METHOD_CONTRACT;
-        MakePointer();
-        bIsCopyConstructed = TRUE;
-    }
-
     void MakePointer()
     {
         LIMITED_METHOD_CONTRACT;
         ChangeType(ELEMENT_TYPE_PTR);
     }
 
+    void AddModifier(bool required, TypeHandle thModifier)
+    {
+        _ASSERTE_MSG(InternalModifierToken.IsNull(), "Only one custom modifier is supported per element signature");
+        ChangeType(ELEMENT_TYPE_CMOD_INTERNAL);
+        InternalModifierRequired = required;
+        InternalModifierToken = thModifier;
+    }
+
     void ChangeType(CorElementType elemType)
     {
         LIMITED_METHOD_CONTRACT;
-        PREFIX_ASSUME((MAX_LOCALDESC_ELEMENTS-1) >= cbType);
+        _ASSERTE((MAX_LOCALDESC_ELEMENTS-1) >= cbType);
 
         for (size_t i = cbType; i >= 1; i--)
         {
@@ -279,7 +268,6 @@ protected:
 #else // _DEBUG
 #define TOKEN_LOOKUP_MAP_SIZE  (64*sizeof(void*))
 #endif // _DEBUG
-
 //---------------------------------------------------------------------------------------
 //
 class TokenLookupMap
@@ -307,16 +295,41 @@ public:
         for (COUNT_T i = 0; i < pSrc->m_signatures.GetCount(); i++)
         {
             const CQuickBytesSpecifySize<16>& src = pSrc->m_signatures[i];
-            CQuickBytesSpecifySize<16>& dst = *m_signatures.Append();
-            dst.AllocThrows(src.Size());
-            memcpy(dst.Ptr(), src.Ptr(), src.Size());
+            auto dst = m_signatures.Append();
+            dst->AllocThrows(src.Size());
+            memcpy(dst->Ptr(), src.Ptr(), src.Size());
         }
+
+        m_memberRefs.Set(pSrc->m_memberRefs);
+        m_methodSpecs.Set(pSrc->m_methodSpecs);
+        m_typeSpecs.Set(pSrc->m_typeSpecs);
+        m_userStrings.Set(pSrc->m_userStrings);
     }
 
     TypeHandle LookupTypeDef(mdToken token)
     {
         WRAPPER_NO_CONTRACT;
-        return LookupTokenWorker<mdtTypeDef, MethodTable*>(token);
+        return LookupTokenWorker<mdtTypeDef, TypeHandle>(token);
+    }
+    struct TypeSpecEntry final
+    {
+        mdToken ClassSignatureToken;
+        TypeHandle Type;
+    };
+    TypeSpecEntry LookupTypeSpec(mdToken token)
+    {
+        CONTRACTL
+        {
+            NOTHROW;
+            MODE_ANY;
+            GC_NOTRIGGER;
+            PRECONDITION(RidFromToken(token) - 1 < m_typeSpecs.GetCount());
+            PRECONDITION(RidFromToken(token) != 0);
+            PRECONDITION(TypeFromToken(token) == mdtTypeSpec);
+        }
+        CONTRACTL_END;
+
+        return m_typeSpecs[static_cast<COUNT_T>(RidFromToken(token) - 1)];
     }
     MethodDesc* LookupMethodDef(mdToken token)
     {
@@ -328,6 +341,55 @@ public:
         WRAPPER_NO_CONTRACT;
         return LookupTokenWorker<mdtFieldDef, FieldDesc*>(token);
     }
+
+    struct MemberRefEntry final
+    {
+        CorTokenType Type;
+        mdToken ClassSignatureToken;
+        union
+        {
+            FieldDesc* Field;
+            MethodDesc* Method;
+        } Entry;
+    };
+    MemberRefEntry LookupMemberRef(mdToken token)
+    {
+        CONTRACTL
+        {
+            NOTHROW;
+            MODE_ANY;
+            GC_NOTRIGGER;
+            PRECONDITION(RidFromToken(token) - 1 < m_memberRefs.GetCount());
+            PRECONDITION(RidFromToken(token) != 0);
+            PRECONDITION(TypeFromToken(token) == mdtMemberRef);
+        }
+        CONTRACTL_END;
+
+        return m_memberRefs[static_cast<COUNT_T>(RidFromToken(token) - 1)];
+    }
+
+    struct MethodSpecEntry final
+    {
+        mdToken ClassSignatureToken;
+        mdToken MethodSignatureToken;
+        MethodDesc* Method;
+    };
+    MethodSpecEntry LookupMethodSpec(mdToken token)
+    {
+        CONTRACTL
+        {
+            NOTHROW;
+            MODE_ANY;
+            GC_NOTRIGGER;
+            PRECONDITION(RidFromToken(token) - 1 < m_methodSpecs.GetCount());
+            PRECONDITION(RidFromToken(token) != 0);
+            PRECONDITION(TypeFromToken(token) == mdtMethodSpec);
+        }
+        CONTRACTL_END;
+
+        return m_methodSpecs[static_cast<COUNT_T>(RidFromToken(token) - 1)];
+    }
+
     SigPointer LookupSig(mdToken token)
     {
         CONTRACTL
@@ -347,20 +409,112 @@ public:
         return SigPointer(pSig, cbSig);
     }
 
-    mdToken GetToken(TypeHandle pMT)
+    LPCWSTR LookupUserString(mdToken token)
+    {
+        CONTRACTL
+        {
+            THROWS;
+            MODE_ANY;
+            GC_NOTRIGGER;
+            PRECONDITION(RidFromToken(token) - 1 < m_userStrings.GetCount());
+            PRECONDITION(RidFromToken(token) != 0);
+            PRECONDITION(TypeFromToken(token) == mdtString);
+        }
+        CONTRACTL_END;
+
+        SString& userString = m_userStrings[static_cast<COUNT_T>(RidFromToken(token) - 1)];
+        return userString.GetUnicode();
+    }
+
+    mdToken GetToken(TypeHandle th)
     {
         WRAPPER_NO_CONTRACT;
-        return GetTokenWorker<mdtTypeDef, TypeHandle>(pMT);
+        return GetTokenWorker<mdtTypeDef, TypeHandle>(th);
+    }
+    mdToken GetToken(TypeHandle th, mdToken typeSignature)
+    {
+        CONTRACTL
+        {
+            THROWS;
+            MODE_ANY;
+            GC_NOTRIGGER;
+            PRECONDITION(!th.IsNull());
+            PRECONDITION(!th.IsTypeDesc() && th.GetMethodTable()->ContainsGenericVariables());
+            PRECONDITION(typeSignature != mdTokenNil);
+        }
+        CONTRACTL_END;
+
+        TypeSpecEntry* entry;
+        mdToken token = GetTypeSpecWorker(&entry);
+        entry->ClassSignatureToken = typeSignature;
+        entry->Type = th;
+        return token;
+
     }
     mdToken GetToken(MethodDesc* pMD)
     {
         WRAPPER_NO_CONTRACT;
         return GetTokenWorker<mdtMethodDef, MethodDesc*>(pMD);
     }
+    mdToken GetToken(MethodDesc* pMD, mdToken typeSignature)
+    {
+        CONTRACTL
+        {
+            THROWS;
+            MODE_ANY;
+            GC_NOTRIGGER;
+            PRECONDITION(pMD != NULL);
+        }
+        CONTRACTL_END;
+
+        MemberRefEntry* entry;
+        mdToken token = GetMemberRefWorker(&entry);
+        entry->Type = mdtMethodDef;
+        entry->ClassSignatureToken = typeSignature;
+        entry->Entry.Method = pMD;
+        return token;
+    }
+    mdToken GetToken(MethodDesc* pMD, mdToken typeSignature, mdToken methodSignature)
+    {
+        CONTRACTL
+        {
+            THROWS;
+            MODE_ANY;
+            GC_NOTRIGGER;
+            PRECONDITION(pMD != NULL);
+            PRECONDITION(methodSignature != mdTokenNil);
+        }
+        CONTRACTL_END;
+
+        MethodSpecEntry* entry;
+        mdToken token = GetMethodSpecWorker(&entry);
+        entry->ClassSignatureToken = typeSignature;
+        entry->MethodSignatureToken = methodSignature;
+        entry->Method = pMD;
+        return token;
+    }
     mdToken GetToken(FieldDesc* pFieldDesc)
     {
         WRAPPER_NO_CONTRACT;
         return GetTokenWorker<mdtFieldDef, FieldDesc*>(pFieldDesc);
+    }
+    mdToken GetToken(FieldDesc* pFieldDesc, mdToken typeSignature)
+    {
+        CONTRACTL
+        {
+            THROWS;
+            MODE_ANY;
+            GC_NOTRIGGER;
+            PRECONDITION(pFieldDesc != NULL);
+        }
+        CONTRACTL_END;
+
+        MemberRefEntry* entry;
+        mdToken token = GetMemberRefWorker(&entry);
+        entry->Type = mdtFieldDef;
+        entry->ClassSignatureToken = typeSignature;
+        entry->Entry.Field = pFieldDesc;
+        return token;
     }
 
     mdToken GetSigToken(PCCOR_SIGNATURE pSig, DWORD cbSig)
@@ -381,7 +535,83 @@ public:
         return token;
     }
 
+    mdToken GetUserStringToken(SString str)
+    {
+        CONTRACTL
+        {
+            THROWS;
+            MODE_ANY;
+            GC_NOTRIGGER;
+        }
+        CONTRACTL_END;
+
+        mdToken token = TokenFromRid(m_userStrings.GetCount(), mdtString)+1;
+        m_userStrings.Append(std::move(str));
+        return token;
+    }
+
+    mdToken GetMaxUserStringToken()
+    {
+        CONTRACTL
+        {
+            THROWS;
+            MODE_ANY;
+            GC_NOTRIGGER;
+        }
+        CONTRACTL_END;
+
+        return TokenFromRid(m_userStrings.GetCount(), mdtString);
+    }
+
 protected:
+    mdToken GetTypeSpecWorker(TypeSpecEntry** entry)
+    {
+        CONTRACTL
+        {
+            THROWS;
+            MODE_ANY;
+            GC_NOTRIGGER;
+            PRECONDITION(entry != NULL);
+        }
+        CONTRACTL_END;
+
+        mdToken token = TokenFromRid(m_typeSpecs.GetCount(), mdtTypeSpec) + 1;
+        *entry = &*m_typeSpecs.Append(); // Dereference the iterator and then take the address
+        return token;
+    }
+
+    mdToken GetMemberRefWorker(MemberRefEntry** entry)
+    {
+        CONTRACTL
+        {
+            THROWS;
+            MODE_ANY;
+            GC_NOTRIGGER;
+            PRECONDITION(entry != NULL);
+        }
+        CONTRACTL_END;
+
+        mdToken token = TokenFromRid(m_memberRefs.GetCount(), mdtMemberRef) + 1;
+        *entry = &*m_memberRefs.Append(); // Dereference the iterator and then take the address
+        return token;
+    }
+
+    mdToken GetMethodSpecWorker(MethodSpecEntry** entry)
+    {
+        CONTRACTL
+        {
+            THROWS;
+            MODE_ANY;
+            GC_NOTRIGGER;
+            PRECONDITION(entry != NULL);
+        }
+        CONTRACTL_END;
+
+        mdToken token = TokenFromRid(m_methodSpecs.GetCount(), mdtMethodSpec) + 1;
+        *entry = &*m_methodSpecs.Append(); // Dereference the iterator and then take the address
+        return token;
+    }
+
     template<mdToken TokenType, typename HandleType>
     HandleType LookupTokenWorker(mdToken token)
     {
@@ -423,9 +653,13 @@ protected:
         return token;
     }
 
-    unsigned int                                   m_nextAvailableRid;
+    uint32_t                                       m_nextAvailableRid;
     CQuickBytesSpecifySize<TOKEN_LOOKUP_MAP_SIZE>  m_qbEntries;
     SArray<CQuickBytesSpecifySize<16>, FALSE>      m_signatures;
+    SArray<SString, FALSE>                         m_userStrings;
+    SArray<MemberRefEntry, FALSE>                  m_memberRefs;
+    SArray<MethodSpecEntry, FALSE>                 m_methodSpecs;
+    SArray<TypeSpecEntry, FALSE>                   m_typeSpecs;
 };
 
 class ILCodeLabel;
@@ -452,6 +686,7 @@ struct ILStubEHClauseBuilder
     ILCodeLabel* handlerBeginLabel;
     ILCodeLabel* handlerEndLabel;
     DWORD typeToken;
+    ILStubEHClauseBuilder* next;
 };
 
 
@@ -482,9 +717,11 @@ public:
 
     void SetStubMethodDesc(MethodDesc *pMD);
 protected:
+    static constexpr UINT_PTR SECRET_STUB_ARGUMENT = static_cast<UINT_PTR>(-1);
 
     void DeleteCodeLabels();
     void DeleteCodeStreams();
+    void DeleteEHClauses();
 
     struct ILInstruction
     {
@@ -492,9 +729,6 @@ protected:
         INT16       iStackDelta;
         UINT_PTR    uArg;
     };
-
-    static void PatchInstructionArgument(ILCodeLabel* pLabel, UINT_PTR uNewArg
-        DEBUG_ARG(UINT16 uExpectedInstruction));
 
 #ifdef _DEBUG
     bool IsInCodeStreamList(ILCodeStream* pcs);
@@ -524,17 +758,17 @@ public:
 
     CorElementType GetStubTargetReturnElementType() { WRAPPER_NO_CONTRACT; return m_nativeFnSigBuilder.GetReturnElementType(); }
 
-    static void GetManagedTypeHelper(LocalDesc* pLoc, Module* pModule, PCCOR_SIGNATURE pSig, SigTypeContext *pTypeContext, MethodDesc *pMD);
+    static void GetManagedTypeHelper(LocalDesc* pLoc, Module* pModule, PCCOR_SIGNATURE pSig, SigTypeContext *pTypeContext);
 
     BOOL StubHasVoidReturnType();
-
-    Stub *Link(LoaderHeap *pHeap, UINT *pcbSize /* = NULL*/, BOOL fMC);
 
     size_t  Link(UINT* puMaxStack);
 
     size_t GetNumEHClauses();
     // Write out EH clauses. Number of items written out will be GetNumEHCLauses().
     void WriteEHClauses(COR_ILMETHOD_SECT_EH* sect);
+    // Get resolved EH clause info (must be called after Link()).
+    ILStubEHClause GetEHClause(size_t index);
 
     TokenLookupMap* GetTokenLookupMap() { LIMITED_METHOD_CONTRACT; return &m_tokenMap; }
 
@@ -548,6 +782,8 @@ public:
         kExceptionCleanup,
         kCleanup,
         kExceptionHandler,
+        kTypeCheckDispatch,
+        kUpdateByRefsReturn
     };
 
     ILCodeStream* NewCodeStream(CodeStreamType codeStreamType);
@@ -592,15 +828,20 @@ protected:
     //
     ILCodeLabel* NewCodeLabel();
     int GetToken(MethodDesc* pMD);
-    int GetToken(MethodTable* pMT);
+    int GetToken(MethodDesc* pMD, mdToken typeSignature);
+    int GetToken(MethodDesc* pMD, mdToken typeSignature, mdToken methodSignature);
     int GetToken(TypeHandle th);
+    int GetToken(TypeHandle th, mdToken typeSignature);
     int GetToken(FieldDesc* pFD);
+    int GetToken(FieldDesc* pFD, mdToken typeSignature);
+    int GetUserStringToken(SString str);
     int GetSigToken(PCCOR_SIGNATURE pSig, DWORD cbSig);
     DWORD NewLocal(CorElementType typ = ELEMENT_TYPE_I);
     DWORD NewLocal(LocalDesc loc);
 
     DWORD SetStubTargetArgType(CorElementType typ, bool fConsumeStubArg = true);
     DWORD SetStubTargetArgType(LocalDesc* pLoc = NULL, bool fConsumeStubArg = true);       // passing pLoc = NULL means "use stub arg type"
+    void SetSecretStubArgumentIndex(DWORD uArgIdx);
     void SetStubTargetReturnType(CorElementType typ);
     void SetStubTargetReturnType(LocalDesc* pLoc);
     void SetStubTargetCallingConv(CorCallingConvention uNativeCallingConv);
@@ -626,12 +867,21 @@ protected:
     INT     m_iTargetStackDelta;
     DWORD   m_cbCurrentCompressedSigLen;
     DWORD   m_nLocals;
+    DWORD   m_uSecretStubArgumentIndex;
 
     bool    m_fHasThis;
 
     // We need this MethodDesc so we can reconstruct the generics
     // SigTypeContext info, if needed.
     MethodDesc * m_pMD;
+
+    // EH clause tracking is owned by the linker so that Begin/End calls
+    // can span different ILCodeStream instances (the PInvoke stub's
+    // try-finally, for example, begins on the Marshal stream and the
+    // handler ends on the Cleanup stream).
+    ILStubEHClauseBuilder* m_pBuildingEHClauseStack;
+    ILStubEHClauseBuilder* m_pFinishedEHClauseHead;
+    ILStubEHClauseBuilder* m_pFinishedEHClauseTail;
 };  // class ILStubLinker
 
 
@@ -708,6 +958,7 @@ public:
     void EmitBLE_UN     (ILCodeLabel* pCodeLabel);
     void EmitBLT        (ILCodeLabel* pCodeLabel);
     void EmitBNE_UN     (ILCodeLabel* pCodeLabel);
+    void EmitBOX        (int token);
     void EmitBR         (ILCodeLabel* pCodeLabel);
     void EmitBREAK      ();
     void EmitBRFALSE    (ILCodeLabel* pCodeLabel);
@@ -720,6 +971,7 @@ public:
     void EmitCGT_UN     ();
     void EmitCLT        ();
     void EmitCLT_UN     ();
+    void EmitCONSTRAINED(int token);
     void EmitCONV_I     ();
     void EmitCONV_I1    ();
     void EmitCONV_I2    ();
@@ -744,8 +996,8 @@ public:
     void EmitLDARG      (unsigned uArgIdx);
     void EmitLDARGA     (unsigned uArgIdx);
     void EmitLDC        (DWORD_PTR uConst);
-    void EmitLDC_R4     (UINT32 uConst);
-    void EmitLDC_R8     (UINT64 uConst);
+    void EmitLDC_R4     (float fConst);
+    void EmitLDC_R8     (double dConst);
     void EmitLDELEMA    (int token);
     void EmitLDELEM_REF ();
     void EmitLDFLD      (int token);
@@ -770,17 +1022,21 @@ public:
     void EmitLDOBJ      (int token);
     void EmitLDSFLD     (int token);
     void EmitLDSFLDA    (int token);
+    void EmitLDSTR      (SString str);
     void EmitLDTOKEN    (int token);
     void EmitLEAVE      (ILCodeLabel* pCodeLabel);
     void EmitLOCALLOC   ();
     void EmitMUL        ();
     void EmitMUL_OVF    ();
     void EmitNEWOBJ     (int token, int numInArgs);
+    void EmitNEWARR     (int token);
     void EmitNOP        (LPCSTR pszNopComment);
     void EmitPOP        ();
     void EmitRET        ();
     void EmitSHR_UN     ();
     void EmitSTARG      (unsigned uArgIdx);
+    void EmitSTELEM_I1  ();
+    void EmitSTELEM_I4  ();
     void EmitSTELEM_REF ();
     void EmitSTIND_I    ();
     void EmitSTIND_I1   ();
@@ -798,6 +1054,8 @@ public:
     void EmitSUB        ();
     void EmitTHROW      ();
     void EmitUNALIGNED  (BYTE alignment);
+    void EmitUNBOX      (int token);
+    void EmitUNBOX_ANY  (int token);
 
     // Overloads to simplify common usage patterns
     void EmitNEWOBJ     (BinderMethodID id, int numInArgs);
@@ -808,8 +1066,8 @@ public:
 
     void EmitLabel(ILCodeLabel* pLabel);
     void EmitLoadThis ();
+    void EmitLoadSecretStubArgument();
     void EmitLoadNullPtr();
-    void EmitArgIteratorCreateAndLoad();
 
     ILCodeLabel* NewCodeLabel();
 
@@ -820,9 +1078,13 @@ public:
     //
 
     int GetToken(MethodDesc* pMD);
+    int GetToken(MethodDesc* pMD, mdToken typeSignature);
+    int GetToken(MethodDesc* pMD, mdToken typeSignature, mdToken methodSignature);
     int GetToken(MethodTable* pMT);
     int GetToken(TypeHandle th);
+    int GetToken(TypeHandle th, mdToken typeSignature);
     int GetToken(FieldDesc* pFD);
+    int GetToken(FieldDesc* pFD, mdToken typeSignature);
     int GetSigToken(PCCOR_SIGNATURE pSig, DWORD cbSig);
 
     DWORD NewLocal(CorElementType typ = ELEMENT_TYPE_I);
@@ -884,8 +1146,6 @@ protected:
     ILCodeStreamBuffer*           m_pqbILInstructions;
     UINT                          m_uCurInstrIdx;
     ILStubLinker::CodeStreamType  m_codeStreamType;       // Type of the ILCodeStream
-    SArray<ILStubEHClauseBuilder> m_buildingEHClauses;
-    SArray<ILStubEHClauseBuilder> m_finishedEHClauses;
 
 #ifndef TARGET_64BIT
     const static UINT32 SPECIAL_VALUE_NAN_64_ON_32 = 0xFFFFFFFF;

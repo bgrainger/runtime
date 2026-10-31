@@ -39,9 +39,13 @@ internal static partial class Interop
 
         internal static partial class StartupInfoOptions
         {
+            internal const int STARTF_USESHOWWINDOW = 0x00000001;
             internal const int STARTF_USESTDHANDLES = 0x00000100;
             internal const int CREATE_UNICODE_ENVIRONMENT = 0x00000400;
             internal const int CREATE_NO_WINDOW = 0x08000000;
+            internal const int CREATE_NEW_PROCESS_GROUP = 0x00000200;
+            internal const int CREATE_SUSPENDED = 0x00000004;
+            internal const int DETACHED_PROCESS = 0x00000008;
         }
     }
 }

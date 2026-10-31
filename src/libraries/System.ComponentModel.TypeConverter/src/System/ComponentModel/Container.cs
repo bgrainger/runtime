@@ -219,23 +219,23 @@ namespace System.ComponentModel
         [RequiresUnreferencedCode("The Type of components in the container cannot be statically discovered.")]
         protected virtual void ValidateName(IComponent component, string? name)
         {
-            if (component == null)
-            {
-                throw new ArgumentNullException(nameof(component));
-            }
+            ArgumentNullException.ThrowIfNull(component);
 
             if (name != null)
             {
-                for (int i = 0; i < Math.Min(_siteCount, _sites!.Length); i++)
+                lock (_syncObj)
                 {
-                    ISite? s = _sites[i];
-
-                    if (s?.Name != null && string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase) && s.Component != component)
+                    for (int i = 0; i < Math.Min(_siteCount, _sites!.Length); i++)
                     {
-                        InheritanceAttribute inheritanceAttribute = (InheritanceAttribute)TypeDescriptor.GetAttributes(s.Component)[typeof(InheritanceAttribute)]!;
-                        if (inheritanceAttribute.InheritanceLevel != InheritanceLevel.InheritedReadOnly)
+                        ISite? s = _sites[i];
+
+                        if (s?.Name != null && string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase) && s.Component != component)
                         {
-                            throw new ArgumentException(SR.Format(SR.DuplicateComponentName, name));
+                            InheritanceAttribute inheritanceAttribute = (InheritanceAttribute)TypeDescriptor.GetAttributes(s.Component)[typeof(InheritanceAttribute)]!;
+                            if (inheritanceAttribute.InheritanceLevel != InheritanceLevel.InheritedReadOnly)
+                            {
+                                throw new ArgumentException(SR.Format(SR.DuplicateComponentName, name));
+                            }
                         }
                     }
                 }

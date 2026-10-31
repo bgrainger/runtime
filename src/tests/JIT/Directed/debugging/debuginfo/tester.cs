@@ -8,33 +8,38 @@ using System.Diagnostics.Tracing;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
-using Microsoft.Diagnostics.Tools.RuntimeClient;
+using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Parsers.Clr;
 using Tracing.Tests.Common;
+using TestLibrary;
 using DebugInfoMethodsD = tests_d::DebugInfoMethods;
 using DebugInfoMethodsR = tests_r::DebugInfoMethods;
+using Xunit;
 
 public unsafe class DebugInfoTest
 {
-    public static unsafe int Main()
+    [ActiveIssue("Just-in-time compilation test", typeof(Utilities), nameof(Utilities.IsNativeAot))]
+    [ActiveIssue("Tests coreclr JIT's debug info generation", TestRuntimes.Mono)]
+    [SkipOnCoreClr("This test is not compatible with GC stress.", RuntimeTestModes.AnyGCStress)]
+    [Fact]
+    public static unsafe int TestEntryPoint()
     {
         var keywords =
             ClrTraceEventParser.Keywords.Jit | ClrTraceEventParser.Keywords.JittedMethodILToNativeMap;
 
-        var dotnetRuntimeProvider = new List<Provider>
+        var dotnetRuntimeProvider = new List<EventPipeProvider>
         {
-            new Provider("Microsoft-Windows-DotNETRuntime", eventLevel: EventLevel.Verbose, keywords: (ulong)keywords)
+            new EventPipeProvider("Microsoft-Windows-DotNETRuntime", eventLevel: EventLevel.Verbose, keywords: (long)keywords)
         };
-
-        var config = new SessionConfiguration(1024, EventPipeSerializationFormat.NetTrace, dotnetRuntimeProvider);
 
         return
             IpcTraceTest.RunAndValidateEventCounts(
                 new Dictionary<string, ExpectedEventCount>(),
                 JitMethods,
-                config,
+                dotnetRuntimeProvider,
+                1024,
                 ValidateMappings);
     }
 
@@ -64,6 +69,9 @@ public unsafe class DebugInfoTest
         source.Clr.MethodLoadVerbose += e => methodTier[e.MethodID] = e.OptimizationTier;
         source.Clr.MethodILToNativeMap += e =>
         {
+            if (e.MethodID == 0)
+                return;
+
             var mappings = new (int, int)[e.CountOfMapEntries];
             for (int i = 0; i < mappings.Length; i++)
                 mappings[i] = (e.ILOffset(i), e.NativeOffset(i));

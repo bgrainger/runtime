@@ -124,15 +124,15 @@ namespace System.Runtime.InteropServices.Tests
             Assert.Equal(100, Marshal.ReadInt16(structure, pointerOffset));
             Assert.Equal(3, Marshal.ReadInt16(structure, arrayOffset + sizeof(short) * 2));
         }
-
         [Fact]
-        [SkipOnMono("Marshal.ReadByte will not be implemented in Mono, see https://github.com/mono/mono/issues/15085.")]
         public void ReadInt16_ZeroPointer_ThrowsException()
         {
-            AssertExtensions.ThrowsAny<AccessViolationException, NullReferenceException>(() => Marshal.ReadInt16(IntPtr.Zero));
-            AssertExtensions.ThrowsAny<AccessViolationException, NullReferenceException>(() => Marshal.ReadInt16(IntPtr.Zero, 2));
+            AssertExtensions.Throws<AccessViolationException>(() => Marshal.ReadInt16(IntPtr.Zero));
+            if (PlatformDetection.SupportsDirtyAccessViolations)
+            {
+                AssertExtensions.Throws<AccessViolationException>(() => Marshal.ReadInt16(IntPtr.Zero, 2));
+            }
         }
-
         [Fact]
         [SkipOnMono("Marshal.ReadInt16 will not be implemented in Mono, see https://github.com/mono/mono/issues/15085.")]
         public void ReadInt16_NullObject_ThrowsAccessViolationException()
@@ -140,7 +140,7 @@ namespace System.Runtime.InteropServices.Tests
             Assert.Throws<AccessViolationException>(() => Marshal.ReadInt16(null, 2));
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
         [SkipOnMono("Marshal.ReadInt16 will not be implemented in Mono, see https://github.com/mono/mono/issues/15085.")]
         public void ReadInt16_NotReadable_ThrowsArgumentException()
         {
@@ -152,15 +152,15 @@ namespace System.Runtime.InteropServices.Tests
 
             AssertExtensions.Throws<ArgumentException>(null, () => Marshal.ReadInt16(collectibleObject, 0));
         }
-
         [Fact]
-        [SkipOnMono("Marshal.ReadByte will not be implemented in Mono, see https://github.com/mono/mono/issues/15085.")]
         public void WriteInt16_ZeroPointer_ThrowsException()
         {
-            AssertExtensions.ThrowsAny<AccessViolationException, NullReferenceException>(() => Marshal.WriteInt16(IntPtr.Zero, 0));
-            AssertExtensions.ThrowsAny<AccessViolationException, NullReferenceException>(() => Marshal.WriteInt16(IntPtr.Zero, 2, 0));
+            AssertExtensions.Throws<AccessViolationException>(() => Marshal.WriteInt16(IntPtr.Zero, 0));
+            if (PlatformDetection.SupportsDirtyAccessViolations)
+            {
+                AssertExtensions.Throws<AccessViolationException>(() => Marshal.WriteInt16(IntPtr.Zero, 2, 0));
+            }
         }
-
         [Fact]
         [SkipOnMono("Marshal.WriteInt16 will not be implemented in Mono, see https://github.com/mono/mono/issues/15085.")]
         public void WriteInt16_NullObject_ThrowsAccessViolationException()
@@ -168,7 +168,7 @@ namespace System.Runtime.InteropServices.Tests
             Assert.Throws<AccessViolationException>(() => Marshal.WriteInt16(null, 2, 0));
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
         [SkipOnMono("Marshal.WriteInt16 will not be implemented in Mono, see https://github.com/mono/mono/issues/15085.")]
         public void WriteInt16_NotReadable_ThrowsArgumentException()
         {

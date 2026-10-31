@@ -8,6 +8,8 @@
 
 #ifdef FEATURE_PERFTRACING
 #include "eventpipeadaptertypes.h"
+#else
+typedef struct _EventPipeSession EventPipeSession;
 #endif // FEATURE_PERFTRACING
 
 enum GcGenAnalysisState
@@ -18,9 +20,9 @@ enum GcGenAnalysisState
     Done = 3,
 };
 
-#define GENAWARE_TRACE_FILE_NAME W("gcgenaware.nettrace")
-#define GENAWARE_DUMP_FILE_NAME W("gcgenaware.dmp")
-#define GENAWARE_COMPLETION_FILE_NAME "gcgenaware.nettrace.completed"
+#define GENAWARE_TRACE_FILE_NAME W("gcgenaware.{pid}.nettrace")
+#define GENAWARE_DUMP_FILE_NAME W("gcgenaware.{pid}.dmp")
+#define GENAWARE_COMPLETION_FILE_NAME W("gcgenaware.{pid}.nettrace.completed")
 
 extern bool s_forcedGCInProgress;
 extern GcGenAnalysisState gcGenAnalysisState;

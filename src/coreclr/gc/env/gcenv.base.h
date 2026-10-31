@@ -21,22 +21,7 @@
 
 #ifndef _MSC_VER
 #define __stdcall
-#ifdef __GNUC__
-#define __forceinline __attribute__((always_inline)) inline
-#else // __GNUC__
-#define __forceinline inline
-#endif // __GNUC__
-// [LOCALGC TODO] is there a better place for this?
-#define NOINLINE __attribute__((noinline))
-#else // !_MSC_VER
-#define NOINLINE __declspec(noinline)
 #endif // _MSC_VER
-
-#ifdef _MSC_VER
-#define __UNREACHABLE() __assume(0)
-#else
-#define __UNREACHABLE() __builtin_unreachable()
-#endif
 
 #ifndef SIZE_T_MAX
 #define SIZE_T_MAX ((size_t)-1)
@@ -45,7 +30,7 @@
 #define SSIZE_T_MAX ((ptrdiff_t)(SIZE_T_MAX / 2))
 #endif
 
-#ifndef _INC_WINDOWS
+#ifdef TARGET_UNIX
 // -----------------------------------------------------------------------------------------------------------
 //
 // Aliases for Win32 types
@@ -54,8 +39,11 @@
 typedef int BOOL;
 typedef uint32_t DWORD;
 typedef uint64_t DWORD64;
+#ifdef _MSC_VER
+typedef unsigned long ULONG;
+#else
 typedef uint32_t ULONG;
-
+#endif
 // -----------------------------------------------------------------------------------------------------------
 // HRESULT subset.
 
@@ -77,11 +65,6 @@ inline HRESULT HRESULT_FROM_WIN32(unsigned long x)
 #define S_OK                                   0x0
 #define E_FAIL                                 0x80004005
 #define E_OUTOFMEMORY                          0x8007000E
-#define COR_E_EXECUTIONENGINE                  0x80131506
-#define CLR_E_GC_BAD_AFFINITY_CONFIG           0x8013200A
-#define CLR_E_GC_BAD_AFFINITY_CONFIG_FORMAT    0x8013200B
-#define CLR_E_GC_BAD_HARD_LIMIT                0x8013200D
-#define CLR_E_GC_LARGE_PAGE_MISSING_HARD_LIMIT 0x8013200E
 
 #define NOERROR                 0x0
 #define ERROR_TIMEOUT           1460
@@ -90,42 +73,18 @@ inline HRESULT HRESULT_FROM_WIN32(unsigned long x)
 #define FALSE false
 
 #define CALLBACK __stdcall
-#define FORCEINLINE __forceinline
 
 #define INFINITE 0xFFFFFFFF
 
 #define ZeroMemory(Destination,Length) memset((Destination),0,(Length))
-
-#ifndef min
-#define min(a,b) (((a) < (b)) ? (a) : (b))
-#endif
-
-#ifndef max
-#define max(a,b) (((a) > (b)) ? (a) : (b))
-#endif
-
-#define C_ASSERT(cond) static_assert( cond, #cond )
 
 #define UNREFERENCED_PARAMETER(P)          (void)(P)
 
 #ifdef TARGET_UNIX
 #define _vsnprintf_s(string, sizeInBytes, count, format, args) vsnprintf(string, sizeInBytes, format, args)
 #define sprintf_s snprintf
-#define swprintf_s swprintf
 #define _snprintf_s(string, sizeInBytes, count, format, ...) \
   snprintf(string, sizeInBytes, format, ## __VA_ARGS__)
-#endif
-
-#ifdef UNICODE
-#define _tcslen wcslen
-#define _tcscpy wcscpy
-#define _stprintf_s swprintf_s
-#define _tfopen _wfopen
-#else
-#define _tcslen strlen
-#define _tcscpy strcpy
-#define _stprintf_s sprintf_s
-#define _tfopen fopen
 #endif
 
 #define WINAPI __stdcall
@@ -189,26 +148,15 @@ typedef DWORD (WINAPI *PTHREAD_START_ROUTINE)(void* lpThreadParameter);
  #endif
 #else // _MSC_VER
 
-#ifdef __llvm__
-#define HAS_IA32_PAUSE __has_builtin(__builtin_ia32_pause)
-#define HAS_IA32_MFENCE __has_builtin(__builtin_ia32_mfence)
-#else
-#define HAS_IA32_PAUSE 0
-#define HAS_IA32_MFENCE 0
-#endif
-
-// Only clang defines __has_builtin, so we first test for a GCC define
-// before using __has_builtin.
-
 #if defined(__i386__) || defined(__x86_64__)
 
-#if (__GNUC__ > 4 && __GNUC_MINOR > 7) || HAS_IA32_PAUSE
+#if __has_builtin(__builtin_ia32_pause)
  // clang added this intrinsic in 3.8
  // gcc added this intrinsic by 4.7.1
  #define YieldProcessor __builtin_ia32_pause
 #endif // __has_builtin(__builtin_ia32_pause)
 
-#if defined(__GNUC__) || HAS_IA32_MFENCE
+#if __has_builtin(__builtin_ia32_mfence)
  // clang has had this intrinsic since at least 3.0
  // gcc has had this intrinsic since forever
  #define MemoryBarrier __builtin_ia32_mfence
@@ -229,6 +177,21 @@ typedef DWORD (WINAPI *PTHREAD_START_ROUTINE)(void* lpThreadParameter);
  #define YieldProcessor() asm volatile ("yield")
  #define MemoryBarrier __sync_synchronize
 #endif // __arm__ || __aarch64__
+
+#ifdef __loongarch64
+ #define YieldProcessor() __asm__ volatile( "dbar 0; \n")
+ #define MemoryBarrier __sync_synchronize
+#endif // __loongarch64
+
+#ifdef __riscv
+ #define YieldProcessor() asm volatile( ".word 0x0100000f");
+ #define MemoryBarrier __sync_synchronize
+#endif // __riscv
+
+#ifdef HOST_WASM
+  #define YieldProcessor()
+  #define MemoryBarrier __sync_synchronize
+#endif // HOST_WASM
 
 #endif // _MSC_VER
 
@@ -303,12 +266,12 @@ inline uint8_t BitScanReverse(uint32_t *bitIndex, uint32_t mask)
 #ifdef _MSC_VER
     return _BitScanReverse((unsigned long*)bitIndex, mask);
 #else // _MSC_VER
-    // The result of __builtin_clzl is undefined when mask is zero,
+    // The result of __builtin_clz is undefined when mask is zero,
     // but it's still OK to call the intrinsic in that case (just don't use the output).
     // Unconditionally calling the intrinsic in this way allows the compiler to
     // emit branchless code for this function when possible (depending on how the
     // intrinsic is implemented for the target platform).
-    int lzcount = __builtin_clzl(mask);
+    int lzcount = __builtin_clz(mask);
     *bitIndex = static_cast<uint32_t>(31 - lzcount);
     return mask != 0 ? TRUE : FALSE;
 #endif // _MSC_VER
@@ -346,6 +309,14 @@ inline uint8_t BitScanReverse64(uint32_t *bitIndex, uint64_t mask)
     return mask != 0 ? TRUE : FALSE;
 #endif // _MSC_VER
 }
+#endif // TARGET_UNIX
+
+#define COR_E_EXECUTIONENGINE                  0x80131506
+#define CLR_E_GC_BAD_AFFINITY_CONFIG           0x8013200A
+#define CLR_E_GC_BAD_AFFINITY_CONFIG_FORMAT    0x8013200B
+#define CLR_E_GC_BAD_HARD_LIMIT                0x8013200D
+#define CLR_E_GC_LARGE_PAGE_MISSING_HARD_LIMIT 0x8013200E
+#define CLR_E_GC_BAD_REGION_SIZE               0x8013200F
 
 // Aligns a size_t to the specified alignment. Alignment must be a power
 // of two.
@@ -392,22 +363,9 @@ inline void* ALIGN_DOWN(void* ptr, size_t alignment)
     return reinterpret_cast<void*>(ALIGN_DOWN(as_size_t, alignment));
 }
 
-inline int GetRandomInt(int max)
-{
-    return rand() % max;
-}
-
-typedef struct _PROCESSOR_NUMBER {
-    uint16_t Group;
-    uint8_t Number;
-    uint8_t Reserved;
-} PROCESSOR_NUMBER, *PPROCESSOR_NUMBER;
-
-#endif // _INC_WINDOWS
-
 // -----------------------------------------------------------------------------------------------------------
 //
-// The subset of the contract code required by the GC/HandleTable sources. If Redhawk moves to support
+// The subset of the contract code required by the GC/HandleTable sources. If NativeAOT moves to support
 // contracts these local definitions will disappear and be replaced by real implementations.
 //
 
@@ -423,8 +381,6 @@ typedef struct _PROCESSOR_NUMBER {
 #define STATIC_CONTRACT_GC_NOTRIGGER
 #define STATIC_CONTRACT_MODE_COOPERATIVE
 #define CONTRACTL
-#define CONTRACT(_expr)
-#define CONTRACT_VOID
 #define THROWS
 #define NOTHROW
 #define INSTANCE_CHECK
@@ -434,23 +390,16 @@ typedef struct _PROCESSOR_NUMBER {
 #define GC_NOTRIGGER
 #define CAN_TAKE_LOCK
 #define SUPPORTS_DAC
-#define FORBID_FAULT
 #define CONTRACTL_END
-#define CONTRACT_END
 #define TRIGGERSGC()
 #define WRAPPER(_contract)
 #define DISABLED(_contract)
-#define INJECT_FAULT(_expr)
-#define INJECTFAULT_GCHEAP 0x2
-#define FAULT_NOT_FATAL()
 #define BEGIN_DEBUG_ONLY_CODE
 #define END_DEBUG_ONLY_CODE
 #define BEGIN_GETTHREAD_ALLOWED
 #define END_GETTHREAD_ALLOWED
 #define LEAF_DAC_CONTRACT
 #define PRECONDITION(_expr)
-#define POSTCONDITION(_expr)
-#define RETURN return
 #define CONDITIONAL_CONTRACT_VIOLATION(_violation, _expr)
 
 // -----------------------------------------------------------------------------------------------------------
@@ -470,27 +419,18 @@ typedef DPTR(uint8_t)   PTR_uint8_t;
 #define DATA_ALIGNMENT sizeof(uintptr_t)
 #define RAW_KEYWORD(x) x
 
-#ifdef _MSC_VER
-#define DECLSPEC_ALIGN(x)   __declspec(align(x))
-#else
-#define DECLSPEC_ALIGN(x)   __attribute__((aligned(x)))
-#endif
-
 #ifndef _ASSERTE
 #define _ASSERTE(_expr) ASSERT(_expr)
 #endif
 #define CONSISTENCY_CHECK(_expr) ASSERT(_expr)
-#define PREFIX_ASSUME(cond) ASSERT(cond)
+#define COMPILER_ASSUME(cond) ASSERT(cond)
 #define EEPOLICY_HANDLE_FATAL_ERROR(error) ASSERT(!"EEPOLICY_HANDLE_FATAL_ERROR")
-#define UI64(_literal) _literal##ULL
 
 class ObjHeader;
 class MethodTable;
 class Object;
 class ArrayBase;
 
-// Various types used to refer to object references or handles. This will get more complex if we decide
-// Redhawk wants to wrap object references in the debug build.
 typedef DPTR(Object) PTR_Object;
 typedef DPTR(PTR_Object) PTR_PTR_Object;
 

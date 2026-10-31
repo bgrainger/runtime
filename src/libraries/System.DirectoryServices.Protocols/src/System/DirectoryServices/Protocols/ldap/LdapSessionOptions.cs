@@ -1,16 +1,16 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Collections;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
-using System.Security.Cryptography.X509Certificates;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-using System.Collections;
-using System.Text;
-using System.Diagnostics;
-using System.Security.Authentication;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
 
 namespace System.DirectoryServices.Protocols
 {
@@ -21,16 +21,16 @@ namespace System.DirectoryServices.Protocols
     public delegate bool VerifyServerCertificateCallback(LdapConnection connection, X509Certificate certificate);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    internal delegate int QUERYFORCONNECTIONInternal(IntPtr Connection, IntPtr ReferralFromConnection, IntPtr NewDNPtr, string HostName, int PortNumber, SEC_WINNT_AUTH_IDENTITY_EX SecAuthIdentity, Luid CurrentUserToken, ref IntPtr ConnectionToUse);
+    internal unsafe delegate int QUERYFORCONNECTIONInternal(IntPtr Connection, IntPtr ReferralFromConnection, IntPtr NewDNPtr, IntPtr HostName, int PortNumber, SEC_WINNT_AUTH_IDENTITY_EX.Native* SecAuthIdentity, Luid* CurrentUserToken, IntPtr* ConnectionToUse);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    internal delegate bool NOTIFYOFNEWCONNECTIONInternal(IntPtr Connection, IntPtr ReferralFromConnection, IntPtr NewDNPtr, string HostName, IntPtr NewConnection, int PortNumber, SEC_WINNT_AUTH_IDENTITY_EX SecAuthIdentity, Luid CurrentUser, int ErrorCodeFromBind);
+    internal unsafe delegate Interop.BOOL NOTIFYOFNEWCONNECTIONInternal(IntPtr Connection, IntPtr ReferralFromConnection, IntPtr NewDNPtr, IntPtr HostName, IntPtr NewConnection, int PortNumber, SEC_WINNT_AUTH_IDENTITY_EX.Native* SecAuthIdentity, Luid* CurrentUser, int ErrorCodeFromBind);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     internal delegate int DEREFERENCECONNECTIONInternal(IntPtr Connection, IntPtr ConnectionToDereference);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    internal delegate bool VERIFYSERVERCERT(IntPtr Connection, IntPtr pServerCert);
+    internal delegate Interop.BOOL VERIFYSERVERCERT(IntPtr Connection, IntPtr pServerCert);
 
     [Flags]
     public enum LocatorFlags : long
@@ -69,10 +69,13 @@ namespace System.DirectoryServices.Protocols
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public class SecurityPackageContextConnectionInformation
     {
-        private readonly SecurityProtocol _securityProtocol;
+        // Not marked as readonly to enable passing to Unsafe.As in GetPinnableReference.
+        private SecurityProtocol _securityProtocol;
+#pragma warning disable SYSLIB0058 // Use NegotiatedCipherSuite.
         private readonly CipherAlgorithmType _identifier;
         private readonly int _strength;
         private readonly HashAlgorithmType _hashAlgorithm;
+#pragma warning restore SYSLIB0058 // Use NegotiatedCipherSuite.
         private readonly int _hashStrength;
         private readonly int _keyExchangeAlgorithm;
         private readonly int _exchangeStrength;
@@ -82,18 +85,37 @@ namespace System.DirectoryServices.Protocols
         }
 
         public SecurityProtocol Protocol => _securityProtocol;
-
+#if NET
+        [Obsolete(Obsoletions.TlsCipherAlgorithmEnumsMessage, DiagnosticId = Obsoletions.TlsCipherAlgorithmEnumsDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
+#endif
         public CipherAlgorithmType AlgorithmIdentifier => _identifier;
 
+#if NET
+        [Obsolete(Obsoletions.TlsCipherAlgorithmEnumsMessage, DiagnosticId = Obsoletions.TlsCipherAlgorithmEnumsDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
+#endif
         public int CipherStrength => _strength;
 
+#if NET
+        [Obsolete(Obsoletions.TlsCipherAlgorithmEnumsMessage, DiagnosticId = Obsoletions.TlsCipherAlgorithmEnumsDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
+#endif
         public HashAlgorithmType Hash => _hashAlgorithm;
 
+#if NET
+        [Obsolete(Obsoletions.TlsCipherAlgorithmEnumsMessage, DiagnosticId = Obsoletions.TlsCipherAlgorithmEnumsDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
+#endif
         public int HashStrength => _hashStrength;
 
+#if NET
+        [Obsolete(Obsoletions.TlsCipherAlgorithmEnumsMessage, DiagnosticId = Obsoletions.TlsCipherAlgorithmEnumsDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
+#endif
         public int KeyExchangeAlgorithm => _keyExchangeAlgorithm;
 
+#if NET
+        [Obsolete(Obsoletions.TlsCipherAlgorithmEnumsMessage, DiagnosticId = Obsoletions.TlsCipherAlgorithmEnumsDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
+#endif
         public int ExchangeStrength => _exchangeStrength;
+
+        internal ref readonly byte GetPinnableReference() => ref Unsafe.As<SecurityProtocol, byte>(ref _securityProtocol);
     }
 
     public sealed class ReferralCallback
@@ -127,7 +149,7 @@ namespace System.DirectoryServices.Protocols
         private readonly DEREFERENCECONNECTIONInternal _dereferenceDelegate;
         private readonly VERIFYSERVERCERT _serverCertificateRoutine;
 
-        internal LdapSessionOptions(LdapConnection connection)
+        internal unsafe LdapSessionOptions(LdapConnection connection)
         {
             _connection = connection;
             _queryDelegate = new QUERYFORCONNECTIONInternal(ProcessQueryConnection);
@@ -500,9 +522,6 @@ namespace System.DirectoryServices.Protocols
             }
         }
 
-        // In practice, this apparently rarely if ever contains useful text
-        internal string ServerErrorMessage => GetStringValueHelper(LdapOption.LDAP_OPT_SERVER_ERROR, true);
-
         internal DereferenceAlias DerefAlias
         {
             get => (DereferenceAlias)GetIntValueHelper(LdapOption.LDAP_OPT_DEREF);
@@ -550,41 +569,37 @@ namespace System.DirectoryServices.Protocols
 
             try
             {
-                IntPtr tempPtr = IntPtr.Zero;
-
                 // build server control
-                managedServerControls = _connection.BuildControlArray(controls, true);
-                int structSize = Marshal.SizeOf(typeof(LdapControl));
+                managedServerControls = LdapConnection.BuildControlArray(controls, true);
+                int structSize = Marshal.SizeOf<LdapControl>();
                 if (managedServerControls != null)
                 {
                     serverControlArray = Utility.AllocHGlobalIntPtrArray(managedServerControls.Length + 1);
+                    void** pServerControlArray = (void**)serverControlArray;
                     for (int i = 0; i < managedServerControls.Length; i++)
                     {
                         IntPtr controlPtr = Marshal.AllocHGlobal(structSize);
                         Marshal.StructureToPtr(managedServerControls[i], controlPtr, false);
-                        tempPtr = (IntPtr)((long)serverControlArray + IntPtr.Size * i);
-                        Marshal.WriteIntPtr(tempPtr, controlPtr);
+                        pServerControlArray[i] = (void*)controlPtr;
                     }
 
-                    tempPtr = (IntPtr)((long)serverControlArray + IntPtr.Size * managedServerControls.Length);
-                    Marshal.WriteIntPtr(tempPtr, IntPtr.Zero);
+                    pServerControlArray[managedServerControls.Length] = null;
                 }
 
                 // Build client control.
-                managedClientControls = _connection.BuildControlArray(controls, false);
+                managedClientControls = LdapConnection.BuildControlArray(controls, false);
                 if (managedClientControls != null)
                 {
                     clientControlArray = Utility.AllocHGlobalIntPtrArray(managedClientControls.Length + 1);
+                    void** pClientControlArray = (void**)clientControlArray;
                     for (int i = 0; i < managedClientControls.Length; i++)
                     {
                         IntPtr controlPtr = Marshal.AllocHGlobal(structSize);
                         Marshal.StructureToPtr(managedClientControls[i], controlPtr, false);
-                        tempPtr = (IntPtr)((long)clientControlArray + IntPtr.Size * i);
-                        Marshal.WriteIntPtr(tempPtr, controlPtr);
+                        pClientControlArray[i] = (void*)controlPtr;
                     }
 
-                    tempPtr = (IntPtr)((long)clientControlArray + IntPtr.Size * managedClientControls.Length);
-                    Marshal.WriteIntPtr(tempPtr, IntPtr.Zero);
+                    pClientControlArray[managedClientControls.Length] = null;
                 }
 
                 int error = LdapPal.StartTls(_connection._ldapHandle, ref serverError, ref ldapResult, serverControlArray, clientControlArray);
@@ -739,6 +754,12 @@ namespace System.DirectoryServices.Protocols
             }
         }
 
+        public int ProtocolVersion
+        {
+            get => GetIntValueHelper(LdapOption.LDAP_OPT_VERSION);
+            set => SetIntValueHelper(LdapOption.LDAP_OPT_VERSION, value);
+        }
+
         private int GetIntValueHelper(LdapOption option)
         {
             if (_connection._disposed)
@@ -849,7 +870,7 @@ namespace System.DirectoryServices.Protocols
         {
             LdapReferralCallback value = new LdapReferralCallback()
             {
-                sizeofcallback = Marshal.SizeOf(typeof(LdapReferralCallback)),
+                sizeofcallback = Marshal.SizeOf<LdapReferralCallback>(),
                 query = tempCallback.QueryForConnection == null ? null : _queryDelegate,
                 notify = tempCallback.NotifyNewConnection == null ? null : _notifiyDelegate,
                 dereference = tempCallback.DereferenceConnection == null ? null : _dereferenceDelegate
@@ -858,9 +879,9 @@ namespace System.DirectoryServices.Protocols
             ErrorChecking.CheckAndSetLdapError(error);
         }
 
-        private int ProcessQueryConnection(IntPtr PrimaryConnection, IntPtr ReferralFromConnection, IntPtr NewDNPtr, string HostName, int PortNumber, SEC_WINNT_AUTH_IDENTITY_EX SecAuthIdentity, Luid CurrentUserToken, ref IntPtr ConnectionToUse)
+        private unsafe int ProcessQueryConnection(IntPtr PrimaryConnection, IntPtr ReferralFromConnection, IntPtr NewDNPtr, IntPtr HostNamePtr, int PortNumber, SEC_WINNT_AUTH_IDENTITY_EX.Native* SecAuthIdentity, Luid* CurrentUserToken, IntPtr* ConnectionToUse)
         {
-            ConnectionToUse = IntPtr.Zero;
+            *ConnectionToUse = IntPtr.Zero;
             string NewDN = null;
 
             // The user must have registered callback function.
@@ -874,11 +895,8 @@ namespace System.DirectoryServices.Protocols
                     NewDN = LdapPal.PtrToString(NewDNPtr);
                 }
 
-                var target = new StringBuilder();
-                target.Append(HostName);
-                target.Append(':');
-                target.Append(PortNumber);
-                var identifier = new LdapDirectoryIdentifier(target.ToString());
+                string target = $"{Marshal.PtrToStringUni(HostNamePtr)}:{PortNumber}";
+                var identifier = new LdapDirectoryIdentifier(target);
 
                 NetworkCredential cred = ProcessSecAuthIdentity(SecAuthIdentity);
                 LdapConnection tempReferralConnection = null;
@@ -912,7 +930,7 @@ namespace System.DirectoryServices.Protocols
                     }
                 }
 
-                long tokenValue = (uint)CurrentUserToken.LowPart + (((long)CurrentUserToken.HighPart) << 32);
+                long tokenValue = (uint)CurrentUserToken->LowPart + (((long)CurrentUserToken->HighPart) << 32);
 
                 LdapConnection con = _callbackRoutine.QueryForConnection(_connection, tempReferralConnection, NewDN, identifier, cred, tokenValue);
                 if (con != null && con._ldapHandle != null && !con._ldapHandle.IsInvalid)
@@ -920,7 +938,7 @@ namespace System.DirectoryServices.Protocols
                     bool success = AddLdapHandleRef(con);
                     if (success)
                     {
-                        ConnectionToUse = con._ldapHandle.DangerousGetHandle();
+                        *ConnectionToUse = con._ldapHandle.DangerousGetHandle();
                     }
                 }
 
@@ -931,7 +949,7 @@ namespace System.DirectoryServices.Protocols
             return 1;
         }
 
-        private bool ProcessNotifyConnection(IntPtr primaryConnection, IntPtr referralFromConnection, IntPtr newDNPtr, string hostName, IntPtr newConnection, int portNumber, SEC_WINNT_AUTH_IDENTITY_EX SecAuthIdentity, Luid currentUser, int errorCodeFromBind)
+        private unsafe Interop.BOOL ProcessNotifyConnection(IntPtr primaryConnection, IntPtr referralFromConnection, IntPtr newDNPtr, IntPtr hostNamePtr, IntPtr newConnection, int portNumber, SEC_WINNT_AUTH_IDENTITY_EX.Native* SecAuthIdentity, Luid* currentUser, int errorCodeFromBind)
         {
             if (newConnection != IntPtr.Zero && _callbackRoutine.NotifyNewConnection != null)
             {
@@ -941,11 +959,8 @@ namespace System.DirectoryServices.Protocols
                     newDN = LdapPal.PtrToString(newDNPtr);
                 }
 
-                var target = new StringBuilder();
-                target.Append(hostName);
-                target.Append(':');
-                target.Append(portNumber);
-                var identifier = new LdapDirectoryIdentifier(target.ToString());
+                string target = $"{Marshal.PtrToStringUni(hostNamePtr)}:{portNumber}";
+                var identifier = new LdapDirectoryIdentifier(target);
 
                 NetworkCredential cred = ProcessSecAuthIdentity(SecAuthIdentity);
                 LdapConnection tempNewConnection = null;
@@ -1005,7 +1020,7 @@ namespace System.DirectoryServices.Protocols
                     }
                 }
 
-                long tokenValue = (uint)currentUser.LowPart + (((long)currentUser.HighPart) << 32);
+                long tokenValue = (uint)currentUser->LowPart + (((long)currentUser->HighPart) << 32);
                 bool value = _callbackRoutine.NotifyNewConnection(_connection, tempReferralConnection, newDN, identifier, tempNewConnection, cred, tokenValue, errorCodeFromBind);
 
                 if (value)
@@ -1017,17 +1032,17 @@ namespace System.DirectoryServices.Protocols
                     }
                 }
 
-                return value;
+                return value ? Interop.BOOL.TRUE : Interop.BOOL.FALSE;
             }
 
-            return false;
+            return Interop.BOOL.FALSE;
         }
 
         private int ProcessDereferenceConnection(IntPtr PrimaryConnection, IntPtr ConnectionToDereference)
         {
             if (ConnectionToDereference != IntPtr.Zero && _callbackRoutine.DereferenceConnection != null)
             {
-                LdapConnection dereferenceConnection = null;
+                LdapConnection dereferenceConnection;
                 WeakReference reference = null;
 
                 // in most cases it should be in our table
@@ -1056,21 +1071,21 @@ namespace System.DirectoryServices.Protocols
             return 1;
         }
 
-        private NetworkCredential ProcessSecAuthIdentity(SEC_WINNT_AUTH_IDENTITY_EX SecAuthIdentit)
+        private unsafe NetworkCredential ProcessSecAuthIdentity(SEC_WINNT_AUTH_IDENTITY_EX.Native* SecAuthIdentit)
         {
             if (SecAuthIdentit == null)
             {
                 return new NetworkCredential();
             }
 
-            string user = SecAuthIdentit.user;
-            string domain = SecAuthIdentit.domain;
-            string password = SecAuthIdentit.password;
+            string user = Marshal.PtrToStringUni(SecAuthIdentit->user);
+            string domain = Marshal.PtrToStringUni(SecAuthIdentit->domain);
+            string password = Marshal.PtrToStringUni(SecAuthIdentit->password);
 
             return new NetworkCredential(user, password, domain);
         }
 
-        private bool ProcessServerCertificate(IntPtr connection, IntPtr serverCert)
+        private Interop.BOOL ProcessServerCertificate(IntPtr connection, IntPtr serverCert)
         {
             // If callback is not specified by user, it means the server certificate is accepted.
             bool value = true;
@@ -1092,7 +1107,7 @@ namespace System.DirectoryServices.Protocols
                 value = _serverCertificateDelegate(_connection, certificate);
             }
 
-            return value;
+            return value ? Interop.BOOL.TRUE : Interop.BOOL.FALSE;
         }
 
         private static bool AddLdapHandleRef(LdapConnection ldapConnection)

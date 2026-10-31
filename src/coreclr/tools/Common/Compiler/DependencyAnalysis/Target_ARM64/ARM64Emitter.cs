@@ -31,6 +31,13 @@ namespace ILCompiler.DependencyAnalysis.ARM64
             Builder.EmitUInt(instruction);
         }
 
+        public void EmitMVN(Register regDst, ushort imm16)
+        {
+            Debug.Assert((uint)regDst <= 0x1f);
+            uint instruction = 0x92800000u | ((uint)imm16 << 5) | (uint)regDst;
+            Builder.EmitUInt(instruction);
+        }
+
         public void EmitMOV(Register regDst, ISymbolNode symbol)
         {
             // ADRP regDst, [symbol (21bit ADRP thing)]
@@ -40,6 +47,14 @@ namespace ILCompiler.DependencyAnalysis.ARM64
             // Add regDst, (12bit LDR page offset reloc)
             Builder.EmitReloc(symbol, RelocType.IMAGE_REL_BASED_ARM64_PAGEOFFSET_12A);
             Builder.EmitUInt((uint)(0b1_0_0_100010_0_000000000000_00000_00000 | ((byte)regDst << 5) | (byte)regDst));
+        }
+
+        // adrp regDst, symbol
+        public void EmitADRP(Register regDst, ISymbolNode symbol)
+        {
+            Debug.Assert((uint)regDst <= 0x1f);
+            Builder.EmitReloc(symbol, RelocType.IMAGE_REL_BASED_ARM64_PAGEBASE_REL21);
+            Builder.EmitUInt(0x90000000u | (uint)regDst);
         }
 
         // ldr regDst, [PC + imm19]
@@ -63,8 +78,7 @@ namespace ILCompiler.DependencyAnalysis.ARM64
 
         public void EmitLDR(Register regDst, Register regSrc, int offset)
         {
-            Debug.Assert(offset >= -255 && offset <= 4095);
-            if (offset >= 0)
+            if (offset >= 0 && offset <= 32760)
             {
                 Debug.Assert(offset % 8 == 0);
 
@@ -72,12 +86,34 @@ namespace ILCompiler.DependencyAnalysis.ARM64
 
                 Builder.EmitUInt((uint)(0b11_1110_0_1_0_1_000000000000_00000_00000u | ((uint)offset << 10) | ((uint)regSrc << 5) | (uint)regDst));
             }
-            else
+            else if (offset >= -255 && offset < 0)
             {
                 uint o = (uint)offset & 0x1FF;
 
                 Builder.EmitUInt((uint)(0b11_1110_0_0_010_000000000_1_1_00000_00000u | (o << 12) | ((uint)regSrc << 5) | (uint)regDst));
             }
+            else
+            {
+                throw new NotImplementedException();
+            }
+        }
+
+        // ldr regDst, [regAddr, symbol page offset]
+        public void EmitLDR(Register regDst, Register regAddr, ISymbolNode symbol)
+        {
+            Debug.Assert((uint)regDst <= 0x1f);
+            Debug.Assert((uint)regAddr <= 0x1f);
+            Builder.EmitReloc(symbol, RelocType.IMAGE_REL_BASED_ARM64_PAGEOFFSET_12L);
+            Builder.EmitUInt(0xf9400000 | ((uint)regAddr << 5) | (uint)regDst);
+        }
+
+        // ldar regDst, [regAddr]
+        public void EmitLDAR(Register regDst, Register regAddr)
+        {
+            Debug.Assert((uint)regDst <= 0x1f);
+            Debug.Assert((uint)regAddr <= 0x1f);
+            uint instruction = 0xc8dffc00 | ((uint)regAddr << 5) | (uint)regDst;
+            Builder.EmitUInt(instruction);
         }
 
         public void EmitCMP(Register reg, sbyte immediate)
@@ -131,16 +167,15 @@ namespace ILCompiler.DependencyAnalysis.ARM64
         {
             if (symbol.RepresentsIndirectionCell)
             {
-                // ldr x12, [PC+0xc]
-                EmitLDR(Register.X12, 0xc);
+                // Use ADRP/LDR pair to load the indirection cell address
+                // adrp x12, symbol
+                EmitADRP(Register.X12, symbol);
 
-                // ldr x12, [x12]
-                EmitLDR(Register.X12, Register.X12);
+                // ldr x12, [x12, symbol page offset]
+                EmitLDR(Register.X12, Register.X12, symbol);
 
                 // br x12
-                Builder.EmitUInt(0xd61f0180);
-
-                Builder.EmitReloc(symbol, RelocType.IMAGE_REL_BASED_DIR64);
+                EmitJMP(Register.X12);
             }
             else
             {
@@ -166,7 +201,15 @@ namespace ILCompiler.DependencyAnalysis.ARM64
 
         public void EmitRETIfEqual()
         {
+            // b.ne #8
             Builder.EmitUInt(0b01010100_0000000000000000010_0_0001u);
+            EmitRET();
+        }
+
+        public void EmitRETIfNotEqual()
+        {
+            // b.eq #8
+            Builder.EmitUInt(0b01010100_0000000000000000010_0_0000u);
             EmitRET();
         }
 
@@ -175,11 +218,25 @@ namespace ILCompiler.DependencyAnalysis.ARM64
             uint offset = symbol.RepresentsIndirectionCell ? 6u : 2u;
 
             Builder.EmitUInt(0b01010100_0000000000000000000_0_0001u | offset << 5);
-                
+
             EmitJMP(symbol);
         }
 
-        private bool InSignedByteRange(int i)
+        public void EmitJNE(ISymbolNode symbol)
+        {
+            uint offset = symbol.RepresentsIndirectionCell ? 6u : 2u;
+
+            Builder.EmitUInt(0b01010100_0000000000000000000_0_0000u | offset << 5);
+
+            EmitJMP(symbol);
+        }
+
+        public void EmitNOP()
+        {
+            Builder.EmitUInt(0xD503201F);
+        }
+
+        private static bool InSignedByteRange(int i)
         {
             return i == (int)(sbyte)i;
         }

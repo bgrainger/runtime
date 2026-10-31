@@ -2,14 +2,15 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-
 using Internal.TypeSystem;
-
 using Internal.Text;
 
 namespace ILCompiler.DependencyAnalysis
 {
-    public abstract class AssemblyStubNode : ObjectNode, ISymbolDefinitionNode
+    // TODO-Wasm: Some instances of AssemblyStubNode will need to implement INodeWithTypeSignature
+    // if they need to be callable from Wasm, though it may not make sense for the base
+    // class to implement INodeWithTypeSignature.
+    public abstract class AssemblyStubNode : ObjectNode, ISymbolDefinitionNode, IPCodeSymbolNode
     {
         public AssemblyStubNode()
         {
@@ -21,7 +22,7 @@ namespace ILCompiler.DependencyAnalysis
         /// </summary>
         protected virtual bool IsVisibleFromManagedCode => true;
 
-        public override ObjectNodeSection Section => ObjectNodeSection.TextSection;
+        public override ObjectNodeSection GetSection(NodeFactory factory) => ObjectNodeSection.TextSection;
 
         public override bool StaticDependenciesAreComputed => true;
 
@@ -68,6 +69,25 @@ namespace ILCompiler.DependencyAnalysis
                     arm64Emitter.Builder.AddSymbol(this);
                     return arm64Emitter.Builder.ToObjectData();
 
+                case TargetArchitecture.LoongArch64:
+                    LoongArch64.LoongArch64Emitter loongarch64Emitter = new LoongArch64.LoongArch64Emitter(factory, relocsOnly);
+                    EmitCode(factory, ref loongarch64Emitter, relocsOnly);
+                    loongarch64Emitter.Builder.RequireInitialAlignment(alignment);
+                    loongarch64Emitter.Builder.AddSymbol(this);
+                    return loongarch64Emitter.Builder.ToObjectData();
+
+                case TargetArchitecture.RiscV64:
+                    RiscV64.RiscV64Emitter riscv64Emitter = new RiscV64.RiscV64Emitter(factory, relocsOnly);
+                    EmitCode(factory, ref riscv64Emitter, relocsOnly);
+                    riscv64Emitter.Builder.RequireInitialAlignment(alignment);
+                    riscv64Emitter.Builder.AddSymbol(this);
+                    return riscv64Emitter.Builder.ToObjectData();
+
+                case TargetArchitecture.Wasm32:
+                    Wasm.WasmEmitter wasmEmitter = new Wasm.WasmEmitter(factory, relocsOnly);
+                    EmitCode(factory, ref wasmEmitter, relocsOnly);
+                    return wasmEmitter.Encode(this);
+
                 default:
                     throw new NotImplementedException();
             }
@@ -77,5 +97,8 @@ namespace ILCompiler.DependencyAnalysis
         protected abstract void EmitCode(NodeFactory factory, ref X86.X86Emitter instructionEncoder, bool relocsOnly);
         protected abstract void EmitCode(NodeFactory factory, ref ARM.ARMEmitter instructionEncoder, bool relocsOnly);
         protected abstract void EmitCode(NodeFactory factory, ref ARM64.ARM64Emitter instructionEncoder, bool relocsOnly);
+        protected abstract void EmitCode(NodeFactory factory, ref LoongArch64.LoongArch64Emitter instructionEncoder, bool relocsOnly);
+        protected abstract void EmitCode(NodeFactory factory, ref RiscV64.RiscV64Emitter instructionEncoder, bool relocsOnly);
+        protected abstract void EmitCode(NodeFactory factory, ref Wasm.WasmEmitter instructionEncoder, bool relocsOnly);
     }
 }

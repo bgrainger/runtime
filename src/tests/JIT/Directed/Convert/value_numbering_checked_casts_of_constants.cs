@@ -1,15 +1,20 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+namespace JitTest_Directed_Convert_value_numbering_checked_casts_of_constants;
+
 using System;
 using System.Runtime.CompilerServices;
+using Xunit;
 
 public partial class ValueNumberingCheckedCastsOfConstants
 {
     private static int _global = 0;
     private static int _counter = 100;
 
-    public static int Main()
+    [OuterLoop]
+    [Fact]
+    public static int TestEntryPoint()
     {
         TestCastingSingleToSByte();
         TestCastingSingleToByte();

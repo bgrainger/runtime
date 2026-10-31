@@ -5,8 +5,7 @@
 //
 
 //
-// defines native pipeline abstraction, which includes debug-support
-// for event redirection.
+// defines native pipeline abstraction
 //*****************************************************************************
 
 
@@ -50,20 +49,6 @@ public:
     //
 
     virtual BOOL DebugSetProcessKillOnExit(bool fKillOnExit) = 0;
-
-    // Create
-    virtual HRESULT CreateProcessUnderDebugger(
-        MachineInfo machineInfo,
-        LPCWSTR lpApplicationName,
-        LPCWSTR lpCommandLine,
-        LPSECURITY_ATTRIBUTES lpProcessAttributes,
-        LPSECURITY_ATTRIBUTES lpThreadAttributes,
-        BOOL bInheritHandles,
-        DWORD dwCreationFlags,
-        LPVOID lpEnvironment,
-        LPCWSTR lpCurrentDirectory,
-        LPSTARTUPINFOW lpStartupInfo,
-        LPPROCESS_INFORMATION lpProcessInformation) = 0;
 
     // Attach
     virtual HRESULT DebugActiveProcess(MachineInfo machineInfo, const ProcessDescriptor& processDescriptor) = 0;
@@ -124,12 +109,12 @@ public:
     //    handle for the debuggee process (see below)
     //
     // Notes:
-    //    Handles are a Windows-specific concept.  For Mac debugging, the handle returned by this function is
-    //    only valid for waiting on process termination.  This is ok for now because the only cases where a
-    //    real process handle is needed are related to interop-debugging, which isn't supported on the Mac.
+    //    Handles are a Windows-specific concept. On Unix, the returned value is a debug-pal latch that is only
+    //    valid for debugger-internal process-termination waits. It must not be exposed through
+    //    ICorDebugProcess::GetHandle.
     //
 
-    virtual HANDLE GetProcessHandle() = 0;
+    virtual WaitHandle *GetProcessHandle() = 0;
 
     //
     // Terminate the debuggee process.
@@ -147,34 +132,9 @@ public:
     virtual BOOL TerminateProcess(UINT32 exitCode) = 0;
 
     //
-    // Resume any suspended threads in the currend process.
-    // This decreases the suspend count of each thread by at most 1.
-    // Call multiple times until it returns S_FALSE if you want to really ensure
-    // all threads are running.
+    // Used by debugger side (RS) to cleanup the target (LS) resources
     //
-    // Notes:
-    //    On Windows the OS may suspend threads when continuing a 2nd-chance exception.
-    //    Call this to get them resumed again.  On other platforms this
-    //    will typically be a no-op, so I provide a default implementation to avoid
-    //    everyone having to override this.
-    //
-    // Return Value:
-    //    S_OK if at least one thread was resumed from a suspended state
-    //    S_FALSE if nothing was done
-    //    An error code indicating why we were not able to attempt this
-
-    virtual HRESULT EnsureThreadsRunning()
-    {
-        return S_FALSE;
-    }
-
-#ifdef TARGET_UNIX
-    // Used by debugger side (RS) to cleanup the target (LS) named pipes
-    // and semaphores when the debugger detects the debuggee process  exited.
-    virtual void CleanupTargetProcess()
-    {
-    }
-#endif
+    virtual void CleanupTargetProcess() = 0;
 };
 
 //
@@ -214,15 +174,4 @@ BOOL IsExceptionEvent(const DEBUG_EVENT * pEvent, BOOL * pfFirstChance, const EX
 //    newly allocated pipeline object. Caller must call Dispose() on it.
 INativeEventPipeline * NewPipelineForThisPlatform();
 
-//-----------------------------------------------------------------------------
-// Allocate and return a pipeline object for this platform
-// Has debug checks (such as for event redirection)
-//
-// Returns:
-//    newly allocated pipeline object. Caller must call Dispose() on it.
-INativeEventPipeline * NewPipelineWithDebugChecks();
-
-
-
 #endif // _NATIVE_PIPELINE_H
-

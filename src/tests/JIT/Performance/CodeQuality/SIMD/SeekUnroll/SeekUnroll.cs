@@ -4,6 +4,8 @@
 using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using Xunit;
+using TestLibrary;
 
 public static class SeekUnroll
 {
@@ -95,8 +97,18 @@ public static class SeekUnroll
     // Set of indices to pass to Test(int)
     static int[] IndicesToTest = new int[] { 1, 3, 11, 19, 27 };
 
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/54906", TestPlatforms.Android)]
+    [ActiveIssue("System.IO.FileNotFoundException: Could not load file or assembly 'xunit.assert, Version=2.4.1.0, Culture=neutral, PublicKeyToken=8d05b1bb7a6fdb6c' or one of its dependencies.", TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+    [Fact]
+    public static int TestEntryPoint()
+    {
+        return TestEntry(null);
+    }
+
     // Main method entrypoint runs the manual timer loop
-    public static int Main(string[] args)
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static int TestEntry(int? arg)
     {
         int failures = 0;
 
@@ -108,14 +120,14 @@ public static class SeekUnroll
         }
 
         int manualLoopCount = 1;
-        if (args == null || args.Length == 0)
+        if (arg == null)
         {
             Console.WriteLine("Warning: no iteration count specified; defaulting to 1 iteration per case");
             Console.WriteLine("To use multiple iterations per case, pass the desired number of iterations as the first command-line argument to this test");
         }
         else
         {
-            manualLoopCount = int.Parse(args[0]);
+            manualLoopCount = (int)arg;
         }
 
         foreach(int index in IndicesToTest)

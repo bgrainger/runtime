@@ -12,6 +12,7 @@
 BASEARRAYREF* CastCache::s_pTableRef = NULL;
 OBJECTHANDLE CastCache::s_sentinelTable = NULL;
 DWORD CastCache::s_lastFlushSize     = INITIAL_CACHE_SIZE;
+const DWORD CastCache::INITIAL_CACHE_SIZE;
 
 BASEARRAYREF CastCache::CreateCastCache(DWORD size)
 {
@@ -33,13 +34,9 @@ BASEARRAYREF CastCache::CreateCastCache(DWORD size)
     // if we get an OOM here, we try a smaller size
     EX_TRY
     {
-        FAULT_NOT_FATAL();
         table = (BASEARRAYREF)AllocatePrimitiveArray(CorElementType::ELEMENT_TYPE_I4, (size + 1) * sizeof(CastCacheEntry) / sizeof(INT32));
     }
-    EX_CATCH
-    {
-    }
-    EX_END_CATCH(RethrowTerminalExceptions)
+        EX_SWALLOW_NONTERMINAL
 
     if (!table)
     {
@@ -47,13 +44,9 @@ BASEARRAYREF CastCache::CreateCastCache(DWORD size)
         // if we get an OOM again we return NULL
         EX_TRY
         {
-            FAULT_NOT_FATAL();
             table = (BASEARRAYREF)AllocatePrimitiveArray(CorElementType::ELEMENT_TYPE_I4, (size + 1) * sizeof(CastCacheEntry) / sizeof(INT32));
         }
-        EX_CATCH
-        {
-        }
-        EX_END_CATCH(RethrowTerminalExceptions)
+        EX_SWALLOW_NONTERMINAL
 
         if (!table)
         {
@@ -124,7 +117,7 @@ void CastCache::Initialize()
     }
     CONTRACTL_END;
 
-    FieldDesc* pTableField = CoreLibBinder::GetField(FIELD__CASTHELPERS__TABLE);
+    FieldDesc* pTableField = CoreLibBinder::GetField(FIELD__CASTCACHE__TABLE);
 
     GCX_COOP();
     s_pTableRef = (BASEARRAYREF*)pTableField->GetCurrentStaticAddress();

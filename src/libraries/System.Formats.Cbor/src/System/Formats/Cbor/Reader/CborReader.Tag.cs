@@ -11,11 +11,11 @@ namespace System.Formats.Cbor
         /// <summary>Reads the next data item as a semantic tag (major type 6).</summary>
         /// <returns>The decoded value.</returns>
         /// <exception cref="InvalidOperationException">The next data item does not have the correct major type.</exception>
-        /// <exception cref="CborContentException">The next value has an invalid CBOR encoding.
-        /// -or-
-        /// There was an unexpected end of CBOR encoding data.
-        /// -or-
-        /// The next value uses a CBOR encoding that is not valid under the current conformance mode.</exception>
+        /// <exception cref="CborContentException"><para>The next value has an invalid CBOR encoding.</para>
+        /// <para>-or-</para>
+        /// <para>There was an unexpected end of CBOR encoding data.</para>
+        /// <para>-or-</para>
+        /// <para>The next value uses a CBOR encoding that is not valid under the current conformance mode.</para></exception>
         [CLSCompliant(false)]
         public CborTag ReadTag()
         {
@@ -29,27 +29,27 @@ namespace System.Formats.Cbor
         /// <summary>Reads the next data item as a semantic tag (major type 6), without advancing the reader.</summary>
         /// <returns>The decoded value.</returns>
         /// <exception cref="InvalidOperationException">The next data item does not have the correct major type.</exception>
-        /// <exception cref="CborContentException">The next value has an invalid CBOR encoding.
-        /// -or-
-        /// There was an unexpected end of CBOR encoding data.
-        /// -or-
-        /// The next value uses a CBOR encoding that is not valid under the current conformance mode.</exception>
+        /// <exception cref="CborContentException"><para>The next value has an invalid CBOR encoding.</para>
+        /// <para>-or-</para>
+        /// <para>There was an unexpected end of CBOR encoding data.</para>
+        /// <para>-or-</para>
+        /// <para>The next value uses a CBOR encoding that is not valid under the current conformance mode.</para></exception>
         /// <remarks>Useful in scenarios where the semantic value decoder needs to be determined at run time.</remarks>
         [CLSCompliant(false)]
         public CborTag PeekTag() => PeekTagCore(out int _);
 
         /// <summary>Reads the next data item as a tagged date/time string, as described in RFC7049 section 2.4.1.</summary>
         /// <returns>The decoded value.</returns>
-        /// <exception cref="InvalidOperationException">The next data item does not have the correct major type.
-        /// -or-
-        /// The next date item does not have the correct semantic tag.</exception>
-        /// <exception cref="CborContentException">The next value has an invalid CBOR encoding.
-        /// -or-
-        /// There was an unexpected end of CBOR encoding data.
-        /// -or-
-        /// Invalid semantic date/time encoding.
-        /// -or-
-        /// The next value uses a CBOR encoding that is not valid under the current conformance mode.</exception>
+        /// <exception cref="InvalidOperationException"><para>The next data item does not have the correct major type.</para>
+        /// <para>-or-</para>
+        /// <para>The next date item does not have the correct semantic tag.</para></exception>
+        /// <exception cref="CborContentException"><para>The next value has an invalid CBOR encoding.</para>
+        /// <para>-or-</para>
+        /// <para>There was an unexpected end of CBOR encoding data.</para>
+        /// <para>-or-</para>
+        /// <para>The semantic date/time encoding is invalid.</para>
+        /// <para>-or-</para>
+        /// <para>The next value uses a CBOR encoding that is not valid under the current conformance mode.</para></exception>
         public DateTimeOffset ReadDateTimeOffset()
         {
             // implements https://tools.ietf.org/html/rfc7049#section-2.4.1
@@ -60,7 +60,7 @@ namespace System.Formats.Cbor
             {
                 ReadExpectedTag(expectedTag: CborTag.DateTimeString);
 
-                switch (PeekState())
+                switch (PeekStateEnsuringDataAvailable())
                 {
                     case CborReaderState.TextString:
                     case CborReaderState.StartIndefiniteLengthTextString:
@@ -72,7 +72,7 @@ namespace System.Formats.Cbor
                 string dateString = ReadTextString();
 
                 // TODO determine if conformance modes should allow inexact date sting parsing
-                if (!DateTimeOffset.TryParseExact(dateString, CborWriter.Rfc3339FormatString, null, DateTimeStyles.RoundtripKind, out DateTimeOffset result))
+                if (!DateTimeOffset.TryParseExact(dateString, CborWriter.Rfc3339FormatString, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset result))
                 {
                     throw new CborContentException(SR.Cbor_Reader_InvalidDateTimeEncoding);
                 }
@@ -88,16 +88,18 @@ namespace System.Formats.Cbor
 
         /// <summary>Reads the next data item as a tagged unix time in seconds, as described in RFC7049 section 2.4.1.</summary>
         /// <returns>The decoded value.</returns>
-        /// <exception cref="InvalidOperationException">The next data item does not have the correct major type.
-        /// -or-
-        /// The next date item does not have the correct semantic tag.</exception>
-        /// <exception cref="CborContentException">The next value has an invalid CBOR encoding.
-        /// -or-
-        /// There was an unexpected end of CBOR encoding data.
-        /// -or-
-        /// invalid semantic date/time encoding.
-        /// -or-
-        /// The next value uses a CBOR encoding that is not valid under the current conformance mode.</exception>
+        /// <exception cref="InvalidOperationException"><para>The next data item does not have the correct major type.</para>
+        /// <para>-or-</para>
+        /// <para>The next date item does not have the correct semantic tag.</para>
+        /// <para>-or-</para>
+        /// <para>The decoded Unix time is outside the range supported by <see cref="DateTimeOffset" />.</para></exception>
+        /// <exception cref="CborContentException"><para>The next value has an invalid CBOR encoding.</para>
+        /// <para>-or-</para>
+        /// <para>There was an unexpected end of CBOR encoding data.</para>
+        /// <para>-or-</para>
+        /// <para>The semantic date/time encoding is invalid.</para>
+        /// <para>-or-</para>
+        /// <para>The next value uses a CBOR encoding that is not valid under the current conformance mode.</para></exception>
         public DateTimeOffset ReadUnixTimeSeconds()
         {
             // implements https://tools.ietf.org/html/rfc7049#section-2.4.1
@@ -108,7 +110,7 @@ namespace System.Formats.Cbor
             {
                 ReadExpectedTag(expectedTag: CborTag.UnixTimeSeconds);
 
-                switch (PeekState())
+                switch (PeekStateEnsuringDataAvailable())
                 {
                     case CborReaderState.UnsignedInteger:
                     case CborReaderState.NegativeInteger:
@@ -131,25 +133,31 @@ namespace System.Formats.Cbor
                         throw new CborContentException(SR.Cbor_Reader_InvalidUnixTimeEncoding);
                 }
             }
-            catch
+            catch (Exception e)
             {
                 RestoreCheckpoint(in checkpoint);
+
+                if (e is ArgumentOutOfRangeException or OverflowException)
+                {
+                    throw new InvalidOperationException(SR.Cbor_Reader_UnixTimeOutOfRange, e);
+                }
+
                 throw;
             }
         }
 
         /// <summary>Reads the next data item as a tagged bignum encoding, as described in RFC7049 section 2.4.2.</summary>
         /// <returns>The decoded value.</returns>
-        /// <exception cref="InvalidOperationException">The next data item does not have the correct major type.
-        /// -or-
-        /// The next date item does not have the correct semantic tag.</exception>
-        /// <exception cref="CborContentException">The next value has an invalid CBOR encoding.
-        /// -or-
-        /// There was an unexpected end of CBOR encoding data.
-        /// -or-
-        /// Invalid semantic bignum encoding.
-        /// -or-
-        /// The next value uses a CBOR encoding that is not valid under the current conformance mode.</exception>
+        /// <exception cref="InvalidOperationException"><para>The next data item does not have the correct major type.</para>
+        /// <para>-or-</para>
+        /// <para>The next date item does not have the correct semantic tag.</para></exception>
+        /// <exception cref="CborContentException"><para>The next value has an invalid CBOR encoding.</para>
+        /// <para>-or-</para>
+        /// <para>There was an unexpected end of CBOR encoding data.</para>
+        /// <para>-or-</para>
+        /// <para>The semantic bignum encoding is invalid.</para>
+        /// <para>-or-</para>
+        /// <para>The next value uses a CBOR encoding that is not valid under the current conformance mode.</para></exception>
         public BigInteger ReadBigInteger()
         {
             // implements https://tools.ietf.org/html/rfc7049#section-2.4.2
@@ -165,7 +173,7 @@ namespace System.Formats.Cbor
                     _ => throw new InvalidOperationException(SR.Cbor_Reader_InvalidBigNumEncoding),
                 };
 
-                switch (PeekState())
+                switch (PeekStateEnsuringDataAvailable())
                 {
                     case CborReaderState.ByteString:
                     case CborReaderState.StartIndefiniteLengthByteString:
@@ -175,7 +183,7 @@ namespace System.Formats.Cbor
                 }
 
                 byte[] unsignedBigEndianEncoding = ReadByteString();
-                BigInteger unsignedValue = new BigInteger(unsignedBigEndianEncoding, isUnsigned: true, isBigEndian: true);
+                BigInteger unsignedValue = CborHelpers.CreateBigIntegerFromUnsignedBigEndianBytes(unsignedBigEndianEncoding);
                 return isNegative ? -1 - unsignedValue : unsignedValue;
             }
             catch
@@ -187,17 +195,17 @@ namespace System.Formats.Cbor
 
         /// <summary>Reads the next data item as a tagged decimal fraction encoding, as described in RFC7049 section 2.4.3.</summary>
         /// <returns>The decoded value.</returns>
-        /// <exception cref="InvalidOperationException">The next data item does not have the correct major type.
-        /// -or-
-        /// The next date item does not have the correct semantic tag.</exception>
-        /// <exception cref="OverflowException">Decoded decimal fraction is either too large or too small for a <see cref="decimal" /> value.</exception>
-        /// <exception cref="CborContentException">The next value has an invalid CBOR encoding.
-        /// -or-
-        /// There was an unexpected end of CBOR encoding data.
-        /// -or-
-        /// Invalid semantic decimal fraction encoding.
-        /// -or-
-        /// The next value uses a CBOR encoding that is not valid under the current conformance mode.</exception>
+        /// <exception cref="InvalidOperationException"><para>The next data item does not have the correct major type.</para>
+        /// <para>-or-</para>
+        /// <para>The next date item does not have the correct semantic tag.</para></exception>
+        /// <exception cref="OverflowException">The decoded decimal fraction is either too large or too small for a <see cref="decimal" /> value.</exception>
+        /// <exception cref="CborContentException"><para>The next value has an invalid CBOR encoding.</para>
+        /// <para>-or-</para>
+        /// <para>There was an unexpected end of CBOR encoding data.</para>
+        /// <para>-or-</para>
+        /// <para>The semantic decimal fraction encoding is invalid.</para>
+        /// <para>-or-</para>
+        /// <para>The next value uses a CBOR encoding that is not valid under the current conformance mode.</para></exception>
         public decimal ReadDecimal()
         {
             // implements https://tools.ietf.org/html/rfc7049#section-2.4.3
@@ -208,7 +216,7 @@ namespace System.Formats.Cbor
             {
                 ReadExpectedTag(expectedTag: CborTag.DecimalFraction);
 
-                if (PeekState() != CborReaderState.StartArray || ReadStartArray() != 2)
+                if (PeekStateEnsuringDataAvailable() != CborReaderState.StartArray || ReadStartArray() != 2)
                 {
                     throw new CborContentException(SR.Cbor_Reader_InvalidDecimalEncoding);
                 }
@@ -216,7 +224,7 @@ namespace System.Formats.Cbor
                 decimal mantissa; // signed integral component of the decimal value
                 long exponent;    // base-10 exponent
 
-                switch (PeekState())
+                switch (PeekStateEnsuringDataAvailable())
                 {
                     case CborReaderState.UnsignedInteger:
                     case CborReaderState.NegativeInteger:
@@ -227,7 +235,7 @@ namespace System.Formats.Cbor
                         throw new CborContentException(SR.Cbor_Reader_InvalidDecimalEncoding);
                 }
 
-                switch (PeekState())
+                switch (PeekStateEnsuringDataAvailable())
                 {
                     case CborReaderState.UnsignedInteger:
                         mantissa = ReadUInt64();
@@ -264,6 +272,22 @@ namespace System.Formats.Cbor
                 RestoreCheckpoint(in checkpoint);
                 throw;
             }
+        }
+
+        // Semantic tag readers consume multiple tokens atomically, so a truncated non-final
+        // buffer surfaces as an unexpected end of buffer rather than as NeedsMoreData;
+        // the reader state is rolled back via checkpoint so the caller can retry
+        // after supplying more data.
+        private CborReaderState PeekStateEnsuringDataAvailable()
+        {
+            CborReaderState state = PeekState();
+
+            if (state == CborReaderState.NeedsMoreData)
+            {
+                throw new CborContentException(SR.Cbor_Reader_InvalidCbor_UnexpectedEndOfBuffer);
+            }
+
+            return state;
         }
 
         private void ReadExpectedTag(CborTag expectedTag)

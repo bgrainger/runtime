@@ -1,8 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Runtime.Versioning;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using System.Runtime.Versioning;
+using System.Threading;
 
 namespace System.Runtime.InteropServices.ObjectiveC
 {
@@ -10,6 +12,9 @@ namespace System.Runtime.InteropServices.ObjectiveC
     /// API to enable Objective-C marshalling.
     /// </summary>
     [SupportedOSPlatform("macos")]
+    [SupportedOSPlatform("ios")]
+    [SupportedOSPlatform("tvos")]
+    [SupportedOSPlatform("maccatalyst")]
     [CLSCompliant(false)]
     public static partial class ObjectiveCMarshal
     {
@@ -36,6 +41,8 @@ namespace System.Runtime.InteropServices.ObjectiveC
             out IntPtr context);
 
         private static UnhandledExceptionPropagationHandler? s_unhandledExceptionPropagationHandler;
+        private static bool s_initialized;
+        private static readonly ConditionalWeakTable<object, ObjcTrackingInformation> s_objects = new();
 
         /// <summary>
         /// Initialize the Objective-C marshalling API.
@@ -63,20 +70,20 @@ namespace System.Runtime.InteropServices.ObjectiveC
             delegate* unmanaged<IntPtr, void> trackedObjectEnteredFinalization,
             UnhandledExceptionPropagationHandler unhandledExceptionPropagationHandler)
         {
-            if (beginEndCallback is null)
-                throw new ArgumentNullException(nameof(beginEndCallback));
-            if (isReferencedCallback is null)
-                throw new ArgumentNullException(nameof(isReferencedCallback));
-            if (trackedObjectEnteredFinalization is null)
-                throw new ArgumentNullException(nameof(trackedObjectEnteredFinalization));
-            if (unhandledExceptionPropagationHandler is null)
-                throw new ArgumentNullException(nameof(unhandledExceptionPropagationHandler));
+            ArgumentNullException.ThrowIfNull(beginEndCallback);
+            ArgumentNullException.ThrowIfNull(isReferencedCallback);
+            ArgumentNullException.ThrowIfNull(trackedObjectEnteredFinalization);
+            ArgumentNullException.ThrowIfNull(unhandledExceptionPropagationHandler);
 
             if (s_unhandledExceptionPropagationHandler != null
-                || !TryInitializeReferenceTracker(beginEndCallback, isReferencedCallback, trackedObjectEnteredFinalization))
+                || !TryInitializeReferenceTracker(
+                    beginEndCallback,
+                    isReferencedCallback,
+                    trackedObjectEnteredFinalization))
             {
                 throw new InvalidOperationException(SR.InvalidOperation_ReinitializeObjectiveCMarshal);
             }
+            s_initialized = true;
             s_unhandledExceptionPropagationHandler = unhandledExceptionPropagationHandler;
         }
 
@@ -88,9 +95,9 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// <returns>Reference tracking GC handle.</returns>
         /// <exception cref="InvalidOperationException">Thrown if the ObjectiveCMarshal API has not been initialized.</exception>
         /// <remarks>
-        /// The Initialize() must be called prior to calling this function.
+        /// The <see cref="Initialize" /> function must be called prior to calling this function.
         ///
-        /// The <paramref name="obj"/> must have a type in its hierarchy marked with
+        /// The <paramref name="obj"/> parameter must have a type in its hierarchy marked with
         /// <see cref="ObjectiveCTrackedTypeAttribute"/>.
         ///
         /// The "Is Referenced" callback passed to Initialize()
@@ -104,26 +111,66 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// return a new handle each time but the same tagged memory will be returned. The
         /// tagged memory is only guaranteed to be zero initialized on the first call.
         ///
+        /// The tagged memory returned is the same as the memory returned from <see cref="GetOrCreateReferenceTrackingMemory" />.
+        ///
         /// The caller is responsible for freeing the returned <see cref="GCHandle"/>.
         /// </remarks>
         public static GCHandle CreateReferenceTrackingHandle(
             object obj,
             out Span<IntPtr> taggedMemory)
         {
-            if (obj is null)
-                throw new ArgumentNullException(nameof(obj));
+            // Defer to GetOrCreateReferenceTrackingMemory for argument/state validation.
+            taggedMemory = GetOrCreateReferenceTrackingMemory(obj);
+            return GCHandle.FromIntPtr(AllocateReferenceTrackingHandle(obj));
+        }
 
-            IntPtr refCountHandle = CreateReferenceTrackingHandleInternal(
-                ObjectHandleOnStack.Create(ref obj),
-                out int memInSizeT,
-                out IntPtr mem);
+        /// <summary>
+        /// Gets reference tracking memory for the supplied object.
+        /// </summary>
+        /// <param name="obj">The object whose tracking memory to return.</param>
+        /// <returns>A span of tracking memory associated with <paramref name="obj"/>.</returns>
+        /// <exception cref="InvalidOperationException">Thrown if the ObjectiveCMarshal API has not been initialized.</exception>
+        /// <remarks>
+        /// The Initialize() must be called prior to calling this function.
+        ///
+        /// The <paramref name="obj"/> must have a type in its hierarchy marked with
+        /// <see cref="ObjectiveCTrackedTypeAttribute"/>.
+        ///
+        /// The "Is Referenced" callback passed to <see cref="Initialize" />
+        /// will be passed the memory returned from this function.
+        /// The memory it points at is defined by the length in the <see cref="Span{IntPtr}"/> and
+        /// will be zeroed out. It will be available until <paramref name="obj"/> is collected by the GC.
+        /// The returned memory can be used for any purpose by the caller of this function and usable
+        /// during the "Is Referenced" callback.
+        ///
+        /// Calling this function multiple times with the same <paramref name="obj"/> will
+        /// return the same tracking memory. It is only guaranteed to be zero initialized on
+        /// the first call of this or <see cref="CreateReferenceTrackingHandle" />.
+        ///
+        /// The return value is the same as the tracking memory returned from <see cref="CreateReferenceTrackingHandle" />.
+        /// </remarks>
+        public static Span<IntPtr> GetOrCreateReferenceTrackingMemory(object obj)
+        {
+            ArgumentNullException.ThrowIfNull(obj);
+
+            if (!s_initialized)
+            {
+                throw new InvalidOperationException(SR.InvalidOperation_ObjectiveCMarshalNotInitialized);
+            }
+
+            if (!IsTrackedReferenceWithFinalizer(obj))
+            {
+                throw new InvalidOperationException(SR.InvalidOperation_ObjectiveCTypeNoFinalizer);
+            }
+
+            ObjcTrackingInformation trackerInfo = s_objects.GetOrAdd(obj, static _ => new ObjcTrackingInformation());
+            trackerInfo.EnsureInitialized(obj);
+            trackerInfo.GetTaggedMemory(out int memInSizeT, out IntPtr mem);
 
             unsafe
             {
-                taggedMemory = new Span<IntPtr>(mem.ToPointer(), memInSizeT);
+                return new Span<IntPtr>(mem.ToPointer(), memInSizeT);
             }
-
-            return GCHandle.FromIntPtr(refCountHandle);
         }
 
         /// <summary>
@@ -164,14 +211,84 @@ namespace System.Runtime.InteropServices.ObjectiveC
         /// </remarks>
         public static void SetMessageSendCallback(MessageSendFunction msgSendFunction, IntPtr func)
         {
-            if (func == IntPtr.Zero)
-                throw new ArgumentNullException(nameof(func));
+            ArgumentNullException.ThrowIfNull(func);
 
             if (msgSendFunction < MessageSendFunction.MsgSend || msgSendFunction > MessageSendFunction.MsgSendSuperStret)
                 throw new ArgumentOutOfRangeException(nameof(msgSendFunction));
 
             if (!TrySetGlobalMessageSendCallback(msgSendFunction, func))
                 throw new InvalidOperationException(SR.InvalidOperation_ResetGlobalObjectiveCMsgSend);
+        }
+
+        internal sealed class ObjcTrackingInformation
+        {
+            private const int TAGGED_MEMORY_SIZE_IN_POINTERS = 2;
+
+            internal IntPtr _memory;
+            private IntPtr _longWeakHandle;
+
+            public unsafe ObjcTrackingInformation()
+            {
+                _memory = (IntPtr)NativeMemory.AllocZeroed(TAGGED_MEMORY_SIZE_IN_POINTERS * (nuint)IntPtr.Size);
+            }
+
+            public void GetTaggedMemory(out int memInSizeT, out IntPtr mem)
+            {
+                memInSizeT = TAGGED_MEMORY_SIZE_IN_POINTERS;
+                mem = _memory;
+            }
+
+            public void EnsureInitialized(object o)
+            {
+                if (_longWeakHandle != IntPtr.Zero)
+                {
+                    return;
+                }
+
+#if NATIVEAOT
+                IntPtr newHandle = RuntimeImports.RhHandleAlloc(o, GCHandleType.WeakTrackResurrection);
+#else
+                IntPtr newHandle = GCHandle.ToIntPtr(GCHandle.Alloc(o, GCHandleType.WeakTrackResurrection));
+#endif
+                if (Interlocked.CompareExchange(ref _longWeakHandle, newHandle, IntPtr.Zero) != IntPtr.Zero)
+                {
+#if NATIVEAOT
+                    RuntimeImports.RhHandleFree(newHandle);
+#else
+                    GCHandle.FromIntPtr(newHandle).Free();
+#endif
+                }
+            }
+
+            unsafe ~ObjcTrackingInformation()
+            {
+                IntPtr longWeakHandle = Volatile.Read(ref _longWeakHandle);
+#if NATIVEAOT
+                if (longWeakHandle != IntPtr.Zero && RuntimeImports.RhHandleGet(longWeakHandle) != null)
+#else
+                if (longWeakHandle != IntPtr.Zero && GCHandle.FromIntPtr(longWeakHandle).Target != null)
+#endif
+                {
+                    GC.ReRegisterForFinalize(this);
+                    return;
+                }
+
+                IntPtr memory = Interlocked.Exchange(ref _memory, IntPtr.Zero);
+                if (memory != IntPtr.Zero)
+                {
+                    NativeMemory.Free((void*)memory);
+                }
+
+                longWeakHandle = Interlocked.Exchange(ref _longWeakHandle, IntPtr.Zero);
+                if (longWeakHandle != IntPtr.Zero)
+                {
+#if NATIVEAOT
+                    RuntimeImports.RhHandleFree(longWeakHandle);
+#else
+                    GCHandle.FromIntPtr(longWeakHandle).Free();
+#endif
+                }
+            }
         }
     }
 }

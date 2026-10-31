@@ -13,7 +13,7 @@ namespace System.Net.WebSockets.Compression
     internal sealed class WebSocketInflater : IDisposable
     {
         internal const int FlushMarkerLength = 4;
-        internal static ReadOnlySpan<byte> FlushMarker => new byte[] { 0x00, 0x00, 0xFF, 0xFF };
+        internal static ReadOnlySpan<byte> FlushMarker => [0x00, 0x00, 0xFF, 0xFF];
 
         private readonly int _windowBits;
         private ZLibStreamHandle? _stream;
@@ -58,11 +58,7 @@ namespace System.Net.WebSockets.Compression
 
         public void Dispose()
         {
-            if (_stream is not null)
-            {
-                _stream.Dispose();
-                _stream = null;
-            }
+            _stream?.Dispose();
             ReleaseBuffer();
         }
 
@@ -131,6 +127,8 @@ namespace System.Net.WebSockets.Compression
         {
             _stream ??= CreateInflater();
 
+            bool streamEnded = false;
+
             if (_available > 0 && output.Length > 0)
             {
                 int consumed;
@@ -140,7 +138,7 @@ namespace System.Net.WebSockets.Compression
                     _stream.NextIn = (IntPtr)(bufferPtr + _position);
                     _stream.AvailIn = (uint)_available;
 
-                    written = Inflate(_stream, output, FlushCode.NoFlush);
+                    written = Inflate(_stream, output, FlushCode.NoFlush, out streamEnded);
                     consumed = _available - (int)_stream.AvailIn;
                 }
 
@@ -158,6 +156,16 @@ namespace System.Net.WebSockets.Compression
                 return _endOfMessage ? Finish(output, ref written) : true;
             }
 
+            if (streamEnded && _available > 0)
+            {
+                // zlib reached the end of the DEFLATE stream (a BFINAL=1 final block) while compressed
+                // bytes still remain that it will never consume. permessage-deflate messages are not
+                // expected to contain a final block; continuing would make no forward progress (the
+                // inflater would report empty results forever and hang the caller's receive loop), so
+                // reject the message.
+                throw new WebSocketException(SR.net_WebSockets_DataAfterBFinal);
+            }
+
             return false;
         }
 
@@ -165,7 +173,7 @@ namespace System.Net.WebSockets.Compression
         /// Finishes the decoding by flushing any outstanding data to the output.
         /// </summary>
         /// <returns>true if the flush completed, false to indicate that there is more outstanding data.</returns>
-        private unsafe bool Finish(Span<byte> output, ref int written)
+        private bool Finish(Span<byte> output, ref int written)
         {
             Debug.Assert(_stream is not null && _stream.AvailIn == 0);
             Debug.Assert(_available == 0);
@@ -184,7 +192,7 @@ namespace System.Net.WebSockets.Compression
             // If we have more space in the output, try to inflate
             if (output.Length > written)
             {
-                written += Inflate(_stream, output[written..], FlushCode.SyncFlush);
+                written += Inflate(_stream, output[written..], FlushCode.SyncFlush, out _);
             }
 
             // After inflate, if we have more space in the output then it means that we
@@ -214,12 +222,12 @@ namespace System.Net.WebSockets.Compression
             }
         }
 
-        private static unsafe bool IsFinished(ZLibStreamHandle stream, out byte? remainingByte)
+        private static bool IsFinished(ZLibStreamHandle stream, out byte? remainingByte)
         {
             // There is no other way to make sure that we've consumed all data
             // but to try to inflate again with at least one byte of output buffer.
-            byte b;
-            if (Inflate(stream, new Span<byte>(&b, 1), FlushCode.SyncFlush) == 0)
+            byte b = 0;
+            if (Inflate(stream, new Span<byte>(ref b), FlushCode.SyncFlush, out _) == 0)
             {
                 remainingByte = null;
                 return true;
@@ -229,7 +237,7 @@ namespace System.Net.WebSockets.Compression
             return false;
         }
 
-        private static unsafe int Inflate(ZLibStreamHandle stream, Span<byte> destination, FlushCode flushCode)
+        private static unsafe int Inflate(ZLibStreamHandle stream, Span<byte> destination, FlushCode flushCode, out bool streamEnded)
         {
             Debug.Assert(destination.Length > 0);
             ErrorCode errorCode;
@@ -243,6 +251,7 @@ namespace System.Net.WebSockets.Compression
 
                 if (errorCode is ErrorCode.Ok or ErrorCode.StreamEnd or ErrorCode.BufError)
                 {
+                    streamEnded = errorCode == ErrorCode.StreamEnd;
                     return destination.Length - (int)stream.AvailOut;
                 }
             }
@@ -252,36 +261,21 @@ namespace System.Net.WebSockets.Compression
                 ErrorCode.MemError => SR.ZLibErrorNotEnoughMemory,
                 ErrorCode.DataError => SR.ZLibUnsupportedCompression,
                 ErrorCode.StreamError => SR.ZLibErrorInconsistentStream,
-                _ => string.Format(SR.ZLibErrorUnexpected, (int)errorCode)
+                _ => SR.Format(SR.ZLibErrorUnexpected, (int)errorCode)
             };
             throw new WebSocketException(message);
         }
 
         private ZLibStreamHandle CreateInflater()
         {
-            ZLibStreamHandle stream;
-            ErrorCode errorCode;
-
             try
             {
-                errorCode = CreateZLibStreamForInflate(out stream, _windowBits);
+                return ZLibStreamHandle.CreateForInflate(_windowBits);
             }
-            catch (Exception exception)
+            catch (Exception ex)
             {
-                throw new WebSocketException(SR.ZLibErrorDLLLoadError, exception);
+                throw new WebSocketException(ex.Message, ex.InnerException);
             }
-
-            if (errorCode == ErrorCode.Ok)
-            {
-                return stream;
-            }
-
-            stream.Dispose();
-
-            string message = errorCode == ErrorCode.MemError
-                ? SR.ZLibErrorNotEnoughMemory
-                : string.Format(SR.ZLibErrorUnexpected, (int)errorCode);
-            throw new WebSocketException(message);
         }
     }
 }

@@ -1,7 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 //*****************************************************************************
-// MetaModelRO.h -- header file for Read-Only compressed COM+ metadata.
+// MetaModelRO.h -- header file for Read-Only compressed CLR metadata.
 //
 
 //
@@ -85,7 +85,7 @@ protected:
     //*************************************************************************
     // Overridables -- must be provided in derived classes.
     __checkReturn
-    FORCEINLINE HRESULT Impl_GetString(UINT32 nIndex, __out LPCSTR *pszString)
+    FORCEINLINE HRESULT Impl_GetString(UINT32 nIndex, _Out_ LPCSTR *pszString)
     { return m_StringHeap.GetString(nIndex, pszString); }
     __checkReturn
     HRESULT Impl_GetStringW(ULONG ix, __inout_ecount (cchBuffer) LPWSTR szOut, ULONG cchBuffer, ULONG *pcchBuffer);
@@ -103,14 +103,14 @@ protected:
         return S_OK;
     }
     __checkReturn
-    FORCEINLINE HRESULT Impl_GetBlob(UINT32 nIndex, __out MetaData::DataBlob *pData)
+    FORCEINLINE HRESULT Impl_GetBlob(UINT32 nIndex, _Out_ MetaData::DataBlob *pData)
     { return m_BlobHeap.GetBlob(nIndex, pData); }
 
     __checkReturn
     FORCEINLINE HRESULT Impl_GetRow(
                         UINT32 nTableIndex,
                         UINT32 nRowIndex,
-        __deref_out_opt BYTE **ppRecord)
+        _Outptr_opt_ BYTE **ppRecord)
     {
         _ASSERTE(nTableIndex < TBL_COUNT);
         return m_Tables[nTableIndex].GetRecord(

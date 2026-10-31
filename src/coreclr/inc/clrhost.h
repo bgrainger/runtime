@@ -8,36 +8,40 @@
 #ifndef __CLRHOST_H__
 #define __CLRHOST_H__
 
+#include <new>
+
 #include "windows.h" // worth to include before mscoree.h so we are guaranteed to pick few definitions
-#ifdef CreateSemaphore
-#undef CreateSemaphore
-#endif
+
 #include "mscoree.h"
 #include "clrinternal.h"
 #include "switches.h"
 #include "holder.h"
-#include "new.hpp"
+
+using std::nothrow;
+
 #include "staticcontract.h"
 #include "predeftlsslot.h"
 #include "safemath.h"
-#include "debugreturn.h"
 #include "yieldprocessornormalized.h"
 
 #if !defined(_DEBUG_IMPL) && defined(_DEBUG) && !defined(DACCESS_COMPILE)
 #define _DEBUG_IMPL 1
 #endif
 
-#define BEGIN_PRESERVE_LAST_ERROR \
-    { \
-        DWORD __dwLastError = ::GetLastError(); \
-        DEBUG_ASSURE_NO_RETURN_BEGIN(PRESERVE_LAST_ERROR); \
-            {
-
-#define END_PRESERVE_LAST_ERROR \
-            } \
-        DEBUG_ASSURE_NO_RETURN_END(PRESERVE_LAST_ERROR); \
-        ::SetLastError(__dwLastError); \
+struct PreserveLastErrorHolder
+{
+    PreserveLastErrorHolder() noexcept
+    {
+        m_dwLastError = ::GetLastError();
     }
+
+    ~PreserveLastErrorHolder() noexcept
+    {
+        ::SetLastError(m_dwLastError);
+    }
+private:
+    DWORD m_dwLastError;
+};
 
 //
 // TRASH_LASTERROR macro sets bogus last error in debug builds to help find places that fail to save it
@@ -56,41 +60,49 @@
 #endif // _DEBUG
 
 
-LPVOID ClrVirtualAlloc(LPVOID lpAddress, SIZE_T dwSize, DWORD flAllocationType, DWORD flProtect);
-BOOL ClrVirtualFree(LPVOID lpAddress, SIZE_T dwSize, DWORD dwFreeType);
-SIZE_T ClrVirtualQuery(LPCVOID lpAddress, PMEMORY_BASIC_INFORMATION lpBuffer, SIZE_T dwLength);
-BOOL ClrVirtualProtect(LPVOID lpAddress, SIZE_T dwSize, DWORD flNewProtect, PDWORD lpflOldProtect);
-
 #ifdef HOST_WINDOWS
 HANDLE ClrGetProcessExecutableHeap();
 #endif
 
-#ifdef FAILPOINTS_ENABLED
-extern int RFS_HashStack();
-#endif
-
-// Critical section support for CLR DLLs other than the the EE.
+// Critical section support for CLR DLLs other than the EE.
 // Include the header defining each Crst type and its corresponding level (relative rank). This is
 // auto-generated from a tool that takes a high-level description of each Crst type and its dependencies.
-#include "crsttypes.h"
+#include "crsttypes_generated.h"
 
 // critical section api
 CRITSEC_COOKIE ClrCreateCriticalSection(CrstType type, CrstFlags flags);
 void ClrDeleteCriticalSection(CRITSEC_COOKIE cookie);
 void ClrEnterCriticalSection(CRITSEC_COOKIE cookie);
-void ClrLeaveCriticalSection(CRITSEC_COOKIE cookie);
-
-DWORD ClrSleepEx(DWORD dwMilliseconds, BOOL bAlertable);
+void ClrLeaveCriticalSection(CRITSEC_COOKIE cookie) noexcept;
 
 // Rather than use the above APIs directly, it is recommended that holder classes
 // be used.  This guarantees that the locks will be vacated when the scope is popped,
 // either on exception or on return.
 
-typedef Holder<CRITSEC_COOKIE, ClrEnterCriticalSection, ClrLeaveCriticalSection, NULL> CRITSEC_Holder;
+typedef Holder<CRITSEC_COOKIE, ClrEnterCriticalSection, ClrLeaveCriticalSection, 0> CRITSEC_Holder;
 
 // Use this holder to manage CRITSEC_COOKIE allocation to ensure it will be released if anything goes wrong
-FORCEINLINE void VoidClrDeleteCriticalSection(CRITSEC_COOKIE cs) { if (cs != NULL) ClrDeleteCriticalSection(cs); }
-typedef Wrapper<CRITSEC_COOKIE, DoNothing<CRITSEC_COOKIE>, VoidClrDeleteCriticalSection, NULL> CRITSEC_AllocationHolder;
+struct CRITSECCookieAllocationTraits final
+{
+    using Type = CRITSEC_COOKIE;
+    static constexpr Type Default() { return NULL; }
+    static void Free(Type cs)
+    {
+        STATIC_CONTRACT_WRAPPER;
+        if (cs != NULL)
+            ClrDeleteCriticalSection(cs);
+    }
+};
+
+using CRITSEC_AllocationHolder = LifetimeHolder<CRITSECCookieAllocationTraits>;
+
+#ifndef DACCESS_COMPILE
+// Suspend/resume APIs that fail-fast on errors
+#ifdef TARGET_WINDOWS
+DWORD ClrSuspendThread(HANDLE hThread);
+#endif // TARGET_WINDOWS
+DWORD ClrResumeThread(HANDLE hThread);
+#endif // !DACCESS_COMPILE
 
 DWORD GetClrModulePathName(SString& buffer);
 
@@ -115,7 +127,7 @@ public:
     }
     ~CantAllocHolder()
     {
-	    DecCantAllocCount ();
+        DecCantAllocCount ();
     }
 };
 
@@ -128,5 +140,37 @@ inline BOOL IsInCantAllocStressLogRegion()
 {
     return t_CantAllocCount != 0;
 }
+
+extern thread_local size_t t_CantStopCount;
+
+// For debugging, we can track arbitrary Can't-Stop regions.
+// In V1.0, this was on the Thread object, but we need to track this for threads w/o a Thread object.
+FORCEINLINE void IncCantStopCount() noexcept
+{
+    t_CantStopCount++;
+}
+
+FORCEINLINE void DecCantStopCount() noexcept
+{
+    t_CantStopCount--;
+}
+
+typedef StateHolder<IncCantStopCount, DecCantStopCount> CantStopHolder;
+
+#ifdef _DEBUG
+// For debug-only, this can be used w/ a holder to ensure that we're keeping our CS count balanced.
+// We should never use this w/ control flow.
+inline size_t GetCantStopCount()
+{
+    return t_CantStopCount;
+}
+
+// At places where we know we're calling out to native code, we can assert that we're NOT in a CS region.
+// This is _debug only since we only use it for asserts; not for real code-flow control in a retail build.
+inline bool IsInCantStopRegion()
+{
+    return (GetCantStopCount() > 0);
+}
+#endif // _DEBUG
 
 #endif

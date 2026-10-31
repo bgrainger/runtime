@@ -9,7 +9,9 @@ internal static partial class Interop
 {
     internal static partial class Advapi32
     {
-        [GeneratedDllImport(Libraries.Advapi32, EntryPoint = "CreateProcessWithLogonW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.Advapi32, EntryPoint = "CreateProcessWithLogonW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+        [return: MarshalAs(UnmanagedType.Bool)]
         internal static unsafe partial bool CreateProcessWithLogonW(
             string userName,
             string domain,
@@ -18,10 +20,10 @@ internal static partial class Interop
             string? appName,
             char* cmdLine,
             int creationFlags,
-            IntPtr environmentBlock,
+            char* environmentBlock,
             string? lpCurrentDirectory,
-            ref Interop.Kernel32.STARTUPINFO lpStartupInfo,
-            ref Interop.Kernel32.PROCESS_INFORMATION lpProcessInformation);
+            Interop.Kernel32.STARTUPINFO* lpStartupInfo,
+            Interop.Kernel32.PROCESS_INFORMATION* lpProcessInformation);
 
         [Flags]
         internal enum LogonFlags

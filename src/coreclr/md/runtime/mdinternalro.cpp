@@ -29,13 +29,9 @@ HRESULT _FillMDDefaultValue(
 __checkReturn
 HRESULT TranslateSigHelper(                 // S_OK or error.
     IMDInternalImport       *pImport,       // [IN] import scope.
-    IMDInternalImport       *pAssemImport,  // [IN] import assembly scope.
-    const void              *pbHashValue,   // [IN] hash value for the import assembly.
-    ULONG                   cbHashValue,    // [IN] count of bytes in the hash value.
     PCCOR_SIGNATURE         pbSigBlob,      // [IN] signature in the importing scope
     ULONG                   cbSigBlob,      // [IN] count of bytes of signature
-    IMetaDataAssemblyEmit   *pAssemEmit,    // [IN] assembly emit scope.
-    IMetaDataEmit           *emit,          // [IN] emit interface
+    IMDInternalEmit         *emit,          // [IN] emit interface
     CQuickBytes             *pqkSigEmit,    // [OUT] buffer to hold translated signature
     ULONG                   *pcbSig);       // [OUT] count of bytes in the translated signature
 #endif //!DACCESS_COMPILE
@@ -85,7 +81,7 @@ ULONG MDInternalRO::AddRef()
     return InterlockedIncrement(&m_cRefs);
 } // MDInternalRO::AddRef
 
-ULONG MDInternalRO::Release()
+ULONG MDInternalRO::Release() noexcept
 {
     ULONG cRef = InterlockedDecrement(&m_cRefs);
     if (cRef == 0)
@@ -132,24 +128,16 @@ HRESULT MDInternalRO::Init(
 //*****************************************************************************
 __checkReturn
 HRESULT MDInternalRO::TranslateSigWithScope(
-    IMDInternalImport*      pAssemImport,   // [IN] import assembly scope.
-    const void*             pbHashValue,    // [IN] hash value for the import assembly.
-    ULONG                   cbHashValue,    // [IN] count of bytes in the hash value.
     PCCOR_SIGNATURE         pbSigBlob,      // [IN] signature in the importing scope
     ULONG                   cbSigBlob,      // [IN] count of bytes of signature
-    IMetaDataAssemblyEmit*  pAssemEmit,     // [IN] assembly emit scope.
-    IMetaDataEmit*          emit,           // [IN] emit interface
+    IMDInternalEmit*        emit,           // [IN] emit interface
     CQuickBytes*            pqkSigEmit,     // [OUT] buffer to hold translated signature
     ULONG*                  pcbSig)         // [OUT] count of bytes in the translated signature
 {
     return TranslateSigHelper(
                 this,
-                pAssemImport,
-                pbHashValue,
-                cbHashValue,
                 pbSigBlob,
                 cbSigBlob,
-                pAssemEmit,
                 emit,
                 pqkSigEmit,
                 pcbSig);
@@ -226,7 +214,29 @@ HRESULT MDInternalRO::EnumMethodImplInit( // return hresult
     HENUMInternal   *phEnumBody,          // [OUT] buffer to fill for enumerator data for MethodBody tokens.
     HENUMInternal   *phEnumDecl)          // [OUT] buffer to fill for enumerator data for MethodDecl tokens.
 {
-    return EnumInit(TBL_MethodImpl << 24, td, phEnumBody);
+    _ASSERTE(TypeFromToken(td) == mdtTypeDef && !IsNilToken(td));
+    _ASSERTE(phEnumBody && phEnumDecl);
+
+    HENUMInternal::ZeroEnum(phEnumBody);
+    HENUMInternal::ZeroEnum(phEnumDecl);
+
+    phEnumBody->m_tkKind = (TBL_MethodImpl << 24);
+    phEnumBody->m_EnumType = MDSimpleEnum;
+
+    HRESULT hr = m_LiteWeightStgdb.m_MiniMd.getMethodImplsForClass(
+        RidFromToken(td),
+        &phEnumBody->u.m_ulEnd,
+        &phEnumBody->u.m_ulStart);
+    if (FAILED(hr))
+        return hr;
+
+    if (phEnumBody->u.m_ulEnd < phEnumBody->u.m_ulStart)
+        return CLDB_E_FILE_CORRUPT;
+
+    phEnumBody->m_ulCount = phEnumBody->u.m_ulEnd - phEnumBody->u.m_ulStart;
+    phEnumBody->u.m_ulCur = phEnumBody->u.m_ulStart;
+
+    return S_OK;
 } // MDInternalRO::EnumMethodImplInit
 
 //*****************************************************************************
@@ -270,32 +280,6 @@ MDInternalRO::EnumMethodImplNext(  // return hresult
 
     return S_OK;
 } // MDInternalRO::EnumMethodImplNext
-
-//*****************************************
-// Reset the enumerator to the beginning.
-//*****************************************
-void MDInternalRO::EnumMethodImplReset(
-    HENUMInternal   *phEnumBody,        // [IN] MethodBody enumerator.
-    HENUMInternal   *phEnumDecl)        // [IN] MethodDecl enumerator.
-{
-    _ASSERTE(phEnumBody && ((phEnumBody->m_tkKind >> 24) == TBL_MethodImpl));
-    _ASSERTE(phEnumBody->m_EnumType == MDSimpleEnum);
-
-    phEnumBody->u.m_ulCur = phEnumBody->u.m_ulStart;
-} // MDInternalRO::EnumMethodImplReset
-
-
-//*****************************************
-// Close the enumerator.
-//*****************************************
-void MDInternalRO::EnumMethodImplClose(
-    HENUMInternal   *phEnumBody,        // [IN] MethodBody enumerator.
-    HENUMInternal   *phEnumDecl)        // [IN] MethodDecl enumerator.
-{
-    _ASSERTE(phEnumBody && ((phEnumBody->m_tkKind >> 24) == TBL_MethodImpl));
-    _ASSERTE(phEnumBody->m_EnumType == MDSimpleEnum);
-} // MDInternalRO::EnumMethodImplClose
-
 
 //******************************************************************************
 // enumerator for global functions
@@ -400,7 +384,7 @@ HRESULT MDInternalRO::EnumInit(     // return S_FALSE if record not found
             IfFailGo(m_LiteWeightStgdb.m_MiniMd.GetPropertyMapRecord(ridPropertyMap, &pPropertyMapRec));
             phEnum->u.m_ulStart = m_LiteWeightStgdb.m_MiniMd.getPropertyListOfPropertyMap(pPropertyMapRec);
             IfFailGo(m_LiteWeightStgdb.m_MiniMd.getEndPropertyListOfPropertyMap(ridPropertyMap, &(phEnum->u.m_ulEnd)));
-            ulMax = m_LiteWeightStgdb.m_MiniMd.getCountPropertys() + 1;
+            ulMax = m_LiteWeightStgdb.m_MiniMd.getCountProperties() + 1;
             if(phEnum->u.m_ulStart == 0) phEnum->u.m_ulStart = 1;
             if(phEnum->u.m_ulEnd > ulMax) phEnum->u.m_ulEnd = ulMax;
             if(phEnum->u.m_ulStart > phEnum->u.m_ulEnd) phEnum->u.m_ulStart = phEnum->u.m_ulEnd;
@@ -458,18 +442,6 @@ HRESULT MDInternalRO::EnumInit(     // return S_FALSE if record not found
         phEnum->u.m_ulStart = 1;
         phEnum->u.m_ulEnd = m_LiteWeightStgdb.m_MiniMd.getCountManifestResources() + 1;
         break;
-    case mdtModuleRef:
-        _ASSERTE(IsNilToken(tkParent));
-        phEnum->u.m_ulStart = 1;
-        phEnum->u.m_ulEnd = m_LiteWeightStgdb.m_MiniMd.getCountModuleRefs() + 1;
-        break;
-    case (TBL_MethodImpl << 24):
-        _ASSERTE(! IsNilToken(tkParent));
-        IfFailGo(m_LiteWeightStgdb.m_MiniMd.getMethodImplsForClass(
-            RidFromToken(tkParent),
-            &phEnum->u.m_ulEnd,
-            &phEnum->u.m_ulStart));
-        break;
     default:
         _ASSERTE(!"ENUM INIT not implemented for the compressed format!");
         IfFailGo(E_NOTIMPL);
@@ -513,14 +485,6 @@ HRESULT MDInternalRO::EnumAllInit(      // return S_FALSE if record not found
         phEnum->m_ulCount = m_LiteWeightStgdb.m_MiniMd.getCountTypeRefs();
         break;
 
-    case mdtMemberRef:
-        phEnum->m_ulCount = m_LiteWeightStgdb.m_MiniMd.getCountMemberRefs();
-        break;
-
-    case mdtSignature:
-        phEnum->m_ulCount = m_LiteWeightStgdb.m_MiniMd.getCountStandAloneSigs();
-        break;
-
     case mdtMethodDef:
         phEnum->m_ulCount = m_LiteWeightStgdb.m_MiniMd.getCountMethods();
         break;
@@ -529,32 +493,12 @@ HRESULT MDInternalRO::EnumAllInit(      // return S_FALSE if record not found
         phEnum->m_ulCount = m_LiteWeightStgdb.m_MiniMd.getCountMethodSpecs();
         break;
 
-    case mdtFieldDef:
-        phEnum->m_ulCount = m_LiteWeightStgdb.m_MiniMd.getCountFields();
-        break;
-
     case mdtTypeSpec:
         phEnum->m_ulCount = m_LiteWeightStgdb.m_MiniMd.getCountTypeSpecs();
         break;
 
     case mdtAssemblyRef:
         phEnum->m_ulCount = m_LiteWeightStgdb.m_MiniMd.getCountAssemblyRefs();
-        break;
-
-    case mdtModuleRef:
-        phEnum->m_ulCount = m_LiteWeightStgdb.m_MiniMd.getCountModuleRefs();
-        break;
-
-    case mdtTypeDef:
-        phEnum->m_ulCount = m_LiteWeightStgdb.m_MiniMd.getCountTypeDefs();
-        break;
-
-    case mdtFile:
-        phEnum->m_ulCount = m_LiteWeightStgdb.m_MiniMd.getCountFiles();
-        break;
-
-    case mdtCustomAttribute:
-        phEnum->m_ulCount = m_LiteWeightStgdb.m_MiniMd.getCountCustomAttributes();
         break;
 
     default:
@@ -720,8 +664,8 @@ __checkReturn
 HRESULT MDInternalRO::GetCustomAttributeByName( // S_OK or error.
     mdToken     tkObj,                  // [IN] Object with Custom Attribute.
     LPCUTF8     szName,                 // [IN] Name of desired Custom Attribute.
-    __deref_out_bcount(*pcbData) const void  **ppData, // [OUT] Put pointer to data here.
-    __out ULONG *pcbData)               // [OUT] Put size of data here.
+    _Outptr_result_bytebuffer_(*pcbData) const void  **ppData, // [OUT] Put pointer to data here.
+    _Out_ ULONG *pcbData)               // [OUT] Put size of data here.
 {
     return m_LiteWeightStgdb.m_MiniMd.CommonGetCustomAttributeByNameEx(tkObj, szName, NULL, ppData, pcbData);
 } // MDInternalRO::GetCustomAttributeByName
@@ -794,7 +738,7 @@ __checkReturn
 HRESULT MDInternalRO::FindMethodDef(    // S_OK or error.
     mdTypeDef   classdef,               // The owning class of the member.
     LPCSTR      szName,                 // Name of the member in utf8.
-    PCCOR_SIGNATURE pvSigBlob,          // [IN] point to a blob value of COM+ signature
+    PCCOR_SIGNATURE pvSigBlob,          // [IN] point to a blob value of signature
     ULONG       cbSigBlob,              // [IN] count of bytes in the signature blob
     mdMethodDef *pmethoddef)            // Put MemberDef token here.
 {
@@ -815,7 +759,7 @@ __checkReturn
 HRESULT MDInternalRO::FindMethodDefUsingCompare(    // S_OK or error.
     mdTypeDef   classdef,               // The owning class of the member.
     LPCSTR      szName,                 // Name of the member in utf8.
-    PCCOR_SIGNATURE pvSigBlob,          // [IN] point to a blob value of COM+ signature
+    PCCOR_SIGNATURE pvSigBlob,          // [IN] point to a blob value of signature
     ULONG       cbSigBlob,              // [IN] count of bytes in the signature blob
     PSIGCOMPARE SigCompare,            // [IN] Signature comparison routine
     void*       pSigArgs,               // [IN] Additional arguments passed to signature compare
@@ -936,7 +880,7 @@ HRESULT MDInternalRO::FindParamOfMethod(// S_OK or error.
 
 //*****************************************************************************
 // return a pointer which points to meta data's internal string
-// return the the type name in utf8
+// return the type name in utf8
 //*****************************************************************************
 __checkReturn
 HRESULT
@@ -1050,7 +994,7 @@ __checkReturn
 HRESULT
 MDInternalRO::GetNameAndSigOfMethodDef(
     mdMethodDef      methoddef,         // [IN] given memberdef
-    PCCOR_SIGNATURE *ppvSigBlob,        // [OUT] point to a blob value of COM+ signature
+    PCCOR_SIGNATURE *ppvSigBlob,        // [OUT] point to a blob value of signature
     ULONG           *pcbSigBlob,        // [OUT] count of bytes in the signature blob
     LPCSTR          *pszMethodName)
 {
@@ -1142,6 +1086,8 @@ HRESULT MDInternalRO::FindTypeRefByName(  // S_OK or error.
         mdToken     tkResolutionScope,      // [IN] Resolution Scope fo the TypeRef.
         mdTypeRef   *ptk)                   // [OUT] TypeRef token returned.
 {
+#ifdef FEATURE_METADATA_EMIT_PORTABLE_PDB
+    // ILDasm uses this API to resolve TypeRefs by name.
     HRESULT     hr = NOERROR;
 
     _ASSERTE(ptk);
@@ -1191,6 +1137,9 @@ HRESULT MDInternalRO::FindTypeRefByName(  // S_OK or error.
     hr = CLDB_E_RECORD_NOTFOUND;
 ErrExit:
     return hr;
+#else
+    return E_NOTIMPL;
+#endif
 }
 
 //*****************************************************************************
@@ -1248,7 +1197,7 @@ HRESULT MDInternalRO::GetItemGuid(      // return hresult
         wzBlob[0] = '{';
         wzBlob[37] = '}';
         wzBlob[38] = 0;
-        hr = IIDFromString(wzBlob, pGuid);
+        hr = LPCWSTRToGuid(wzBlob, pGuid) ? S_OK : E_FAIL;
     }
     else
         *pGuid = GUID_NULL;
@@ -1675,9 +1624,6 @@ HRESULT MDInternalRO::GetMethodSpecProps(         // S_OK or error.
     HRESULT         hr = NOERROR;
     MethodSpecRec  *pMethodSpecRec;
 
-    LOG((LOGMD, "MD RegMeta::GetMethodSpecProps(0x%08x, 0x%08x, 0x%08x, 0x%08x)\n",
-        mi, tkParent, ppvSigBlob, pcbSigBlob));
-
     _ASSERTE(TypeFromToken(mi) == mdtMethodSpec);
 
     IfFailRet(m_LiteWeightStgdb.m_MiniMd.GetMethodSpecRecord(RidFromToken(mi), &pMethodSpecRec));
@@ -1815,7 +1761,7 @@ __checkReturn
 HRESULT
 MDInternalRO::GetNameAndSigOfMemberRef( // meberref's name
     mdMemberRef      memberref,         // given a memberref
-    PCCOR_SIGNATURE *ppvSigBlob,        // [OUT] point to a blob value of COM+ signature
+    PCCOR_SIGNATURE *ppvSigBlob,        // [OUT] point to a blob value of signature
     ULONG           *pcbSigBlob,        // [OUT] count of bytes in the signature blob
     LPCSTR          *pszMemberRefName)
 {
@@ -1953,7 +1899,7 @@ HRESULT MDInternalRO::GetPropertyInfoForMethodDef(  // Result.
 
             if (InterlockedCompareExchangeT<CMethodSemanticsMap *>(
                 &m_pMethodSemanticsMap, pMethodSemanticsMap, NULL) == NULL)
-            {   // The exchange did happen, supress of the allocated map
+            {   // The exchange did happen, suppress of the allocated map
                 pMethodSemanticsMap.SuppressRelease();
             }
         }
@@ -2659,16 +2605,11 @@ HRESULT
 MDInternalRO::GetUserString(    // Offset into the string blob heap.
     mdString stk,               // [IN] the string token.
     ULONG   *pcchStringSize,    // [OUT] count of characters in the string.
-    BOOL    *pfIs80Plus,        // [OUT] specifies where there are extended characters >= 0x80.
     LPCWSTR *pwszUserString)
 {
     HRESULT hr;
     LPWSTR  wszTmp;
 
-    if (pfIs80Plus != NULL)
-    {
-        *pfIs80Plus = FALSE;
-    }
     *pwszUserString = NULL;
     *pcchStringSize = 0;
 
@@ -2684,16 +2625,6 @@ MDInternalRO::GetUserString(    // Offset into the string blob heap.
     {
         *pwszUserString = NULL;
         return S_OK;
-    }
-
-    if (pfIs80Plus != NULL)
-    {
-        if (userString.GetSize() % sizeof(WCHAR) == 0)
-        {
-            *pfIs80Plus = TRUE; // no indicator, presume the worst
-        }
-        // Return the user string terminator (contains value fIs80Plus)
-        *pfIs80Plus = *(reinterpret_cast<PBYTE>(wszTmp + *pcchStringSize));
     }
 
     *pwszUserString = wszTmp;
@@ -3068,7 +2999,7 @@ __checkReturn
 HRESULT MDInternalRO::ConvertTextSigToComSig(// Return hresult.
     BOOL        fCreateTrIfNotFound,    // create typeref if not found or not
     LPCSTR      pSignature,             // class file format signature
-    CQuickBytes *pqbNewSig,             // [OUT] place holder for COM+ signature
+    CQuickBytes *pqbNewSig,             // [OUT] place holder for signature
     ULONG       *pcbCount)              // [OUT] the result size of signature
 {
     return E_NOTIMPL;
@@ -3114,7 +3045,7 @@ BOOL MDInternalRO::IsValidToken(        // True or False.
     case mdtEvent:
         return (rid <= m_LiteWeightStgdb.m_MiniMd.getCountEvents());
     case mdtProperty:
-        return (rid <= m_LiteWeightStgdb.m_MiniMd.getCountPropertys());
+        return (rid <= m_LiteWeightStgdb.m_MiniMd.getCountProperties());
     case mdtModuleRef:
         return (rid <= m_LiteWeightStgdb.m_MiniMd.getCountModuleRefs());
     case mdtTypeSpec:
@@ -3147,91 +3078,9 @@ mdModule MDInternalRO::GetModuleFromScope(void)
     return TokenFromRid(1, mdtModule);
 } // MDInternalRO::GetModuleFromScope
 
-//*****************************************************************************
-// Fill a variant given a MDDefaultValue
-// This routine will create a bstr if the ELEMENT_TYPE of default value is STRING
-//*****************************************************************************
-__checkReturn
-HRESULT _FillVariant(
-    MDDefaultValue  *pMDDefaultValue,
-    VARIANT     *pvar)
-{
-    HRESULT     hr = NOERROR;
-
-    _ASSERTE(pMDDefaultValue);
-
-    switch (pMDDefaultValue->m_bType)
-    {
-    case ELEMENT_TYPE_BOOLEAN:
-        V_VT(pvar) = VT_BOOL;
-        V_BOOL(pvar) = pMDDefaultValue->m_bValue;
-        break;
-    case ELEMENT_TYPE_I1:
-        V_VT(pvar) = VT_I1;
-        V_I1(pvar) = pMDDefaultValue->m_cValue;
-        break;
-    case ELEMENT_TYPE_U1:
-        V_VT(pvar) = VT_UI1;
-        V_UI1(pvar) = pMDDefaultValue->m_byteValue;
-        break;
-    case ELEMENT_TYPE_I2:
-        V_VT(pvar) = VT_I2;
-        V_I2(pvar) = pMDDefaultValue->m_sValue;
-        break;
-    case ELEMENT_TYPE_U2:
-    case ELEMENT_TYPE_CHAR:             // char is stored as UI2 internally
-        V_VT(pvar) = VT_UI2;
-        V_UI2(pvar) = pMDDefaultValue->m_usValue;
-        break;
-    case ELEMENT_TYPE_I4:
-        V_VT(pvar) = VT_I4;
-        V_I4(pvar) = pMDDefaultValue->m_lValue;
-        break;
-    case ELEMENT_TYPE_U4:
-        V_VT(pvar) = VT_UI4;
-        V_UI4(pvar) = pMDDefaultValue->m_ulValue;
-        break;
-    case ELEMENT_TYPE_R4:
-        V_VT(pvar) = VT_R4;
-        V_R4(pvar) = pMDDefaultValue->m_fltValue;
-        break;
-    case ELEMENT_TYPE_R8:
-        V_VT(pvar) = VT_R8;
-        V_R8(pvar) = pMDDefaultValue->m_dblValue;
-        break;
-    case ELEMENT_TYPE_STRING:
-        // allocated bstr here
-        V_BSTR(pvar) = ::SysAllocStringLen(pMDDefaultValue->m_wzValue, pMDDefaultValue->m_cbSize / sizeof(WCHAR));
-        if (V_BSTR(pvar) == NULL)
-            hr = E_OUTOFMEMORY;
-        V_VT(pvar) = VT_BSTR;
-        break;
-    case ELEMENT_TYPE_CLASS:
-        V_VT(pvar) = VT_UNKNOWN;
-        V_UNKNOWN(pvar) = pMDDefaultValue->m_unkValue;
-        break;
-    case ELEMENT_TYPE_I8:
-        V_VT(pvar) = VT_I8;
-        V_CY(pvar).int64 = pMDDefaultValue->m_llValue;
-        break;
-    case ELEMENT_TYPE_U8:
-        V_VT(pvar) = VT_UI8;
-        V_CY(pvar).int64 = pMDDefaultValue->m_ullValue;
-        break;
-    case ELEMENT_TYPE_VOID:
-        V_VT(pvar) = VT_EMPTY;
-        break;
-    default:
-        _ASSERTE(!"bad constant value type!");
-    }
-
-    return hr;
-} // _FillVariant
-
 
 //*****************************************************************************
 // Fill a variant given a MDDefaultValue
-// This routine will create a bstr if the ELEMENT_TYPE of default value is STRING
 //*****************************************************************************
 __checkReturn
 HRESULT _FillMDDefaultValue(
@@ -3302,7 +3151,7 @@ HRESULT _FillMDDefaultValue(
             {
                 IfFailGo(CLDB_E_FILE_CORRUPT);
             }
-            __int32 Value = GET_UNALIGNED_VAL32(pValue);
+            int32_t Value = GET_UNALIGNED_VAL32(pValue);
             pMDDefaultValue->m_fltValue = (float &)Value;
         }
         break;
@@ -3312,7 +3161,7 @@ HRESULT _FillMDDefaultValue(
             {
                 IfFailGo(CLDB_E_FILE_CORRUPT);
             }
-            __int64 Value = GET_UNALIGNED_VAL64(pValue);
+            int64_t Value = GET_UNALIGNED_VAL64(pValue);
             pMDDefaultValue->m_dblValue = (double &) Value;
         }
         break;
@@ -3320,19 +3169,7 @@ HRESULT _FillMDDefaultValue(
         if (cbValue == 0)
             pValue = NULL;
 
-#if BIGENDIAN
-        {
-            // We need to allocate and swap the string if we're on a big endian
-            // This allocation will be freed by the MDDefaultValue destructor.
-            pMDDefaultValue->m_wzValue = new WCHAR[(cbValue + 1) / sizeof (WCHAR)];
-            IfNullGo(pMDDefaultValue->m_wzValue);
-            memcpy(const_cast<WCHAR *>(pMDDefaultValue->m_wzValue), pValue, cbValue);
-            _ASSERTE(cbValue % sizeof(WCHAR) == 0);
-            SwapStringLength(const_cast<WCHAR *>(pMDDefaultValue->m_wzValue), cbValue / sizeof(WCHAR));
-        }
-#else
         pMDDefaultValue->m_wzValue = (LPWSTR) pValue;
-#endif
         break;
     case ELEMENT_TYPE_CLASS:
         //
@@ -3415,65 +3252,6 @@ HRESULT MDInternalRO::ApplyEditAndContinue(
 ErrExit:
     if (pDeltaMDImport)
         pDeltaMDImport->Release();
-    return hr;
-}
-
-HRESULT MDInternalRO::GetRvaOffsetData(
-    DWORD   *pFirstMethodRvaOffset,     // [OUT] Offset (from start of metadata) to the first RVA field in MethodDef table.
-    DWORD   *pMethodDefRecordSize,      // [OUT] Size of each record in MethodDef table.
-    DWORD   *pMethodDefCount,           // [OUT] Number of records in MethodDef table.
-    DWORD   *pFirstFieldRvaOffset,      // [OUT] Offset (from start of metadata) to the first RVA field in FieldRVA table.
-    DWORD   *pFieldRvaRecordSize,       // [OUT] Size of each record in FieldRVA table.
-    DWORD   *pFieldRvaCount)            // [OUT] Number of records in FieldRVA table.
-{
-    HRESULT hr = S_OK;
-    DWORD methodDefCount = *pMethodDefCount = m_LiteWeightStgdb.m_MiniMd.getCountMethods();
-    if (methodDefCount == 0)
-        *pFirstMethodRvaOffset = *pMethodDefRecordSize = 0;
-    else
-    {
-        MethodRec *pMethodRec;
-        IfFailGo(m_LiteWeightStgdb.m_MiniMd.GetMethodRecord(1, &pMethodRec));
-
-        // RVA is the first column of the MethodDef table, so the address of MethodRec is also address of RVA column.
-        if ((const BYTE *)m_LiteWeightStgdb.m_pvMd > (const BYTE *)pMethodRec)
-        {
-            Debug_ReportError("Stream header is not within MetaData block.");
-            IfFailGo(CLDB_E_FILE_CORRUPT);
-        }
-        *pFirstMethodRvaOffset = (DWORD)((const BYTE *)pMethodRec - (const BYTE *)m_LiteWeightStgdb.m_pvMd);
-        *pMethodDefRecordSize = m_LiteWeightStgdb.m_MiniMd._CBREC(Method);
-    }
-
-    {
-        DWORD fieldRvaCount = *pFieldRvaCount = m_LiteWeightStgdb.m_MiniMd.getCountFieldRVAs();
-        if (fieldRvaCount == 0)
-            *pFirstFieldRvaOffset = *pFieldRvaRecordSize = 0;
-        else
-        {
-
-            // orig
-            // FieldRVARec *pFieldRVARec = m_LiteWeightStgdb.m_MiniMd.getFieldRVA(1);
-            FieldRVARec *pFieldRVARec;
-            IfFailGo(m_LiteWeightStgdb.m_MiniMd.GetFieldRVARecord(1, &pFieldRVARec));
-
-//FieldRVARec *pFieldRVARec;
-//mdToken fakeTok = 1;
-//RidToToken(&fakeTok, mdtFieldDef);
-//GetFieldRVA(fakeTok, &pFieldRVARec);
-            // RVA is the first column of the FieldRVA table, so the address of FieldRVARec is also address of RVA column.
-            if ((const BYTE *)m_LiteWeightStgdb.m_pvMd > (const BYTE *)pFieldRVARec)
-            {
-                Debug_ReportError("Stream header is not within MetaData block.");
-                IfFailGo(CLDB_E_FILE_CORRUPT);
-            }
-            *pFirstFieldRvaOffset = (DWORD)((const BYTE *)pFieldRVARec - (const BYTE *)m_LiteWeightStgdb.m_pvMd);
-            *pFieldRvaRecordSize = m_LiteWeightStgdb.m_MiniMd._CBREC(FieldRVA);
-        }
-    }
-    hr = S_OK;
-
-ErrExit:
     return hr;
 }
 

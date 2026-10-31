@@ -1,11 +1,5 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-// --------------------------------------------------------------------------------
-// PEImage.h
-//
-
-// --------------------------------------------------------------------------------
-
 
 #ifndef PEIMAGE_H_
 #define PEIMAGE_H_
@@ -18,7 +12,8 @@
 #include "peimagelayout.h"
 #include "sstring.h"
 #include "holder.h"
-#include <bundle.h>
+#include <assemblyprobeextension.h>
+#include "cdacdata.h"
 
 class SimpleRWLock;
 // --------------------------------------------------------------------------------
@@ -28,17 +23,56 @@ class SimpleRWLock;
 class Crst;
 
 // --------------------------------------------------------------------------------
-// PEImage is a PE file loaded by our "simulated LoadLibrary" mechanism.  A PEImage
-// can be loaded either FLAT (same layout as on disk) or MAPPED (PE sections
-// mapped into virtual addresses.)
+// PEImage is a PE file loaded into memory.
 //
-// The MAPPED format is currently limited to "IL only" images - this can be checked
-// for via PEDecoder::IsILOnlyImage.
+// The actual data is represented by PEImageLayout instances which are created on demand.
 //
-// NOTE: PEImage will NEVER call LoadLibrary.
-// --------------------------------------------------------------------------------
-
-
+// Various PEImageLayouts can be classified into two kinds -
+//  - Flat    - the same layout as on disk/array or
+//
+//  - Loaded  - PE sections are mapped into virtual addresses.
+//              PE relocations are applied.
+//              Native exception handlers are registered with OS (on Windows).
+//
+// Flat layouts are sufficient for operations that do not require running native code,
+// Anything based on RVA, such as retrieving IL method bodies, is slightly less efficient,
+// since RVA must be translated to file offsets by iterating through section headers.
+// The additional cost is not very high though, since our PEs have only a few sections.
+//
+// Loaded layouts are functional supersets of Flat - anything that can be done with Flat
+// can be done with Loaded.
+//
+// Running native code in the PE (i.e. R2R or IJW scenarios) requires Loaded layout.
+// It is possible to execute R2R assembly from Flat layout in IL mode, but its R2R functionality
+// will be disabled. When R2R is explicitly turned off, Flat is sufficient for any scenario with
+// R2R assemblies.
+// In a case of IJW, the PE must be loaded by the native loader to ensure that native dependencies
+// are resolved.
+//
+// In some scenarios we create Loaded layouts by manually mapping images into memory.
+// That is particularly true on Unix where we cannot rely on OS loader.
+// Manual creation of layouts is limited to "IL only" images. This can be checked
+// for via `PEDecoder::IsILOnlyImage`
+// NOTE: historically, and somewhat confusingly, R2R PEs are considered IsILOnlyImage for this
+//       purpose. That is true even for composite R2R PEs that do not contain IL.
+//
+// A PEImage, depending on scenario, may end up creating both Flat and Loaded layouts,
+// thus it has two slots - m_pLayouts[IMAGE_COUNT].
+//
+// m_pLayouts[IMAGE_FLAT]
+//   When initialized contains a layout that allows operations for which Flat layout is sufficient -
+//   i.e. reading metadata
+//
+// m_pLayouts[IMAGE_LOADED]
+//   When initialized contains a layout that allows loading/running code.
+//
+// The layouts can only be unloaded together with the owning PEImage, so if we have Flat and
+// then need Loaded, we can only add one more. Thus we have two slots.
+//
+// Often the slots refer to the same layout though. That is because if we create Loaded before Flat,
+// we put Loaded into both slots, since it is functionally a superset of Flat.
+// Also for pure-IL assemblies Flat is sufficient for anything, so we may put Flat into both slots.
+//
 
 #define CV_SIGNATURE_RSDS   0x53445352
 
@@ -65,29 +99,25 @@ public:
     static void Startup();
 
     ~PEImage();
-    PEImage();
+    explicit PEImage(const WCHAR* path);
 
     BOOL Equals(PEImage* pImage);
 
     ULONG AddRef();
-    ULONG Release();
+    ULONG Release() noexcept;
 
 #ifndef DACCESS_COMPILE
-    static PTR_PEImage LoadFlat(const void *flat, COUNT_T size);
+    static PTR_PEImage CreateFromByteArray(const BYTE* array, COUNT_T size);
 #ifndef TARGET_UNIX
-    static PTR_PEImage LoadImage(HMODULE hMod);
+    static PTR_PEImage CreateFromHMODULE(HMODULE hMod);
 #endif // !TARGET_UNIX
     static PTR_PEImage OpenImage(
         LPCWSTR pPath,
         MDInternalImportFlags flags = MDInternalImport_Default,
-        BundleFileLocation bundleFileLocation = BundleFileLocation::Invalid());
+        ProbeExtensionResult probeExtensionResult = ProbeExtensionResult::Invalid());
 
-    static PTR_PEImage FindByPath(LPCWSTR pPath, BOOL isInBundle = TRUE);
+    static PTR_PEImage FindByPath(LPCWSTR pPath, BOOL isInBundle, BOOL isExternalData);
     void AddToHashMap();
-
-    void   Load();
-    void   LoadNoFile();
-    void   LoadFromMapped();
 #endif
 
     BOOL IsOpened();
@@ -95,32 +125,34 @@ public:
 
     BOOL HasLoadedLayout();
     PTR_PEImageLayout GetLoadedLayout();
+    PTR_PEImageLayout GetFlatLayout();
 
-    BOOL  HasPath();
-    ULONG GetPathHash();
     const SString& GetPath();
     const SString& GetPathToLoad();
+    LPCWSTR GetPathForErrorMessages() { return GetPath(); }
 
     BOOL IsFile();
     BOOL IsInBundle() const;
-    HANDLE GetFileHandle();
+    BOOL IsExternalData() const;
+    void* GetExternalData(INT64* size);
     INT64 GetOffset() const;
     INT64 GetSize() const;
-    INT64 GetUncompressedSize() const;
+    BOOL IsCompressed(INT64* uncompressedSize = NULL) const;
 
-    HRESULT TryOpenFile();
-
-    LPCWSTR GetPathForErrorMessages();
+#ifndef DACCESS_COMPILE
+    VMToOSInterface::MemoryMapHandle GetFileHandle();
+    // Callers already holding m_pLayoutLock pass false; external callers use the locking default.
+    HRESULT TryOpenFile(bool takeLock = false);
+#endif
 
     void GetMVID(GUID *pMvid);
-    BOOL HasV1Metadata();
     IMDInternalImport* GetMDImport();
     BOOL MDImportLoaded();
-    IMDInternalImport* GetNativeMDImport(BOOL loadAllowed = TRUE);
 
     BOOL HasContents() ;
     BOOL IsPtrInImage(PTR_CVOID data);
 
+    BOOL HasHeaders();
     BOOL HasNTHeaders();
     BOOL HasCorHeader();
     BOOL HasReadyToRunHeader();
@@ -130,7 +162,6 @@ public:
     void GetPEKindAndMachine(DWORD* pdwKind, DWORD* pdwMachine);
 
     BOOL IsILOnly();
-    BOOL IsReferenceAssembly();
     BOOL IsComponentAssembly();
 
     PTR_CVOID GetNativeManifestMetadata(COUNT_T* pSize = NULL);
@@ -139,7 +170,7 @@ public:
 
     PTR_CVOID GetMetadata(COUNT_T* pSize = NULL);
 
-    // Check utilites
+    // Check utilities
     static CHECK CheckStartup();
     static CHECK CheckCanonicalFullPath(const SString& path);
 
@@ -147,13 +178,11 @@ public:
     CHECK CheckILFormat();
     CHECK CheckUniqueInstance();
 
-    void VerifyIsAssembly();
-
     void SetModuleFileNameHintForDAC();
 #ifdef DACCESS_COMPILE
     void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);
-    const SString &GetModuleFileNameHintForDAC();
 #endif
+    const SString &GetModuleFileNameHintForDAC();
 
 private:
 #ifndef DACCESS_COMPILE
@@ -161,10 +190,10 @@ private:
     PTR_PEImageLayout GetOrCreateLayoutInternal(DWORD imageLayoutMask);
 
     // Create the mapped layout
-    PTR_PEImageLayout CreateLayoutMapped();
+    PTR_PEImageLayout CreateLoadedLayout(bool throwOnFailure);
 
     // Create the flat layout
-    PTR_PEImageLayout CreateLayoutFlat(BOOL bPermitWriteableSections);
+    PTR_PEImageLayout CreateFlatLayout();
 
     void   SetLayout(DWORD dwLayout, PTR_PEImageLayout pLayout);
 #endif
@@ -172,36 +201,35 @@ private:
     PTR_PEImageLayout GetExistingLayoutInternal(DWORD imageLayoutMask);
 
     void OpenMDImport();
-    void OpenNativeMDImport();
     // ------------------------------------------------------------
     // Private routines
     // ------------------------------------------------------------
 
-    void Init(LPCWSTR pPath, BundleFileLocation bundleFileLocation);
+    void Init(ProbeExtensionResult probeExtensionResult);
 
     struct PEImageLocator
     {
-
         LPCWSTR m_pPath;
         BOOL m_bIsInBundle;
+        BOOL m_bIsExternalData;
 
-        PEImageLocator(LPCWSTR pPath, BOOL bIsInBundle)
-            : m_pPath(pPath),
-              m_bIsInBundle(bIsInBundle)
+        PEImageLocator(LPCWSTR pPath, BOOL bIsInBundle, BOOL bIsExternalData)
+            : m_pPath(pPath)
+            , m_bIsInBundle(bIsInBundle)
+            , m_bIsExternalData(bIsExternalData)
         {
         }
 
         PEImageLocator(PEImage * pImage)
             : m_pPath(pImage->m_path.GetUnicode())
+            , m_bIsInBundle(pImage->IsInBundle())
+            , m_bIsExternalData(pImage->IsExternalData())
         {
-            m_bIsInBundle = pImage->IsInBundle();
         }
     };
 
     static BOOL CompareImage(UPTR image1, UPTR image2);
     static BOOL CompareIJWDataBase(UPTR base, UPTR mapping);
-
-    void DECLSPEC_NORETURN ThrowFormat(HRESULT hr);
 
 public:
     class IJWFixupData
@@ -210,7 +238,6 @@ public:
         Crst            m_lock;
         void*           m_base;
         DWORD           m_flags;
-        PTR_LoaderHeap  m_DllThunkHeap;
 
         // the fixup for the next iteration in FixupVTables
         // we use it to make sure that we do not try to fix up the same entry twice
@@ -224,19 +251,15 @@ public:
 
     public:
         IJWFixupData(void* pBase);
-        ~IJWFixupData();
         void* GetBase() { LIMITED_METHOD_CONTRACT; return m_base; }
         Crst* GetLock() { LIMITED_METHOD_CONTRACT; return &m_lock; }
         BOOL IsFixedUp() { LIMITED_METHOD_CONTRACT; return m_flags & e_FIXED_UP; }
         void SetIsFixedUp() { LIMITED_METHOD_CONTRACT; m_flags |= e_FIXED_UP; }
-        PTR_LoaderHeap  GetThunkHeap();
         void MarkMethodFixedUp(COUNT_T iFixup, COUNT_T iMethod);
         BOOL IsMethodFixedUp(COUNT_T iFixup, COUNT_T iMethod);
     };
 
     static IJWFixupData* GetIJWData(void* pBase);
-    static PTR_LoaderHeap GetDllThunkHeap(void* pBase);
-    static void UnloadIJWModule(void* pBase);
 
 private:
 
@@ -258,55 +281,64 @@ private:
     // Instance fields
     // ------------------------------------------------------------
 
-    SString   m_path;
+    const SString   m_path;
+    ULONG     m_pathHash;
     LONG      m_refCount;
 
     // means this is a unique (deduped) instance.
     BOOL      m_bInHashMap;
 
-    // If this image is located within a single-file bundle, the location within the bundle.
-    // If m_bundleFileLocation is valid, it takes precedence over m_path for loading.
-    BundleFileLocation m_bundleFileLocation;
+    // Valid if this image is from a probe extension (single-file bundle, external data).
+    // If m_probeExtensionResult is valid, it takes precedence over m_path for loading.
+    ProbeExtensionResult m_probeExtensionResult;
 
-    // valid handle if we tried to open the file/path and succeeded.
-    HANDLE m_hFile;
+    // Valid file descriptor or handle if opening the file/path succeeded.
+    VMToOSInterface::MemoryMapHandle m_hFile;
 
     DWORD m_dwPEKind;
     DWORD m_dwMachine;
 
-    // This variable will have the data of module name.
-    // It is only used by DAC to remap fusion loaded modules back to
-    // disk IL. This really is a workaround. The real fix is for fusion loader
-    // hook (public API on hosting) to take an additional file name hint.
-    // We are piggy backing on the fact that module name is the same as file name!!!
-    SString   m_sModuleFileNameHintUsedByDac; // This is only used by DAC
+    // This only used by DAC
+    // For assemblies loaded from a path or single-file bundle, this is the file name portion of the path
+    // For assemblies loaded from memory, this is the module file name from metadata
+    SString   m_sModuleFileNameHintUsedByDac;
 
     enum
     {
         IMAGE_FLAT=0,
-        IMAGE_MAPPED=1,
-        IMAGE_LOADED=2,
-        IMAGE_COUNT=3
+        IMAGE_LOADED=1,
+        IMAGE_COUNT=2
     };
 
     SimpleRWLock *m_pLayoutLock;
-    PTR_PEImageLayout m_pLayouts[IMAGE_COUNT] ;
-
-#ifdef METADATATRACKER_DATA
-    class MetaDataTracker   *m_pMDTracker;
-#endif // METADATATRACKER_DATA
-
+    PTR_PEImageLayout m_pLayouts[IMAGE_COUNT];
     IMDInternalImport* m_pMDImport;
-    IMDInternalImport* m_pNativeMDImport;
+
+    friend struct cdac_data<PEImage>;
 };
 
-FORCEINLINE void PEImageRelease(PEImage *i)
+template<>
+struct cdac_data<PEImage>
 {
-    WRAPPER_NO_CONTRACT;
-    i->Release();
-}
+    // Layouts are stored in m_pLayouts[], indexed by IMAGE_FLAT (0) and IMAGE_LOADED (1).
+    static constexpr size_t FlatImageLayout = offsetof(PEImage, m_pLayouts);
+    static constexpr size_t LoadedImageLayout = offsetof(PEImage, m_pLayouts) + sizeof(PTR_PEImageLayout);
+    static constexpr size_t ProbeExtensionResult = offsetof(PEImage, m_probeExtensionResult);
+};
 
-typedef Wrapper<PEImage *, DoNothing, PEImageRelease> PEImageHolder;
+struct PEImageHolderTraits final
+{
+    using Type = PEImage*;
+    static constexpr Type Default() { return NULL; }
+    static void Free(Type i) noexcept
+    {
+        WRAPPER_NO_CONTRACT;
+        if (i != NULL)
+            i->Release();
+    }
+};
+
+using PEImageHolder = LifetimeHolder<PEImageHolderTraits>;
 
 // ================================================================================
 // Inline definitions

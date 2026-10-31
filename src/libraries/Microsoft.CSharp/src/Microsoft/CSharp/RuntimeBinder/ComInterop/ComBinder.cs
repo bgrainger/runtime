@@ -33,10 +33,11 @@ namespace Microsoft.CSharp.RuntimeBinder.ComInterop
         /// <param name="delayInvocation">true if member evaluation may be delayed.</param>
         /// <returns>true if operation was bound successfully; otherwise, false.</returns>
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         public static bool TryBindGetMember(GetMemberBinder binder, DynamicMetaObject instance, out DynamicMetaObject result, bool delayInvocation)
         {
-            Requires.NotNull(binder, nameof(binder));
-            Requires.NotNull(instance, nameof(instance));
+            Requires.NotNull(binder);
+            Requires.NotNull(instance);
 
             if (TryGetMetaObject(ref instance))
             {
@@ -65,11 +66,12 @@ namespace Microsoft.CSharp.RuntimeBinder.ComInterop
         /// <param name="result">The new <see cref="DynamicMetaObject"/> representing the result of the binding.</param>
         /// <returns>true if operation was bound successfully; otherwise, false.</returns>
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         public static bool TryBindSetMember(SetMemberBinder binder, DynamicMetaObject instance, DynamicMetaObject value, out DynamicMetaObject result)
         {
-            Requires.NotNull(binder, nameof(binder));
-            Requires.NotNull(instance, nameof(instance));
-            Requires.NotNull(value, nameof(value));
+            Requires.NotNull(binder);
+            Requires.NotNull(instance);
+            Requires.NotNull(value);
 
             if (TryGetMetaObject(ref instance))
             {
@@ -90,11 +92,12 @@ namespace Microsoft.CSharp.RuntimeBinder.ComInterop
         /// <param name="result">The new <see cref="DynamicMetaObject"/> representing the result of the binding.</param>
         /// <returns>true if operation was bound successfully; otherwise, false.</returns>
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         public static bool TryBindInvoke(InvokeBinder binder, DynamicMetaObject instance, DynamicMetaObject[] args, out DynamicMetaObject result)
         {
-            Requires.NotNull(binder, nameof(binder));
-            Requires.NotNull(instance, nameof(instance));
-            Requires.NotNull(args, nameof(args));
+            Requires.NotNull(binder);
+            Requires.NotNull(instance);
+            Requires.NotNull(args);
 
             if (TryGetMetaObjectInvoke(ref instance))
             {
@@ -115,11 +118,12 @@ namespace Microsoft.CSharp.RuntimeBinder.ComInterop
         /// <param name="result">The new <see cref="DynamicMetaObject"/> representing the result of the binding.</param>
         /// <returns>true if operation was bound successfully; otherwise, false.</returns>
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         public static bool TryBindInvokeMember(InvokeMemberBinder binder, DynamicMetaObject instance, DynamicMetaObject[] args, out DynamicMetaObject result)
         {
-            Requires.NotNull(binder, nameof(binder));
-            Requires.NotNull(instance, nameof(instance));
-            Requires.NotNull(args, nameof(args));
+            Requires.NotNull(binder);
+            Requires.NotNull(instance);
+            Requires.NotNull(args);
 
             if (TryGetMetaObject(ref instance))
             {
@@ -140,11 +144,12 @@ namespace Microsoft.CSharp.RuntimeBinder.ComInterop
         /// <param name="result">The new <see cref="DynamicMetaObject"/> representing the result of the binding.</param>
         /// <returns>true if operation was bound successfully; otherwise, false.</returns>
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         public static bool TryBindGetIndex(GetIndexBinder binder, DynamicMetaObject instance, DynamicMetaObject[] args, out DynamicMetaObject result)
         {
-            Requires.NotNull(binder, nameof(binder));
-            Requires.NotNull(instance, nameof(instance));
-            Requires.NotNull(args, nameof(args));
+            Requires.NotNull(binder);
+            Requires.NotNull(instance);
+            Requires.NotNull(args);
 
             if (TryGetMetaObjectInvoke(ref instance))
             {
@@ -166,12 +171,13 @@ namespace Microsoft.CSharp.RuntimeBinder.ComInterop
         /// <param name="result">The new <see cref="DynamicMetaObject"/> representing the result of the binding.</param>
         /// <returns>true if operation was bound successfully; otherwise, false.</returns>
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         public static bool TryBindSetIndex(SetIndexBinder binder, DynamicMetaObject instance, DynamicMetaObject[] args, DynamicMetaObject value, out DynamicMetaObject result)
         {
-            Requires.NotNull(binder, nameof(binder));
-            Requires.NotNull(instance, nameof(instance));
-            Requires.NotNull(args, nameof(args));
-            Requires.NotNull(value, nameof(value));
+            Requires.NotNull(binder);
+            Requires.NotNull(instance);
+            Requires.NotNull(args);
+            Requires.NotNull(value);
 
             if (TryGetMetaObjectInvoke(ref instance))
             {
@@ -192,8 +198,8 @@ namespace Microsoft.CSharp.RuntimeBinder.ComInterop
         /// <returns>true if operation was bound successfully; otherwise, false.</returns>
         public static bool TryConvert(ConvertBinder binder, DynamicMetaObject instance, out DynamicMetaObject result)
         {
-            Requires.NotNull(binder, nameof(binder));
-            Requires.NotNull(instance, nameof(instance));
+            Requires.NotNull(binder);
+            Requires.NotNull(instance);
 
             if (IsComObject(instance.Value))
             {
@@ -228,9 +234,10 @@ namespace Microsoft.CSharp.RuntimeBinder.ComInterop
         /// <param name="value">The object for which member names are requested.</param>
         /// <returns>The collection of member names.</returns>
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         internal static IList<string> GetDynamicDataMemberNames(object value)
         {
-            Requires.NotNull(value, nameof(value));
+            Requires.NotNull(value);
             Requires.Condition(IsComObject(value), nameof(value));
 
             return ComObject.ObjectToComObject(value).GetMemberNames(true);
@@ -244,15 +251,17 @@ namespace Microsoft.CSharp.RuntimeBinder.ComInterop
         /// <param name="names">The enumeration of names of data members for which to retrieve values.</param>
         /// <returns>The collection of pairs that represent data member's names and their data.</returns>
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         internal static IList<KeyValuePair<string, object>> GetDynamicDataMembers(object value, IEnumerable<string> names)
         {
-            Requires.NotNull(value, nameof(value));
+            Requires.NotNull(value);
             Requires.Condition(IsComObject(value), nameof(value));
 
             return ComObject.ObjectToComObject(value).GetMembers(names);
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static bool TryGetMetaObject(ref DynamicMetaObject instance)
         {
             // If we're already a COM MO don't make a new one
@@ -272,6 +281,7 @@ namespace Microsoft.CSharp.RuntimeBinder.ComInterop
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static bool TryGetMetaObjectInvoke(ref DynamicMetaObject instance)
         {
             // If we're already a COM MO don't make a new one
@@ -293,6 +303,7 @@ namespace Microsoft.CSharp.RuntimeBinder.ComInterop
         /// <summary>
         /// Special binder that indicates special semantics for COM GetMember operation.
         /// </summary>
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         internal sealed class ComGetMemberBinder : GetMemberBinder
         {
             private readonly GetMemberBinder _originalBinder;

@@ -131,7 +131,7 @@ namespace System.Reflection.Metadata
 
             private int ReadLine()
             {
-                return _reader.ReadCompressedInteger();
+                return AddLines(0, _reader.ReadCompressedInteger());
             }
 
             private ushort ReadColumn()
@@ -145,7 +145,7 @@ namespace System.Reflection.Metadata
                 return (ushort)column;
             }
 
-            private int AddOffsets(int value, int delta)
+            private static int AddOffsets(int value, int delta)
             {
                 int result = unchecked(value + delta);
                 if (result < 0)
@@ -156,10 +156,10 @@ namespace System.Reflection.Metadata
                 return result;
             }
 
-            private int AddLines(int value, int delta)
+            private static int AddLines(int value, int delta)
             {
                 int result = unchecked(value + delta);
-                if (result < 0 || result >= SequencePoint.HiddenLine)
+                if (result < 0 || result > BlobWriterImpl.MaxCompressedIntegerValue || result == SequencePoint.HiddenLine)
                 {
                     Throw.SequencePointValueOutOfRange();
                 }
@@ -167,10 +167,10 @@ namespace System.Reflection.Metadata
                 return result;
             }
 
-            private ushort AddColumns(ushort value, int delta)
+            private static ushort AddColumns(ushort value, int delta)
             {
                 int result = unchecked(value + delta);
-                if (result < 0 || result >= ushort.MaxValue)
+                if (result < 0 || result > ushort.MaxValue)
                 {
                     Throw.SequencePointValueOutOfRange();
                 }

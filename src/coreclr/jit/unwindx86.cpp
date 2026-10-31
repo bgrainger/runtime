@@ -70,16 +70,13 @@ void Compiler::unwindSaveReg(regNumber reg, unsigned offset)
 //
 void Compiler::unwindReserve()
 {
-#if defined(FEATURE_EH_FUNCLETS)
-    assert(!compGeneratingProlog);
-    assert(!compGeneratingEpilog);
+    assert(!GetEmitter()->emitGeneratingPrologOrFuncletProlog());
+    assert(!GetEmitter()->emitGeneratingEpilogOrFuncletEpilog());
 
-    assert(compFuncInfoCount > 0);
-    for (unsigned funcIdx = 0; funcIdx < compFuncInfoCount; funcIdx++)
+    for (FuncInfoDsc* const func : Funcs())
     {
-        unwindReserveFunc(funGetFunc(funcIdx));
+        unwindReserveFunc(func);
     }
-#endif
 }
 
 //------------------------------------------------------------------------
@@ -91,19 +88,15 @@ void Compiler::unwindReserve()
 //
 void Compiler::unwindEmit(void* pHotCode, void* pColdCode)
 {
-#if defined(FEATURE_EH_FUNCLETS)
-    assert(!compGeneratingProlog);
-    assert(!compGeneratingEpilog);
+    assert(!GetEmitter()->emitGeneratingPrologOrFuncletProlog());
+    assert(!GetEmitter()->emitGeneratingEpilogOrFuncletEpilog());
 
-    assert(compFuncInfoCount > 0);
-    for (unsigned funcIdx = 0; funcIdx < compFuncInfoCount; funcIdx++)
+    for (FuncInfoDsc* const func : Funcs())
     {
-        unwindEmitFunc(funGetFunc(funcIdx), pHotCode, pColdCode);
+        unwindEmitFunc(func, pHotCode, pColdCode);
     }
-#endif // FEATURE_EH_FUNCLETS
 }
 
-#if defined(FEATURE_EH_FUNCLETS)
 //------------------------------------------------------------------------
 // Compiler::unwindReserveFunc: Reserve the unwind information from the VM for a
 // given main function or funclet.
@@ -117,7 +110,11 @@ void Compiler::unwindReserveFunc(FuncInfoDsc* func)
 
     if (fgFirstColdBlock != nullptr)
     {
-        unwindReserveFuncHelper(func, false);
+        // If fake-splitting, treat all unwind info as hot.
+        INDEBUG(if (!JitConfig.JitFakeProcedureSplitting()))
+        {
+            unwindReserveFuncHelper(func, false);
+        }
     }
 }
 
@@ -150,15 +147,20 @@ void Compiler::unwindReserveFuncHelper(FuncInfoDsc* func, bool isHotCode)
 void Compiler::unwindEmitFunc(FuncInfoDsc* func, void* pHotCode, void* pColdCode)
 {
     // Verify that the JIT enum is in sync with the JIT-EE interface enum
-    static_assert_no_msg(FUNC_ROOT == (FuncKind)CORJIT_FUNC_ROOT);
-    static_assert_no_msg(FUNC_HANDLER == (FuncKind)CORJIT_FUNC_HANDLER);
-    static_assert_no_msg(FUNC_FILTER == (FuncKind)CORJIT_FUNC_FILTER);
+    static_assert(FUNC_ROOT == (FuncKind)CORJIT_FUNC_ROOT);
+    static_assert(FUNC_HANDLER == (FuncKind)CORJIT_FUNC_HANDLER);
+    static_assert(FUNC_FILTER == (FuncKind)CORJIT_FUNC_FILTER);
 
     unwindEmitFuncHelper(func, pHotCode, pColdCode, true);
 
     if (pColdCode != nullptr)
     {
-        unwindEmitFuncHelper(func, pHotCode, pColdCode, false);
+#ifdef DEBUG
+        if (!JitConfig.JitFakeProcedureSplitting())
+#endif // DEBUG
+        {
+            unwindEmitFuncHelper(func, pHotCode, pColdCode, false);
+        }
     }
 }
 
@@ -239,7 +241,17 @@ void Compiler::unwindEmitFuncHelper(FuncInfoDsc* func, void* pHotCode, void* pCo
 
     if (isHotCode)
     {
-        assert(endOffset <= info.compTotalHotCodeSize);
+#ifdef DEBUG
+        if (JitConfig.JitFakeProcedureSplitting() && (fgFirstColdBlock != nullptr))
+        {
+            assert(endOffset <= info.compNativeCodeSize);
+        }
+        else
+#endif // DEBUG
+        {
+            assert(endOffset <= info.compTotalHotCodeSize);
+        }
+
         pColdCode = nullptr;
     }
     else
@@ -256,4 +268,3 @@ void Compiler::unwindEmitFuncHelper(FuncInfoDsc* func, void* pHotCode, void* pCo
     eeAllocUnwindInfo((BYTE*)pHotCode, (BYTE*)pColdCode, startOffset, endOffset, sizeof(UNWIND_INFO),
                       (BYTE*)&unwindInfo, (CorJitFuncKind)func->funKind);
 }
-#endif // FEATURE_EH_FUNCLETS

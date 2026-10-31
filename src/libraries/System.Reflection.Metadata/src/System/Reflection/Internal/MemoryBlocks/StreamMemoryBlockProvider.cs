@@ -28,7 +28,7 @@ namespace System.Reflection.Internal
         private readonly object _streamGuard;
 
         private readonly bool _leaveOpen;
-        private bool _useMemoryMap;
+        private readonly bool _useMemoryMap;
 
         private readonly long _imageStart;
         private readonly int _imageSize;
@@ -73,13 +73,7 @@ namespace System.Reflection.Internal
             try
             {
                 stream.Seek(start, SeekOrigin.Begin);
-
-                int bytesRead = 0;
-
-                if ((bytesRead = stream.Read(block.Pointer, size)) != size)
-                {
-                    stream.CopyTo(block.Pointer + bytesRead, size - bytesRead);
-                }
+                stream.ReadExactly(block.Pointer, size);
 
                 fault = false;
             }
@@ -94,6 +88,15 @@ namespace System.Reflection.Internal
             return block;
         }
 
+        public override bool TryGetUnderlyingStream([NotNullWhen(true)] out Stream? stream, out long imageStart, out int imageSize, [NotNullWhen(true)] out object? streamGuard)
+        {
+            stream = _stream;
+            imageStart = _imageStart;
+            imageSize = _imageSize;
+            streamGuard = _streamGuard;
+            return true;
+        }
+
         /// <exception cref="IOException">Error while reading from the stream.</exception>
         protected override AbstractMemoryBlock GetMemoryBlockImpl(int start, int size)
         {
@@ -101,12 +104,7 @@ namespace System.Reflection.Internal
 
             if (_useMemoryMap && size > MemoryMapThreshold)
             {
-                if (TryCreateMemoryMappedFileBlock(absoluteStart, size, out MemoryMappedFileBlock? block))
-                {
-                    return block;
-                }
-
-                _useMemoryMap = false;
+                return CreateMemoryMappedFileBlock(absoluteStart, size);
             }
 
             lock (_streamGuard)
@@ -115,26 +113,18 @@ namespace System.Reflection.Internal
             }
         }
 
-        public override Stream GetStream(out StreamConstraints constraints)
-        {
-            constraints = new StreamConstraints(_streamGuard, _imageStart, _imageSize);
-            return _stream;
-        }
-
         /// <exception cref="IOException">IO error while mapping memory or not enough memory to create the mapping.</exception>
-        private unsafe bool TryCreateMemoryMappedFileBlock(long start, int size, [NotNullWhen(true)]out MemoryMappedFileBlock? block)
+        private MemoryMappedFileBlock CreateMemoryMappedFileBlock(long start, int size)
         {
             if (_lazyMemoryMap == null)
             {
-                // leave the underlying stream open. It will be closed by the Dispose method.
-                MemoryMappedFile newMemoryMap;
-
                 // CreateMemoryMap might modify the stream (calls FileStream.Flush)
                 lock (_streamGuard)
                 {
                     try
                     {
-                        newMemoryMap =
+                        // leave the underlying stream open. It will be closed by the Dispose method.
+                        _lazyMemoryMap ??=
                             MemoryMappedFile.CreateFromFile(
                                 fileStream: (FileStream)_stream,
                                 mapName: null,
@@ -142,33 +132,22 @@ namespace System.Reflection.Internal
                                 access: MemoryMappedFileAccess.Read,
                                 inheritability: HandleInheritability.None,
                                 leaveOpen: true);
-                    } catch (UnauthorizedAccessException e)
+                    }
+                    catch (UnauthorizedAccessException e)
                     {
                         throw new IOException(e.Message, e);
                     }
                 }
-
-                if (newMemoryMap == null)
-                {
-                    block = null;
-                    return false;
-                }
-
-                if (Interlocked.CompareExchange(ref _lazyMemoryMap, newMemoryMap, null) != null)
-                {
-                    newMemoryMap.Dispose();
-                }
             }
 
-            MemoryMappedViewAccessor accessor = _lazyMemoryMap.CreateViewAccessor(start, size, MemoryMappedFileAccess.Read);
-            if (accessor == null)
+            MemoryMappedViewAccessor accessor;
+
+            lock (_streamGuard)
             {
-                block = null;
-                return false;
+                accessor = _lazyMemoryMap.CreateViewAccessor(start, size, MemoryMappedFileAccess.Read);
             }
 
-            block = new MemoryMappedFileBlock(accessor, accessor.SafeMemoryMappedViewHandle, accessor.PointerOffset, size);
-            return true;
+            return new MemoryMappedFileBlock(accessor, accessor.SafeMemoryMappedViewHandle, accessor.PointerOffset, size);
         }
     }
 }

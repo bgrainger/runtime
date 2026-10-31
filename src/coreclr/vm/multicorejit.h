@@ -92,7 +92,7 @@ private:
     TADDR m_entryPointAndTierInfo;
 
 public:
-    MulticoreJitCodeInfo() : m_entryPointAndTierInfo(NULL)
+    MulticoreJitCodeInfo() : m_entryPointAndTierInfo{}
     {
         LIMITED_METHOD_CONTRACT;
     }
@@ -109,13 +109,13 @@ public:
     bool IsNull() const
     {
         LIMITED_METHOD_CONTRACT;
-        return m_entryPointAndTierInfo == NULL;
+        return m_entryPointAndTierInfo == 0;
     }
 
     PCODE GetEntryPoint() const
     {
         WRAPPER_NO_CONTRACT;
-        return IsNull() ? NULL : PINSTRToPCODE(m_entryPointAndTierInfo & ~(TADDR)TierInfo::Mask);
+        return IsNull() ? (PCODE)0 : PINSTRToPCODE(m_entryPointAndTierInfo & ~(TADDR)TierInfo::Mask);
     }
 
     bool WasTier0() const
@@ -164,6 +164,8 @@ public:
 #endif
 
     void StoreMethodCode(MethodDesc * pMethod, MulticoreJitCodeInfo codeInfo);
+
+    bool LookupMethodCode(MethodDesc * pMethod);
 
     MulticoreJitCodeInfo QueryAndRemoveMethodCode(MethodDesc * pMethod);
 
@@ -313,7 +315,7 @@ public:
 
 // For qcallentrypoints.cpp
 
-extern "C" void QCALLTYPE MultiCoreJIT_InternalSetProfileRoot(__in_z LPCWSTR directoryPath);
-extern "C" void QCALLTYPE MultiCoreJIT_InternalStartProfile(__in_z LPCWSTR wszProfile, INT_PTR ptrNativeAssemblyBinder);
+extern "C" void QCALLTYPE MultiCoreJIT_InternalSetProfileRoot(_In_z_ LPCWSTR directoryPath, QCallExceptionStatus* qcallError);
+extern "C" void QCALLTYPE MultiCoreJIT_InternalStartProfile(_In_z_ LPCWSTR wszProfile, INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError);
 
 #endif // __MULTICORE_JIT_H__

@@ -103,24 +103,21 @@ namespace System.IO.Compression
         }
 
         /// <summary>Gets the maximum expected compressed length for the provided input size.</summary>
-        /// <param name="inputSize">The input size to get the maximum expected compressed length from. Must be greater or equal than 0 and less or equal than <see cref="int.MaxValue" /> - 515.</param>
+        /// <param name="inputSize">The input size to get the maximum expected compressed length from. Must be greater than or equal to 0 and small enough that the result is less than or equal to <see cref="int.MaxValue"/>.</param>
         /// <returns>A number representing the maximum compressed length for the provided input size.</returns>
-        /// <remarks>Returns 1 if <paramref name="inputSize" /> is 0.</remarks>
-        /// <exception cref="System.ArgumentOutOfRangeException"><paramref name="inputSize" /> is less than 0, the minimum allowed input size, or greater than <see cref="int.MaxValue" /> - 515, the maximum allowed input size.</exception>
+        /// <remarks>Returns 2 if <paramref name="inputSize" /> is 0.</remarks>
+        /// <exception cref="System.ArgumentOutOfRangeException"><paramref name="inputSize" /> is less than 0, the minimum allowed input size, or large enough that the result would be larger than <see cref="int.MaxValue"/>.</exception>
         public static int GetMaxCompressedLength(int inputSize)
         {
-            if (inputSize < 0 || inputSize > BrotliUtils.MaxInputSize)
+            ArgumentOutOfRangeException.ThrowIfNegative(inputSize);
+
+            nuint result = Interop.Brotli.BrotliEncoderMaxCompressedSize((nuint)inputSize);
+            if (result > int.MaxValue)
             {
                 throw new ArgumentOutOfRangeException(nameof(inputSize));
             }
-            if (inputSize == 0)
-                return 1;
-            int numLargeBlocks = inputSize >> 24;
-            int tail = inputSize & 0xFFFFFF;
-            int tailOverhead = (tail > (1 << 20)) ? 4 : 3;
-            int overhead = 2 + (4 * numLargeBlocks) + tailOverhead + 1;
-            int result = inputSize + overhead;
-            return result;
+
+            return (int)result;
         }
 
         internal OperationStatus Flush(Memory<byte> destination, out int bytesWritten) => Flush(destination.Span, out bytesWritten);
@@ -129,7 +126,7 @@ namespace System.IO.Compression
         /// <param name="destination">When this method returns, a span of bytes where the compressed data will be stored.</param>
         /// <param name="bytesWritten">When this method returns, the total number of bytes that were written to <paramref name="destination" />.</param>
         /// <returns>One of the enumeration values that describes the status with which the operation finished.</returns>
-        public OperationStatus Flush(Span<byte> destination, out int bytesWritten) => Compress(ReadOnlySpan<byte>.Empty, destination, out int bytesConsumed, out bytesWritten, BrotliEncoderOperation.Flush);
+        public OperationStatus Flush(Span<byte> destination, out int bytesWritten) => Compress(ReadOnlySpan<byte>.Empty, destination, out _, out bytesWritten, BrotliEncoderOperation.Flush);
 
         internal OperationStatus Compress(ReadOnlyMemory<byte> source, Memory<byte> destination, out int bytesConsumed, out int bytesWritten, bool isFinalBlock) => Compress(source.Span, destination.Span, out bytesConsumed, out bytesWritten, isFinalBlock);
 

@@ -1,25 +1,15 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-// ===========================================================================
-// File: UTIL.CPP
-//
-
-// ===========================================================================
-
 
 #include "common.h"
 #include "excep.h"
 #include "corhost.h"
 #include "eventtrace.h"
 #include "posterror.h"
-#include "eemessagebox.h"
-
-#include <shlobj.h>
 
 #include "dlwrap.h"
 
 #ifndef DACCESS_COMPILE
-
 
 thread_local size_t t_ThreadType;
 
@@ -31,12 +21,7 @@ void ClrFlsSetThreadType(TlsThreadTypeFlag flag)
 
     // The historic location of ThreadType slot kept for compatibility with SOS
     // TODO: Introduce DAC API to make this hack unnecessary
-#if defined(_MSC_VER) && defined(HOST_X86)
-    // Workaround for https://developercommunity.visualstudio.com/content/problem/949233/tls-relative-fixup-overflow-tls-section-is-too-lar.html
-    gCurrentThreadInfo.m_EETlsData = (void**)(((size_t)&t_ThreadType ^ 1) - (4 * TlsIdx_ThreadType + 1));
-#else
-    gCurrentThreadInfo.m_EETlsData = (void**)&t_ThreadType - TlsIdx_ThreadType;
-#endif
+    t_CurrentThreadInfo.m_EETlsData = (void**)&t_ThreadType - TlsIdx_ThreadType;
 }
 
 void ClrFlsClearThreadType(TlsThreadTypeFlag flag)
@@ -47,184 +32,6 @@ void ClrFlsClearThreadType(TlsThreadTypeFlag flag)
 
 thread_local size_t t_CantStopCount;
 
-// Helper function that encapsulates the parsing rules.
-//
-// Called first with *pdstout == NULL to figure out how many args there are
-// and the size of the required destination buffer.
-//
-// Called again with a nonnull *pdstout to fill in the actual buffer.
-//
-// Returns the # of arguments.
-static UINT ParseCommandLine(LPCWSTR psrc, __inout LPWSTR *pdstout)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        FORBID_FAULT;
-    }
-    CONTRACTL_END
-
-    UINT    argcount = 1;       // discovery of arg0 is unconditional, below
-    LPWSTR  pdst     = *pdstout;
-    BOOL    fDoWrite = (pdst != NULL);
-
-    BOOL    fInQuotes;
-    int     iSlash;
-
-    /* A quoted program name is handled here. The handling is much
-       simpler than for other arguments. Basically, whatever lies
-       between the leading double-quote and next one, or a terminal null
-       character is simply accepted. Fancier handling is not required
-       because the program name must be a legal NTFS/HPFS file name.
-       Note that the double-quote characters are not copied, nor do they
-       contribute to numchars.
-
-       This "simplification" is necessary for compatibility reasons even
-       though it leads to mishandling of certain cases.  For example,
-       "c:\tests\"test.exe will result in an arg0 of c:\tests\ and an
-       arg1 of test.exe.  In any rational world this is incorrect, but
-       we need to preserve compatibility.
-    */
-
-    LPCWSTR pStart = psrc;
-    BOOL    skipQuote = FALSE;
-
-    if (*psrc == W('\"'))
-    {
-        // scan from just past the first double-quote through the next
-        // double-quote, or up to a null, whichever comes first
-        while ((*(++psrc) != W('\"')) && (*psrc != W('\0')))
-            continue;
-
-        skipQuote = TRUE;
-    }
-    else
-    {
-        /* Not a quoted program name */
-
-        while (!ISWWHITE(*psrc) && *psrc != W('\0'))
-            psrc++;
-    }
-
-    // We have now identified arg0 as pStart (or pStart+1 if we have a leading
-    // quote) through psrc-1 inclusive
-    if (skipQuote)
-        pStart++;
-    while (pStart < psrc)
-    {
-        if (fDoWrite)
-            *pdst = *pStart;
-
-        pStart++;
-        pdst++;
-    }
-
-    // And terminate it.
-    if (fDoWrite)
-        *pdst = W('\0');
-
-    pdst++;
-
-    // if we stopped on a double-quote when arg0 is quoted, skip over it
-    if (skipQuote && *psrc == W('\"'))
-        psrc++;
-
-    while ( *psrc != W('\0'))
-    {
-LEADINGWHITE:
-
-        // The outofarg state.
-        while (ISWWHITE(*psrc))
-            psrc++;
-
-        if (*psrc == W('\0'))
-            break;
-        else
-        if (*psrc == W('#'))
-        {
-            while (*psrc != W('\0') && *psrc != W('\n'))
-                psrc++;     // skip to end of line
-
-            goto LEADINGWHITE;
-        }
-
-        argcount++;
-        fInQuotes = FALSE;
-
-        while ((!ISWWHITE(*psrc) || fInQuotes) && *psrc != W('\0'))
-        {
-            switch (*psrc)
-            {
-            case W('\\'):
-                iSlash = 0;
-                while (*psrc == W('\\'))
-                {
-                    iSlash++;
-                    psrc++;
-                }
-
-                if (*psrc == W('\"'))
-                {
-                    for ( ; iSlash >= 2; iSlash -= 2)
-                    {
-                        if (fDoWrite)
-                            *pdst = W('\\');
-
-                        pdst++;
-                    }
-
-                    if (iSlash & 1)
-                    {
-                        if (fDoWrite)
-                            *pdst = *psrc;
-
-                        psrc++;
-                        pdst++;
-                    }
-                    else
-                    {
-                        fInQuotes = !fInQuotes;
-                        psrc++;
-                    }
-                }
-                else
-                    for ( ; iSlash > 0; iSlash--)
-                    {
-                        if (fDoWrite)
-                            *pdst = W('\\');
-
-                        pdst++;
-                    }
-
-                break;
-
-            case W('\"'):
-                fInQuotes = !fInQuotes;
-                psrc++;
-                break;
-
-            default:
-                if (fDoWrite)
-                    *pdst = *psrc;
-
-                psrc++;
-                pdst++;
-            }
-        }
-
-        if (fDoWrite)
-            *pdst = W('\0');
-
-        pdst++;
-    }
-
-
-    _ASSERTE(*psrc == W('\0'));
-    *pdstout = pdst;
-    return argcount;
-}
-
 
 //************************************************************************
 // CQuickHeap
@@ -233,7 +40,7 @@ LEADINGWHITE:
 // Destroying the heap frees all blocks allocated from the heap.
 // Blocks cannot be freed individually.
 //
-// The heap uses COM+ exceptions to report errors.
+// The heap uses CLR exceptions to report errors.
 //
 // The heap does not use any internal synchronization so it is not
 // multithreadsafe.
@@ -253,7 +60,6 @@ CQuickHeap::~CQuickHeap()
     {
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
     }
     CONTRACTL_END
 
@@ -278,7 +84,6 @@ LPVOID CQuickHeap::Alloc(UINT sz)
     {
         THROWS;
         GC_NOTRIGGER;
-        INJECT_FAULT(COMPlusThrowOM(););
     } CONTRACTL_END;
 
     sz = (sz+7) & ~7;
@@ -309,126 +114,17 @@ LPVOID CQuickHeap::Alloc(UINT sz)
 // Output functions that avoid the crt's.
 //----------------------------------------------------------------------------
 
-static
-void NPrintToHandleA(HANDLE Handle, const char *pszString, size_t BytesToWrite)
+void PrintToStdErrA(const char *pszString)
 {
     CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
     }
     CONTRACTL_END
 
-    if (Handle == INVALID_HANDLE_VALUE || Handle == NULL)
-        return;
-
-    BOOL success;
-    DWORD   dwBytesWritten;
-    const size_t maxWriteFileSize = 32767; // This is somewhat arbitrary limit, but 2**16-1 doesn't work
-
-    while (BytesToWrite > 0) {
-        DWORD dwChunkToWrite = (DWORD) min(BytesToWrite, maxWriteFileSize);
-        // No CharNextExA on CoreSystem, we just assume no multi-byte characters (this code path shouldn't be
-        // used in the production codepath for currently supported CoreSystem based products anyway).
-#ifndef FEATURE_CORESYSTEM
-        if (dwChunkToWrite < BytesToWrite) {
-            break;
-            // must go by char to find biggest string that will fit, taking DBCS chars into account
-            //dwChunkToWrite = 0;
-            //const char *charNext = pszString;
-            //while (dwChunkToWrite < maxWriteFileSize-2 && charNext) {
-            //    charNext = CharNextExA(0, pszString+dwChunkToWrite, 0);
-            //    dwChunkToWrite = (DWORD)(charNext - pszString);
-            //}
-            //if (dwChunkToWrite == 0)
-            //    break;
-        }
-#endif // !FEATURE_CORESYSTEM
-
-        // Try to write to handle.  If this is not a CUI app, then this is probably
-        // not going to work unless the dev took special pains to set their own console
-        // handle during CreateProcess.  So try it, but don't yell if it doesn't work in
-        // that case.  Also, if we redirect stdout to a pipe then the pipe breaks (ie, we
-        // write to something like the UNIX head command), don't complain.
-        success = WriteFile(Handle, pszString, dwChunkToWrite, &dwBytesWritten, NULL);
-        if (!success)
-        {
-#if defined(_DEBUG)
-            // This can happen if stdout is a closed pipe.  This might not help
-            // much, but we'll have half a chance of seeing this.
-            OutputDebugStringA("CLR: Writing out an unhandled exception to stdout failed!\n");
-            OutputDebugStringA(pszString);
-#endif //_DEBUG
-
-            break;
-        }
-        else {
-            _ASSERTE(dwBytesWritten == dwChunkToWrite);
-        }
-        pszString = pszString + dwChunkToWrite;
-        BytesToWrite -= dwChunkToWrite;
-    }
-
+    minipal_log_write_error(pszString);
 }
-
-static
-void PrintToHandleA(HANDLE Handle, const char *pszString)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        FORBID_FAULT;
-    }
-    CONTRACTL_END
-
-    size_t len = strlen(pszString);
-    NPrintToHandleA(Handle, pszString, len);
-}
-
-void PrintToStdOutA(const char *pszString) {
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        FORBID_FAULT;
-    }
-    CONTRACTL_END
-
-    HANDLE  Handle = GetStdHandle(STD_OUTPUT_HANDLE);
-    PrintToHandleA(Handle, pszString);
-}
-
-
-void PrintToStdOutW(const WCHAR *pwzString)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_NOTRIGGER;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END
-
-    MAKE_MULTIBYTE_FROMWIDE_BESTFIT(pStr, pwzString, GetConsoleOutputCP());
-
-    PrintToStdOutA(pStr);
-}
-
-void PrintToStdErrA(const char *pszString) {
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        FORBID_FAULT;
-    }
-    CONTRACTL_END
-
-    HANDLE  Handle = GetStdHandle(STD_ERROR_HANDLE);
-    PrintToHandleA(Handle, pszString);
-}
-
 
 void PrintToStdErrW(const WCHAR *pwzString)
 {
@@ -436,76 +132,25 @@ void PrintToStdErrW(const WCHAR *pwzString)
     {
         THROWS;
         GC_NOTRIGGER;
-        INJECT_FAULT(COMPlusThrowOM(););
     }
     CONTRACTL_END
 
-    MAKE_MULTIBYTE_FROMWIDE_BESTFIT(pStr, pwzString, GetConsoleOutputCP());
+    UINT codePage = GetConsoleOutputCP();
+    // Console output allows best-fit mapping and default-character substitution.
+    int byteCount = WideCharToMultiByte(codePage, 0, pwzString, -1, nullptr, 0, nullptr, nullptr);
+    if (byteCount == 0)
+    {
+        ThrowWin32(ERROR_NO_UNICODE_TRANSLATION);
+    }
+
+    CQuickBytes buffer;
+    char* pStr = static_cast<char*>(buffer.AllocThrows(byteCount));
+    if (WideCharToMultiByte(codePage, 0, pwzString, -1, pStr, byteCount, nullptr, nullptr) == 0)
+    {
+        ThrowWin32(ERROR_NO_UNICODE_TRANSLATION);
+    }
 
     PrintToStdErrA(pStr);
-}
-
-
-
-void NPrintToStdOutA(const char *pszString, size_t nbytes) {
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        FORBID_FAULT;
-    }
-    CONTRACTL_END
-
-    HANDLE  Handle = GetStdHandle(STD_OUTPUT_HANDLE);
-    NPrintToHandleA(Handle, pszString, nbytes);
-}
-
-
-void NPrintToStdOutW(const WCHAR *pwzString, size_t nchars)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_NOTRIGGER;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END
-
-    LPSTR pStr;
-    MAKE_MULTIBYTE_FROMWIDEN_BESTFIT(pStr, pwzString, (int)nchars, nbytes, GetConsoleOutputCP());
-
-    NPrintToStdOutA(pStr, nbytes);
-}
-
-void NPrintToStdErrA(const char *pszString, size_t nbytes) {
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        FORBID_FAULT;
-    }
-    CONTRACTL_END
-
-    HANDLE  Handle = GetStdHandle(STD_ERROR_HANDLE);
-    NPrintToHandleA(Handle, pszString, nbytes);
-}
-
-
-void NPrintToStdErrW(const WCHAR *pwzString, size_t nchars)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_NOTRIGGER;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END
-
-    LPSTR pStr;
-
-    MAKE_MULTIBYTE_FROMWIDEN_BESTFIT(pStr, pwzString, (int)nchars, nbytes, GetConsoleOutputCP());
-
-    NPrintToStdErrA(pStr, nbytes);
 }
 //----------------------------------------------------------------------------
 
@@ -518,7 +163,6 @@ bool operator ==(const ICorDebugInfo::VarLoc &varLoc1,
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     if (varLoc1.vlType != varLoc2.vlType)
         return false;
@@ -526,6 +170,7 @@ bool operator ==(const ICorDebugInfo::VarLoc &varLoc1,
     switch(varLoc1.vlType)
     {
     case ICorDebugInfo::VLT_REG:
+    case ICorDebugInfo::VLT_REG_FP:
     case ICorDebugInfo::VLT_REG_BYREF:
         return varLoc1.vlReg.vlrReg == varLoc2.vlReg.vlrReg;
 
@@ -555,6 +200,9 @@ bool operator ==(const ICorDebugInfo::VarLoc &varLoc1,
     case ICorDebugInfo::VLT_FPSTK:
         return varLoc1.vlFPstk.vlfReg == varLoc2.vlFPstk.vlfReg;
 
+    case ICorDebugInfo::VLT_FIXED_VA:
+        return varLoc1.vlFixedVarArg.vlfvOffset == varLoc2.vlFixedVarArg.vlfvOffset;
+
     default:
         _ASSERTE(!"Bad vlType"); return false;
     }
@@ -571,7 +219,6 @@ SIZE_T GetRegOffsInCONTEXT(ICorDebugInfo::RegNum regNum)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
 #ifdef TARGET_X86
     switch(regNum)
@@ -600,7 +247,11 @@ SIZE_T GetRegOffsInCONTEXT(ICorDebugInfo::RegNum regNum)
     case ICorDebugInfo::REGNUM_RCX: return offsetof(CONTEXT, Rcx);
     case ICorDebugInfo::REGNUM_RDX: return offsetof(CONTEXT, Rdx);
     case ICorDebugInfo::REGNUM_RBX: return offsetof(CONTEXT, Rbx);
-    case ICorDebugInfo::REGNUM_RSP: return offsetof(CONTEXT, Rsp);
+    // TODO: AMBIENT_SP isn't necessarily the same value as RSP (see x86 TODO above).
+    // This is a best-effort approximation matching the pattern used by other platforms.
+    case ICorDebugInfo::REGNUM_RSP:
+    case ICorDebugInfo::REGNUM_AMBIENT_SP:
+                                    return offsetof(CONTEXT, Rsp);
     case ICorDebugInfo::REGNUM_RBP: return offsetof(CONTEXT, Rbp);
     case ICorDebugInfo::REGNUM_RSI: return offsetof(CONTEXT, Rsi);
     case ICorDebugInfo::REGNUM_RDI: return offsetof(CONTEXT, Rdi);
@@ -677,6 +328,86 @@ SIZE_T GetRegOffsInCONTEXT(ICorDebugInfo::RegNum regNum)
     case ICorDebugInfo::REGNUM_AMBIENT_SP: return offsetof(T_CONTEXT, Sp);
     default: _ASSERTE(!"Bad regNum"); return (SIZE_T)(-1);
     }
+#elif defined(TARGET_LOONGARCH64)
+
+    switch(regNum)
+    {
+    case ICorDebugInfo::REGNUM_R0: return offsetof(T_CONTEXT, R0);
+    case ICorDebugInfo::REGNUM_RA: return offsetof(T_CONTEXT, Ra);
+    //case ICorDebugInfo::REGNUM_TP: return offsetof(T_CONTEXT, Tp);
+    case ICorDebugInfo::REGNUM_SP: return offsetof(T_CONTEXT, Sp);
+    case ICorDebugInfo::REGNUM_A0: return offsetof(T_CONTEXT, A0);
+    case ICorDebugInfo::REGNUM_A1: return offsetof(T_CONTEXT, A1);
+    case ICorDebugInfo::REGNUM_A2: return offsetof(T_CONTEXT, A2);
+    case ICorDebugInfo::REGNUM_A3: return offsetof(T_CONTEXT, A3);
+    case ICorDebugInfo::REGNUM_A4: return offsetof(T_CONTEXT, A4);
+    case ICorDebugInfo::REGNUM_A5: return offsetof(T_CONTEXT, A5);
+    case ICorDebugInfo::REGNUM_A6: return offsetof(T_CONTEXT, A6);
+    case ICorDebugInfo::REGNUM_A7: return offsetof(T_CONTEXT, A7);
+    case ICorDebugInfo::REGNUM_T0: return offsetof(T_CONTEXT, T0);
+    case ICorDebugInfo::REGNUM_T1: return offsetof(T_CONTEXT, T1);
+    case ICorDebugInfo::REGNUM_T2: return offsetof(T_CONTEXT, T2);
+    case ICorDebugInfo::REGNUM_T3: return offsetof(T_CONTEXT, T3);
+    case ICorDebugInfo::REGNUM_T4: return offsetof(T_CONTEXT, T4);
+    case ICorDebugInfo::REGNUM_T5: return offsetof(T_CONTEXT, T5);
+    case ICorDebugInfo::REGNUM_T6: return offsetof(T_CONTEXT, T6);
+    case ICorDebugInfo::REGNUM_T7: return offsetof(T_CONTEXT, T7);
+    case ICorDebugInfo::REGNUM_T8: return offsetof(T_CONTEXT, T8);
+    case ICorDebugInfo::REGNUM_X0: return offsetof(T_CONTEXT, X0);
+    case ICorDebugInfo::REGNUM_FP: return offsetof(T_CONTEXT, Fp);
+    case ICorDebugInfo::REGNUM_S0: return offsetof(T_CONTEXT, S0);
+    case ICorDebugInfo::REGNUM_S1: return offsetof(T_CONTEXT, S1);
+    case ICorDebugInfo::REGNUM_S2: return offsetof(T_CONTEXT, S2);
+    case ICorDebugInfo::REGNUM_S3: return offsetof(T_CONTEXT, S3);
+    case ICorDebugInfo::REGNUM_S4: return offsetof(T_CONTEXT, S4);
+    case ICorDebugInfo::REGNUM_S5: return offsetof(T_CONTEXT, S5);
+    case ICorDebugInfo::REGNUM_S6: return offsetof(T_CONTEXT, S6);
+    case ICorDebugInfo::REGNUM_S7: return offsetof(T_CONTEXT, S7);
+    case ICorDebugInfo::REGNUM_S8: return offsetof(T_CONTEXT, S8);
+    case ICorDebugInfo::REGNUM_PC: return offsetof(T_CONTEXT, Pc);
+    case ICorDebugInfo::REGNUM_AMBIENT_SP: return offsetof(T_CONTEXT, Sp);
+    default: _ASSERTE(!"Bad regNum"); return (SIZE_T)(-1);
+    }
+#elif defined(TARGET_RISCV64)
+
+    switch(regNum)
+    {
+    case ICorDebugInfo::REGNUM_R0: return offsetof(T_CONTEXT, R0);
+    case ICorDebugInfo::REGNUM_RA: return offsetof(T_CONTEXT, Ra);
+    case ICorDebugInfo::REGNUM_SP: return offsetof(T_CONTEXT, Sp);
+    case ICorDebugInfo::REGNUM_GP: return offsetof(T_CONTEXT, Gp);
+    case ICorDebugInfo::REGNUM_TP: return offsetof(T_CONTEXT, Tp);
+    case ICorDebugInfo::REGNUM_T0: return offsetof(T_CONTEXT, T0);
+    case ICorDebugInfo::REGNUM_T1: return offsetof(T_CONTEXT, T1);
+    case ICorDebugInfo::REGNUM_T2: return offsetof(T_CONTEXT, T2);
+    case ICorDebugInfo::REGNUM_FP: return offsetof(T_CONTEXT, Fp);
+    case ICorDebugInfo::REGNUM_S1: return offsetof(T_CONTEXT, S1);
+    case ICorDebugInfo::REGNUM_A0: return offsetof(T_CONTEXT, A0);
+    case ICorDebugInfo::REGNUM_A1: return offsetof(T_CONTEXT, A1);
+    case ICorDebugInfo::REGNUM_A2: return offsetof(T_CONTEXT, A2);
+    case ICorDebugInfo::REGNUM_A3: return offsetof(T_CONTEXT, A3);
+    case ICorDebugInfo::REGNUM_A4: return offsetof(T_CONTEXT, A4);
+    case ICorDebugInfo::REGNUM_A5: return offsetof(T_CONTEXT, A5);
+    case ICorDebugInfo::REGNUM_A6: return offsetof(T_CONTEXT, A6);
+    case ICorDebugInfo::REGNUM_A7: return offsetof(T_CONTEXT, A7);
+    case ICorDebugInfo::REGNUM_S2: return offsetof(T_CONTEXT, S2);
+    case ICorDebugInfo::REGNUM_S3: return offsetof(T_CONTEXT, S3);
+    case ICorDebugInfo::REGNUM_S4: return offsetof(T_CONTEXT, S4);
+    case ICorDebugInfo::REGNUM_S5: return offsetof(T_CONTEXT, S5);
+    case ICorDebugInfo::REGNUM_S6: return offsetof(T_CONTEXT, S6);
+    case ICorDebugInfo::REGNUM_S7: return offsetof(T_CONTEXT, S7);
+    case ICorDebugInfo::REGNUM_S8: return offsetof(T_CONTEXT, S8);
+    case ICorDebugInfo::REGNUM_S9: return offsetof(T_CONTEXT, S9);
+    case ICorDebugInfo::REGNUM_S10: return offsetof(T_CONTEXT, S10);
+    case ICorDebugInfo::REGNUM_S11: return offsetof(T_CONTEXT, S11);
+    case ICorDebugInfo::REGNUM_T3: return offsetof(T_CONTEXT, T3);
+    case ICorDebugInfo::REGNUM_T4: return offsetof(T_CONTEXT, T4);
+    case ICorDebugInfo::REGNUM_T5: return offsetof(T_CONTEXT, T5);
+    case ICorDebugInfo::REGNUM_T6: return offsetof(T_CONTEXT, T6);
+    case ICorDebugInfo::REGNUM_PC: return offsetof(T_CONTEXT, Pc);
+    case ICorDebugInfo::REGNUM_AMBIENT_SP: return offsetof(T_CONTEXT, Sp);
+    default: _ASSERTE(!"Bad regNum"); return (SIZE_T)(-1);
+    }
 #else
     PORTABILITY_ASSERT("GetRegOffsInCONTEXT is not implemented on this platform.");
     return (SIZE_T) -1;
@@ -687,13 +418,13 @@ SIZE_T DereferenceByRefVar(SIZE_T addr)
 {
     STATIC_CONTRACT_WRAPPER;
 
-    SIZE_T result = NULL;
+    SIZE_T result = 0;
 
 #if defined(DACCESS_COMPILE)
     HRESULT hr = DacReadAll(addr, &result, sizeof(result), false);
     if (FAILED(hr))
     {
-        result = NULL;
+        result = 0;
     }
 
 #else  // !DACCESS_COMPILE
@@ -706,7 +437,7 @@ SIZE_T DereferenceByRefVar(SIZE_T addr)
     EX_CATCH
     {
     }
-    EX_END_CATCH(SwallowAllExceptions);
+    EX_END_CATCH
 
 #endif // !DACCESS_COMPILE
 
@@ -721,7 +452,6 @@ ULONG NativeVarLocations(const ICorDebugInfo::VarLoc &   varLoc,
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     _ASSERTE(numLocs >= MAX_NATIVE_VAR_LOCS);
 
@@ -833,7 +563,6 @@ SIZE_T *NativeVarStackAddr(const ICorDebugInfo::VarLoc &   varLoc,
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     SIZE_T *dwAddr = NULL;
 
@@ -853,7 +582,7 @@ SIZE_T *NativeVarStackAddr(const ICorDebugInfo::VarLoc &   varLoc,
         {
             dwAddr = (SIZE_T*)(*dwAddr);
         }
-        LOG((LF_CORDB, LL_INFO100, "NVSA: VLT_REG @ 0x%x (by ref = %d)\n", dwAddr, fByRef));
+          LOG((LF_CORDB, LL_INFO100, "NVSA: VLT_REG @ %p (by ref = %d)\n", dwAddr, fByRef));
         break;
 
     case ICorDebugInfo::VLT_STK_BYREF:
@@ -867,7 +596,7 @@ SIZE_T *NativeVarStackAddr(const ICorDebugInfo::VarLoc &   varLoc,
         {
             dwAddr = (SIZE_T*)(*dwAddr);
         }
-        LOG((LF_CORDB, LL_INFO100, "NVSA: VLT_STK @ 0x%x (by ref = %d)\n", dwAddr, fByRef));
+          LOG((LF_CORDB, LL_INFO100, "NVSA: VLT_STK @ %p (by ref = %d)\n", dwAddr, fByRef));
         break;
 
     case ICorDebugInfo::VLT_STK2:
@@ -877,21 +606,21 @@ SIZE_T *NativeVarStackAddr(const ICorDebugInfo::VarLoc &   varLoc,
         regOffs = GetRegOffsInCONTEXT(varLoc.vlStk2.vls2BaseReg);
         baseReg = (const BYTE *)*(SIZE_T *)(regOffs + (BYTE*)pCtx);
         dwAddr = (SIZE_T *)(baseReg + varLoc.vlStk2.vls2Offset);
-        LOG((LF_CORDB, LL_INFO100, "NVSA: VLT_STK_2 @ 0x%x\n",dwAddr));
+          LOG((LF_CORDB, LL_INFO100, "NVSA: VLT_STK_2 @ %p\n", dwAddr));
         break;
 
     case ICorDebugInfo::VLT_REG_STK:
         regOffs = GetRegOffsInCONTEXT(varLoc.vlRegStk.vlrsStk.vlrssBaseReg);
         baseReg = (const BYTE *)*(SIZE_T *)(regOffs + (BYTE*)pCtx);
         dwAddr = (SIZE_T *)(baseReg + varLoc.vlRegStk.vlrsStk.vlrssOffset);
-        LOG((LF_CORDB, LL_INFO100, "NVSA: REG_STK @ 0x%x\n",dwAddr));
+          LOG((LF_CORDB, LL_INFO100, "NVSA: REG_STK @ %p\n", dwAddr));
         break;
 
     case ICorDebugInfo::VLT_STK_REG:
         regOffs = GetRegOffsInCONTEXT(varLoc.vlStkReg.vlsrStk.vlsrsBaseReg);
         baseReg = (const BYTE *)*(SIZE_T *)(regOffs + (BYTE*)pCtx);
         dwAddr = (SIZE_T *)(baseReg + varLoc.vlStkReg.vlsrStk.vlsrsOffset);
-        LOG((LF_CORDB, LL_INFO100, "NVSA: STK_REG @ 0x%x\n",dwAddr));
+          LOG((LF_CORDB, LL_INFO100, "NVSA: STK_REG @ %p\n", dwAddr));
         break;
 
     case ICorDebugInfo::VLT_REG_REG:
@@ -941,7 +670,6 @@ bool    GetNativeVarVal(const ICorDebugInfo::VarLoc &   varLoc,
 
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     switch(varLoc.vlType)
     {
@@ -964,20 +692,20 @@ bool    GetNativeVarVal(const ICorDebugInfo::VarLoc &   varLoc,
     case ICorDebugInfo::VLT_REG_REG:
         regOffs = GetRegOffsInCONTEXT(varLoc.vlRegReg.vlrrReg1);
         *pVal1 = *(SIZE_T *)(regOffs + (BYTE*)pCtx);
-        LOG((LF_CORDB, LL_INFO100, "GNVV: STK_REG_REG 1 @ 0x%x\n",
-            (SIZE_T *)(regOffs + (BYTE*)pCtx)));
+        LOG((LF_CORDB, LL_INFO100, "GNVV: STK_REG_REG 1 @ %p\n",
+            (void*)(regOffs + (BYTE*)pCtx)));
 
         regOffs = GetRegOffsInCONTEXT(varLoc.vlRegReg.vlrrReg2);
         *pVal2 = *(SIZE_T *)(regOffs + (BYTE*)pCtx);
-        LOG((LF_CORDB, LL_INFO100, "GNVV: STK_REG_REG 2 @ 0x%x\n",
-            (SIZE_T *)(regOffs + (BYTE*)pCtx)));
+        LOG((LF_CORDB, LL_INFO100, "GNVV: STK_REG_REG 2 @ %p\n",
+            (void*)(regOffs + (BYTE*)pCtx)));
         break;
 
     case ICorDebugInfo::VLT_REG_STK:
         regOffs = GetRegOffsInCONTEXT(varLoc.vlRegStk.vlrsReg);
         *pVal1 = *(SIZE_T *)(regOffs + (BYTE*)pCtx);
-        LOG((LF_CORDB, LL_INFO100, "GNVV: STK_REG_STK reg @ 0x%x\n",
-            (SIZE_T *)(regOffs + (BYTE*)pCtx)));
+        LOG((LF_CORDB, LL_INFO100, "GNVV: STK_REG_STK reg @ %p\n",
+            (void*)(regOffs + (BYTE*)pCtx)));
         *pVal2 = *NativeVarStackAddr(varLoc,pCtx);
         break;
 
@@ -985,8 +713,8 @@ bool    GetNativeVarVal(const ICorDebugInfo::VarLoc &   varLoc,
         *pVal1 = *NativeVarStackAddr(varLoc,pCtx);
         regOffs = GetRegOffsInCONTEXT(varLoc.vlStkReg.vlsrReg);
         *pVal2 = *(SIZE_T *)(regOffs + (BYTE*)pCtx);
-        LOG((LF_CORDB, LL_INFO100, "GNVV: STK_STK_REG reg @ 0x%x\n",
-            (SIZE_T *)(regOffs + (BYTE*)pCtx)));
+        LOG((LF_CORDB, LL_INFO100, "GNVV: STK_STK_REG reg @ %p\n",
+            (void*)(regOffs + (BYTE*)pCtx)));
         break;
 
     case ICorDebugInfo::VLT_FPSTK:
@@ -1047,7 +775,6 @@ bool    SetNativeVarVal(const ICorDebugInfo::VarLoc &   varLoc,
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     switch(varLoc.vlType)
     {
@@ -1070,20 +797,20 @@ bool    SetNativeVarVal(const ICorDebugInfo::VarLoc &   varLoc,
     case ICorDebugInfo::VLT_REG_REG:
         regOffs = GetRegOffsInCONTEXT(varLoc.vlRegReg.vlrrReg1);
         *(SIZE_T *)(regOffs + (BYTE*)pCtx) = val1;
-        LOG((LF_CORDB, LL_INFO100, "SNVV: STK_REG_REG 1 @ 0x%x\n",
-            (SIZE_T *)(regOffs + (BYTE*)pCtx)));
+        LOG((LF_CORDB, LL_INFO100, "SNVV: STK_REG_REG 1 @ %p\n",
+            (void*)(regOffs + (BYTE*)pCtx)));
 
         regOffs = GetRegOffsInCONTEXT(varLoc.vlRegReg.vlrrReg2);
         *(SIZE_T *)(regOffs + (BYTE*)pCtx) = val2;
-        LOG((LF_CORDB, LL_INFO100, "SNVV: STK_REG_REG 2 @ 0x%x\n",
-            (SIZE_T *)(regOffs + (BYTE*)pCtx)));
+        LOG((LF_CORDB, LL_INFO100, "SNVV: STK_REG_REG 2 @ %p\n",
+            (void*)(regOffs + (BYTE*)pCtx)));
         break;
 
     case ICorDebugInfo::VLT_REG_STK:
         regOffs = GetRegOffsInCONTEXT(varLoc.vlRegStk.vlrsReg);
         *(SIZE_T *)(regOffs + (BYTE*)pCtx) = val1;
-        LOG((LF_CORDB, LL_INFO100, "SNVV: STK_REG_STK reg @ 0x%x\n",
-            (SIZE_T *)(regOffs + (BYTE*)pCtx)));
+        LOG((LF_CORDB, LL_INFO100, "SNVV: STK_REG_STK reg @ %p\n",
+            (void*)(regOffs + (BYTE*)pCtx)));
         *NativeVarStackAddr(varLoc,pCtx) = val2;
         break;
 
@@ -1091,8 +818,8 @@ bool    SetNativeVarVal(const ICorDebugInfo::VarLoc &   varLoc,
         *NativeVarStackAddr(varLoc,pCtx) = val1;
         regOffs = GetRegOffsInCONTEXT(varLoc.vlStkReg.vlsrReg);
         *(SIZE_T *)(regOffs + (BYTE*)pCtx) = val2;
-        LOG((LF_CORDB, LL_INFO100, "SNVV: STK_STK_REG reg @ 0x%x\n",
-            (SIZE_T *)(regOffs + (BYTE*)pCtx)));
+        LOG((LF_CORDB, LL_INFO100, "SNVV: STK_STK_REG reg @ %p\n",
+            (void*)(regOffs + (BYTE*)pCtx)));
         break;
 
     case ICorDebugInfo::VLT_FPSTK:
@@ -1119,109 +846,18 @@ bool    SetNativeVarVal(const ICorDebugInfo::VarLoc &   varLoc,
     return true;
 }
 
-LPVOID
-CLRMapViewOfFile(
-    IN HANDLE hFileMappingObject,
-    IN DWORD dwDesiredAccess,
-    IN DWORD dwFileOffsetHigh,
-    IN DWORD dwFileOffsetLow,
-    IN SIZE_T dwNumberOfBytesToMap,
-    IN LPVOID lpBaseAddress
-    )
-{
-#ifdef _DEBUG
-#ifdef TARGET_X86
-
-    char *tmp = new (nothrow) char;
-    if (!tmp)
-    {
-        SetLastError(ERROR_OUTOFMEMORY);
-        return NULL;
-    }
-    delete tmp;
-
-#endif // TARGET_X86
-#endif // _DEBUG
-
-    LPVOID pv = MapViewOfFileEx(hFileMappingObject,dwDesiredAccess,dwFileOffsetHigh,dwFileOffsetLow,dwNumberOfBytesToMap,lpBaseAddress);
-
-
-    if (!pv)
-    {
-        if(GetLastError()==ERROR_SUCCESS)
-            SetLastError(ERROR_OUTOFMEMORY);
-        return NULL;
-    }
-
-#ifdef _DEBUG
-#ifdef TARGET_X86
-    if (pv && g_pConfig && g_pConfig->ShouldInjectFault(INJECTFAULT_MAPVIEWOFFILE))
-    {
-        MEMORY_BASIC_INFORMATION mbi;
-        memset(&mbi, 0, sizeof(mbi));
-        if (!ClrVirtualQuery(pv, &mbi, sizeof(mbi)))
-        {
-            if(GetLastError()==ERROR_SUCCESS)
-                SetLastError(ERROR_OUTOFMEMORY);
-            return NULL;
-        }
-        UnmapViewOfFile(pv);
-        pv = ClrVirtualAlloc(lpBaseAddress, mbi.RegionSize, MEM_RESERVE, PAGE_NOACCESS);
-    }
-    else
-#endif // TARGET_X86
-#endif // _DEBUG
-    {
-    }
-
-    if (!pv && GetLastError()==ERROR_SUCCESS)
-        SetLastError(ERROR_OUTOFMEMORY);
-
-    return pv;
-}
-
-BOOL
-CLRUnmapViewOfFile(
-    IN LPVOID lpBaseAddress
-    )
-{
-    STATIC_CONTRACT_ENTRY_POINT;
-
-#ifdef _DEBUG
-#ifdef TARGET_X86
-    if (g_pConfig && g_pConfig->ShouldInjectFault(INJECTFAULT_MAPVIEWOFFILE))
-    {
-        return ClrVirtualFree((LPVOID)lpBaseAddress, 0, MEM_RELEASE);
-    }
-    else
-#endif // TARGET_X86
-#endif // _DEBUG
-    {
-        BOOL result = UnmapViewOfFile(lpBaseAddress);
-        if (result)
-        {
-        }
-        return result;
-    }
-}
-
-
-
 static HMODULE CLRLoadLibraryWorker(LPCWSTR lpLibFileName, DWORD *pLastError)
 {
     // Don't use dynamic contract: will override GetLastError value
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_TRIGGERS;
-    STATIC_CONTRACT_FAULT;
-
     HMODULE hMod;
-    UINT last = SetErrorMode(SEM_NOOPENFILEERRORBOX|SEM_FAILCRITICALERRORS);
+    ErrorModeHolder errorMode{};
     {
         INDEBUG(PEDecoder::ForceRelocForDLL(lpLibFileName));
         hMod = WszLoadLibrary(lpLibFileName);
         *pLastError = GetLastError();
     }
-    SetErrorMode(last);
     return hMod;
 }
 
@@ -1230,8 +866,6 @@ HMODULE CLRLoadLibrary(LPCWSTR lpLibFileName)
     // Don't use dynamic contract: will override GetLastError value
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_TRIGGERS;
-    STATIC_CONTRACT_FAULT;
-
     DWORD dwLastError = 0;
     HMODULE hmod = 0;
 
@@ -1249,16 +883,13 @@ static HMODULE CLRLoadLibraryExWorker(LPCWSTR lpLibFileName, HANDLE hFile, DWORD
     // Don't use dynamic contract: will override GetLastError value
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_TRIGGERS;
-    STATIC_CONTRACT_FAULT;
-
     HMODULE hMod;
-    UINT last = SetErrorMode(SEM_NOOPENFILEERRORBOX|SEM_FAILCRITICALERRORS);
+    ErrorModeHolder errorMode{};
     {
         INDEBUG(PEDecoder::ForceRelocForDLL(lpLibFileName));
-        hMod = WszLoadLibraryEx(lpLibFileName, hFile, dwFlags);
+        hMod = WszLoadLibrary(lpLibFileName, hFile, dwFlags);
         *pLastError = GetLastError();
     }
-    SetErrorMode(last);
     return hMod;
 }
 
@@ -1269,8 +900,6 @@ HMODULE CLRLoadLibraryEx(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags)
     // This will throw in the case of SO
     //STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_TRIGGERS;
-    STATIC_CONTRACT_FAULT;
-
     DWORD lastError = ERROR_SUCCESS;
     HMODULE hmod = NULL;
 
@@ -1287,18 +916,137 @@ BOOL CLRFreeLibrary(HMODULE hModule)
     // Don't use dynamic contract: will override GetLastError value
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_TRIGGERS;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     return FreeLibrary(hModule);
 }
 
-
 #endif // #ifndef DACCESS_COMPILE
+
+//======================================================================
+// This function returns true, if it can determine that the instruction pointer
+// refers to a code address that belongs in the range of the given image.
+BOOL IsIPInModule(PTR_VOID pModuleBaseAddress, PCODE ip)
+{
+    STATIC_CONTRACT_LEAF;
+    SUPPORTS_DAC;
+
+    struct Param
+    {
+        PTR_VOID pModuleBaseAddress;
+        PCODE ip;
+        BOOL fRet;
+    } param;
+    param.pModuleBaseAddress = pModuleBaseAddress;
+    param.ip = ip;
+    param.fRet = FALSE;
+
+// UNIXTODO: implement a proper version for PAL
+#ifdef HOST_WINDOWS
+    PAL_TRY(Param *, pParam, &param)
+    {
+        PTR_BYTE pBase = dac_cast<PTR_BYTE>(pParam->pModuleBaseAddress);
+
+        PTR_IMAGE_DOS_HEADER pDOS = NULL;
+        PTR_IMAGE_NT_HEADERS pNT  = NULL;
+        USHORT cbOptHdr;
+        PCODE baseAddr;
+
+        //
+        // First, must validate the format of the PE headers to make sure that
+        // the fields we're interested in using exist in the image.
+        //
+
+        // Validate the DOS header.
+        pDOS = PTR_IMAGE_DOS_HEADER(pBase);
+        if (pDOS->e_magic != VAL16(IMAGE_DOS_SIGNATURE) ||
+            pDOS->e_lfanew == 0)
+        {
+            goto lDone;
+        }
+
+        // Validate the NT header
+        pNT = PTR_IMAGE_NT_HEADERS(pBase + VAL32(pDOS->e_lfanew));
+
+        if (pNT->Signature != VAL32(IMAGE_NT_SIGNATURE))
+        {
+            goto lDone;
+        }
+
+        // Validate that the optional header is large enough to contain the fields
+        // we're interested, namely IMAGE_OPTIONAL_HEADER::SizeOfImage. The reason
+        // we don't just check that SizeOfOptionalHeader == IMAGE_SIZEOF_NT_OPTIONAL_HEADER
+        // is due to VSW443590, which states that the extensibility of this structure
+        // is such that it is possible to include only a portion of the optional header.
+        cbOptHdr = pNT->FileHeader.SizeOfOptionalHeader;
+
+        // Check that the magic field is contained by the optional header and set to the correct value.
+        if (cbOptHdr < (offsetof(IMAGE_OPTIONAL_HEADER, Magic) + sizeofmember(IMAGE_OPTIONAL_HEADER, Magic)) ||
+            pNT->OptionalHeader.Magic != VAL16(IMAGE_NT_OPTIONAL_HDR_MAGIC))
+        {
+            goto lDone;
+        }
+
+        // Check that the SizeOfImage is contained by the optional header.
+        if (cbOptHdr < (offsetof(IMAGE_OPTIONAL_HEADER, SizeOfImage) + sizeofmember(IMAGE_OPTIONAL_HEADER, SizeOfImage)))
+        {
+            goto lDone;
+        }
+
+        //
+        // The real check
+        //
+
+        baseAddr = dac_cast<PCODE>(pBase);
+        if ((pParam->ip < baseAddr) || (pParam->ip >= (baseAddr + VAL32(pNT->OptionalHeader.SizeOfImage))))
+        {
+            goto lDone;
+        }
+
+        pParam->fRet = TRUE;
+
+lDone: ;
+    }
+    PAL_EXCEPT (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+    PAL_ENDTRY
+#endif // HOST_WINDOWS
+
+    return param.fRet;
+}
+
+namespace GcNotifications
+{
+    VOID SetNotification(GcEvtArgs ev)
+    {
+        LIMITED_METHOD_CONTRACT;
+        if (ev.typ == GC_MARK_END)
+        {
+            if (ev.condemnedGeneration == 0)
+                g_gcNotificationFlags = 0;
+            else
+                g_gcNotificationFlags = (DWORD)(g_gcNotificationFlags | ev.condemnedGeneration);
+        }
+    }
+    BOOL GetNotification(GcEvtArgs ev)
+    {
+        LIMITED_METHOD_CONTRACT;
+        // check to see if we have a notification for this generation
+        if (ev.typ == GC_MARK_END && (ev.condemnedGeneration == 0 || (g_gcNotificationFlags & ev.condemnedGeneration) != 0))
+        {
+            return TRUE;
+        }
+        else
+        {
+            return FALSE;
+        }
+    }
+};
 
 GPTR_IMPL(JITNotification, g_pNotificationTable);
 GVAL_IMPL(ULONG32, g_dacNotificationFlags);
 
-BOOL IsValidMethodCodeNotification(USHORT Notification)
+BOOL IsValidMethodCodeNotification(ULONG32 Notification)
 {
     // If any bit is on other than that given by a valid combination of flags, no good.
     if (Notification & ~(
@@ -1375,7 +1123,7 @@ BOOL JITNotifications::SetAllNotifications(TADDR clrModule,USHORT NType,BOOL *ch
     {
         JITNotification *pCurrent = m_jitTable + i;
         if (!pCurrent->IsFree() &&
-            ((clrModule == NULL) || (pCurrent->clrModule == clrModule))&&
+            ((clrModule == (TADDR)NULL) || (pCurrent->clrModule == clrModule))&&
             pCurrent->state != NType)
         {
             pCurrent->state = NType;
@@ -1407,7 +1155,7 @@ BOOL JITNotifications::SetNotification(TADDR clrModule, mdToken token, USHORT NT
         return FALSE;
     }
 
-    if (clrModule == NULL)
+    if (clrModule == (TADDR)NULL)
     {
         return FALSE;
     }
@@ -1560,7 +1308,7 @@ BOOL UpdateOutOfProcTable(__GlobalPtr<NotificationClass*, DPTR(NotificationClass
         return FALSE;
     }
 
-    if (dac_cast<TADDR>(pHostTable) == NULL)
+    if (dac_cast<TADDR>(pHostTable) == (TADDR)NULL)
     {
         // The table has not been initialized in the target.  Allocate space for it and update the pointer
         // in the target so that we'll use this allocated memory from now on.  Note that we never free this
@@ -1598,155 +1346,10 @@ BOOL JITNotifications::UpdateOutOfProcTable()
 }
 #endif // DACCESS_COMPILE
 
-GPTR_IMPL(GcNotification, g_pGcNotificationTable);
-
-GcNotifications::GcNotifications(GcNotification *gcTable)
-{
-    LIMITED_METHOD_CONTRACT;
-    if (gcTable)
-    {
-        // Bookkeeping info is held in the first slot
-        m_gcTable = gcTable + 1;
-    }
-    else
-    {
-        m_gcTable = NULL;
-    }
-}
-
-BOOL GcNotifications::FindItem(GcEvtArgs ev_, UINT *indexOut)
-{
-    LIMITED_METHOD_CONTRACT;
-    if (m_gcTable == NULL)
-    {
-        return FALSE;
-    }
-
-    if (indexOut == NULL)
-    {
-        return FALSE;
-    }
-
-    UINT length = Length();
-    for (UINT i = 0; i < length; i++)
-    {
-        if (m_gcTable[i].IsMatch(ev_))
-        {
-            *indexOut = i;
-            return TRUE;
-        }
-    }
-
-    return FALSE;
-}
-
-
-BOOL GcNotifications::SetNotification(GcEvtArgs ev)
-{
-    if (!IsActive())
-    {
-        return FALSE;
-    }
-
-    if (ev.typ < 0 || ev.typ >= GC_EVENT_TYPE_MAX)
-    {
-        return FALSE;
-    }
-
-    // build the "match" event
-    GcEvtArgs evStar = { ev.typ };
-    switch (ev.typ)
-    {
-        case GC_MARK_END:
-            // specify mark event matching all generations
-            evStar.condemnedGeneration = -1;
-            break;
-        default:
-            break;
-    }
-
-    // look for the entry that matches the evStar argument
-    UINT idx;
-    if (!FindItem(evStar, &idx))
-    {
-        // Find first free item
-        UINT iFirstFree = Length();
-        for (UINT i = 0; i < iFirstFree; i++)
-        {
-            GcNotification *pCurrent = m_gcTable + i;
-            if (pCurrent->IsFree())
-            {
-                iFirstFree = i;
-                break;
-            }
-        }
-
-        if (iFirstFree == Length() &&
-            iFirstFree == GetTableSize())
-    {
-            // No more room
-        return FALSE;
-    }
-
-        // guarantee the free cell is zeroed out
-        m_gcTable[iFirstFree].SetFree();
-        idx = iFirstFree;
-    }
-
-    // Now update the state
-    m_gcTable[idx].ev.typ = ev.typ;
-    switch (ev.typ)
-    {
-        case GC_MARK_END:
-            if (ev.condemnedGeneration == 0)
-            {
-                m_gcTable[idx].SetFree();
-            }
-            else
-            {
-                m_gcTable[idx].ev.condemnedGeneration |= ev.condemnedGeneration;
-            }
-            break;
-        default:
-            break;
-    }
-
-    // and if needed, update the array's length
-    if (idx == Length())
-    {
-        IncrementLength();
-    }
-
-    return TRUE;
-}
 
 GARY_IMPL(size_t, g_clrNotificationArguments, MAX_CLR_NOTIFICATION_ARGS);
 
-#ifdef DACCESS_COMPILE
-
-GcNotification *GcNotifications::InitializeNotificationTable(UINT TableSize)
-{
-    // We use the first entry in the table for recordkeeping info.
-
-    GcNotification *retTable = new (nothrow) GcNotification[TableSize+1];
-    if (retTable)
-    {
-        // Set the length
-        UINT *pUint = (UINT *) &(retTable[0].ev.typ);
-        *pUint = 0;
-        // Set the table size
-        ++pUint;
-        *pUint = TableSize;
-    }
-    return retTable;
-}
-
-BOOL GcNotifications::UpdateOutOfProcTable()
-{
-    return ::UpdateOutOfProcTable<GcNotification>(g_pGcNotificationTable, m_gcTable - 1, GetTableSize() + 1);
-}
-
-#else // DACCESS_COMPILE
+#ifndef DACCESS_COMPILE
 
 static CrstStatic g_clrNotificationCrst;
 
@@ -1786,7 +1389,7 @@ void DACNotifyExceptionHelper(TADDR *args, UINT argCount)
 
     _ASSERTE(argCount <= MAX_CLR_NOTIFICATION_ARGS);
 
-    if (IsDebuggerPresent() && !CORDebuggerAttached())
+    if (minipal_is_native_debugger_present() && !CORDebuggerAttached())
     {
         CrstHolder lh(&g_clrNotificationCrst);
 
@@ -1797,20 +1400,20 @@ void DACNotifyExceptionHelper(TADDR *args, UINT argCount)
 
         DACRaiseException(args, argCount);
 
-        g_clrNotificationArguments[0] = NULL;
+        g_clrNotificationArguments[0] = 0;
     }
 }
 
 void InitializeClrNotifications()
 {
     g_clrNotificationCrst.Init(CrstClrNotification, CRST_UNSAFE_ANYMODE);
-    g_clrNotificationArguments[0] = NULL;
+    g_clrNotificationArguments[0] = 0;
 }
 
 // <TODO> FIX IN BETA 2
 //
 // g_dacNotificationFlags is only modified by the DAC and therefore the
-// optmizer can assume that it will always be its default value and has
+// optimizer can assume that it will always be its default value and has
 // been seen to eliminate the code in DoModuleLoadNotification,
 // etc... such that DAC notifications are no longer sent.
 //
@@ -1846,23 +1449,6 @@ void DACNotify::DoJITNotification(MethodDesc *MethodDescPtr, TADDR NativeCodeLoc
     DACNotifyExceptionHelper(Args, 3);
 }
 
-void DACNotify::DoJITPitchingNotification(MethodDesc *MethodDescPtr)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_PREEMPTIVE;
-    }
-    CONTRACTL_END;
-
-#if defined(FEATURE_GDBJIT) && defined(TARGET_UNIX)
-    NotifyGdb::MethodPitched(MethodDescPtr);
-#endif
-    TADDR Args[2] = { JIT_PITCHING_NOTIFICATION, (TADDR) MethodDescPtr };
-    DACNotifyExceptionHelper(Args, 2);
-}
-
 void DACNotify::DoModuleLoadNotification(Module *ModulePtr)
 {
     CONTRACTL
@@ -1893,23 +1479,6 @@ void DACNotify::DoModuleUnloadNotification(Module *ModulePtr)
     if ((g_dacNotificationFlags & CLRDATA_NOTIFY_ON_MODULE_UNLOAD) != 0)
     {
         TADDR Args[2] = { MODULE_UNLOAD_NOTIFICATION, (TADDR) ModulePtr};
-        DACNotifyExceptionHelper(Args, 2);
-    }
-}
-
-void DACNotify::DoExceptionNotification(Thread* ThreadPtr)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_PREEMPTIVE;
-    }
-    CONTRACTL_END;
-
-    if ((g_dacNotificationFlags & CLRDATA_NOTIFY_ON_EXCEPTION) != 0)
-    {
-        TADDR Args[2] = { EXCEPTION_NOTIFICATION, (TADDR) ThreadPtr};
         DACNotifyExceptionHelper(Args, 2);
     }
 }
@@ -1973,19 +1542,6 @@ BOOL DACNotify::ParseJITNotification(TADDR Args[], TADDR& MethodDescPtr, TADDR& 
 
     MethodDescPtr = Args[1];
     NativeCodeLocation = Args[2];
-
-    return TRUE;
-}
-
-BOOL DACNotify::ParseJITPitchingNotification(TADDR Args[], TADDR& MethodDescPtr)
-{
-    _ASSERTE(Args[0] == JIT_PITCHING_NOTIFICATION);
-    if (Args[0] != JIT_PITCHING_NOTIFICATION)
-    {
-        return FALSE;
-    }
-
-    MethodDescPtr = Args[1];
 
     return TRUE;
 }
@@ -2079,27 +1635,25 @@ static BOOL TrustMeIAmSafe(void *pLock)
 
 LockOwner g_lockTrustMeIAmThreadSafe = { NULL, TrustMeIAmSafe };
 
-static DangerousNonHostedSpinLock g_randomLock;
-static CLRRandom g_random;
+namespace
+{
+    DangerousNonHostedSpinLock g_randomLock;
+    CLRRandom g_random;
+}
 
 int GetRandomInt(int maxVal)
 {
-    // Use the thread-local Random instance if possible
-    Thread* pThread = GetThreadNULLOk();
-    if (pThread)
-        return pThread->GetRandom()->Next(maxVal);
-
-    // No Thread object - need to fall back to the global generator.
     // In DAC builds we don't need the lock (DAC is single-threaded) and can't get it anyway (DNHSL isn't supported)
 #ifndef DACCESS_COMPILE
-    DangerousNonHostedSpinLockHolder lh(&g_randomLock);
+    DangerousNonHostedSpinLockHolder lockHolder(&g_randomLock);
 #endif
+    // Use the thread-local Random instance
     if (!g_random.IsInitialized())
         g_random.Init();
     return g_random.Next(maxVal);
 }
 
-// These wrap the SString:L:CompareCaseInsenstive function in a way that makes it
+// These wrap the SString:L:CompareCaseInsensitive function in a way that makes it
 // easy to fix code that uses _stricmp. _stricmp should be avoided as it uses the current
 // C-runtime locale rather than the invariance culture.
 //
@@ -2112,7 +1666,6 @@ int __cdecl stricmpUTF8(const char* szStr1, const char* szStr2)
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END
 
@@ -2123,79 +1676,6 @@ int __cdecl stricmpUTF8(const char* szStr1, const char* szStr2)
 }
 
 #ifndef DACCESS_COMPILE
-//
-//
-// COMCharacter and Helper functions
-//
-//
-
-#ifndef TARGET_UNIX
-/*============================GetCharacterInfoHelper============================
-**Determines character type info (digit, whitespace, etc) for the given char.
-**Args:   c is the character on which to operate.
-**        CharInfoType is one of CT_CTYPE1, CT_CTYPE2, CT_CTYPE3 and specifies the type
-**        of information being requested.
-**Returns: The bitmask returned by GetStringTypeEx.  The caller needs to know
-**         how to interpret this.
-**Exceptions: ArgumentException if GetStringTypeEx fails.
-==============================================================================*/
-INT32 GetCharacterInfoHelper(WCHAR c, INT32 CharInfoType)
-{
-    WRAPPER_NO_CONTRACT;
-
-    unsigned short result=0;
-    if (!GetStringTypeEx(LOCALE_USER_DEFAULT, CharInfoType, &(c), 1, &result)) {
-        _ASSERTE(!"This should not happen, verify the arguments passed to GetStringTypeEx()");
-    }
-    return(INT32)result;
-}
-#endif // !TARGET_UNIX
-
-/*==============================nativeIsWhiteSpace==============================
-**The locally available version of IsWhiteSpace.  Designed to be called by other
-**native methods.  The work is mostly done by GetCharacterInfoHelper
-**Args:  c -- the character to check.
-**Returns: true if c is whitespace, false otherwise.
-**Exceptions:  Only those thrown by GetCharacterInfoHelper.
-==============================================================================*/
-BOOL COMCharacter::nativeIsWhiteSpace(WCHAR c)
-{
-    WRAPPER_NO_CONTRACT;
-
-#ifndef TARGET_UNIX
-    if (c <= (WCHAR) 0x7F) // common case
-    {
-        BOOL result = (c == ' ') || (c == '\r') || (c == '\n') || (c == '\t') || (c == '\f') || (c == (WCHAR) 0x0B);
-
-        ASSERT(result == ((GetCharacterInfoHelper(c, CT_CTYPE1) & C1_SPACE)!=0));
-
-        return result;
-    }
-
-    // GetCharacterInfoHelper costs around 160 instructions
-    return((GetCharacterInfoHelper(c, CT_CTYPE1) & C1_SPACE)!=0);
-#else // !TARGET_UNIX
-    return iswspace(c);
-#endif // !TARGET_UNIX
-}
-
-/*================================nativeIsDigit=================================
-**The locally available version of IsDigit.  Designed to be called by other
-**native methods.  The work is mostly done by GetCharacterInfoHelper
-**Args:  c -- the character to check.
-**Returns: true if c is whitespace, false otherwise.
-**Exceptions:  Only those thrown by GetCharacterInfoHelper.
-==============================================================================*/
-BOOL COMCharacter::nativeIsDigit(WCHAR c)
-{
-    WRAPPER_NO_CONTRACT;
-#ifndef TARGET_UNIX
-    return((GetCharacterInfoHelper(c, CT_CTYPE1) & C1_DIGIT)!=0);
-#else // !TARGET_UNIX
-    return iswdigit(c);
-#endif // !TARGET_UNIX
-}
-
 BOOL RuntimeFileNotFound(HRESULT hr)
 {
     LIMITED_METHOD_CONTRACT;
@@ -2259,5 +1739,23 @@ HRESULT GetFileVersion(                     // S_OK or error
 #endif // !TARGET_UNIX
 
 Volatile<double> NormalizedTimer::s_frequency = -1.0;
+
+void FillStubCodePage(BYTE* pageBase, const void* code, SIZE_T codeSize, SIZE_T pageSize)
+{
+    SIZE_T totalCodeSize = (pageSize / codeSize) * codeSize;
+
+    memcpy(pageBase, code, codeSize);
+
+    SIZE_T i;
+    for (i = codeSize; i < pageSize / 2; i *= 2)
+    {
+        memcpy(pageBase + i, pageBase, i);
+    }
+
+    if (i != totalCodeSize)
+    {
+        memcpy(pageBase + i, pageBase, totalCodeSize - i);
+    }
+}
 
 #endif // !DACCESS_COMPILE

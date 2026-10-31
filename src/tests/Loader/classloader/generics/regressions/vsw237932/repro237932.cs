@@ -10,11 +10,15 @@
 
 using System;
 using System.Threading;
+using Xunit;
+using TestLibrary;
 
 
 public class Test_repro237932
 {
-	public static int Main()
+ [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+	[Fact]
+	public static int TestEntryPoint()
 	{
 		C1<System.OverflowException> cOverflow = new C1<System.OverflowException>();
 		C1<System.InvalidCastException> cCast = new C1<System.InvalidCastException>();

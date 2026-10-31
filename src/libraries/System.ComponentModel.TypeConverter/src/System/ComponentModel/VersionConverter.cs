@@ -3,6 +3,7 @@
 
 using System.ComponentModel.Design.Serialization;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Reflection;
 
@@ -27,7 +28,7 @@ namespace System.ComponentModel
         ///    <para>Gets a value indicating whether this converter can
         ///       convert an object to the given destination type using the context.</para>
         /// </summary>
-        public override bool CanConvertTo(ITypeDescriptorContext? context, Type? destinationType)
+        public override bool CanConvertTo(ITypeDescriptorContext? context, [NotNullWhen(true)] Type? destinationType)
         {
             return destinationType == typeof(Version) || destinationType == typeof(InstanceDescriptor) || base.CanConvertTo(context, destinationType);
         }
@@ -52,7 +53,7 @@ namespace System.ComponentModel
 
             if (value is Version version)
             {
-                return new Version(version.Major, version.Minor, version.Build, version.Revision); // return new instance
+                return version.Clone(); // return new instance
             }
 
             return base.ConvertFrom(context, culture, value);
@@ -64,18 +65,34 @@ namespace System.ComponentModel
         /// </summary>
         public override object? ConvertTo(ITypeDescriptorContext? context, CultureInfo? culture, object? value, Type destinationType)
         {
-            if (destinationType == null)
-            {
-                throw new ArgumentNullException(nameof(destinationType));
-            }
+            ArgumentNullException.ThrowIfNull(destinationType);
 
             if (value is Version version)
             {
                 if (destinationType == typeof(InstanceDescriptor))
                 {
-                    ConstructorInfo? ctor = typeof(Version).GetConstructor(BindingFlags.Public | BindingFlags.Instance, null, new Type[] { typeof(int), typeof(int), typeof(int), typeof(int) }, null);
+                    ConstructorInfo? ctor;
+                    object[] arguments;
+
+                    // Build and Revision are -1 when undefined, which the four-argument constructor rejects.
+                    if (version.Build < 0)
+                    {
+                        ctor = typeof(Version).GetConstructor([typeof(int), typeof(int)]);
+                        arguments = [version.Major, version.Minor];
+                    }
+                    else if (version.Revision < 0)
+                    {
+                        ctor = typeof(Version).GetConstructor([typeof(int), typeof(int), typeof(int)]);
+                        arguments = [version.Major, version.Minor, version.Build];
+                    }
+                    else
+                    {
+                        ctor = typeof(Version).GetConstructor([typeof(int), typeof(int), typeof(int), typeof(int)]);
+                        arguments = [version.Major, version.Minor, version.Build, version.Revision];
+                    }
+
                     Debug.Assert(ctor != null, "Couldn't find constructor");
-                    return new InstanceDescriptor(ctor, new object[] { version.Major, version.Minor, version.Build, version.Revision });
+                    return new InstanceDescriptor(ctor, arguments);
                 }
 
                 if (destinationType == typeof(string))
@@ -85,7 +102,7 @@ namespace System.ComponentModel
 
                 if (destinationType == typeof(Version))
                 {
-                    return new Version(version.Major, version.Minor, version.Build, version.Revision);
+                    return version.Clone();
                 }
             }
 
@@ -96,7 +113,7 @@ namespace System.ComponentModel
         {
             if (value is string version)
             {
-                return Version.TryParse(version, out Version _);
+                return Version.TryParse(version, out _);
             }
             return value is Version;
         }

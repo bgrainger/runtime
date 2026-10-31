@@ -45,42 +45,14 @@ public:
         numValidBytes    = numEntries * sizeof(void *)
     };
 
-    // store next pointer and the entries
-    SLink   m_Link;
+    // store next pointer and the entries - total of 16 pointers
+    // Next pointer for SList linkage.
+    DPTR(CacheLine)  m_pNext;
     union
     {
         void*   m_pAddr[numEntries];
         BYTE    m_xxx[numValidBytes];
     };
-
-    // init
-    void Init32()
-    {
-        CONTRACTL
-        {
-            NOTHROW;
-            GC_NOTRIGGER;
-            MODE_ANY;
-        }
-        CONTRACTL_END;
-
-        // initialize cacheline
-        memset(&m_Link,0,32);
-    }
-
-    void Init64()
-    {
-        CONTRACTL
-        {
-            NOTHROW;
-            GC_NOTRIGGER;
-            MODE_ANY;
-        }
-        CONTRACTL_END;
-
-        // initialize cacheline
-        memset(&m_Link,0,64);
-    }
 
     CacheLine()
     {
@@ -93,9 +65,11 @@ public:
         CONTRACTL_END;
 
         // initialize cacheline
-        memset(&m_Link,0,sizeof(CacheLine));
+        m_pNext = NULL;
+        memset(m_xxx,0,numValidBytes);
     }
 };
+static_assert(sizeof(CacheLine) == (16 * sizeof(void*)), "Cacheline should be exactly 16 pointers in size");
 #include <poppack.h>
 
 typedef CacheLine* LPCacheLine;
@@ -107,9 +81,9 @@ typedef CacheLine* LPCacheLine;
 ///////////////////////////////////////////////////////
 class CCacheLineAllocator
 {
-    typedef SList<CacheLine, true> REGISTRYLIST;
-    typedef SList<CacheLine, true> FREELIST32;
-    typedef SList<CacheLine, true> FREELIST64;
+    typedef SList<CacheLine> REGISTRYLIST;
+    typedef SList<CacheLine> FREELIST32;
+    typedef SList<CacheLine> FREELIST64;
 
 public:
 

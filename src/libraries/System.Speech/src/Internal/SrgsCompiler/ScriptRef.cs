@@ -7,7 +7,7 @@ using System.Speech.Internal.SrgsParser;
 namespace System.Speech.Internal.SrgsCompiler
 {
     // list of rules with scripts
-    [DebuggerDisplay("rule=\"{_rule}\" method=\"{_sMethod}\" operation=\"{_method.ToString ()}\"")]
+    [DebuggerDisplay("rule = \"{_rule}\", method = \"{_sMethod}\", operation = \"{_method.ToString ()}\"")]
     internal class ScriptRef
     {
         #region Constructors
@@ -39,7 +39,7 @@ namespace System.Speech.Internal.SrgsCompiler
             streamBuffer.WriteStream(script);
         }
 
-        internal static string OnInitMethod(ScriptRef[] scriptRefs, string rule)
+        internal static string? OnInitMethod(ScriptRef[]? scriptRefs, string? rule)
         {
             if (scriptRefs != null)
             {

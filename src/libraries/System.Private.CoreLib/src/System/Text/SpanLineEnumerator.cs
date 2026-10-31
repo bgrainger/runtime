@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Collections;
+using System.Collections.Generic;
+
 namespace System.Text
 {
     /// <summary>
@@ -9,7 +12,7 @@ namespace System.Text
     /// <remarks>
     /// To get an instance of this type, use <see cref="MemoryExtensions.EnumerateLines(ReadOnlySpan{char})"/>.
     /// </remarks>
-    public ref struct SpanLineEnumerator
+    public ref struct SpanLineEnumerator : IEnumerator<ReadOnlySpan<char>>
     {
         private ReadOnlySpan<char> _remaining;
         private ReadOnlySpan<char> _current;
@@ -43,26 +46,46 @@ namespace System.Text
         {
             if (!_isEnumeratorActive)
             {
+                _current = default;
                 return false; // EOF previously reached or enumerator was never initialized
             }
 
-            int idx = string.IndexOfNewlineChar(_remaining, out int stride);
-            if (idx >= 0)
+            ReadOnlySpan<char> remaining = _remaining;
+
+            int idx = remaining.IndexOfAny(string.SearchValuesStorage.NewLineChars);
+
+            if ((uint)idx < (uint)remaining.Length)
             {
-                _current = _remaining.Slice(0, idx);
-                _remaining = _remaining.Slice(idx + stride);
+                int stride = 1;
+
+                if (remaining[idx] == '\r' && (uint)(idx + 1) < (uint)remaining.Length && remaining[idx + 1] == '\n')
+                {
+                    stride = 2;
+                }
+
+                _current = remaining.Slice(0, idx);
+                _remaining = remaining.Slice(idx + stride);
             }
             else
             {
                 // We've reached EOF, but we still need to return 'true' for this final
                 // iteration so that the caller can query the Current property once more.
 
-                _current = _remaining;
+                _current = remaining;
                 _remaining = default;
                 _isEnumeratorActive = false;
             }
 
             return true;
         }
+
+        /// <inheritdoc />
+        object IEnumerator.Current => throw new NotSupportedException();
+
+        /// <inheritdoc />
+        void IEnumerator.Reset() => throw new NotSupportedException();
+
+        /// <inheritdoc />
+        void IDisposable.Dispose() { }
     }
 }

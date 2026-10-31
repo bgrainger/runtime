@@ -9,8 +9,10 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using Xunit;
+using TestLibrary;
 
-class Program
+public class Program
 {
     private class MockEndPoint : EndPoint
     {
@@ -40,7 +42,9 @@ class Program
         return extendedSocketException.EndPointEquals(endPoint);
     }
 
-    static int Main()
+    [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+    [Fact]
+    public static int TestEntryPoint()
     {
         Console.WriteLine("Extended socket exception:");
         return TestExtendedSocketException() ? 100 : 1;

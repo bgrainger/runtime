@@ -2,6 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 using System;
 using System.Threading;
+using Xunit;
+using TestLibrary;
 
 class Gen<T> 
 {
@@ -32,7 +34,8 @@ class Gen<T>
 
 public class Test_thread01
 {
-	public static int nThreads = 50;
+	// Use fewer threads on 32-bit platforms to avoid OOM from exhausting the virtual address space.
+	public static int nThreads = PlatformDetection.Is32BitProcess ? 5 : 50;
 	public static int counter = 0;
 	public static int Xcounter = 0;
 	public static bool result = true;
@@ -47,7 +50,8 @@ public class Test_thread01
 	
 	}
 	
-	public static int Main()
+	[ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
+	public static int TestEntryPoint()
 	{
 		Gen<int>.ThreadPoolTest();
 		Gen<double>.ThreadPoolTest();

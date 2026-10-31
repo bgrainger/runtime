@@ -1,9 +1,5 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-//
-// siginfo.hpp
-//
-
 
 #ifndef _H_SIGINFO
 #define _H_SIGINFO
@@ -17,7 +13,7 @@
 #include "threads.h"
 #include "corinfo.h"
 
-#include "eecontract.h"
+#include <contract.h>
 #include "typectxt.h"
 
 //---------------------------------------------------------------------------------------
@@ -46,25 +42,13 @@ struct ElementTypeInfo {
 extern const ElementTypeInfo gElementTypeInfo[];
 
 unsigned GetSizeForCorElementType(CorElementType etyp);
-const ElementTypeInfo* GetElementTypeInfo(CorElementType etyp);
 
 class SigBuilder;
 class ArgDestination;
+class TokenLookupMap;
+class DynamicResolver;
 
 typedef const struct HardCodedMetaSig *LPHARDCODEDMETASIG;
-
-//@GENERICS: flags returned from IsPolyType indicating the presence or absence of class and
-// method type parameters in a type whose instantiation cannot be determined at JIT-compile time
-enum VarKind
-{
-  hasNoVars = 0x0000,
-  hasClassVar = 0x0001,
-  hasMethodVar = 0x0002,
-  hasSharableClassVar = 0x0004,
-  hasSharableMethodVar = 0x0008,
-  hasAnyVarsMask = 0x0003,
-  hasSharableVarsMask = 0x000c
-};
 
 //---------------------------------------------------------------------------------------
 
@@ -97,7 +81,7 @@ class SigPointer : public SigParser
 
 public:
     // Constructor.
-    SigPointer() { LIMITED_METHOD_DAC_CONTRACT; }
+    SigPointer() : SigParser() { LIMITED_METHOD_DAC_CONTRACT; }
 
     // Copy constructor.
     SigPointer(const SigPointer & sig) : SigParser(sig)
@@ -139,9 +123,14 @@ public:
     //=========================================================================
 
 
-        void ConvertToInternalExactlyOne(Module* pSigModule, SigTypeContext *pTypeContext, SigBuilder * pSigBuilder, BOOL bSkipCustomModifier = TRUE);
-        void ConvertToInternalSignature(Module* pSigModule, SigTypeContext *pTypeContext, SigBuilder * pSigBuilder, BOOL bSkipCustomModifier = TRUE);
+        void ConvertToInternalExactlyOne(Module* pSigModule, const SigTypeContext *pTypeContext, SigBuilder * pSigBuilder, BOOL bSkipCustomModifier = TRUE);
+        void ConvertToInternalSignature(Module* pSigModule, const SigTypeContext *pTypeContext, SigBuilder * pSigBuilder, BOOL bSkipCustomModifier = TRUE);
 
+        // Copy the current part of the signature to the SigBuilder.
+        // All copy methods advance internal state as if a Get was called.
+        void CopyModOptsReqs(Module* pSigModule, SigBuilder* pSigBuilder);
+        void CopyExactlyOne(Module* pSigModule, SigBuilder* pSigBuilder);
+        void CopySignature(Module* pSigModule, SigBuilder* pSigBuilder, BYTE additionalCallConv);
 
     //=========================================================================
     // The CLOSED interface for reading signatures.  With the following
@@ -203,13 +192,13 @@ private:
 
         // SigPointer should be just after E_T_VAR or E_T_MVAR
         TypeHandle GetTypeVariable(CorElementType et,const SigTypeContext *pTypeContext);
-        TypeHandle GetTypeVariableThrowing(Module *pModule,
+        TypeHandle GetTypeVariableThrowing(ModuleBase *pModule,
                                            CorElementType et,
                                            ClassLoader::LoadTypesFlag fLoadTypes,
                                            const SigTypeContext *pTypeContext);
 
         // Parse type following E_T_GENERICINST
-        TypeHandle GetGenericInstType(Module *        pModule,
+        TypeHandle GetGenericInstType(ModuleBase *        pModule,
                                       ClassLoader::LoadTypesFlag = ClassLoader::LoadTypes,
                                       ClassLoadLevel level = CLASS_LOADED,
                                       const ZapSig::Context *pZapSigContext = NULL);
@@ -227,10 +216,16 @@ public:
         TypeHandle GetTypeHandleNT(Module* pModule,
                                    const SigTypeContext *pTypeContext) const;
 
+        struct HandleRecursiveGenericsForFieldLayoutLoad
+        {
+            Module* pModuleWithTokenToAvoidIfPossible;
+            mdToken tkTypeDefToAvoidIfPossible;
+        };
+
         // pTypeContext indicates how to instantiate any generic type parameters we come
         // However, first we implicitly apply the substitution pSubst to the metadata if pSubst is supplied.
         // That is, if the metadata contains a type variable "!0" then we first look up
-        // !0 in pSubst to produce another item of metdata and continue processing.
+        // !0 in pSubst to produce another item of metadata and continue processing.
         // If pSubst is empty then we look up !0 in the pTypeContext to produce a final
         // type handle.  If any of these are out of range we throw an exception.
         //
@@ -247,31 +242,18 @@ public:
         //   occurring in the type arguments
         // This semantics is used by the class loader to load tricky recursive definitions in phases
         // (e.g. class C : D<C>, or struct S : I<S>)
-        TypeHandle GetTypeHandleThrowing(Module* pModule,
+        TypeHandle GetTypeHandleThrowing(ModuleBase* pModule,
                                          const SigTypeContext *pTypeContext,
                                          ClassLoader::LoadTypesFlag fLoadTypes = ClassLoader::LoadTypes,
                                          ClassLoadLevel level = CLASS_LOADED,
                                          BOOL dropGenericArgumentLevel = FALSE,
                                          const Substitution *pSubst = NULL,
                                          const ZapSig::Context *pZapSigContext = NULL,
-                                         MethodTable *pMTInterfaceMapOwner = NULL) const;
+                                         MethodTable* pMTInterfaceMapOwner = NULL,
+                                         HandleRecursiveGenericsForFieldLayoutLoad *pRecursiveFieldGenericHandling = NULL
+                                         ) const;
 
 public:
-        //------------------------------------------------------------------------
-        // Does this type contain class or method type parameters whose instantiation cannot
-        // be determined at JIT-compile time from the instantiations in the method context?
-        // Return a combination of hasClassVar and hasMethodVar flags.
-        //
-        // Example: class C<A,B> containing instance method m<T,U>
-        // Suppose that the method context is C<float,string>::m<double,object>
-        // Then the type Dict<!0,!!0> is considered to have *no* "polymorphic" type parameters because
-        // !0 is known to be float and !!0 is known to be double
-        // But Dict<!1,!!1> has polymorphic class *and* method type parameters because both
-        // !1=string and !!1=object are reference types and so code using these can be shared with
-        // other reference instantiations.
-        //------------------------------------------------------------------------
-        VarKind IsPolyType(const SigTypeContext *pTypeContext) const;
-
         //------------------------------------------------------------------------
         // Tests if the element type is a System.String. Accepts
         // either ELEMENT_TYPE_STRING or ELEMENT_TYPE_CLASS encoding.
@@ -298,7 +280,7 @@ public:
         //------------------------------------------------------------------------
         // Tests for the existence of a custom modifier
         //------------------------------------------------------------------------
-        BOOL HasCustomModifier(Module *pModule, LPCSTR szModName, CorElementType cmodtype) const;
+        BOOL HasCustomModifier(Module *pModule, LPCSTR szModName, CorElementType cmodtype, Module** pModifierScope = NULL, mdToken* pModifierType = NULL) const;
 
         //------------------------------------------------------------------------
         // Tests for ELEMENT_TYPE_CLASS or ELEMENT_TYPE_VALUETYPE followed by a TypeDef,
@@ -311,6 +293,7 @@ public:
 // forward declarations needed for the friends declared in Signature
 struct FrameInfo;
 struct VASigCookie;
+struct AsyncMethodData;
 #if defined(DACCESS_COMPILE)
 class  DacDbiInterfaceImpl;
 #endif // DACCESS_COMPILE
@@ -367,9 +350,20 @@ public:
     DWORD           GetRawSigLen() const;
 
 private:
+    friend struct ::cdac_data<VASigCookie>;
+    friend struct ::cdac_data<AsyncMethodData>;
+    friend struct ::cdac_data<Signature>;
+
     PCCOR_SIGNATURE m_pSig;
     DWORD           m_cbSig;
 };  // class Signature
+
+template<>
+struct cdac_data<Signature>
+{
+    static constexpr size_t SignaturePointer = offsetof(Signature, m_pSig);
+    static constexpr size_t SignatureLength = offsetof(Signature, m_cbSig);
+};
 
 
 #ifdef _DEBUG
@@ -401,7 +395,7 @@ private:
 class Substitution
 {
 private:
-    Module *             m_pModule; // Module in which instantiation lives (needed to resolve typerefs)
+    ModuleBase *         m_pModule; // Module in which instantiation lives (needed to resolve typerefs)
     SigPointer           m_sigInst;
     const Substitution * m_pNext;
 
@@ -414,8 +408,8 @@ public:
     }
 
     Substitution(
-        Module *             pModuleArg,
-        const SigPointer &   sigInst,
+        ModuleBase *         pModuleArg,
+        SigPointer           sigInst,
         const Substitution * pNextSubstitution)
     {
         LIMITED_METHOD_CONTRACT;
@@ -426,7 +420,7 @@ public:
 
     Substitution(
         mdToken              parentTypeDefOrRefOrSpec,
-        Module *             pModuleArg,
+        ModuleBase *         pModuleArg,
         const Substitution * nextArg);
 
     Substitution(const Substitution & subst)
@@ -438,7 +432,7 @@ public:
     }
     void DeleteChain();
 
-    Module * GetModule() const { LIMITED_METHOD_DAC_CONTRACT; return m_pModule; }
+    ModuleBase * GetModule() const { LIMITED_METHOD_DAC_CONTRACT; return m_pModule; }
     const Substitution * GetNext() const { LIMITED_METHOD_DAC_CONTRACT; return m_pNext; }
     const SigPointer & GetInst() const { LIMITED_METHOD_DAC_CONTRACT; return m_sigInst; }
     DWORD GetLength() const;
@@ -453,18 +447,19 @@ public:
 // infinite recursion when types refer to each other in a cycle, e.g. a delegate that takes itself as
 // a parameter or a struct that declares a field of itself (illegal but we don't know at this point).
 //
-class TokenPairList
+class TokenPairList final
 {
 public:
+
     // Chain using this constructor when comparing two typedefs for equivalence.
-    TokenPairList(mdToken token1, Module *pModule1, mdToken token2, Module *pModule2, TokenPairList *pNext)
+    TokenPairList(mdToken token1, ModuleBase *pModule1, mdToken token2, ModuleBase *pModule2, TokenPairList *pNext)
         : m_token1(token1), m_token2(token2),
           m_pModule1(pModule1), m_pModule2(pModule2),
           m_bInTypeEquivalenceForbiddenScope(pNext == NULL ? FALSE : pNext->m_bInTypeEquivalenceForbiddenScope),
           m_pNext(pNext)
     { LIMITED_METHOD_CONTRACT; }
 
-    static BOOL Exists(TokenPairList *pList, mdToken token1, Module *pModule1, mdToken token2, Module *pModule2)
+    static BOOL Exists(TokenPairList *pList, mdToken token1, ModuleBase *pModule1, mdToken token2, ModuleBase *pModule2)
     {
         LIMITED_METHOD_CONTRACT;
         while (pList != NULL)
@@ -488,10 +483,9 @@ public:
     }
 
     // Chain using this method when comparing type specs.
-    static TokenPairList AdjustForTypeSpec(TokenPairList *pTemplate, Module *pTypeSpecModule, PCCOR_SIGNATURE pTypeSpecSig, DWORD cbTypeSpecSig);
+    static TokenPairList AdjustForTypeSpec(TokenPairList *pTemplate, ModuleBase *pTypeSpecModule, PCCOR_SIGNATURE pTypeSpecSig, DWORD cbTypeSpecSig);
     static TokenPairList AdjustForTypeEquivalenceForbiddenScope(TokenPairList *pTemplate);
 
-private:
     TokenPairList(TokenPairList *pTemplate)
         : m_token1(pTemplate ? pTemplate->m_token1 : mdTokenNil),
           m_token2(pTemplate ? pTemplate->m_token2 : mdTokenNil),
@@ -501,8 +495,9 @@ private:
           m_pNext(pTemplate ? pTemplate->m_pNext : NULL)
     { LIMITED_METHOD_CONTRACT; }
 
+private:
     mdToken m_token1, m_token2;
-    Module *m_pModule1, *m_pModule2;
+    ModuleBase *m_pModule1, *m_pModule2;
     BOOL m_bInTypeEquivalenceForbiddenScope;
     TokenPairList *m_pNext;
 };  // class TokenPairList
@@ -623,10 +618,10 @@ class MetaSig
 
         //------------------------------------------------------------------------
         // Returns # of arguments. Does not count the return value.
-        // Does not count the "this" argument (which is not reflected om the
+        // Does not count the "this" argument (which is not reflected on the
         // sig.) 64-bit arguments are counted as one argument.
         //------------------------------------------------------------------------
-        UINT NumFixedArgs()
+        UINT NumFixedArgs() const
         {
             LIMITED_METHOD_DAC_CONTRACT;
             return m_nArgs;
@@ -701,7 +696,7 @@ class MetaSig
         // Returns the calling convention & flags (see IMAGE_CEE_CS_CALLCONV_*
         // defines in cor.h)
         //----------------------------------------------------------
-        BYTE GetCallingConventionInfo()
+        USHORT GetCallingConventionInfo()
         {
             LIMITED_METHOD_DAC_CONTRACT;
 
@@ -711,7 +706,7 @@ class MetaSig
         //----------------------------------------------------------
         // Has a 'this' pointer?
         //----------------------------------------------------------
-        BOOL HasThis()
+        BOOL HasThis() const
         {
             LIMITED_METHOD_CONTRACT;
 
@@ -748,6 +743,26 @@ class MetaSig
         }
 
         //----------------------------------------------------------
+        // Does it have a generic context argument?
+        //----------------------------------------------------------
+        BOOL HasGenericContextArg()
+        {
+            LIMITED_METHOD_CONTRACT;
+            return m_CallConv & CORINFO_CALLCONV_PARAMTYPE;
+        }
+
+        //----------------------------------------------------------
+        // Is it an async call?
+        //----------------------------------------------------------
+        bool IsAsyncCall()
+        {
+            LIMITED_METHOD_CONTRACT;
+            return m_CallConv & CORINFO_CALLCONV_ASYNCCALL;
+        }
+
+        BOOL HasAsyncContinuation();
+
+        //----------------------------------------------------------
         // Is vararg?
         //----------------------------------------------------------
         static BOOL IsVarArg(const Signature &signature)
@@ -780,8 +795,8 @@ class MetaSig
         }
 
         //------------------------------------------------------------------
-        // Like NextArg, but return only normalized type (enums flattned to
-        // underlying type ...
+        // Like NextArg, but return only normalized type (enums flattened to
+        // the underlying type ...
         //------------------------------------------------------------------
         CorElementType
         NextArgNormalized(TypeHandle * pthValueType = NULL)
@@ -790,7 +805,6 @@ class MetaSig
             {
                 if (FORBIDGC_LOADER_USE_ENABLED()) NOTHROW; else THROWS;
                 if (FORBIDGC_LOADER_USE_ENABLED()) GC_NOTRIGGER; else GC_TRIGGERS;
-                if (FORBIDGC_LOADER_USE_ENABLED()) FORBID_FAULT; else { INJECT_FAULT(COMPlusThrowOM()); }
                 MODE_ANY;
                 SUPPORTS_DAC;
             }
@@ -808,16 +822,12 @@ class MetaSig
                 // We should not hit ELEMENT_TYPE_END in the middle of the signature
                 if (mt == ELEMENT_TYPE_END)
                 {
-                    THROW_BAD_FORMAT(BFA_BAD_SIGNATURE, (Module *)NULL);
+                    THROW_BAD_FORMAT(BFA_BAD_SIGNATURE, (ModuleBase*)NULL);
                 }
-                IfFailThrowBF(m_pWalk.SkipExactlyOne(), BFA_BAD_SIGNATURE, (Module *)NULL);
+                IfFailThrowBF(m_pWalk.SkipExactlyOne(), BFA_BAD_SIGNATURE, (ModuleBase*)NULL);
                 return mt;
             }
         } // NextArgNormalized
-
-        // Tests if the return type is an object ref.  Loads types
-        // if needed (though it shouldn't really need to)
-        BOOL IsObjectRefReturnType();
 
         //------------------------------------------------------------------------
         // Compute element size from CorElementType and optional valuetype.
@@ -934,7 +944,7 @@ class MetaSig
                                              BOOL dropGenericArgumentLevel = FALSE) const
         {
              WRAPPER_NO_CONTRACT;
-             return m_pLastType.GetTypeHandleThrowing(m_pModule, &m_typeContext, fLoadTypes,
+             return m_pLastType.GetTypeHandleThrowing((ModuleBase*)m_pModule, &m_typeContext, fLoadTypes,
                                                       level, dropGenericArgumentLevel);
         }
 
@@ -951,7 +961,7 @@ class MetaSig
                                             ClassLoadLevel level = CLASS_LOADED) const
         {
              WRAPPER_NO_CONTRACT;
-             return m_pRetType.GetTypeHandleThrowing(m_pModule, &m_typeContext, fLoadTypes, level);
+             return m_pRetType.GetTypeHandleThrowing((ModuleBase*)m_pModule, &m_typeContext, fLoadTypes, level);
         }
 
         //------------------------------------------------------------------
@@ -966,6 +976,34 @@ class MetaSig
         CorElementType GetByRefType(TypeHandle* pTy) const;
 
         //------------------------------------------------------------------
+        // Consume the custom modifiers, if any, in the current signature
+        // and update it.
+        // This is a non destructive operation if the current signature is not
+        // pointing at a sequence of ELEMENT_TYPE_CMOD_REQD or ELEMENT_TYPE_CMOD_OPT.
+        //------------------------------------------------------------------
+        static void ConsumeCustomModifiers(PCCOR_SIGNATURE& pSig, PCCOR_SIGNATURE pEndSig);
+
+        // Struct used to capture in/out state during the comparison
+        // of element types.
+        struct CompareState
+        {
+            // List of tokens that are currently being compared.
+            // See TokenPairList for more use details.
+            TokenPairList*  Visited;
+
+            // Boolean indicating if custom modifiers should
+            // be compared.
+            bool IgnoreCustomModifiers;
+
+            CompareState() = default;
+
+            CompareState(TokenPairList* list)
+                : Visited{ list }
+                , IgnoreCustomModifiers{ false }
+            { }
+        };
+
+        //------------------------------------------------------------------
         // Compare types in two signatures, first applying
         // - optional substitutions pSubst1 and pSubst2
         //   to class type parameters (E_T_VAR) in the respective signatures
@@ -975,11 +1013,11 @@ class MetaSig
             PCCOR_SIGNATURE &    pSig2,
             PCCOR_SIGNATURE      pEndSig1,
             PCCOR_SIGNATURE      pEndSig2,
-            Module *             pModule1,
-            Module *             pModule2,
+            ModuleBase *         pModule1,
+            ModuleBase *         pModule2,
             const Substitution * pSubst1,
             const Substitution * pSubst2,
-            TokenPairList *      pVisited = NULL);
+            CompareState *       state = NULL);
 
 
 
@@ -999,41 +1037,23 @@ class MetaSig
         static BOOL CompareMethodSigs(
             PCCOR_SIGNATURE     pSig1,
             DWORD               cSig1,
-            Module*             pModule1,
+            ModuleBase*         pModule1,
             const Substitution* pSubst1,
             PCCOR_SIGNATURE     pSig2,
             DWORD               cSig2,
-            Module*             pModule2,
+            ModuleBase*         pModule2,
             const Substitution* pSubst2,
             BOOL                skipReturnTypeSig,
             TokenPairList*      pVisited = NULL
         );
 
-        // Nonthrowing version of CompareMethodSigs
-        //
-        //   Return S_OK if they match
-        //          S_FALSE if they don't match
-        //          FAILED  if OOM or some other blocking error
-        //
-        static HRESULT CompareMethodSigsNT(
-            PCCOR_SIGNATURE pSig1,
-            DWORD       cSig1,
-            Module*     pModule1,
-            const Substitution* pSubst1,
-            PCCOR_SIGNATURE pSig2,
-            DWORD       cSig2,
-            Module*     pModule2,
-            const Substitution* pSubst2,
-            TokenPairList *pVisited = NULL
-        );
-
         static BOOL CompareFieldSigs(
             PCCOR_SIGNATURE pSig1,
             DWORD       cSig1,
-            Module*     pModule1,
+            ModuleBase* pModule1,
             PCCOR_SIGNATURE pSig2,
             DWORD       cSig2,
-            Module*     pModule2,
+            ModuleBase* pModule2,
             TokenPairList *pVisited = NULL
         );
 
@@ -1043,7 +1063,7 @@ class MetaSig
 
         // Is each set of constraints on the implementing method's type parameters a subset
         // of the corresponding set of constraints on the declared method's type parameters,
-        // given a subsitution for the latter's (class) type parameters.
+        // given a substitution for the latter's (class) type parameters.
         // This is used by the class loader to verify type safety of method overriding and interface implementation.
         static BOOL CompareMethodConstraints(const Substitution *pSubst1,
                                              Module *pModule1,
@@ -1058,40 +1078,27 @@ private:
                                                const Substitution *pSubst2,
                                                Module *pModule2, mdGenericParam tok2); //overridden
 
-        static BOOL CompareTypeDefOrRefOrSpec(Module *pModule1, mdToken tok1,
+        static BOOL CompareTypeDefOrRefOrSpec(ModuleBase *pModule1, mdToken tok1,
                                               const Substitution *pSubst1,
-                                              Module *pModule2, mdToken tok2,
+                                              ModuleBase *pModule2, mdToken tok2,
                                               const Substitution *pSubst2,
                                               TokenPairList *pVisited);
         static BOOL CompareTypeSpecToToken(mdTypeSpec tk1,
                                            mdToken tk2,
-                                           Module *pModule1,
-                                           Module *pModule2,
+                                           ModuleBase *pModule1,
+                                           ModuleBase *pModule2,
                                            const Substitution *pSubst1,
                                            TokenPairList *pVisited);
 
         static BOOL CompareElementTypeToToken(PCCOR_SIGNATURE &pSig1,
                                              PCCOR_SIGNATURE pEndSig1, // end of sig1
                                              mdToken         tk2,
-                                             Module*         pModule1,
-                                             Module*         pModule2,
+                                             ModuleBase*         pModule1,
+                                             ModuleBase*         pModule2,
                                              const Substitution*   pSubst1,
                                              TokenPairList *pVisited);
 
 public:
-
-        //------------------------------------------------------------------
-        // Ensures that all the value types in the sig are loaded. This
-        // should be called on sig's that have value types before they
-        // are passed to Call(). This ensures that value classes will not
-        // be loaded during the operation to determine the size of the
-        // stack. Thus preventing the resulting GC hole.
-        //------------------------------------------------------------------
-        static void EnsureSigValueTypesLoaded(MethodDesc *pMD);
-
-        // this walks the sig and checks to see if all  types in the sig can be loaded
-        static void CheckSigTypesCanBeLoaded(MethodDesc *pMD);
-
         const SigTypeContext *GetSigTypeContext() const { LIMITED_METHOD_CONTRACT; return &m_typeContext; }
 
         // Disallow copy constructor.
@@ -1103,12 +1110,23 @@ public:
             m_CallConv |= CORINFO_CALLCONV_PARAMTYPE;
         }
 
+        void SetIsAsyncCall()
+        {
+            LIMITED_METHOD_CONTRACT;
+            m_CallConv |= CORINFO_CALLCONV_ASYNCCALL;
+        }
+
         void SetTreatAsVarArg()
         {
             LIMITED_METHOD_CONTRACT;
             m_flags |= TREAT_AS_VARARG;
         }
 
+        void ClearHasThis()
+        {
+            LIMITED_METHOD_CONTRACT;
+            m_CallConv &= ~IMAGE_CEE_CS_CALLCONV_HASTHIS;
+        }
 
     // These are protected because Reflection subclasses Metasig
     protected:
@@ -1135,7 +1153,7 @@ public:
 
         CorElementType  m_corNormalizedRetType;
         BYTE            m_flags;
-        BYTE            m_CallConv;
+        USHORT          m_CallConv;
 };  // class MetaSig
 
 BOOL IsTypeRefOrDef(LPCSTR szClassName, Module *pModule, mdToken token);
@@ -1164,7 +1182,7 @@ private:
 
 // fResolved is TRUE when one of the tokens is a resolved TypeRef. This is used to restrict
 // type equivalence checks for value types.
-BOOL CompareTypeTokens(mdToken tk1, mdToken tk2, Module *pModule1, Module *pModule2, TokenPairList *pVisited = NULL);
+BOOL CompareTypeTokens(mdToken tk1, mdToken tk2, ModuleBase *pModule1, ModuleBase *pModule2, TokenPairList *pVisited = NULL);
 
 // Nonthrowing version of CompareTypeTokens.
 //
@@ -1179,6 +1197,8 @@ BOOL CompareTypeLayout(mdToken tk1, mdToken tk2, Module *pModule1, Module *pModu
 BOOL CompareTypeDefsForEquivalence(mdToken tk1, mdToken tk2, Module *pModule1, Module *pModule2, TokenPairList *pVisited);
 BOOL IsTypeDefEquivalent(mdToken tk, Module *pModule);
 BOOL IsTypeDefExternallyVisible(mdToken tk, Module *pModule, DWORD dwAttrs);
+
+CorInfoCallConvExtension GetUnmanagedCallConvExtension(MetaSig* pSig);
 
 void ReportPointersFromValueType(promote_func *fn, ScanContext *sc, PTR_MethodTable pMT, PTR_VOID pSrc);
 

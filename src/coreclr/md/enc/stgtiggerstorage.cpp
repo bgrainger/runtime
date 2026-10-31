@@ -1,16 +1,15 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
+
 //*****************************************************************************
 // StgTiggerStorage.cpp
-//
-
 //
 // TiggerStorage is a stripped down version of compound doc files.  Doc files
 // have some very useful and complex features to them, unfortunately nothing
 // comes for free.  Given the incredibly tuned format of existing .tlb files,
 // every single byte counts and 10% added by doc files is just too expensive.
-//
 //*****************************************************************************
+
 #include "stdafx.h"                     // Standard header.
 #include "stgio.h"                      // I/O subsystem.
 #include "stgtiggerstorage.h"           // Our interface.
@@ -47,7 +46,7 @@ TiggerStorage::~TiggerStorage()
 HRESULT
 TiggerStorage::Init(
     StgIO            *pStgIO,       // The I/O subsystem.
-    __in __in_z LPSTR pVersion)     // 'Compiled for' CLR version
+    _In_ _In_z_ LPSTR pVersion)     // 'Compiled for' CLR version
 {
     PSTORAGESIGNATURE pSig;         // Signature data for file.
     ULONG             cbData;       // Offset of header data.
@@ -81,7 +80,11 @@ TiggerStorage::Init(
     // For write case, dump the signature into the file up front.
     else
     {
+#ifdef FEATURE_METADATA_PERSISTENCE
         IfFailGo(WriteSignature(pVersion));
+#else
+        IfFailGo(E_NOTIMPL);
+#endif
     }
 
 ErrExit:
@@ -182,6 +185,16 @@ TiggerStorage::GetExtraData(
     return S_OK;
 } // TiggerStorage::GetExtraData
 
+//*****************************************************************************
+// Debugging helpers.  #define __SAVESIZE_TRACE__ to enable.
+//*****************************************************************************
+
+// #define __SAVESIZE_TRACE__
+#ifdef __SAVESIZE_TRACE__
+#define SAVETRACE(func) DEBUG_STMT(func)
+#else
+#define SAVETRACE(func)
+#endif // __SAVESIZE_TRACE__
 
 //*****************************************************************************
 // Called when this stream is going away.
@@ -197,10 +210,10 @@ TiggerStorage::WriteHeader(
     HRESULT hr;
     SAVETRACE(ULONG cbDebugSize);   // Track debug size of header.
 
-    SAVETRACE(DbgWriteEx(W("PSS:  Header:\n")));
+    SAVETRACE(printf("PSS:  Header:\n"));
 
     // Save the count and set flags.
-    m_StgHdr.SetiStreams(pList->Count());
+    m_StgHdr.SetiStreams((USHORT)pList->Count());
     if (cbExtraData != 0)
         m_StgHdr.AddFlags(STGHDR_EXTRADATA);
 
@@ -218,7 +231,7 @@ TiggerStorage::WriteHeader(
 
         // And then the data.
         IfFailRet(m_pStgIO->Write(pbExtraData, cbExtraData, &cbWritten));
-        SAVETRACE(DbgWriteEx(W("PSS:    extra data size %d\n"), m_pStgIO->GetCurrentOffset() - cbDebugSize);cbDebugSize=m_pStgIO->GetCurrentOffset());
+        SAVETRACE(printf("PSS:    extra data size %d\n", m_pStgIO->GetCurrentOffset() - cbDebugSize);cbDebugSize=m_pStgIO->GetCurrentOffset());
     }
 
     // Save off each data stream.
@@ -238,9 +251,9 @@ TiggerStorage::WriteHeader(
         {
             IfFailRet(m_pStgIO->Write(&hr, ALIGN4BYTE(iLen) - iLen, 0));
         }
-        SAVETRACE(DbgWriteEx(W("PSS:    Table %hs header size %d\n"), pStream->rcName, m_pStgIO->GetCurrentOffset() - cbDebugSize);cbDebugSize=m_pStgIO->GetCurrentOffset());
+        SAVETRACE(printf("PSS:    Table %hs header size %d\n", pStream->rcName, m_pStgIO->GetCurrentOffset() - cbDebugSize);cbDebugSize=m_pStgIO->GetCurrentOffset());
     }
-    SAVETRACE(DbgWriteEx(W("PSS:  Total size of header data %d\n"), m_pStgIO->GetCurrentOffset()));
+    SAVETRACE(printf("PSS:  Total size of header data %d\n", m_pStgIO->GetCurrentOffset()));
     // Make sure the whole thing is 4 byte aligned.
     _ASSERTE((m_pStgIO->GetCurrentOffset() % 4) == 0);
     return S_OK;
@@ -348,7 +361,7 @@ TiggerStorage::GetStreamSaveSize(
     UINT32 cbTotalSize;            // Add up each element.
 
     // Find out how large the name will be.
-    cbTotalSize = ::WszWideCharToMultiByte(CP_ACP, 0, szStreamName, -1, 0, 0, 0, 0);
+    cbTotalSize = ::WideCharToMultiByte(CP_ACP, 0, szStreamName, -1, 0, 0, 0, 0);
     _ASSERTE(cbTotalSize != 0);
 
     // Add the size of the stream header minus the static name array.
@@ -430,9 +443,13 @@ HRESULT STDMETHODCALLTYPE TiggerStorage::CreateStream(
     DWORD       reserved2,
     IStream     **ppstm)
 {
+#ifdef FEATURE_METADATA_PERSISTENCE
     char        rcStream[MAXSTREAMNAME];// For converted name.
-    VERIFY(Wsz_wcstombs(rcStream, pwcsName, sizeof(rcStream)));
+    VERIFY(WideCharToMultiByte(CP_ACP, 0, pwcsName, -1, rcStream, sizeof(rcStream), 0, 0));
     return (CreateStream(rcStream, grfMode, reserved1, reserved2, ppstm));
+#else
+    return E_NOTIMPL;
+#endif
 }
 
 
@@ -444,6 +461,7 @@ HRESULT STDMETHODCALLTYPE TiggerStorage::CreateStream(
     DWORD       reserved2,
     IStream     **ppstm)
 {
+#ifdef FEATURE_METADATA_PERSISTENCE
     PSTORAGESTREAM pStream;             // For lookup.
     HRESULT     hr;
 
@@ -477,6 +495,9 @@ HRESULT STDMETHODCALLTYPE TiggerStorage::CreateStream(
         return (hr);
     }
     return (S_OK);
+#else
+    return E_NOTIMPL;
+#endif
 }
 #endif //!DACCESS_COMPILE
 
@@ -508,7 +529,7 @@ TiggerStorage::OpenStorage(
     const OLECHAR * wcsName,
     IStorage *      pStgPriority,
     DWORD           dwMode,
-  __in
+  _In_
     SNB             snbExclude,
     DWORD           reserved,
     IStorage **     ppStg)
@@ -520,7 +541,7 @@ HRESULT STDMETHODCALLTYPE
 TiggerStorage::CopyTo(
     DWORD       cIidExclude,
     const IID * rgIidExclude,
-  __in
+  _In_
     SNB         snbExclude,
     IStorage *  pStgDest)
 {
@@ -620,7 +641,7 @@ HRESULT STDMETHODCALLTYPE TiggerStorage::OpenStream(
     HRESULT     hr;
 
     // Convert the name for internal use.
-    VERIFY(::WszWideCharToMultiByte(CP_ACP, 0, szStream, -1, rcName, sizeof(rcName), 0, 0));
+    VERIFY(::WideCharToMultiByte(CP_ACP, 0, szStream, -1, rcName, sizeof(rcName), 0, 0));
 
     // Look for the stream which must be found for this to work.  Note that
     // this error is explicitly not posted as an error object since unfound streams
@@ -706,7 +727,7 @@ TiggerStorage::Write(
 HRESULT
 TiggerStorage::FindStream(
     LPCSTR                szName,
-    __out PSTORAGESTREAM *stream)
+    _Out_ PSTORAGESTREAM *stream)
 {
     *stream = NULL;
     // In read mode, just walk the list and return one.
@@ -715,7 +736,7 @@ TiggerStorage::FindStream(
         PSTORAGESTREAM p = m_pStreamList;
 
         SIZE_T pStartMD = (SIZE_T)(m_pStgIO->m_pData);
-        SIZE_T pEndMD = NULL;
+        SIZE_T pEndMD = 0;
 
         if (!ClrSafeInt<SIZE_T>::addition(pStartMD, m_pStgIO->m_cbData, pEndMD))
         {
@@ -783,7 +804,7 @@ TiggerStorage::WriteSignature(
     sSig.SetSignature(STORAGE_MAGIC_SIG);
     sSig.SetMajorVer(FILE_VER_MAJOR);
     sSig.SetMinorVer(FILE_VER_MINOR);
-    sSig.SetExtraDataOffset(0); // We have no extra inforation
+    sSig.SetExtraDataOffset(0); // We have no extra information
     sSig.SetVersionStringLength(alignedVersionSize);
     IfFailRet(m_pStgIO->Write(&sSig, sizeof(STORAGESIGNATURE), &cbWritten));
     IfFailRet(m_pStgIO->Write(pVersion, versionSize, &cbWritten));
@@ -944,34 +965,3 @@ HRESULT TiggerStorage::VerifyHeader()
 //*****************************************************************************
 // Print the sizes of the various streams.
 //*****************************************************************************
-#if defined(_DEBUG)
-ULONG TiggerStorage::PrintSizeInfo(bool verbose)
-{
-    ULONG total = 0;
-
-    printf("Storage Header:  %zu\n", sizeof(STORAGEHEADER));
-    if (m_pStreamList != NULL)
-    {
-        PSTORAGESTREAM storStream = m_pStreamList;
-        PSTORAGESTREAM pNext;
-        for (int i = 0; i < m_StgHdr.GetiStreams(); i++)
-        {
-            pNext = storStream->NextStream();
-            printf("Stream #%d (%s) Header: %zd, Data: %lu\n",i,storStream->GetName(), (size_t)((BYTE*)pNext - (BYTE*)storStream), storStream->GetSize());
-            total += storStream->GetSize();
-            storStream = pNext;
-        }
-    }
-    else
-    {
-        //<REVISIT_TODO>todo: Add support for the case where m_Streams exists and m_pStreamList does not</REVISIT_TODO>
-    }
-
-    if (m_pbExtra != NULL)
-    {
-        printf("Extra bytes: %d\n",*(ULONG*)m_pbExtra);
-        total += *(ULONG*)m_pbExtra;
-    }
-    return total;
-}
-#endif // _DEBUG

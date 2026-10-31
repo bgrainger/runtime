@@ -7,6 +7,7 @@
 // Best-scoring C# .NET Core version as of 2017-10-02
 
 /* The Computer Language Benchmarks Game
+using TestLibrary;
    http://benchmarksgame.alioth.debian.org/
 
    started with Java #2 program (Krause/Whipkey/Bennet/AhnTran/Enotus/Stalcup)
@@ -21,6 +22,8 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
+using Xunit;
+using TestLibrary;
 
 namespace BenchmarksGame
 {
@@ -82,9 +85,18 @@ namespace BenchmarksGame
             return (byte)(res ^ -1);
         }
 
-        public static int Main(string[] args)
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/41472", typeof(PlatformDetection), nameof(PlatformDetection.IsNotMultithreadingSupported))]
+        [Fact]
+        public static int TestEntryPoint()
         {
-            var size = (args.Length > 0) ? int.Parse(args[0]) : 80;
+            return Test(null);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static int Test(int? arg)
+        {
+            int size = arg ?? 80;
             var lineLength = size >> 3;
 
             var data = DoBench(size, lineLength);

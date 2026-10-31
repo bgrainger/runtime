@@ -1,11 +1,11 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Diagnostics;
 using System.Collections;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Xml;
 using System.Xml.Serialization;
-using System.Diagnostics.CodeAnalysis;
 
 namespace System.Data
 {
@@ -16,13 +16,14 @@ namespace System.Data
         private DataTable? _dataTable;
 
         [RequiresUnreferencedCode(DataSet.RequiresUnreferencedCodeMessage)]
+        [RequiresDynamicCode(DataSet.RequiresDynamicCodeMessage)]
         internal void LoadDiffGram(DataSet ds, XmlReader dataTextReader)
         {
             XmlReader reader = DataTextReader.CreateReader(dataTextReader);
             _dataSet = ds;
             while (reader.LocalName == Keywords.SQL_BEFORE && reader.NamespaceURI == Keywords.DFFNS)
             {
-                ProcessDiffs(ds, reader);
+                ProcessDiffs(reader);
                 reader.Read(); // now the reader points to the error section
             }
 
@@ -48,6 +49,7 @@ namespace System.Data
         }
 
         [RequiresUnreferencedCode(DataSet.RequiresUnreferencedCodeMessage)]
+        [RequiresDynamicCode(DataSet.RequiresDynamicCodeMessage)]
         internal void LoadDiffGram(DataTable dt, XmlReader dataTextReader)
         {
             XmlReader reader = DataTextReader.CreateReader(dataTextReader);
@@ -58,7 +60,7 @@ namespace System.Data
 
             while (reader.LocalName == Keywords.SQL_BEFORE && reader.NamespaceURI == Keywords.DFFNS)
             {
-                ProcessDiffs(_tables, reader);
+                ProcessDiffs(reader);
                 reader.Read(); // now the reader points to the error section
             }
 
@@ -71,6 +73,7 @@ namespace System.Data
         }
 
         [RequiresUnreferencedCode(DataSet.RequiresUnreferencedCodeMessage)]
+        [RequiresDynamicCode(DataSet.RequiresDynamicCodeMessage)]
         internal void ProcessDiffs(DataSet ds, XmlReader ssync)
         {
             DataTable? tableBefore;
@@ -86,9 +89,7 @@ namespace System.Data
             while (iSsyncDepth < ssync.Depth)
             {
                 tableBefore = null;
-                string? diffId = null;
-
-                oldRowRecord = -1;
+                string? diffId;
 
                 // the diffgramm always contains sql:before and sql:after pairs
 
@@ -124,7 +125,8 @@ namespace System.Data
         }
 
         [RequiresUnreferencedCode(DataSet.RequiresUnreferencedCodeMessage)]
-        internal void ProcessDiffs(ArrayList tableList, XmlReader ssync)
+        [RequiresDynamicCode(DataSet.RequiresDynamicCodeMessage)]
+        internal void ProcessDiffs(XmlReader ssync)
         {
             DataTable? tableBefore;
             DataRow? row;
@@ -141,7 +143,6 @@ namespace System.Data
                 tableBefore = null;
                 string diffId;
 
-                oldRowRecord = -1;
 
                 // the diffgramm always contains sql:before and sql:after pairs
 
@@ -178,7 +179,7 @@ namespace System.Data
         }
 
         [RequiresUnreferencedCode(DataSet.RequiresUnreferencedCodeMessage)]
-        internal void ProcessErrors(DataSet ds, XmlReader ssync)
+        internal static void ProcessErrors(DataSet ds, XmlReader ssync)
         {
             DataTable? table;
 
@@ -289,6 +290,7 @@ namespace System.Data
         }
 
         [RequiresUnreferencedCode(DataSet.RequiresUnreferencedCodeMessage)]
+        [RequiresDynamicCode(DataSet.RequiresDynamicCodeMessage)]
         private int ReadOldRowData(DataSet? ds, ref DataTable? table, ref int pos, XmlReader row)
         {
             // read table information
@@ -308,7 +310,7 @@ namespace System.Data
             }
 
             int iRowDepth = row.Depth;
-            string? value = null;
+            string? value;
 
             value = row.GetAttribute(Keywords.ROWORDER, Keywords.MSDNS);
             if (!string.IsNullOrEmpty(value))
@@ -452,7 +454,7 @@ namespace System.Data
             return record;
         }
 
-        internal void SkipWhitespaces(XmlReader reader)
+        internal static void SkipWhitespaces(XmlReader reader)
         {
             while (reader.NodeType == XmlNodeType.Whitespace || reader.NodeType == XmlNodeType.SignificantWhitespace)
             {

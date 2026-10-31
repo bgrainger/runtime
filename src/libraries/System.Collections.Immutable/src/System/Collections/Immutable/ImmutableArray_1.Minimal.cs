@@ -39,8 +39,7 @@ namespace System.Collections.Immutable
         /// An empty (initialized) instance of <see cref="ImmutableArray{T}"/>.
         /// </summary>
 #pragma warning disable CA1825
-        // Array.Empty<T>() doesn't exist in all configurations
-        // Switching to Array.Empty also has a non-negligible impact on the working set memory
+        // Avoid the extra generic instantiation for Array.Empty<T>()
         public static readonly ImmutableArray<T> Empty = new ImmutableArray<T>(new T[0]);
 #pragma warning restore CA1825
 
@@ -192,7 +191,7 @@ namespace System.Collections.Immutable
         {
             get
             {
-                var self = this;
+                ImmutableArray<T> self = this;
                 return self.array == null || self.array.Length == 0;
             }
         }
@@ -214,7 +213,7 @@ namespace System.Collections.Immutable
         {
             get
             {
-                var self = this;
+                ImmutableArray<T> self = this;
                 return self.IsDefault ? "Uninitialized" : $"Length = {self.Length}";
             }
         }
@@ -225,9 +224,9 @@ namespace System.Collections.Immutable
         /// <param name="destination">The array to copy to.</param>
         public void CopyTo(T[] destination)
         {
-            var self = this;
+            ImmutableArray<T> self = this;
             self.ThrowNullRefIfNotInitialized();
-            Array.Copy(self.array!, destination, self.Length);
+            Array.Copy(self.array, destination, self.Length);
         }
 
         /// <summary>
@@ -237,9 +236,9 @@ namespace System.Collections.Immutable
         /// <param name="destinationIndex">The index into the destination array to which the first copied element is written.</param>
         public void CopyTo(T[] destination, int destinationIndex)
         {
-            var self = this;
+            ImmutableArray<T> self = this;
             self.ThrowNullRefIfNotInitialized();
-            Array.Copy(self.array!, 0, destination, destinationIndex, self.Length);
+            Array.Copy(self.array, 0, destination, destinationIndex, self.Length);
         }
 
         /// <summary>
@@ -251,9 +250,9 @@ namespace System.Collections.Immutable
         /// <param name="length">The number of elements to copy.</param>
         public void CopyTo(int sourceIndex, T[] destination, int destinationIndex, int length)
         {
-            var self = this;
+            ImmutableArray<T> self = this;
             self.ThrowNullRefIfNotInitialized();
-            Array.Copy(self.array!, sourceIndex, destination, destinationIndex, length);
+            Array.Copy(self.array, sourceIndex, destination, destinationIndex, length);
         }
 
         /// <summary>
@@ -262,7 +261,7 @@ namespace System.Collections.Immutable
         /// <returns>The new builder.</returns>
         public ImmutableArray<T>.Builder ToBuilder()
         {
-            var self = this;
+            ImmutableArray<T> self = this;
             if (self.Length == 0)
             {
                 return new Builder(); // allow the builder to create itself with a reasonable default capacity
@@ -280,9 +279,9 @@ namespace System.Collections.Immutable
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Enumerator GetEnumerator()
         {
-            var self = this;
+            ImmutableArray<T> self = this;
             self.ThrowNullRefIfNotInitialized();
-            return new Enumerator(self.array!);
+            return new Enumerator(self.array);
         }
 
         /// <summary>
@@ -293,7 +292,7 @@ namespace System.Collections.Immutable
         /// </returns>
         public override int GetHashCode()
         {
-            var self = this;
+            ImmutableArray<T> self = this;
             return self.array == null ? 0 : self.array.GetHashCode();
         }
 
@@ -386,9 +385,9 @@ namespace System.Collections.Immutable
         /// <exception cref="InvalidOperationException">Thrown if the <see cref="IsDefault"/> property returns true.</exception>
         IEnumerator<T> IEnumerable<T>.GetEnumerator()
         {
-            var self = this;
+            ImmutableArray<T> self = this;
             self.ThrowInvalidOperationIfNotInitialized();
-            return EnumeratorObject.Create(self.array!);
+            return EnumeratorObject.Create(self.array);
         }
 
         /// <summary>
@@ -398,14 +397,15 @@ namespace System.Collections.Immutable
         /// <exception cref="InvalidOperationException">Thrown if the <see cref="IsDefault"/> property returns true.</exception>
         IEnumerator IEnumerable.GetEnumerator()
         {
-            var self = this;
+            ImmutableArray<T> self = this;
             self.ThrowInvalidOperationIfNotInitialized();
-            return EnumeratorObject.Create(self.array!);
+            return EnumeratorObject.Create(self.array);
         }
 
         /// <summary>
         /// Throws a null reference exception if the array field is null.
         /// </summary>
+        [MemberNotNull(nameof(array))]
         internal void ThrowNullRefIfNotInitialized()
         {
             // Force NullReferenceException if array is null by touching its Length.
@@ -427,9 +427,10 @@ namespace System.Collections.Immutable
         ///
         /// This is intended for explicitly implemented interface method and property implementations.
         /// </summary>
+        [MemberNotNull(nameof(array))]
         private void ThrowInvalidOperationIfNotInitialized()
         {
-            if (this.IsDefault)
+            if (this.array == null)
             {
                 throw new InvalidOperationException(SR.InvalidOperationOnDefaultArray);
             }

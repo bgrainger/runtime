@@ -1,4 +1,4 @@
-// Licensed to the .NET Foundation under one or more agreements.
+﻿// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics;
@@ -15,7 +15,12 @@ namespace System
     /// int lastElement = someArray[^1]; // lastElement = 5
     /// </code>
     /// </remarks>
-    public readonly struct Index : IEquatable<Index>
+#if SYSTEM_PRIVATE_CORELIB || MICROSOFT_BCL_MEMORY
+    public
+#else
+    internal
+#endif
+    readonly struct Index : IEquatable<Index>
     {
         private readonly int _value;
 
@@ -30,7 +35,7 @@ namespace System
         {
             if (value < 0)
             {
-                ThrowHelper.ThrowValueArgumentOutOfRange_NeedNonNegNumException();
+                ThrowValueArgumentOutOfRange_NeedNonNegNumException();
             }
 
             if (fromEnd)
@@ -58,7 +63,7 @@ namespace System
         {
             if (value < 0)
             {
-                ThrowHelper.ThrowValueArgumentOutOfRange_NeedNonNegNumException();
+                ThrowValueArgumentOutOfRange_NeedNonNegNumException();
             }
 
             return new Index(value);
@@ -71,7 +76,7 @@ namespace System
         {
             if (value < 0)
             {
-                ThrowHelper.ThrowValueArgumentOutOfRange_NeedNonNegNumException();
+                ThrowValueArgumentOutOfRange_NeedNonNegNumException();
             }
 
             return new Index(~value);
@@ -138,7 +143,16 @@ namespace System
             return ((uint)Value).ToString();
         }
 
-        private string ToStringFromEnd()
+        private static void ThrowValueArgumentOutOfRange_NeedNonNegNumException()
+        {
+#if SYSTEM_PRIVATE_CORELIB
+            throw new ArgumentOutOfRangeException("value", SR.ArgumentOutOfRange_NeedNonNegNum);
+#else
+            throw new ArgumentOutOfRangeException("value", "value must be non-negative");
+#endif
+        }
+
+        private unsafe string ToStringFromEnd()
         {
 #if (!NETSTANDARD2_0 && !NETFRAMEWORK)
             Span<char> span = stackalloc char[11]; // 1 for ^ and 10 for longest possible uint value

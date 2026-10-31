@@ -4,13 +4,14 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using System.Text;
 
 internal static partial class Interop
 {
     internal static partial class Sys
     {
-        [GeneratedDllImport(Libraries.SystemNative, EntryPoint = "SystemNative_GetDomainName")]
+        [LibraryImport(Libraries.SystemNative, EntryPoint = "SystemNative_GetDomainName")]
         private static unsafe partial int GetDomainName(byte* name, int len);
 
         internal static unsafe string GetDomainName()
@@ -31,8 +32,13 @@ internal static partial class Interop
                 throw new InvalidOperationException($"{nameof(GetDomainName)}: {err}");
             }
 
-            // Marshal.PtrToStringAnsi uses UTF8 on Unix.
-            return Marshal.PtrToStringAnsi((IntPtr)name)!;
+            string domainName = Utf8StringMarshaller.ConvertToManaged(name)!;
+            if (domainName == "(none)")
+            {
+                return string.Empty;
+            }
+
+            return domainName;
         }
     }
 }

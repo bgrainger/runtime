@@ -6,6 +6,7 @@
 #include "dir_utils.h"
 #include "pal.h"
 #include "utils.h"
+#include <cinttypes>
 
 #ifdef __sun
 #include <alloca.h>
@@ -30,8 +31,8 @@ pal::string_t& extractor_t::extraction_dir()
         // Compute the final extraction location as:
         // m_extraction_dir = $DOTNET_BUNDLE_EXTRACT_BASE_DIR/<app>/<id>/...
         //
-        // If DOTNET_BUNDLE_EXTRACT_BASE_DIR is not set in the environment, 
-        // a default is choosen within the temporary directory.
+        // If DOTNET_BUNDLE_EXTRACT_BASE_DIR is not set in the environment,
+        // a default is chosen within the temporary directory.
 
         if (!pal::getenv(_X("DOTNET_BUNDLE_EXTRACT_BASE_DIR"), &m_extraction_dir))
         {
@@ -62,7 +63,7 @@ pal::string_t& extractor_t::extraction_dir()
         append_path(&m_extraction_dir, host_name.c_str());
         append_path(&m_extraction_dir, m_bundle_id.c_str());
 
-        trace::info(_X("Files embedded within the bundled will be extracted to [%s] directory."), m_extraction_dir.c_str());
+        trace::info(_X("Files embedded within the bundle will be extracted to [%s] directory."), m_extraction_dir.c_str());
     }
 
     return m_extraction_dir;
@@ -72,7 +73,7 @@ pal::string_t& extractor_t::working_extraction_dir()
 {
     if (m_working_extraction_dir.empty())
     {
-        // Compute the working extraction location for this process, 
+        // Compute the working extraction location for this process,
         // before the extracted files are committed to the final location
         // working_extraction_dir = $DOTNET_BUNDLE_EXTRACT_BASE_DIR/<app>/<proc-id-hex>
 
@@ -93,7 +94,7 @@ FILE* extractor_t::create_extraction_file(const pal::string_t& relative_path)
     pal::string_t file_path = working_extraction_dir();
     append_path(&file_path, relative_path.c_str());
 
-    // working_extraction_dir is assumed to exist, 
+    // working_extraction_dir is assumed to exist,
     // so we only create sub-directories if relative_path contains directories
     if (dir_utils_t::has_dirs_in_path(relative_path))
     {
@@ -121,12 +122,13 @@ void extractor_t::extract(const file_entry_t &entry, reader_t &reader)
     size_t cast_size = to_size_t_dbgchecked(size);
     size_t extracted_size = 0;
 
+    trace::verbose(_X("  %s (size: %" PRId64 ")"), entry.relative_path().c_str(), size);
     if (entry.compressedSize() != 0)
     {
 #if defined(NATIVE_LIBS_EMBEDDED)
         PAL_ZStream zStream;
         zStream.nextIn = (uint8_t*)(const void*)reader;
-        zStream.availIn = entry.compressedSize();
+        zStream.availIn = static_cast<uint32_t>(entry.compressedSize());
 
         const int Deflate_DefaultWindowBits = -15; // Legal values are 8..15 and -8..-15. 15 is the window size,
                                                    // negative val causes deflate to produce raw deflate data (no zlib header).
@@ -157,8 +159,9 @@ void extractor_t::extract(const file_entry_t &entry, reader_t &reader)
             int produced = bufSize - zStream.availOut;
             if (fwrite(buf, 1, produced, file) != (size_t)produced)
             {
+                int error_code = errno;
                 CompressionNative_InflateEnd(&zStream);
-                trace::error(_X("I/O failure when writing decompressed file."));
+                trace::error(_X("I/O failure when writing decompressed file. %s (%d)"), pal::strerror(error_code).c_str(), error_code);
                 throw StatusCode::BundleExtractionIOError;
             }
 
@@ -174,12 +177,16 @@ void extractor_t::extract(const file_entry_t &entry, reader_t &reader)
     else
     {
         extracted_size = fwrite(reader, 1, cast_size, file);
+        if (extracted_size != cast_size)
+        {
+            int error_code = errno;
+            trace::error(_X("I/O failure when writing extracted files. %s (%d)"), pal::strerror(error_code).c_str(), error_code);
+        }
     }
 
     if (extracted_size != cast_size)
     {
-        trace::error(_X("Failure extracting contents of the application bundle. Expected size:%d Actual size:%d"), size, extracted_size);
-        trace::error(_X("I/O failure when writing extracted files."));
+        trace::error(_X("Failure extracting contents of the application bundle. Expected size:%" PRId64 " Actual size:%zu"), size, extracted_size);
         throw StatusCode::BundleExtractionIOError;
     }
 
@@ -200,7 +207,7 @@ void extractor_t::begin()
     //    extraction location (working_extraction_dir)
     // 2) Upon successful extraction, working_extraction_dir is renamed to the actual
     //    extraction location (extraction_dir)
-    //    
+    //
     // This effectively creates a file-lock to protect against races and failed extractions.
 
 
@@ -218,7 +225,7 @@ void extractor_t::commit_dir()
     // Retry the move operation with some wait in between the attempts. This is to workaround for possible file locking
     // caused by AV software. Basically the extraction process above writes a bunch of executable files to disk
     // and some AV software may decide to scan them on write. If this happens the files will be locked which blocks
-    // our ablity to move them.
+    // our ability to move them.
 
     bool extracted_by_concurrent_process = false;
     bool extracted_by_current_process =
@@ -279,7 +286,7 @@ void extractor_t::commit_file(const pal::string_t& relative_path)
 void extractor_t::extract_new(reader_t& reader)
 {
     begin();
-    for (const file_entry_t& entry : m_manifest.files) 
+    for (const file_entry_t& entry : m_manifest.files)
     {
         if (entry.needs_extraction())
         {

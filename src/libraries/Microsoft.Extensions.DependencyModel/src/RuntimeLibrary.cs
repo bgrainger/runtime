@@ -54,9 +54,9 @@ namespace Microsoft.Extensions.DependencyModel
                   serviceable,
                   path,
                   hashPath,
-                  runtimeStoreManifestName : null)
-         {
-         }
+                  runtimeStoreManifestName: null)
+        {
+        }
 
 
         /// <summary>
@@ -105,18 +105,10 @@ namespace Microsoft.Extensions.DependencyModel
                   hashPath,
                   runtimeStoreManifestName)
         {
-            if (runtimeAssemblyGroups == null)
-            {
-                throw new ArgumentNullException(nameof(runtimeAssemblyGroups));
-            }
-            if (nativeLibraryGroups == null)
-            {
-                throw new ArgumentNullException(nameof(nativeLibraryGroups));
-            }
-            if (resourceAssemblies == null)
-            {
-                throw new ArgumentNullException(nameof(resourceAssemblies));
-            }
+            ArgumentNullException.ThrowIfNull(runtimeAssemblyGroups);
+            ArgumentNullException.ThrowIfNull(nativeLibraryGroups);
+            ArgumentNullException.ThrowIfNull(resourceAssemblies);
+
             RuntimeAssemblyGroups = runtimeAssemblyGroups;
             ResourceAssemblies = resourceAssemblies.ToArray();
             NativeLibraryGroups = nativeLibraryGroups;

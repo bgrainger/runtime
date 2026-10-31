@@ -28,6 +28,45 @@ Precode* FuncPtrStubs::Lookup(MethodDesc * pMD, PrecodeType type)
     return pPrecode;
 }
 
+#if defined(FEATURE_PORTABLE_ENTRYPOINTS) && !defined(DACCESS_COMPILE)
+PCODE FuncPtrStubs::LookupClosedStaticRetBufStub(MethodDesc* pTargetMD, MethodDesc* pDelegateInvoke)
+{
+    CONTRACTL
+    {
+        THROWS;
+        GC_NOTRIGGER;
+    }
+    CONTRACTL_END;
+
+    CrstHolder ch(&m_hashTableCrst);
+    const ClosedStaticRetBufStubEntry* entry =
+        m_closedStaticRetBufStubs.LookupPtr({ pTargetMD, pDelegateInvoke });
+    return entry == NULL ? (PCODE)NULL : entry->Stub;
+}
+
+PCODE FuncPtrStubs::AddClosedStaticRetBufStub(
+    MethodDesc* pTargetMD,
+    MethodDesc* pDelegateInvoke,
+    PCODE pStub)
+{
+    CONTRACTL
+    {
+        THROWS;
+        GC_NOTRIGGER;
+    }
+    CONTRACTL_END;
+
+    CrstHolder ch(&m_hashTableCrst);
+    const ClosedStaticRetBufStubEntry* entry =
+        m_closedStaticRetBufStubs.LookupPtr({ pTargetMD, pDelegateInvoke });
+    if (entry != NULL)
+        return entry->Stub;
+
+    m_closedStaticRetBufStubs.Add({ pTargetMD, pDelegateInvoke, pStub });
+    return pStub;
+}
+#endif // FEATURE_PORTABLE_ENTRYPOINTS && !DACCESS_COMPILE
+
 
 #ifndef DACCESS_COMPILE
 //
@@ -64,7 +103,6 @@ PCODE FuncPtrStubs::GetFuncPtrStub(MethodDesc * pMD, PrecodeType type)
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(ThrowOutOfMemory(););
     }
     CONTRACTL_END
 
@@ -78,8 +116,9 @@ PCODE FuncPtrStubs::GetFuncPtrStub(MethodDesc * pMD, PrecodeType type)
     {
         return pPrecode->GetEntryPoint();
     }
+    GCX_PREEMP();
 
-    PCODE target = NULL;
+    PCODE target = (PCODE)NULL;
     bool setTargetAfterAddingToHashTable = false;
 
     if (type != GetDefaultType(pMD) &&
@@ -99,7 +138,7 @@ PCODE FuncPtrStubs::GetFuncPtrStub(MethodDesc * pMD, PrecodeType type)
     {
         // The funcptr stub must point to the current entry point after it is created and exposed. Keep the target as null for
         // now. The precode will initially point to the prestub and its target will be updated after the precode is exposed.
-        _ASSERTE(target == NULL);
+        _ASSERTE(target == (PCODE)NULL);
         setTargetAfterAddingToHashTable = true;
     }
     else
@@ -123,7 +162,7 @@ PCODE FuncPtrStubs::GetFuncPtrStub(MethodDesc * pMD, PrecodeType type)
         AllocMemTracker amt;
         Precode* pNewPrecode = Precode::Allocate(type, pMD, pMD->GetLoaderAllocator(), &amt);
 
-        if (target != NULL)
+        if (target != (PCODE)NULL)
         {
             pNewPrecode->SetTargetInterlocked(target);
         }
@@ -151,12 +190,10 @@ PCODE FuncPtrStubs::GetFuncPtrStub(MethodDesc * pMD, PrecodeType type)
 
     if (setTargetAfterAddingToHashTable)
     {
-        GCX_PREEMP();
-
         _ASSERTE(pMD->IsVersionableWithVtableSlotBackpatch());
 
         PCODE temporaryEntryPoint = pMD->GetTemporaryEntryPoint();
-        MethodDescBackpatchInfoTracker::ConditionalLockHolderForGCPreemp slotBackpatchLockHolder;
+        MethodDescBackpatchInfoTracker::ConditionalLockHolder slotBackpatchLockHolder;
 
         // Set the funcptr stub's entry point to the current entry point inside the lock and after the funcptr stub is exposed,
         // to synchronize with backpatching in MethodDesc::BackpatchEntryPointSlots()

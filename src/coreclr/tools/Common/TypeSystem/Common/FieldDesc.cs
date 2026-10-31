@@ -3,8 +3,12 @@
 
 using System;
 using System.Runtime.CompilerServices;
-
+using Internal.Text;
 using Debug = System.Diagnostics.Debug;
+
+#if TYPE_LOADER_IMPLEMENTATION
+using MetadataType = Internal.TypeSystem.DefType;
+#endif
 
 namespace Internal.TypeSystem
 {
@@ -23,19 +27,29 @@ namespace Internal.TypeSystem
         public override bool Equals(object o)
         {
             // Its only valid to compare two FieldDescs in the same context
-            Debug.Assert(o is not FieldDesc || object.ReferenceEquals(((FieldDesc)o).Context, this.Context));
-            return object.ReferenceEquals(this, o);
+            Debug.Assert(o is not FieldDesc || ReferenceEquals(((FieldDesc)o).Context, this.Context));
+            return ReferenceEquals(this, o);
         }
 
-        public virtual string Name
+        public virtual Utf8Span Name
         {
             get
             {
-                return null;
+                return Array.Empty<byte>();
             }
         }
 
-        public abstract DefType OwningType
+        public string GetName()
+        {
+            return System.Text.Encoding.UTF8.GetString(
+                Name.AsSpan()
+#if NETSTANDARD
+                .ToArray()
+#endif
+                );
+        }
+
+        public abstract MetadataType OwningType
         {
             get;
         }
@@ -44,6 +58,11 @@ namespace Internal.TypeSystem
         {
             get;
         }
+
+        // Get the embedded signature data used to hold custom modifiers and such within a field signature
+        public abstract EmbeddedSignatureData[] GetEmbeddedSignatureData();
+
+        public abstract bool HasEmbeddedSignatureData { get; }
 
         public abstract bool IsStatic
         {
@@ -89,7 +108,7 @@ namespace Internal.TypeSystem
         {
             FieldDesc field = this;
 
-            TypeDesc owningType = field.OwningType;
+            DefType owningType = field.OwningType;
             TypeDesc instantiatedOwningType = owningType.InstantiateSignature(typeInstantiation, methodInstantiation);
             if (owningType != instantiatedOwningType)
                 field = instantiatedOwningType.Context.GetFieldForInstantiatedType(field.GetTypicalFieldDefinition(), (InstantiatedType)instantiatedOwningType);

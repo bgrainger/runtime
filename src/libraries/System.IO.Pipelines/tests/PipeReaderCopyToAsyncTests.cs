@@ -38,14 +38,14 @@ namespace System.IO.Pipelines.Tests
             await Assert.ThrowsAsync<TaskCanceledException>(() => PipeReader.CopyToAsync(new MemoryStream(), new CancellationToken(true)));
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public async Task CopyToAsyncStreamWorks()
         {
             var messages = new List<byte[]>()
             {
-                Encoding.UTF8.GetBytes("Hello World1"),
-                Encoding.UTF8.GetBytes("Hello World2"),
-                Encoding.UTF8.GetBytes("Hello World3"),
+                "Hello World1"u8.ToArray(),
+                "Hello World2"u8.ToArray(),
+                "Hello World3"u8.ToArray(),
             };
 
             var stream = new WriteCheckMemoryStream();
@@ -67,9 +67,9 @@ namespace System.IO.Pipelines.Tests
         {
             var messages = new List<byte[]>()
             {
-                Encoding.UTF8.GetBytes("Hello World1"),
-                Encoding.UTF8.GetBytes("Hello World2"),
-                Encoding.UTF8.GetBytes("Hello World3"),
+                "Hello World1"u8.ToArray(),
+                "Hello World2"u8.ToArray(),
+                "Hello World3"u8.ToArray(),
             };
 
             var targetPipe = new Pipe(s_testOptions);
@@ -128,7 +128,7 @@ namespace System.IO.Pipelines.Tests
                 try
                 {
                     await PipeReader.CopyToAsync(stream);
-                    Assert.True(false, $"CopyToAsync should have failed, wrote {stream.Writes} times.");
+                    Assert.Fail($"CopyToAsync should have failed, wrote {stream.Writes} times.");
                 }
                 catch (InvalidOperationException)
                 {
@@ -170,7 +170,7 @@ namespace System.IO.Pipelines.Tests
             await Assert.ThrowsAsync<OperationCanceledException>(() => task);
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public async Task CancelingBetweenReadsThrowsOperationCancelledException()
         {
             var stream = new WriteCheckMemoryStream { MidWriteCancellation = new CancellationTokenSource() };
@@ -193,13 +193,13 @@ namespace System.IO.Pipelines.Tests
             await Assert.ThrowsAsync<OperationCanceledException>(() => task);
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public async Task CancelingPipeWriterViaCancellationTokenThrowsOperationCancelledException()
         {
             // This should make the write call pause
             var targetPipe = new Pipe(new PipeOptions(pauseWriterThreshold: 1, resumeWriterThreshold: 1));
             var cts = new CancellationTokenSource();
-            await Pipe.Writer.WriteAsync(Encoding.ASCII.GetBytes("Gello World"));
+            await Pipe.Writer.WriteAsync("Gello World"u8.ToArray());
             Task task = PipeReader.CopyToAsync(targetPipe.Writer, cts.Token);
 
             cts.Cancel();
@@ -207,12 +207,12 @@ namespace System.IO.Pipelines.Tests
             await Assert.ThrowsAsync<OperationCanceledException>(() => task);
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public async Task CancelingPipeWriterViaPendingFlushThrowsOperationCancelledException()
         {
             // This should make the write call pause
             var targetPipe = new Pipe(new PipeOptions(pauseWriterThreshold: 1, resumeWriterThreshold: 1));
-            await Pipe.Writer.WriteAsync(Encoding.ASCII.GetBytes("Gello World"));
+            await Pipe.Writer.WriteAsync("Gello World"u8.ToArray());
             Task task = PipeReader.CopyToAsync(targetPipe.Writer);
 
             targetPipe.Writer.CancelPendingFlush();
@@ -220,7 +220,7 @@ namespace System.IO.Pipelines.Tests
             await Assert.ThrowsAsync<OperationCanceledException>(() => task);
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public async Task CancelingStreamViaCancellationTokenThrowsOperationCancelledException()
         {
             var stream = new CancelledWritesStream();
@@ -261,7 +261,7 @@ namespace System.IO.Pipelines.Tests
             PipeReader.Complete();
         }
 
-        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         [InlineData(0)]
         [InlineData(1)]
         public async Task ThrowingFromStreamCallsAdvanceToWithStartOfLastReadResult(int throwAfterNWrites)
@@ -290,7 +290,7 @@ namespace System.IO.Pipelines.Tests
         [Fact]
         public async Task CopyToAsyncStreamCopiesRemainderAfterReadingSome()
         {
-            var buffer = Encoding.UTF8.GetBytes("Hello World");
+            byte[] buffer = "Hello World"u8.ToArray();
             await Pipe.Writer.WriteAsync(buffer);
             Pipe.Writer.Complete();
 
@@ -308,7 +308,7 @@ namespace System.IO.Pipelines.Tests
         [Fact]
         public async Task CopyToAsyncPipeWriterCopiesRemainderAfterReadingSome()
         {
-            var buffer = Encoding.UTF8.GetBytes("Hello World");
+            byte[] buffer = "Hello World"u8.ToArray();
             await Pipe.Writer.WriteAsync(buffer);
             Pipe.Writer.Complete();
 
@@ -321,6 +321,115 @@ namespace System.IO.Pipelines.Tests
             await PipeReader.CopyToAsync(PipeWriter.Create(ms));
 
             Assert.Equal(buffer.AsMemory(5).ToArray(), ms.ToArray());
+        }
+
+        [Fact]
+        public async Task CopyToAsyncStreamDoesNotDoZeroLengthWrite()
+        {
+            using var ms = new LengthCheckStream();
+            var incompleteCopy = Task.Run(() => PipeReader.CopyToAsync(ms));
+            Pipe.Writer.Write(Array.Empty<byte>());
+            await Pipe.Writer.FlushAsync();
+            Pipe.Writer.Complete(null);
+            await incompleteCopy;
+            Assert.False(ms.ZeroLengthWriteDetected);
+        }
+
+        [Fact]
+        public async Task CopyToAsyncPipeWriterAdvancesBufferedData()
+        {
+            byte[] buffer = "Hello World"u8.ToArray();
+            await Pipe.Writer.WriteAsync(buffer);
+            Pipe.Writer.Complete();
+
+            // Buffer some data via ReadAsync
+            ReadResult readResult = await PipeReader.ReadAsync();
+            PipeReader.AdvanceTo(readResult.Buffer.Start, readResult.Buffer.End);
+
+            // CopyToAsync should advance past the buffered data
+            var pipe = new Pipe();
+            await PipeReader.CopyToAsync(pipe.Writer);
+            await pipe.Writer.CompleteAsync();
+
+            ReadResult pipeResult = await pipe.Reader.ReadAsync();
+            Assert.Equal(buffer.Length, pipeResult.Buffer.Length);
+            Assert.Equal("Hello World", Encoding.ASCII.GetString(pipeResult.Buffer.ToArray()));
+            pipe.Reader.AdvanceTo(pipeResult.Buffer.End);
+            pipe.Reader.Complete();
+
+            // Verify the reader state is clean - no buffered data should remain
+            readResult = await PipeReader.ReadAsync();
+            Assert.True(readResult.IsCompleted);
+            Assert.Equal(0, readResult.Buffer.Length);
+            PipeReader.AdvanceTo(readResult.Buffer.End);
+        }
+
+        [Fact]
+        public async Task CopyToAsyncStreamAdvancesBufferedData()
+        {
+            byte[] buffer = "Hello World"u8.ToArray();
+            await Pipe.Writer.WriteAsync(buffer);
+            Pipe.Writer.Complete();
+
+            // Buffer some data via ReadAsync
+            ReadResult readResult = await PipeReader.ReadAsync();
+            PipeReader.AdvanceTo(readResult.Buffer.Start, readResult.Buffer.End);
+
+            // CopyToAsync should advance past the buffered data
+            var destination = new MemoryStream();
+            await PipeReader.CopyToAsync(destination);
+
+            Assert.Equal(buffer.Length, destination.Length);
+            Assert.Equal("Hello World", Encoding.ASCII.GetString(destination.ToArray()));
+
+            // Verify the reader state is clean - no buffered data should remain
+            readResult = await PipeReader.ReadAsync();
+            Assert.True(readResult.IsCompleted);
+            Assert.Equal(0, readResult.Buffer.Length);
+            PipeReader.AdvanceTo(readResult.Buffer.End);
+        }
+
+        class LengthCheckStream : MemoryStream
+        {
+            public bool ZeroLengthWriteDetected { get; private set; }
+
+            private void Check(int count)
+            {
+                if (count == 0) ZeroLengthWriteDetected = true;
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                Check(count);
+                base.Write(buffer, offset, count);
+            }
+#if NET
+            public override void Write(ReadOnlySpan<byte> buffer)
+            {
+                Check(buffer.Length);
+                base.Write(buffer);
+            }
+            public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                Check(buffer.Length);
+                return base.WriteAsync(buffer, cancellationToken);
+            }
+#endif
+            public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            {
+                Check(count);
+                return base.WriteAsync(buffer, offset, count, cancellationToken);
+            }
+            public override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback? callback, object? state)
+            {
+                Check(count);
+                return base.BeginWrite(buffer, offset, count, callback, state);
+            }
+            public override void WriteByte(byte value)
+            {
+                Check(1);
+                base.WriteByte(value);
+            }
         }
     }
 }

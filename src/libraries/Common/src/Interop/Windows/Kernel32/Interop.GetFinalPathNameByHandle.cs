@@ -12,8 +12,9 @@ internal static partial class Interop
     {
         internal const uint FILE_NAME_NORMALIZED = 0x0;
 
-        // https://docs.microsoft.com/windows/desktop/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew (kernel32)
-        [GeneratedDllImport(Libraries.Kernel32, EntryPoint = "GetFinalPathNameByHandleW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+        // https://learn.microsoft.com/windows/desktop/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew (kernel32)
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.Kernel32, EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true)]
         internal static unsafe partial uint GetFinalPathNameByHandle(
             SafeFileHandle hFile,
             char* lpszFilePath,

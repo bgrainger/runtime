@@ -1,49 +1,39 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Collections.Generic;
 using System.Text;
 
 namespace System.Net.Http.QPack
 {
     internal static partial class H3StaticTable
     {
-        private static readonly Dictionary<int, int> s_statusIndex = new Dictionary<int, int>
+        public static bool TryGetStatusIndex(int status, out int index)
         {
-            [103] = 24,
-            [200] = 25,
-            [304] = 26,
-            [404] = 27,
-            [503] = 28,
-            [100] = 63,
-            [204] = 64,
-            [206] = 65,
-            [302] = 66,
-            [400] = 67,
-            [403] = 68,
-            [421] = 69,
-            [425] = 70,
-            [500] = 71,
-        };
+            index = status switch
+            {
+                103 => 24,
+                200 => 25,
+                304 => 26,
+                404 => 27,
+                503 => 28,
+                100 => 63,
+                204 => 64,
+                206 => 65,
+                302 => 66,
+                400 => 67,
+                403 => 68,
+                421 => 69,
+                425 => 70,
+                500 => 71,
+                _ => -1
+            };
 
-        private static readonly Dictionary<HttpMethod, int> s_methodIndex = new Dictionary<HttpMethod, int>
-        {
-            // TODO connect is internal to system.net.http
-            [HttpMethod.Delete] = 16,
-            [HttpMethod.Get] = 17,
-            [HttpMethod.Head] = 18,
-            [HttpMethod.Options] = 19,
-            [HttpMethod.Post] = 20,
-            [HttpMethod.Put] = 21,
-        };
+            return index != -1;
+        }
 
         public static int Count => s_staticTable.Length;
 
-        // TODO: just use Dictionary directly to avoid interface dispatch.
-        public static IReadOnlyDictionary<int, int> StatusIndex => s_statusIndex;
-        public static IReadOnlyDictionary<HttpMethod, int> MethodIndex => s_methodIndex;
-
-        public static HeaderField GetHeaderFieldAt(int index) => s_staticTable[index];
+        public static ref readonly HeaderField Get(int index) => ref s_staticTable[index];
 
         private static readonly HeaderField[] s_staticTable = new HeaderField[]
         {
@@ -141,7 +131,7 @@ namespace System.Net.Http.QPack
             CreateHeaderField("purpose", "prefetch"), // 91
             CreateHeaderField("server", ""), // 92
             CreateHeaderField("timing-allow-origin", "*"), // 93
-            CreateHeaderField("upgrading-insecure-requests", "1"), // 94
+            CreateHeaderField("upgrade-insecure-requests", "1"), // 94
             CreateHeaderField("user-agent", ""), // 95
             CreateHeaderField("x-forwarded-for", ""), // 96
             CreateHeaderField("x-frame-options", "deny"), // 97

@@ -2,7 +2,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 //
 
+namespace JitTest_Generics_Typeof_class01;
+
 using System;
+using Xunit;
 
 public struct ValX0 { }
 public struct ValY0 { }
@@ -60,7 +63,9 @@ public class Test_class01
 
     }
 
-    public static int Main()
+    [OuterLoop]
+    [Fact]
+    public static int TestEntryPoint()
     {
         Eval((new Gen<int>(new int())).InstVerify(typeof(int)));
         Eval((new Gen<double>(new double())).InstVerify(typeof(double)));

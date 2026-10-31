@@ -200,6 +200,7 @@ namespace System.Linq.Expressions.Interpreter
     internal sealed class RethrowException : Exception
     {
         public RethrowException() : base() { }
+        [Obsolete(Obsoletions.LegacyFormatterImplMessage, DiagnosticId = Obsoletions.LegacyFormatterImplDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
         internal RethrowException(SerializationInfo info, StreamingContext context) : base(info, context) { }
     }
 
@@ -241,7 +242,7 @@ namespace System.Linq.Expressions.Interpreter
                     return null;
                 }
                 //return the last one that is smaller
-                i = i - 1;
+                i--;
             }
 
             return debugInfos[i];
@@ -442,7 +443,7 @@ namespace System.Linq.Expressions.Interpreter
             }
         }
 
-        private bool MaybeMutableValueType(Type type)
+        private static bool MaybeMutableValueType(Type type)
         {
             return type.IsValueType && !type.IsEnum && !type.IsPrimitive;
         }
@@ -1360,10 +1361,29 @@ namespace System.Linq.Expressions.Interpreter
             _instructions.EmitCall(opTrue);
             _instructions.EmitBranchTrue(labEnd);
 
+            // Store the left value to a local to empty the evaluation stack before
+            // compiling the right expression. The right expression may contain a
+            // TryCatch (or anything that does not tolerate non-empty evaluation
+            // stack on entry), so we must not leave the dup'd left value on the
+            // stack while the right expression executes.
+            LocalDefinition leftTemp = _locals.DefineLocal(Expression.Parameter(expr.Left.Type), _instructions.Count);
+            _instructions.EmitStoreLocal(leftTemp.Index);
+
             Compile(expr.Right);
+
+            // Store the right value, then reload both left and right before calling
+            // the user-defined operator method.
+            LocalDefinition rightTemp = _locals.DefineLocal(Expression.Parameter(expr.Right.Type), _instructions.Count);
+            _instructions.EmitStoreLocal(rightTemp.Index);
+
+            _instructions.EmitLoadLocal(leftTemp.Index);
+            _instructions.EmitLoadLocal(rightTemp.Index);
 
             Debug.Assert(expr.Method.IsStatic);
             _instructions.EmitCall(expr.Method);
+
+            _locals.UndefineLocal(leftTemp, _instructions.Count);
+            _locals.UndefineLocal(rightTemp, _instructions.Count);
 
             _instructions.MarkLabel(labEnd);
         }
@@ -1743,10 +1763,7 @@ namespace System.Linq.Expressions.Interpreter
                 Debug.Assert(label != null);
             }
 
-            if (label == null)
-            {
-                label = DefineLabel(node.Target);
-            }
+            label ??= DefineLabel(node.Target);
 
             if (node.DefaultValue != null)
             {
@@ -2166,10 +2183,7 @@ namespace System.Linq.Expressions.Interpreter
                     ByRefUpdater? updater = CompileAddress(arg, i);
                     if (updater != null)
                     {
-                        if (updaters == null)
-                        {
-                            updaters = new List<ByRefUpdater>();
-                        }
+                        updaters ??= new List<ByRefUpdater>();
 
                         updaters.Add(updater);
                     }
@@ -2406,10 +2420,7 @@ namespace System.Linq.Expressions.Interpreter
                         ByRefUpdater? updater = CompileAddress(arg, i);
                         if (updater != null)
                         {
-                            if (updaters == null)
-                            {
-                                updaters = new List<ByRefUpdater>();
-                            }
+                            updaters ??= new List<ByRefUpdater>();
                             updaters.Add(updater);
                         }
                     }
@@ -2517,8 +2528,12 @@ namespace System.Linq.Expressions.Interpreter
             }
         }
 
+        [UnconditionalSuppressMessage("DynamicDependency", "IL3050",
+            Justification = "NewArrayExpression has RequiresDynamicCode, so the only way to get here is by already "
+                + "seeing a warning.")]
         private void CompileNewArrayExpression(Expression expr)
         {
+            Debug.Assert(typeof(NewArrayExpression).GetCustomAttribute<RequiresDynamicCodeAttribute>() is not null);
             var node = (NewArrayExpression)expr;
 
             foreach (Expression arg in node.Expressions)

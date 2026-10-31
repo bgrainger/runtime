@@ -115,7 +115,7 @@ ICorDebugFrame * UpdateFrame(ICorDebugThread * pThread, ICorDebugFrame * pOldFra
         // continue with a NULL ICDFrame.  VS is able to handle this gracefully.
         pNewFrame.Assign(NULL);
     }
-    EX_END_CATCH(SwallowAllExceptions);
+    EX_END_CATCH
 
     return pNewFrame;
 }
@@ -659,7 +659,7 @@ HRESULT ShimProxyCallback::DebuggerError(ICorDebugProcess * pProcess, HRESULT er
 
 
 // Implementation of ICorDebugManagedCallback::LogMessage
-HRESULT ShimProxyCallback::LogMessage(ICorDebugAppDomain * pAppDomain, ICorDebugThread * pThread, LONG lLevel, __in LPWSTR pLogSwitchName, __in LPWSTR pMessage)
+HRESULT ShimProxyCallback::LogMessage(ICorDebugAppDomain * pAppDomain, ICorDebugThread * pThread, LONG lLevel, _In_ LPWSTR pLogSwitchName, _In_ LPWSTR pMessage)
 {
     m_pShim->PreDispatchEvent();
     class LogMessageEvent  : public ManagedEvent
@@ -695,7 +695,7 @@ HRESULT ShimProxyCallback::LogMessage(ICorDebugAppDomain * pAppDomain, ICorDebug
 
 
 // Implementation of ICorDebugManagedCallback::LogSwitch
-HRESULT ShimProxyCallback::LogSwitch(ICorDebugAppDomain * pAppDomain, ICorDebugThread * pThread, LONG lLevel, ULONG ulReason, __in LPWSTR pLogSwitchName, __in LPWSTR pParentName)
+HRESULT ShimProxyCallback::LogSwitch(ICorDebugAppDomain * pAppDomain, ICorDebugThread * pThread, LONG lLevel, ULONG ulReason, _In_ LPWSTR pLogSwitchName, _In_ LPWSTR pParentName)
 {
     m_pShim->PreDispatchEvent();
     class LogSwitchEvent  : public ManagedEvent
@@ -1060,7 +1060,7 @@ HRESULT ShimProxyCallback::FunctionRemapOpportunity(ICorDebugAppDomain * pAppDom
 
 
 // Implementation of ICorDebugManagedCallback2::CreateConnection
-HRESULT ShimProxyCallback::CreateConnection(ICorDebugProcess * pProcess, CONNID dwConnectionId, __in LPWSTR pConnectionName)
+HRESULT ShimProxyCallback::CreateConnection(ICorDebugProcess * pProcess, CONNID dwConnectionId, _In_ LPWSTR pConnectionName)
 {
     m_pShim->PreDispatchEvent();
     class CreateConnectionEvent  : public ManagedEvent
@@ -1259,33 +1259,9 @@ HRESULT ShimProxyCallback::FunctionRemapComplete(ICorDebugAppDomain * pAppDomain
 // Implementation of ICorDebugManagedCallback2::MDANotification
 HRESULT ShimProxyCallback::MDANotification(ICorDebugController * pController, ICorDebugThread * pThread, ICorDebugMDA * pMDA)
 {
-    m_pShim->PreDispatchEvent();
-    class MDANotificationEvent  : public ManagedEvent
-    {
-        // callbacks parameters. These are strong references
-        RSExtSmartPtr<ICorDebugController > m_pController;
-        RSExtSmartPtr<ICorDebugThread > m_pThread;
-        RSExtSmartPtr<ICorDebugMDA > m_pMDA;
-
-    public:
-        // Ctor
-        MDANotificationEvent(ICorDebugController * pController, ICorDebugThread * pThread, ICorDebugMDA * pMDA) :
-             ManagedEvent(pThread)
-        {
-            this->m_pController.Assign(pController);
-            this->m_pThread.Assign(pThread);
-            this->m_pMDA.Assign(pMDA);
-        }
-
-        HRESULT Dispatch(DispatchArgs args)
-        {
-            return args.GetCallback2()->MDANotification(m_pController, m_pThread, m_pMDA);
-        }
-    }; // end class MDANotificationEvent
-
-    m_pShim->GetManagedEventQueue()->QueueEvent(new MDANotificationEvent(pController, pThread, pMDA));
-    return S_OK;
-} // end of methodICorDebugManagedCallback2::MDANotification
+    // MDA (Managed Debugging Assistant) support does not exist in .NET Core
+    return E_NOTIMPL;
+}
 
 // Implementation of ICorDebugManagedCallback3::CustomNotification
 // Arguments:
@@ -1396,7 +1372,7 @@ HRESULT ShimProxyCallback::DataBreakpoint(ICorDebugProcess* pProcess, ICorDebugT
         // callbacks parameters. These are strong references
         RSExtSmartPtr<ICorDebugProcess> m_pProcess;
         RSExtSmartPtr<ICorDebugThread> m_pThread;
-        CONTEXT m_context;
+        NewArrayHolder<BYTE> m_context;
         ULONG32 m_contextSize;
 
     public:
@@ -1407,14 +1383,20 @@ HRESULT ShimProxyCallback::DataBreakpoint(ICorDebugProcess* pProcess, ICorDebugT
             this->m_pProcess.Assign(pProcess);
             this->m_pThread.Assign(pThread);
 
-            _ASSERTE(contextSize == sizeof(CONTEXT));
-            this->m_contextSize = min(contextSize, sizeof(CONTEXT));
-            memcpy(&(this->m_context), pContext, this->m_contextSize);
+            this->m_contextSize = min(contextSize, (ULONG32)0x1000);
+            if (pContext != NULL && this->m_contextSize > 0)
+            {
+                m_context = new (nothrow) BYTE[this->m_contextSize];
+                if (m_context != NULL)
+                    memcpy(m_context, pContext, this->m_contextSize);
+            }
         }
 
         HRESULT Dispatch(DispatchArgs args)
         {
-            return args.GetCallback4()->DataBreakpoint(m_pProcess, m_pThread, reinterpret_cast<BYTE*>(&m_context), m_contextSize);
+            if (m_context == NULL)
+                return E_OUTOFMEMORY;
+            return args.GetCallback4()->DataBreakpoint(m_pProcess, m_pThread, m_context, m_contextSize);
         }
     }; // end class AfterGarbageCollectionEvent
 

@@ -35,11 +35,6 @@ Can return nullptr if there isn't a corresponding shared object.
 PALEXPORT const ASN1_OBJECT* CryptoNative_GetObjectDefinitionByName(const char* friendlyName);
 
 /*
-Direct shim to OBJ_sn2nid.
-*/
-PALEXPORT int32_t CryptoNative_ObjSn2Nid(const char* sn);
-
-/*
 Direct shim to OBJ_txt2nid.
 */
 PALEXPORT int32_t CryptoNative_ObjTxt2Nid(const char* sn);
@@ -55,16 +50,6 @@ Direct shim to ASN1_OBJECT_free.
 PALEXPORT void CryptoNative_Asn1ObjectFree(ASN1_OBJECT* a);
 
 /*
-Shims the d2i_ASN1_BIT_STRING method and makes it easier to invoke from managed code.
-*/
-PALEXPORT ASN1_BIT_STRING* CryptoNative_DecodeAsn1BitString(const uint8_t* buf, int32_t len);
-
-/*
-Direct shim to ASN1_BIT_STRING_free.
-*/
-PALEXPORT void CryptoNative_Asn1BitStringFree(ASN1_STRING* a);
-
-/*
 Direct shim to ASN1_OCTET_STRING_new.
 */
 PALEXPORT ASN1_OCTET_STRING* CryptoNative_Asn1OctetStringNew(void);
@@ -78,11 +63,6 @@ PALEXPORT int32_t CryptoNative_Asn1OctetStringSet(ASN1_OCTET_STRING* s, const ui
 Direct shim to ASN1_OCTET_STRING_free.
 */
 PALEXPORT void CryptoNative_Asn1OctetStringFree(ASN1_STRING* a);
-
-/*
-Direct shim to ASN1_STRING_free.
-*/
-PALEXPORT void CryptoNative_Asn1StringFree(ASN1_STRING* a);
 
 /*
 Returns the number of bytes it will take to convert

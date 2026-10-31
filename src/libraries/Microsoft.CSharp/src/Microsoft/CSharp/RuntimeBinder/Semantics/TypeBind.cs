@@ -33,6 +33,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
     {
         // Check the constraints of any type arguments in the given Type.
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         public static bool CheckConstraints(CType type, CheckConstraintsFlags flags)
         {
             type = type.GetNakedType(false);
@@ -120,6 +121,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         ////////////////////////////////////////////////////////////////////////////////
         // Check the constraints on the method instantiation.
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         public static void CheckMethConstraints(MethWithInst mwi)
         {
             Debug.Assert(mwi.Meth() != null && mwi.GetType() != null && mwi.TypeArgs != null);
@@ -137,6 +139,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         // typeArgsCls and typeArgsMeth are used for substitution on the bounds. The
         // tree and symErr are used for error reporting.
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static bool CheckConstraintsCore(Symbol symErr, TypeArray typeVars, TypeArray typeArgs, TypeArray typeArgsCls, TypeArray typeArgsMeth, CheckConstraintsFlags flags)
         {
             Debug.Assert(typeVars.Count == typeArgs.Count);
@@ -159,6 +162,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static bool CheckSingleConstraint(Symbol symErr, TypeParameterType var, CType arg, TypeArray typeArgsCls, TypeArray typeArgsMeth, CheckConstraintsFlags flags)
         {
             Debug.Assert(!(arg is PointerType));
@@ -239,7 +243,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
                                 // Nullable types don't satisfy bounds of EnumType, or the underlying type of the enum
                                 // even though the conversion from Nullable to these types is a boxing conversion
                                 // This is a rare case, because these bounds can never be directly stated ...
-                                // These bounds can only occur when one type paramter is constrained to a second type parameter
+                                // These bounds can only occur when one type parameter is constrained to a second type parameter
                                 // and the second type parameter is instantiated with Enum or the underlying type of the first type
                                 // parameter
                                 error = ErrorCode.ERR_GenericConstraintNotSatisfiedNullableEnum;
@@ -304,6 +308,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         // constraints).
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private static bool SatisfiesBound(CType arg, CType typeBnd)
         {
             if (typeBnd == arg)

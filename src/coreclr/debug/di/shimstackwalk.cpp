@@ -14,14 +14,6 @@
 #include "stdafx.h"
 #include "primitives.h"
 
-#if defined(TARGET_X86)
-static const ULONG32 REGISTER_X86_MAX  = REGISTER_X86_FPSTACK_7 + 1;
-static const ULONG32 MAX_MASK_COUNT    = (REGISTER_X86_MAX + 7) >> 3;
-#elif defined(TARGET_AMD64)
-static const ULONG32 REGISTER_AMD64_MAX = REGISTER_AMD64_XMM15 + 1;
-static const ULONG32 MAX_MASK_COUNT     = (REGISTER_AMD64_MAX + 7) >> 3;
-#endif
-
 ShimStackWalk::ShimStackWalk(ShimProcess * pProcess, ICorDebugThread * pThread)
   : m_pChainEnumList(NULL),
     m_pFrameEnumList(NULL)
@@ -135,19 +127,28 @@ BOOL ShimStackWalk::ShouldTrackUMChain(StackWalkInfo * pswInfo)
     // #DacShimSwWorkAround
     //
     // This part cannot be determined using DBI alone. We must call through to the DAC
-    // because we have no other way to get at TS_Hijacked & TS_SyncSuspended.  When the
+    // because we have no other way to get at TS_Hijacked & TS_DebugSyncSuspended.  When the
     // rearchitecture is complete, this DAC call should be able to go away, and we
     // should be able to use DBI for all the info we need.
     //
-    // One might think one could avoid the DAC for TS_SyncSuspended by just checking
+    // One might think one could avoid the DAC for TS_DebugSyncSuspended by just checking
     // USER_SUSPENDED, but that won't work. Although USER_SUSPENDED will be returned some
-    // of the time when TS_SyncSuspended is set, that will not be the case when the
+    // of the time when TS_DebugSyncSuspended is set, that will not be the case when the
     // debugger must suspend the thread. Example: if the given thread is in the middle of
-    // throwing a managed exception when the debugger breaks in, then TS_SyncSuspended
+    // throwing a managed exception when the debugger breaks in, then TS_DebugSyncSuspended
     // will be set due to the debugger's breaking, but USER_SUSPENDED will not be set, so
     // we'll think the UM chain should be tracked, resulting in a stack that differs from
     // Whidbey.
     if (m_pProcess->IsThreadSuspendedOrHijacked(m_pThread))
+        return FALSE;
+
+    // In the case the thread is throwing a managed exception, 
+    // TS_DebugSyncSuspended might not yet be set, resulting in IsThreadSuspendedOrHijacked 
+    // returning false above. We need to check the exception state to make sure we don't
+    // track the chain in this case. Since we know the type of Frame we are dealing with, 
+    // we can make a more accurate determination of whether we should track the chain.
+    // However if we are interop debugging and the thread is hijacked, we should track the chain.
+    if (!pswInfo->ExhaustedAllInternalFrames() && !m_pProcess->IsUnmanagedThreadHijacked(m_pThread) && GetInternalFrameType(pswInfo->GetCurrentInternalFrame()) == STUBFRAME_EXCEPTION) 
         return FALSE;
 
     return TRUE;
@@ -312,6 +313,7 @@ void ShimStackWalk::Populate()
                             // because of the leaf STUBFRAME_EXCEPTION.
                             chainInfo.CancelUMChain();
                             swInfo.m_fSkipChain = true;
+                            swInfo.m_fHasException = true;
                         }
                     }
 
@@ -426,7 +428,6 @@ void ShimStackWalk::Populate()
                                 // These frame types are tracked specially.
                                 break;
 
-                            case STUBFRAME_APPDOMAIN_TRANSITION:    // fall through
                             case STUBFRAME_LIGHTWEIGHT_FUNCTION:    // fall through
                             case STUBFRAME_INTERNALCALL:
                                 // These frame types don't correspond to chains.
@@ -947,7 +948,7 @@ void ShimStackWalk::GetCalleeForFrame(ICorDebugFrame * pFrame, ICorDebugFrame **
 
 FramePointer ShimStackWalk::GetFramePointerForChain(DT_CONTEXT * pContext)
 {
-    return FramePointer::MakeFramePointer(CORDbgGetSP(pContext));
+    return FramePointer::MakeFramePointer(CORDB_ADDRESS_TO_PTR(CORDbgGetSP(pContext)));
 }
 
 FramePointer ShimStackWalk::GetFramePointerForChain(ICorDebugInternalFrame2 * pInternalFrame2)
@@ -988,6 +989,20 @@ CorDebugInternalFrameType ShimStackWalk::GetInternalFrameType(ICorDebugInternalF
 
 void ShimStackWalk::AppendFrame(ICorDebugFrame * pFrame, StackWalkInfo * pStackWalkInfo)
 {
+    // We've detected we're in a stackwalk where we have an exception and no further managed frames 
+    // are on top of this frame. To ensure our IP points to the user line that threw the exception, 
+    // we ask the frame to adjust the IP to the call instruction as currently it points to the instruction after it.
+    if (pStackWalkInfo->m_fHasException && pStackWalkInfo->m_cFrame == 0)
+    {
+        RSExtSmartPtr<ICorDebugILFrame> pNFrame3;
+        HRESULT hr = pFrame->QueryInterface(IID_ICorDebugILFrame, reinterpret_cast<void **>(&pNFrame3));
+        if (pNFrame3 != NULL)
+        {
+            CordbJITILFrame* JITILFrameToAdjustIP = (static_cast<CordbJITILFrame*>(pNFrame3.GetValue()));
+            JITILFrameToAdjustIP->AdjustIPAfterException();
+            pStackWalkInfo->m_fHasException = false;                                    
+        }
+    }
     // grow the
     ICorDebugFrame ** ppFrame = m_stackFrames.AppendThrowing();
 
@@ -1095,13 +1110,19 @@ void ShimStackWalk::AppendChain(ChainInfo * pChainInfo, StackWalkInfo * pStackWa
         {
             // We need to send an extra enter-managed chain.
             _ASSERTE(pChainInfo->m_fLeafNativeContextIsValid);
-            BYTE * sp = reinterpret_cast<BYTE *>(CORDbgGetSP(&(pChainInfo->m_leafNativeContext)));
-#if !defined(TARGET_ARM) &&  !defined(TARGET_ARM64)
+            BYTE * sp = reinterpret_cast<BYTE *>(CORDB_ADDRESS_TO_PTR(CORDbgGetSP(&(pChainInfo->m_leafNativeContext))));
+            IDacDbiInterface::TargetInfo targetInfo;
             // Dev11 324806: on ARM we use the caller's SP for a frame's ending delimiter so we cannot
-            // subtract 4 bytes from the chain's ending delimiter else the frame might never be in range.
+            // subtract from the chain's ending delimiter else the frame might never be in range.
             // TODO: revisit overlapping ranges on ARM, it would be nice to make it consistent with the other architectures.
-            sp -= sizeof(LPVOID);
-#endif
+            CordbProcess * pProcess = static_cast<CordbProcess *>(m_pProcess->GetProcess());
+            if (pProcess != NULL &&
+                SUCCEEDED(pProcess->GetTargetInfo(&targetInfo)) &&
+                targetInfo.arch != IDacDbiInterface::kArchArm &&
+                targetInfo.arch != IDacDbiInterface::kArchArm64)
+            {
+                sp -= targetInfo.pointerSize;
+            }
             FramePointer fp = FramePointer::MakeFramePointer(sp);
 
             AppendChainWorker(pStackWalkInfo,
@@ -1178,7 +1199,7 @@ BOOL ShimStackWalk::CheckInternalFrame(ICorDebugFrame *     pNextStackFrame,
     // Special handling for the case where a managed method contains a M2U internal frame.
     // Normally only IL stubs contain M2U internal frames, but we may have inlined pinvoke calls in
     // optimized code.  In that case, we would have an InlinedCallFrame in a normal managed method on x86.
-    // On WIN64, we would have a normal NDirectMethodFrame* in a normal managed method.
+    // On WIN64, we would have a normal PInvokeMethodFrame* in a normal managed method.
     if (pStackWalkInfo->m_internalFrameType == STUBFRAME_M2U)
     {
         // create a temporary ICDStackWalk
@@ -1206,7 +1227,7 @@ BOOL ShimStackWalk::CheckInternalFrame(ICorDebugFrame *     pNextStackFrame,
         IfFailThrow(hr);
 
         // Get the SP from the CONTEXT.  This is the caller SP.
-        CORDB_ADDRESS sp = PTR_TO_CORDB_ADDRESS(CORDbgGetSP(&ctx));
+        CORDB_ADDRESS sp = CORDbgGetSP(&ctx);
 
         // get the frame address
         CORDB_ADDRESS frameAddr = 0;
@@ -1375,8 +1396,7 @@ void ShimStackWalk::TrackUMChain(ChainInfo * pChainInfo, StackWalkInfo * pStackW
             // Sometimes we may not want to show an UM chain b/c we know it's just
             // code inside of mscorwks. (Eg: Funcevals & AD transitions both fall into this category).
             // These are perfectly valid UM chains and we could give them if we wanted to.
-            if ((pStackWalkInfo->m_internalFrameType == STUBFRAME_APPDOMAIN_TRANSITION) ||
-                (pStackWalkInfo->m_internalFrameType == STUBFRAME_FUNC_EVAL))
+            if (pStackWalkInfo->m_internalFrameType == STUBFRAME_FUNC_EVAL)
             {
                 pChainInfo->CancelUMChain();
             }
@@ -1469,7 +1489,8 @@ ShimStackWalk::StackWalkInfo::StackWalkInfo()
     m_fProcessingInternalFrame(false),
     m_fSkipChain(false),
     m_fLeafFrame(true),
-    m_fHasConvertedFrame(false)
+    m_fHasConvertedFrame(false),
+    m_fHasException(false)
 {
     m_pChildFrame.Assign(NULL);
     m_pConvertedInternalFrame2.Assign(NULL);
@@ -1654,7 +1675,7 @@ HRESULT ShimChain::GetStackRange(CORDB_ADDRESS * pStart, CORDB_ADDRESS * pEnd)
         // The leafmost end is represented by the register set.
         if (pStart)
         {
-            *pStart = PTR_TO_CORDB_ADDRESS(CORDbgGetSP(&m_context));
+            *pStart = CORDbgGetSP(&m_context);
         }
 
         // Return the rootmost end of the stack range.  It is represented by the frame pointer of the chain.

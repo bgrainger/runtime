@@ -1,53 +1,56 @@
 # Licensed to the .NET Foundation under one or more agreements.
 # The .NET Foundation licenses this file to you under the MIT license.
 
-project(apphost)
-set(DOTNET_PROJECT_NAME "apphost")
-
-# Add RPATH to the apphost binary that allows using local copies of shared libraries
-# dotnet core depends on for special scenarios when system wide installation of such
-# dependencies is not possible for some reason.
-# This cannot be enabled for MacOS (Darwin) since its RPATH works in a different way,
-# doesn't apply to libraries loaded via dlopen and most importantly, it is not transitive.
-if (NOT CLR_CMAKE_TARGET_OSX)
-    set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
-    set(CMAKE_INSTALL_RPATH "\$ORIGIN/netcoredeps")
-endif()
-
-set(SKIP_VERSIONING 1)
-
 include_directories(..)
 
 set(SOURCES
-    ../bundle_marker.cpp
-    ./hostfxr_resolver.cpp
+    ../apphost.c
+    ../bundle_marker.c
+    ./apphost_hostfxr_resolver.c
 )
 
 set(HEADERS
     ../bundle_marker.h
-    ../../hostfxr_resolver.h
+    ../../hostmisc/pal.h
+    ../apphost_hostfxr_resolver.h
 )
+
+add_compile_definitions(FEATURE_APPHOST)
 
 if(CLR_CMAKE_TARGET_WIN32)
     list(APPEND SOURCES
-        ../apphost.windows.cpp)
-
+        ../apphost.windows.c)
     list(APPEND HEADERS
         ../apphost.windows.h)
+
+    add_compile_definitions(UNICODE)
 endif()
 
-include(../../exe.cmake)
+list(APPEND SOURCES ${HEADERS})
 
-add_definitions(-DFEATURE_APPHOST=1)
+add_executable(apphost ${SOURCES} ${RESOURCES})
 
-# Disable manifest generation into the file .exe on Windows
+target_link_libraries(apphost PRIVATE fxr_resolver)
+
 if(CLR_CMAKE_TARGET_WIN32)
-    set_property(TARGET ${PROJECT_NAME} PROPERTY
-            LINK_FLAGS "/MANIFEST:NO"
-        )
+    target_link_libraries(apphost PRIVATE hostmisc_c minipal_objects shell32)
+
+    # Disable manifest generation into the file .exe on Windows
+    target_link_options(apphost PRIVATE "/MANIFEST:NO")
+
+    # Enable CET-compatibility
+    if (CLR_CMAKE_HOST_ARCH_AMD64)
+        target_link_options(apphost PRIVATE "/CETCOMPAT")
+    endif()
+else()
+    target_link_libraries(apphost PRIVATE hostmisc_c minipal_objects m)
+    disable_pax_mprotect(apphost)
 endif()
 
-# Specify non-default Windows libs to be used for Arm/Arm64 builds
-if (CLR_CMAKE_TARGET_WIN32 AND (CLR_CMAKE_TARGET_ARCH_ARM OR CLR_CMAKE_TARGET_ARCH_ARM64))
-    target_link_libraries(apphost shell32.lib)
+add_sanitizer_runtime_support(apphost)
+
+install_with_stripped_symbols(apphost TARGETS corehost)
+
+if (CLR_CMAKE_HOST_APPLE)
+    adhoc_sign_with_entitlements(apphost "${CLR_ENG_NATIVE_DIR}/entitlements.plist")
 endif()

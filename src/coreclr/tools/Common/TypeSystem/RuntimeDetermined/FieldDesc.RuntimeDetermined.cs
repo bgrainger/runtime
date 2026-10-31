@@ -3,11 +3,11 @@
 
 namespace Internal.TypeSystem
 {
-    partial class FieldDesc
+    public partial class FieldDesc
     {
         public FieldDesc GetNonRuntimeDeterminedFieldFromRuntimeDeterminedFieldViaSubstitution(Instantiation typeInstantiation, Instantiation methodInstantiation)
         {
-            DefType owningType = OwningType;
+            MetadataType owningType = OwningType;
             TypeDesc owningTypeInstantiated = owningType.GetNonRuntimeDeterminedTypeFromRuntimeDeterminedSubtypeViaSubstitution(typeInstantiation, methodInstantiation);
             if (owningTypeInstantiated != owningType)
             {

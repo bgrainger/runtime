@@ -8,9 +8,14 @@ using System.Diagnostics;
 using System.Reflection.PortableExecutable;
 
 using Internal.Text;
+using Internal.TypeSystem;
 using Internal.TypeSystem.Ecma;
 using System.IO;
 using System.Collections.Immutable;
+using System.Collections.Generic;
+using ILCompiler.Diagnostics;
+using ILCompiler.DependencyAnalysisFramework;
+using System.Security.Cryptography;
 
 namespace ILCompiler.DependencyAnalysis.ReadyToRun
 {
@@ -23,7 +28,10 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             _module = module;
         }
 
-        public override ObjectNodeSection Section => ObjectNodeSection.TextSection;
+        public override ObjectNodeSection GetSection(NodeFactory factory)
+        {
+            return ObjectNodeSection.ReadOnlyDataSection;
+        }
 
         public override bool IsShareable => false;
 
@@ -76,13 +84,15 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
         public unsafe int Size => PerfMapEntrySize;
 
-        public PerfMapDebugDirectoryEntryNode(string entryName)
+        public PerfMapDebugDirectoryEntryNode(string entryName, int perfMapFormatVersion)
             : base(null)
         {
             _entryName = entryName;
+            _perfMapFormatVersion = perfMapFormatVersion;
         }
 
-        private string _entryName;
+        private readonly string _entryName;
+        private readonly int _perfMapFormatVersion;
 
         public override void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
         {
@@ -96,30 +106,25 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             builder.RequireInitialPointerAlignment();
             builder.AddSymbol(this);
 
-            // Emit empty entry. This will be filled with data after the output image is emitted
-            builder.EmitZeros(PerfMapEntrySize);
+            List<AssemblyInfo> assemblies = [];
+            foreach (string inputPath in factory.TypeSystemContext.InputFilePaths.Values)
+            {
+                EcmaModule module = factory.TypeSystemContext.GetModuleFromPath(inputPath);
+                assemblies.Add(new AssemblyInfo(module.Assembly.GetName().Name, module.MetadataReader.GetGuid(module.MetadataReader.GetModuleDefinition().Mvid)));
+            }
+
+            byte[] signature = PerfMapWriter.PerfMapV1SignatureHelper(assemblies, factory.Target);
+
+            builder.EmitUInt(PerfMapMagic);
+            builder.EmitBytes(signature);
+            builder.EmitInt(_perfMapFormatVersion);
+
+            builder.EmitBytes(Encoding.UTF8.GetBytes(_entryName));
+            builder.EmitByte(0);
+
+            Debug.Assert(builder.CountBytes <= PerfMapEntrySize);
 
             return builder.ToObjectData();
-        }
-
-        public byte[] GeneratePerfMapEntryData(byte[] signature, int version)
-        {
-            Debug.Assert(SignatureSize == signature.Length);
-            MemoryStream perfmapEntry = new MemoryStream(PerfMapEntrySize);
-
-            using (BinaryWriter writer = new BinaryWriter(perfmapEntry))
-            {
-                writer.Write(PerfMapMagic);
-                writer.Write(signature);
-                writer.Write(version);
-
-                byte[] perfmapNameBytes = Encoding.UTF8.GetBytes(_entryName);
-                writer.Write(perfmapNameBytes);
-                writer.Write(0); // Null terminator
-
-                Debug.Assert(perfmapEntry.Length <= PerfMapEntrySize);
-                return perfmapEntry.ToArray();
-            }
         }
 
         internal void EmitHeader(ref ObjectDataBuilder builder)
@@ -160,7 +165,8 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             _pdbName = pdbName;
         }
 
-        private string _pdbName;
+        private readonly string _pdbName;
+        private readonly RSDSChecksumNode _checksumNode = new();
 
         public override void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
         {
@@ -174,13 +180,24 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             builder.RequireInitialPointerAlignment();
             builder.AddSymbol(this);
 
-            // Emit empty entry. This will be filled with data after the output image is emitted
-            builder.EmitZeros(RSDSSize);
+            builder.EmitUInt(RsdsMagic);
+
+            builder.EmitChecksumReloc(_checksumNode);
+
+            // Age
+            builder.EmitInt(1);
+
+            string pdbFileName = _pdbName;
+            byte[] pdbFileNameBytes = Encoding.UTF8.GetBytes(pdbFileName);
+            builder.EmitBytes(pdbFileNameBytes);
+            builder.EmitByte(0); // Null terminator
+
+            Debug.Assert(builder.CountBytes <= RSDSSize);
 
             return builder.ToObjectData();
         }
 
-        public byte[] GenerateRSDSEntryData(byte[] md5Hash)
+        public byte[] GenerateRSDSEntryData(byte[] hash)
         {
             MemoryStream rsdsEntry = new MemoryStream(RSDSSize);
 
@@ -188,14 +205,8 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             {
                 writer.Write(RsdsMagic);
 
-                // The PDB signature will be the same as our NGEN signature.
-                // However we want the printed version of the GUID to be the same as the
-                // byte dump of the signature so we swap bytes to make this work.
-                Debug.Assert(md5Hash.Length == 16);
-                writer.Write((uint)((md5Hash[0] * 256 + md5Hash[1]) * 256 + md5Hash[2]) * 256 + md5Hash[3]);
-                writer.Write((ushort)(md5Hash[4] * 256 + md5Hash[5]));
-                writer.Write((ushort)(md5Hash[6] * 256 + md5Hash[7]));
-                writer.Write(md5Hash, 8, 8);
+                Debug.Assert(hash.Length >= 16);
+                writer.Write(hash, 0, 16);
 
                 // Age
                 writer.Write(1);
@@ -228,6 +239,46 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             builder.EmitReloc(this, RelocType.IMAGE_REL_BASED_ADDR32NB);
             builder.EmitReloc(this, RelocType.IMAGE_REL_FILE_ABSOLUTE);
         }
+
+        private class RSDSChecksumNode : DependencyNodeCore<NodeFactory>, IChecksumNode
+        {
+            public int ChecksumSize => 16;
+
+            public void EmitChecksum(Stream outputStream, Span<byte> checksumLocation)
+            {
+                Debug.Assert(checksumLocation.Length == ChecksumSize);
+                // Take the first 16 bytes of the SHA256 hash of the image as the RSDS checksum.
+                Span<byte> hash = stackalloc byte[SHA256.HashSizeInBytes];
+                SHA256.HashData(outputStream, hash);
+                hash[0..ChecksumSize].CopyTo(checksumLocation);
+            }
+
+            public override bool InterestingForDynamicDependencyAnalysis => false;
+
+            public override bool HasDynamicDependencies => false;
+
+            public override bool HasConditionalStaticDependencies => false;
+
+            public override bool StaticDependenciesAreComputed => true;
+
+            public int Offset => 0;
+
+            public bool RepresentsIndirectionCell => false;
+
+            public void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
+            {
+                sb.Append(nameMangler.CompilationUnitPrefix);
+                sb.Append($"__RSDSChecksum");
+            }
+
+            public override void AddConditionalDependencies(DependencySink sink, NodeFactory context) { }
+            public override void AddStaticDependencies(DependencySink sink, NodeFactory context) { }
+            public override void SearchDynamicDependencies(List<DependencyNodeCore<NodeFactory>> markedNodes, int firstNode, DependencySink sink, NodeFactory context) { }
+            protected override string GetName(NodeFactory context)
+            {
+                return "RSDSChecksum";
+            }
+        }
     }
 
     public class CopiedDebugDirectoryEntryNode : DebugDirectoryEntryNode
@@ -256,7 +307,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                 return new ObjectData(Array.Empty<byte>(), Array.Empty<Relocation>(), 1, new ISymbolDefinitionNode[] { this });
             }
 
-            ImmutableArray<DebugDirectoryEntry> entries = _module.PEReader.ReadDebugDirectory();
+            ImmutableArray<DebugDirectoryEntry> entries = _module.PEReader.SafeReadDebugDirectory();
             Debug.Assert(entries != null && _debugEntryIndex < entries.Length);
 
             DebugDirectoryEntry sourceDebugEntry = entries[_debugEntryIndex];

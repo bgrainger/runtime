@@ -1,9 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Internal.Cryptography;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+using Internal.Cryptography;
 
 namespace System.Security.Cryptography
 {
@@ -15,17 +18,32 @@ namespace System.Security.Cryptography
 
     public abstract class SHA1 : HashAlgorithm
     {
-        private const int HashSizeBits = 160;
-        private const int HashSizeBytes = HashSizeBits / 8;
+        private sealed class HashTrait : IHashStatic
+        {
+            static int IHashStatic.HashSizeInBytes => HashSizeInBytes;
+            static string IHashStatic.HashAlgorithmName => HashAlgorithmNames.SHA1;
+            static bool IHashStatic.IsSupported => true;
+        }
+
+        /// <summary>
+        /// The hash size produced by the SHA1 algorithm, in bits.
+        /// </summary>
+        public const int HashSizeInBits = 160;
+
+        /// <summary>
+        /// The hash size produced by the SHA1 algorithm, in bytes.
+        /// </summary>
+        public const int HashSizeInBytes = HashSizeInBits / 8;
 
         protected SHA1()
         {
-            HashSizeValue = HashSizeBits;
+            HashSizeValue = HashSizeInBits;
         }
 
-        [SuppressMessage("Microsoft.Security", "CA5350", Justification = "This is the implementaton of SHA1")]
+        [SuppressMessage("Microsoft.Security", "CA5350", Justification = "This is the implementation of SHA1")]
         public static new SHA1 Create() => new Implementation();
 
+        [Obsolete(Obsoletions.CryptoStringFactoryMessage, DiagnosticId = Obsoletions.CryptoStringFactoryDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
         [RequiresUnreferencedCode(CryptoConfig.CreateFromNameUnreferencedCodeMessage)]
         public static new SHA1? Create(string hashName) => (SHA1?)CryptoConfig.CreateFromName(hashName);
 
@@ -37,28 +55,14 @@ namespace System.Security.Cryptography
         /// <exception cref="ArgumentNullException">
         /// <paramref name="source" /> is <see langword="null" />.
         /// </exception>
-        public static byte[] HashData(byte[] source)
-        {
-            if (source is null)
-                throw new ArgumentNullException(nameof(source));
-
-            return HashData(new ReadOnlySpan<byte>(source));
-        }
+        public static byte[] HashData(byte[] source) => HashStatic<HashTrait>.HashData(source);
 
         /// <summary>
         /// Computes the hash of data using the SHA1 algorithm.
         /// </summary>
         /// <param name="source">The data to hash.</param>
         /// <returns>The hash of the data.</returns>
-        public static byte[] HashData(ReadOnlySpan<byte> source)
-        {
-            byte[] buffer = GC.AllocateUninitializedArray<byte>(HashSizeBytes);
-
-            int written = HashData(source, buffer.AsSpan());
-            Debug.Assert(written == buffer.Length);
-
-            return buffer;
-        }
+        public static byte[] HashData(ReadOnlySpan<byte> source) => HashStatic<HashTrait>.HashData(source);
 
         /// <summary>
         /// Computes the hash of data using the SHA1 algorithm.
@@ -72,10 +76,7 @@ namespace System.Security.Cryptography
         /// </exception>
         public static int HashData(ReadOnlySpan<byte> source, Span<byte> destination)
         {
-            if (!TryHashData(source, destination, out int bytesWritten))
-                throw new ArgumentException(SR.Argument_DestinationTooShort, nameof(destination));
-
-            return bytesWritten;
+            return HashStatic<HashTrait>.HashData(source, destination);
         }
 
         /// <summary>
@@ -92,16 +93,95 @@ namespace System.Security.Cryptography
         /// </returns>
         public static bool TryHashData(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten)
         {
-            if (destination.Length < HashSizeBytes)
-            {
-                bytesWritten = 0;
-                return false;
-            }
+            return HashStatic<HashTrait>.TryHashData(source, destination, out bytesWritten);
+        }
 
-            bytesWritten = HashProviderDispenser.OneShotHashProvider.HashData(HashAlgorithmNames.SHA1, source, destination);
-            Debug.Assert(bytesWritten == HashSizeBytes);
+        /// <summary>
+        /// Computes the hash of a stream using the SHA1 algorithm.
+        /// </summary>
+        /// <param name="source">The stream to hash.</param>
+        /// <param name="destination">The buffer to receive the hash value.</param>
+        /// <returns>The total number of bytes written to <paramref name="destination" />.</returns>
+        /// <exception cref="ArgumentNullException">
+        ///   <paramref name="source" /> is <see langword="null" />.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        ///   <p>
+        ///   The buffer in <paramref name="destination"/> is too small to hold the calculated hash
+        ///   size. The SHA1 algorithm always produces a 160-bit hash, or 20 bytes.
+        ///   </p>
+        ///   <p>-or-</p>
+        ///   <p>
+        ///   <paramref name="source" /> does not support reading.
+        ///   </p>
+        /// </exception>
+        public static int HashData(Stream source, Span<byte> destination)
+        {
+            return HashStatic<HashTrait>.HashData(source, destination);
+        }
 
-            return true;
+        /// <summary>
+        /// Computes the hash of a stream using the SHA1 algorithm.
+        /// </summary>
+        /// <param name="source">The stream to hash.</param>
+        /// <returns>The hash of the data.</returns>
+        /// <exception cref="ArgumentNullException">
+        ///   <paramref name="source" /> is <see langword="null" />.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        ///   <paramref name="source" /> does not support reading.
+        /// </exception>
+        public static byte[] HashData(Stream source) => HashStatic<HashTrait>.HashData(source);
+
+        /// <summary>
+        /// Asynchronously computes the hash of a stream using the SHA1 algorithm.
+        /// </summary>
+        /// <param name="source">The stream to hash.</param>
+        /// <param name="cancellationToken">
+        ///   The token to monitor for cancellation requests.
+        ///   The default value is <see cref="System.Threading.CancellationToken.None" />.
+        /// </param>
+        /// <returns>The hash of the data.</returns>
+        /// <exception cref="ArgumentNullException">
+        ///   <paramref name="source" /> is <see langword="null" />.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        ///   <paramref name="source" /> does not support reading.
+        /// </exception>
+        public static ValueTask<byte[]> HashDataAsync(Stream source, CancellationToken cancellationToken = default)
+        {
+            return HashStatic<HashTrait>.HashDataAsync(source, cancellationToken);
+        }
+
+        /// <summary>
+        /// Asynchronously computes the hash of a stream using the SHA1 algorithm.
+        /// </summary>
+        /// <param name="source">The stream to hash.</param>
+        /// <param name="destination">The buffer to receive the hash value.</param>
+        /// <param name="cancellationToken">
+        ///   The token to monitor for cancellation requests.
+        ///   The default value is <see cref="System.Threading.CancellationToken.None" />.
+        /// </param>
+        /// <returns>The total number of bytes written to <paramref name="destination" />.</returns>
+        /// <exception cref="ArgumentNullException">
+        ///   <paramref name="source" /> is <see langword="null" />.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        ///   <p>
+        ///   The buffer in <paramref name="destination"/> is too small to hold the calculated hash
+        ///   size. The SHA1 algorithm always produces a 160-bit hash, or 20 bytes.
+        ///   </p>
+        ///   <p>-or-</p>
+        ///   <p>
+        ///   <paramref name="source" /> does not support reading.
+        ///   </p>
+        /// </exception>
+        public static ValueTask<int> HashDataAsync(
+            Stream source,
+            Memory<byte> destination,
+            CancellationToken cancellationToken = default)
+        {
+            return HashStatic<HashTrait>.HashDataAsync(source, destination, cancellationToken);
         }
 
         private sealed class Implementation : SHA1

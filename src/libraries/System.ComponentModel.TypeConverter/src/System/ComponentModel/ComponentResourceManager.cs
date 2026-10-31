@@ -17,7 +17,7 @@ namespace System.ComponentModel
     /// </summary>
     public class ComponentResourceManager : ResourceManager
     {
-        private Hashtable? _resourceSets;
+        private Dictionary<CultureInfo, SortedList<string, object?>?>? _resourceSets;
         private CultureInfo? _neutralResourcesCulture;
 
         public ComponentResourceManager()
@@ -65,18 +65,31 @@ namespace System.ComponentModel
         [RequiresUnreferencedCode("The Type of value cannot be statically discovered.")]
         public virtual void ApplyResources(object value, string objectName, CultureInfo? culture)
         {
-            if (value == null)
-            {
-                throw new ArgumentNullException(nameof(value));
-            }
-            if (objectName == null)
-            {
-                throw new ArgumentNullException(nameof(objectName));
-            }
-            if (culture == null)
-            {
-                culture = CultureInfo.CurrentUICulture;
-            }
+            ArgumentNullException.ThrowIfNull(value);
+            ArgumentNullException.ThrowIfNull(objectName);
+            ApplyResources(value, value.GetType(), objectName, culture);
+        }
+
+        /// <summary>
+        /// This method examines all the resources for the provided culture.
+        /// When it finds a resource with a key in the format of
+        /// &quot;[objectName].[property name]&quot; or &quot;[objectName]-[property name]&quot; it will apply that resource's value
+        /// to the corresponding property on the object. If there is no matching
+        /// property the resource will be ignored.
+        /// </summary>
+        public virtual void ApplyResourcesToRegisteredType(object value, string objectName, CultureInfo? culture)
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            ArgumentNullException.ThrowIfNull(objectName);
+
+            Type typeFromValue = value.GetType();
+            TypeDescriptor.ValidateRegisteredType(typeFromValue);
+            ApplyResources(value, typeFromValue, objectName, culture);
+        }
+
+        private void ApplyResources(object value, Type typeFromValue, string objectName, CultureInfo? culture)
+        {
+            culture ??= CultureInfo.CurrentUICulture;
 
             // The general case here will be to always use the same culture, so optimize for
             // that. The resourceSets hashtable uses culture as a key. It's value is
@@ -93,16 +106,16 @@ namespace System.ComponentModel
 
             if (_resourceSets == null)
             {
-                _resourceSets = new Hashtable();
-                resources = FillResources(culture, out ResourceSet? dummy);
+                _resourceSets = new Dictionary<CultureInfo, SortedList<string, object?>?>();
+                resources = FillResources(culture, out _);
                 _resourceSets[culture] = resources;
             }
             else
             {
-                resources = (SortedList<string, object?>?)_resourceSets[culture];
+                resources = _resourceSets.GetValueOrDefault(culture, defaultValue: null);
                 if (resources == null || (resources.Comparer.Equals(StringComparer.OrdinalIgnoreCase) != IgnoreCase))
                 {
-                    resources = FillResources(culture, out ResourceSet? dummy);
+                    resources = FillResources(culture, out _);
                     _resourceSets[culture] = resources;
                 }
             }
@@ -128,19 +141,9 @@ namespace System.ComponentModel
                 // See if this key matches our object.
                 string key = kvp.Key;
 
-                if (IgnoreCase)
+                if (!key.StartsWith(objectName, IgnoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
                 {
-                    if (string.Compare(key, 0, objectName, 0, objectName.Length, StringComparison.OrdinalIgnoreCase) != 0)
-                    {
-                        continue;
-                    }
-                }
-                else
-                {
-                    if (string.CompareOrdinal(key, 0, objectName, 0, objectName.Length) != 0)
-                    {
-                        continue;
-                    }
+                    continue;
                 }
 
                 // Character after objectName.Length should be a "." or a '-', or else we should continue.
@@ -156,7 +159,7 @@ namespace System.ComponentModel
 
                 if (componentReflect)
                 {
-                    PropertyDescriptor? prop = TypeDescriptor.GetProperties(value).Find(propName, IgnoreCase);
+                    PropertyDescriptor? prop = TypeDescriptorGetProperties(value).Find(propName, IgnoreCase);
 
                     if (prop != null && !prop.IsReadOnly && (kvp.Value == null || prop.PropertyType.IsInstanceOfType(kvp.Value)))
                     {
@@ -165,20 +168,20 @@ namespace System.ComponentModel
                 }
                 else
                 {
-                    PropertyInfo? prop = null;
+                    PropertyInfo? prop;
 
                     try
                     {
-                        prop = value.GetType().GetProperty(propName, flags);
+                        prop = prop = TrimSafeReflectionHelper.GetProperty(typeFromValue, propName, flags);
                     }
                     catch (AmbiguousMatchException)
                     {
                         // Looks like we ran into a conflict between a declared property and an inherited one.
                         // In such cases, we choose the most declared one.
-                        Type? t = value.GetType();
+                        Type? t = typeFromValue;
                         do
                         {
-                            prop = t.GetProperty(propName, flags | BindingFlags.DeclaredOnly);
+                            prop = TrimSafeReflectionHelper.GetProperty(t, propName, flags | BindingFlags.DeclaredOnly);
                             t = t.BaseType;
                         } while (prop == null && t != null && t != typeof(object));
                     }
@@ -189,6 +192,10 @@ namespace System.ComponentModel
                     }
                 }
             }
+
+            [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
+                Justification = "Calling method either has RequiresUnreferencedCode or has registered types.")]
+            static PropertyDescriptorCollection TypeDescriptorGetProperties(object value) => TypeDescriptor.GetProperties(value);
         }
 
         /// <summary>

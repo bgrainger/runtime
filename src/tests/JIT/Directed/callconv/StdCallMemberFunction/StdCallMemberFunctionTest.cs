@@ -63,9 +63,11 @@ unsafe class StdCallMemberFunctionNative
     public static extern CLong GetWidthAsLongFromManaged(C* c);
 }
 
-unsafe class StdCallMemberFunctionTest
+public unsafe class StdCallMemberFunctionTest
 {
-    public static int Main(string[] args)
+    [Fact]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/50440", TestPlatforms.Windows, runtimes: TestRuntimes.Mono)]
+    public static int TestEntryPoint()
     {
         try
         {
@@ -197,7 +199,7 @@ unsafe class StdCallMemberFunctionTest
         }
     }
 
-    [UnmanagedCallersOnly(CallConvs = new [] {typeof(CallConvStdcall), typeof(CallConvMemberFunction)})]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall), typeof(CallConvMemberFunction)])]
     private static StdCallMemberFunctionNative.SizeF GetSize(StdCallMemberFunctionNative.C* c, int unused)
     {
         return new StdCallMemberFunctionNative.SizeF
@@ -207,7 +209,7 @@ unsafe class StdCallMemberFunctionTest
         };
     }
 
-    [UnmanagedCallersOnly(CallConvs = new [] {typeof(CallConvStdcall), typeof(CallConvMemberFunction)})]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall), typeof(CallConvMemberFunction)])]
     private static StdCallMemberFunctionNative.Width GetWidth(StdCallMemberFunctionNative.C* c)
     {
         return new StdCallMemberFunctionNative.Width
@@ -216,7 +218,7 @@ unsafe class StdCallMemberFunctionTest
         };
     }
 
-    [UnmanagedCallersOnly(CallConvs = new [] {typeof(CallConvStdcall), typeof(CallConvMemberFunction)})]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall), typeof(CallConvMemberFunction)])]
     private static StdCallMemberFunctionNative.IntWrapper GetHeightAsInt(StdCallMemberFunctionNative.C* c)
     {
         return new StdCallMemberFunctionNative.IntWrapper
@@ -225,13 +227,13 @@ unsafe class StdCallMemberFunctionTest
         };
     }
 
-    [UnmanagedCallersOnly(CallConvs = new [] {typeof(CallConvStdcall), typeof(CallConvMemberFunction)})]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall), typeof(CallConvMemberFunction)])]
     private static StdCallMemberFunctionNative.E GetE(StdCallMemberFunctionNative.C* c)
     {
         return c->dummy;
     }
 
-    [UnmanagedCallersOnly(CallConvs = new [] {typeof(CallConvStdcall), typeof(CallConvMemberFunction)})]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall), typeof(CallConvMemberFunction)])]
     private static CLong GetWidthAsLong(StdCallMemberFunctionNative.C* c)
     {
         return new CLong((nint)c->width);

@@ -28,10 +28,7 @@ namespace System.Net.Http
             set
             {
 #if !PHONE
-                if (value == null)
-                {
-                    throw new ArgumentNullException(nameof(value));
-                }
+                ArgumentNullException.ThrowIfNull(value);
 #endif
                 CheckDisposed();
 
@@ -70,10 +67,8 @@ namespace System.Net.Http
             get { return _statusCode; }
             set
             {
-                if (((int)value < 0) || ((int)value > 999))
-                {
-                    throw new ArgumentOutOfRangeException(nameof(value));
-                }
+                ArgumentOutOfRangeException.ThrowIfNegative((int)value, nameof(value));
+                ArgumentOutOfRangeException.ThrowIfGreaterThan((int)value, 999, nameof(value));
                 CheckDisposed();
 
                 _statusCode = value;
@@ -95,7 +90,7 @@ namespace System.Net.Http
             }
             set
             {
-                if ((value != null) && ContainsNewLineCharacter(value))
+                if ((value != null) && HttpRuleParser.ContainsNewLineOrNull(value))
                 {
                     throw new FormatException(SR.net_http_reasonphrase_format_error);
                 }
@@ -156,10 +151,8 @@ namespace System.Net.Http
 
         public HttpResponseMessage(HttpStatusCode statusCode)
         {
-            if (((int)statusCode < 0) || ((int)statusCode > 999))
-            {
-                throw new ArgumentOutOfRangeException(nameof(statusCode));
-            }
+            ArgumentOutOfRangeException.ThrowIfNegative((int)statusCode, nameof(statusCode));
+            ArgumentOutOfRangeException.ThrowIfGreaterThan((int)statusCode, 999, nameof(statusCode));
 
             _statusCode = statusCode;
             _version = DefaultResponseVersion;
@@ -172,7 +165,7 @@ namespace System.Net.Http
                 throw new HttpRequestException(
                     SR.Format(
                         System.Globalization.CultureInfo.InvariantCulture,
-                        SR.net_http_message_not_success_statuscode,
+                        string.IsNullOrWhiteSpace(ReasonPhrase) ? SR.net_http_message_not_success_statuscode : SR.net_http_message_not_success_statuscode_reason,
                         (int)_statusCode,
                         ReasonPhrase),
                     inner: null,
@@ -184,42 +177,32 @@ namespace System.Net.Http
 
         public override string ToString()
         {
-            StringBuilder sb = new StringBuilder();
+            ValueStringBuilder sb = new ValueStringBuilder(stackalloc char[512]);
 
             sb.Append("StatusCode: ");
-            sb.Append((int)_statusCode);
+            sb.AppendSpanFormattable((int)_statusCode);
 
             sb.Append(", ReasonPhrase: '");
             sb.Append(ReasonPhrase ?? "<null>");
 
             sb.Append("', Version: ");
-            sb.Append(_version);
+            sb.AppendSpanFormattable(_version);
 
             sb.Append(", Content: ");
             sb.Append(_content == null ? "<null>" : _content.GetType().ToString());
 
-            sb.AppendLine(", Headers:");
-            HeaderUtilities.DumpHeaders(sb, _headers, _content?.Headers);
+            sb.Append(", Headers:");
+            sb.Append(Environment.NewLine);
+            HeaderUtilities.DumpHeaders(ref sb, _headers, _content?.Headers);
 
             if (_trailingHeaders != null)
             {
-                sb.AppendLine(", Trailing Headers:");
-                HeaderUtilities.DumpHeaders(sb, _trailingHeaders);
+                sb.Append(", Trailing Headers:");
+                sb.Append(Environment.NewLine);
+                HeaderUtilities.DumpHeaders(ref sb, _trailingHeaders);
             }
 
             return sb.ToString();
-        }
-
-        private bool ContainsNewLineCharacter(string value)
-        {
-            foreach (char character in value)
-            {
-                if ((character == HttpRuleParser.CR) || (character == HttpRuleParser.LF))
-                {
-                    return true;
-                }
-            }
-            return false;
         }
 
         #region IDisposable Members
@@ -231,10 +214,7 @@ namespace System.Net.Http
             if (disposing && !_disposed)
             {
                 _disposed = true;
-                if (_content != null)
-                {
-                    _content.Dispose();
-                }
+                _content?.Dispose();
             }
         }
 
@@ -248,10 +228,7 @@ namespace System.Net.Http
 
         private void CheckDisposed()
         {
-            if (_disposed)
-            {
-                throw new ObjectDisposedException(this.GetType().ToString());
-            }
+            ObjectDisposedException.ThrowIf(_disposed, this);
         }
     }
 }

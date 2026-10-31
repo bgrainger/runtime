@@ -1,4 +1,5 @@
 <Project>
+
   <PropertyGroup Condition="'$(TargetFrameworkIdentifier)' == '.NETCoreApp'">
     <!--
       Disable RAR from transitively discovering dependencies for references. This is required as we don't copy
@@ -7,56 +8,51 @@
     <_FindDependencies>false</_FindDependencies>
   </PropertyGroup>
 
-   <!-- If a CoreLib ProjectReference is present, make all P2P assets non transitive. -->
-  <ItemGroup Condition="'@(ProjectReference)' != '' and
-                         @(ProjectReference->AnyHaveMetadataValue('Identity', '$(CoreLibProject)'))">
-    <ProjectReference Update="@(ProjectReference)"
-                      PrivateAssets="all" />
-  </ItemGroup>
-
-  <!-- Project references shouldn't be copied to the output for non test apps. -->
-  <ItemDefinitionGroup Condition="'$(IsTestProject)' != 'true' and '$(IsTestSupportProject)' != 'true'">
+  <!-- Project references shouldn't be copied to the output for reference, source, or generator projects. -->
+  <ItemDefinitionGroup Condition="'$(IsSourceProject)' == 'true' or '$(IsReferenceAssemblyProject)' == 'true' or '$(IsGeneratorProject)' == 'true'">
     <ProjectReference>
       <Private>false</Private>
     </ProjectReference>
   </ItemDefinitionGroup>
 
-  <!-- Filter out transitive P2Ps which should be excluded. -->
-  <Target Name="FilterTransitiveProjectReferences"
-          AfterTargets="IncludeTransitiveProjectReferences"
-          Condition="'$(DisableTransitiveProjectReferences)' != 'true' and
-                     '@(DefaultReferenceExclusion)' != ''">
+  <!-- Set the corresponding CoreLib runtime configuration. -->
+  <ItemGroup Condition="'@(ProjectReference)' != ''">
+    <_coreLibProjectReference Include="@(ProjectReference->WithMetadataValue('Identity', '$(CoreLibProject)'))" />
+    <ProjectReference Update="@(_coreLibProjectReference)">
+      <SetConfiguration Condition="'$(RuntimeFlavor)' == 'CoreCLR' and
+                                   '$(Configuration)' != '$(CoreCLRConfiguration)'">Configuration=$(CoreCLRConfiguration)</SetConfiguration>
+      <SetConfiguration Condition="'$(RuntimeFlavor)' == 'Mono' and
+                                   '$(Configuration)' != '$(MonoConfiguration)'">Configuration=$(MonoConfiguration)</SetConfiguration>
+    </ProjectReference>
+  </ItemGroup>
+
+  <!-- Mark shared framework assemblies as non-transitive (privateassets=all) and non app-local (private=false). -->
+  <ItemGroup Condition="'@(ProjectReference)' != '' and
+                        '$(TargetFrameworkIdentifier)' == '.NETCoreApp' and
+                        '$(TargetFrameworkVersion)' == 'v$(NetCoreAppCurrentVersion)'">
+    <_ProjectReferenceWithOriginalIdentity Include="@(ProjectReference)"
+                                           OriginalIdentity="%(Identity)" />
+    <_projectReferenceWithFilename Include="@(_ProjectReferenceWithOriginalIdentity->Metadata('Filename'))" />
+
+    <_projectReferenceExcludedWithFilename Include="@(_projectReferenceWithFilename)"
+                                           Exclude="@(NetCoreAppLibrary)" />
+    <_frameworkProjectReference Include="@(_projectReferenceWithFilename)"
+                                Exclude="@(_projectReferenceExcludedWithFilename)" />
+
+    <ProjectReference Update="@(_frameworkProjectReference->Metadata('OriginalIdentity'))">
+      <PrivateAssets Condition="'%(PrivateAssets)' == ''">all</PrivateAssets>
+      <Private Condition="'%(Private)' == ''">false</Private>
+    </ProjectReference>
+  </ItemGroup>
+
+  <Target Name="ReplaceCoreLibSrcWithRefAssemblyForCompilation"
+          AfterTargets="FindReferenceAssembliesForReferences"
+          Condition="'$(CompileUsingReferenceAssemblies)' != 'true' and '@(_coreLibProjectReference)' != ''">
     <ItemGroup>
-      <_transitiveProjectReferenceWithExclusion Include="@(ProjectReference)">
-        <Exclusion>%(DefaultReferenceExclusion.Identity)</Exclusion>
-      </_transitiveProjectReferenceWithExclusion>
-      <ProjectReference Remove="@(_transitiveProjectReferenceWithExclusion)"
-                        Condition="'%(_transitiveProjectReferenceWithExclusion.NuGetPackageId)' == '%(_transitiveProjectReferenceWithExclusion.Exclusion)'" />
+      <_resolvedCoreLibProjectReference Include="@(_ResolvedProjectReferencePaths->WithMetadataValue('MSBuildSourceProjectFile','$(CoreLibProject)'))" />
+      <ReferencePathWithRefAssemblies Remove="@(_resolvedCoreLibProjectReference)" />
+      <ReferencePathWithRefAssemblies Include="@(_resolvedCoreLibProjectReference->Metadata('ReferenceAssembly'))" />
     </ItemGroup>
   </Target>
 
-  <!-- Make shared framework assemblies not app-local (non private). -->
-  <Target Name="UpdateProjectReferencesWithPrivateAttribute"
-          AfterTargets="AssignProjectConfiguration"
-          BeforeTargets="PrepareProjectReferences"
-          Condition="'$(TargetFrameworkIdentifier)' == '.NETCoreApp' and
-                     ('$(IsTestProject)' == 'true' or '$(IsTestSupportProject)' == 'true') and
-                     '@(ProjectReferenceWithConfiguration)' != ''">
-    <ItemGroup>
-      <ProjectReferenceWithConfiguration PrivateAssets="all"
-                                         Private="false"
-                                         Condition="$(NetCoreAppLibrary.Contains('%(Filename);'))" />
-    </ItemGroup>
-  </Target>
-
-  <ItemDefinitionGroup>
-    <TargetPathWithTargetPlatformMoniker>
-      <IsReferenceAssembly>$(IsReferenceAssembly)</IsReferenceAssembly>
-    </TargetPathWithTargetPlatformMoniker>
-  </ItemDefinitionGroup>
-
-  <Target Name="ValidateReferenceAssemblyProjectReferences" Condition="'$(IsReferenceAssembly)' == 'true'" AfterTargets="ResolveReferences">
-    <Error Condition="'%(ReferencePath.ReferenceSourceTarget)' == 'ProjectReference' AND '%(ReferencePath.IsReferenceAssembly)' != 'true' AND '%(ReferencePath.ReferenceAssembly)' == ''"
-           Text="Reference assemblies must only reference other reference assemblies and '%(ReferencePath.ProjectReferenceOriginalItemSpec)' is not a reference assembly project and does not set 'ProduceReferenceAssembly'." />
-  </Target>
 </Project>

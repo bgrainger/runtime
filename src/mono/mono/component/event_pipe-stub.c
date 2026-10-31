@@ -27,7 +27,7 @@ static void
 event_pipe_stub_shutdown (void);
 
 static EventPipeSessionID
-event_pipe_stub_enable (
+event_pipe_stub_init_session (
 	const ep_char8_t *output_path,
 	uint32_t circular_buffer_size_in_mb,
 	const EventPipeProviderConfigurationNative *providers,
@@ -50,7 +50,7 @@ static EventPipeWaitHandle
 event_pipe_stub_get_wait_handle (EventPipeSessionID session_id);
 
 static void
-event_pipe_stub_start_streaming (EventPipeSessionID session_id);
+event_pipe_stub_start_session (EventPipeSessionID session_id);
 
 static void
 event_pipe_stub_write_event_2 (
@@ -75,7 +75,6 @@ static EventPipeProvider *
 event_pipe_stub_create_provider (
 	const ep_char8_t *provider_name,
 	EventPipeCallback callback_func,
-	EventPipeCallbackDataFree callback_data_free_func,
 	void *callback_data);
 
 static void
@@ -128,6 +127,14 @@ event_pipe_stub_write_event_threadpool_worker_thread_wait (
 	uint16_t clr_instance_id);
 
 static bool
+event_pipe_stub_write_event_threadpool_min_max_threads (
+	uint16_t min_worker_threads,
+	uint16_t max_worker_threads,
+	uint16_t min_io_completion_threads,
+	uint16_t max_io_completion_threads,
+	uint16_t clr_instance_id);
+
+static bool
 event_pipe_stub_write_event_threadpool_worker_thread_adjustment_sample (
 	double throughput,
 	uint16_t clr_instance_id);
@@ -171,6 +178,50 @@ event_pipe_stub_write_event_threadpool_working_thread_count (
 	uint16_t count,
 	uint16_t clr_instance_id);
 
+static bool
+event_pipe_stub_write_event_threadpool_io_pack (
+	intptr_t native_overlapped,
+	intptr_t overlapped,
+	uint16_t clr_instance_id);
+
+static bool
+event_pipe_stub_write_event_contention_lock_created (
+	intptr_t lock_id,
+	intptr_t associated_object_id,
+	uint16_t clr_instance_id);
+
+static bool
+event_pipe_stub_write_event_contention_start (
+	uint8_t contention_flags,
+	uint16_t clr_instance_id,
+	intptr_t lock_id,
+	intptr_t associated_object_id,
+	uint64_t lock_owner_thread_id);
+
+static bool
+event_pipe_stub_write_event_contention_stop (
+	uint8_t contention_flags,
+	uint16_t clr_instance_id,
+	double duration_ns);
+
+static bool
+event_pipe_stub_signal_session (EventPipeSessionID session_id);
+
+static bool
+event_pipe_stub_wait_for_session_signal (
+	EventPipeSessionID session_id,
+	uint32_t timeout);
+
+static bool
+event_pipe_stub_write_event_wait_handle_wait_start (
+	uint8_t wait_source,
+	intptr_t associated_object_id,
+	uint16_t clr_instance_id);
+
+static bool
+event_pipe_stub_write_event_wait_handle_wait_stop (
+	uint16_t clr_instance_id);
+
 MonoComponentEventPipe *
 component_event_pipe_stub_init (void);
 
@@ -179,11 +230,11 @@ static MonoComponentEventPipe fn_table = {
 	&event_pipe_stub_init,
 	&event_pipe_stub_finish_init,
 	&event_pipe_stub_shutdown,
-	&event_pipe_stub_enable,
+	&event_pipe_stub_init_session,
 	&event_pipe_stub_disable,
 	&event_pipe_stub_get_next_event,
 	&event_pipe_stub_get_wait_handle,
-	&event_pipe_stub_start_streaming,
+	&event_pipe_stub_start_session,
 	&event_pipe_stub_write_event_2,
 	&event_pipe_stub_add_rundown_execution_checkpoint,
 	&event_pipe_stub_add_rundown_execution_checkpoint_2,
@@ -198,12 +249,21 @@ static MonoComponentEventPipe fn_table = {
 	&event_pipe_stub_write_event_threadpool_worker_thread_start,
 	&event_pipe_stub_write_event_threadpool_worker_thread_stop,
 	&event_pipe_stub_write_event_threadpool_worker_thread_wait,
+	&event_pipe_stub_write_event_threadpool_min_max_threads,
 	&event_pipe_stub_write_event_threadpool_worker_thread_adjustment_sample,
 	&event_pipe_stub_write_event_threadpool_worker_thread_adjustment_adjustment,
 	&event_pipe_stub_write_event_threadpool_worker_thread_adjustment_stats,
 	&event_pipe_stub_write_event_threadpool_io_enqueue,
 	&event_pipe_stub_write_event_threadpool_io_dequeue,
-	&event_pipe_stub_write_event_threadpool_working_thread_count
+	&event_pipe_stub_write_event_threadpool_working_thread_count,
+	&event_pipe_stub_write_event_threadpool_io_pack,
+	&event_pipe_stub_write_event_contention_lock_created,
+	&event_pipe_stub_write_event_contention_start,
+	&event_pipe_stub_write_event_contention_stop,
+	&event_pipe_stub_write_event_wait_handle_wait_start,
+	&event_pipe_stub_write_event_wait_handle_wait_stop,
+	&event_pipe_stub_signal_session,
+	&event_pipe_stub_wait_for_session_signal
 };
 
 static bool
@@ -228,7 +288,7 @@ event_pipe_stub_shutdown (void)
 }
 
 static EventPipeSessionID
-event_pipe_stub_enable (
+event_pipe_stub_init_session (
 	const ep_char8_t *output_path,
 	uint32_t circular_buffer_size_in_mb,
 	const EventPipeProviderConfigurationNative *providers,
@@ -262,7 +322,7 @@ event_pipe_stub_get_wait_handle (EventPipeSessionID session_id)
 }
 
 static void
-event_pipe_stub_start_streaming (EventPipeSessionID session_id)
+event_pipe_stub_start_session (EventPipeSessionID session_id)
 {
 }
 
@@ -300,7 +360,6 @@ static EventPipeProvider *
 event_pipe_stub_create_provider (
 	const ep_char8_t *provider_name,
 	EventPipeCallback callback_func,
-	EventPipeCallbackDataFree callback_data_free_func,
 	void *callback_data)
 {
 	return (EventPipeProvider *)_max_event_pipe_type_size;
@@ -382,6 +441,17 @@ event_pipe_stub_write_event_threadpool_worker_thread_wait (
 }
 
 static bool
+event_pipe_stub_write_event_threadpool_min_max_threads (
+	uint16_t min_worker_threads,
+	uint16_t max_worker_threads,
+	uint16_t min_io_completion_threads,
+	uint16_t max_io_completion_threads,
+	uint16_t clr_instance_id)
+{
+	return true;
+}
+
+static bool
 event_pipe_stub_write_event_threadpool_worker_thread_adjustment_sample (
 	double throughput,
 	uint16_t clr_instance_id)
@@ -438,6 +508,74 @@ event_pipe_stub_write_event_threadpool_io_dequeue (
 static bool
 event_pipe_stub_write_event_threadpool_working_thread_count (
 	uint16_t count,
+	uint16_t clr_instance_id)
+{
+	return true;
+}
+
+static bool
+event_pipe_stub_write_event_threadpool_io_pack (
+	intptr_t native_overlapped,
+	intptr_t overlapped,
+	uint16_t clr_instance_id)
+{
+	return true;
+}
+
+static bool
+event_pipe_stub_write_event_contention_lock_created (
+	intptr_t lock_id,
+	intptr_t associated_object_id,
+	uint16_t clr_instance_id)
+{
+	return true;
+}
+
+static bool
+event_pipe_stub_write_event_contention_start (
+	uint8_t contention_flags,
+	uint16_t clr_instance_id,
+	intptr_t lock_id,
+	intptr_t associated_object_id,
+	uint64_t lock_owner_thread_id)
+{
+	return true;
+}
+
+static bool
+event_pipe_stub_write_event_contention_stop (
+	uint8_t contention_flags,
+	uint16_t clr_instance_id,
+	double duration_ns)
+{
+	return true;
+}
+
+static bool
+event_pipe_stub_signal_session (EventPipeSessionID session_id)
+{
+	return true;
+}
+
+static bool
+event_pipe_stub_wait_for_session_signal (
+	EventPipeSessionID session_id,
+	uint32_t timeout)
+{
+	return true;
+}
+
+static bool
+event_pipe_stub_write_event_wait_handle_wait_start (
+	uint8_t wait_source,
+	intptr_t associated_object_id,
+	uint16_t clr_instance_id)
+{
+	return true;
+}
+
+static bool
+event_pipe_stub_write_event_wait_handle_wait_stop (
 	uint16_t clr_instance_id)
 {
 	return true;

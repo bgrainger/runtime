@@ -3,7 +3,10 @@
 
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.IO;
 using System.Runtime.Versioning;
+using System.Threading;
+using System.Threading.Tasks;
 using Internal.Cryptography;
 
 namespace System.Security.Cryptography
@@ -14,19 +17,37 @@ namespace System.Security.Cryptography
     // it can't be helped.
     //
 
-    [UnsupportedOSPlatform("browser")]
     public abstract class MD5 : HashAlgorithm
     {
-        private const int HashSizeBits = 128;
-        private const int HashSizeBytes = HashSizeBits / 8;
+        private sealed class HashTrait : IHashStatic
+        {
+            static int IHashStatic.HashSizeInBytes => HashSizeInBytes;
+            static string IHashStatic.HashAlgorithmName => HashAlgorithmNames.MD5;
+
+            // Even though MD5 is not supported on browser, we return true and let it act as an unknown algorithm
+            // instead of an unsupported algorithm.
+            static bool IHashStatic.IsSupported => true;
+        }
+
+        /// <summary>
+        /// The hash size produced by the MD5 algorithm, in bits.
+        /// </summary>
+        public const int HashSizeInBits = 128;
+
+        /// <summary>
+        /// The hash size produced by the MD5 algorithm, in bytes.
+        /// </summary>
+        public const int HashSizeInBytes = HashSizeInBits / 8;
 
         protected MD5()
         {
-            HashSizeValue = HashSizeBits;
+            HashSizeValue = HashSizeInBits;
         }
 
+        [UnsupportedOSPlatform("browser")]
         public static new MD5 Create() => new Implementation();
 
+        [Obsolete(Obsoletions.CryptoStringFactoryMessage, DiagnosticId = Obsoletions.CryptoStringFactoryDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
         [RequiresUnreferencedCode(CryptoConfig.CreateFromNameUnreferencedCodeMessage)]
         public static new MD5? Create(string algName) => (MD5?)CryptoConfig.CreateFromName(algName);
 
@@ -38,28 +59,16 @@ namespace System.Security.Cryptography
         /// <exception cref="ArgumentNullException">
         /// <paramref name="source" /> is <see langword="null" />.
         /// </exception>
-        public static byte[] HashData(byte[] source)
-        {
-            if (source is null)
-                throw new ArgumentNullException(nameof(source));
-
-            return HashData(new ReadOnlySpan<byte>(source));
-        }
+        [UnsupportedOSPlatform("browser")]
+        public static byte[] HashData(byte[] source) => HashStatic<HashTrait>.HashData(source);
 
         /// <summary>
         /// Computes the hash of data using the MD5 algorithm.
         /// </summary>
         /// <param name="source">The data to hash.</param>
         /// <returns>The hash of the data.</returns>
-        public static byte[] HashData(ReadOnlySpan<byte> source)
-        {
-            byte[] buffer = GC.AllocateUninitializedArray<byte>(HashSizeBytes);
-
-            int written = HashData(source, buffer.AsSpan());
-            Debug.Assert(written == buffer.Length);
-
-            return buffer;
-        }
+        [UnsupportedOSPlatform("browser")]
+        public static byte[] HashData(ReadOnlySpan<byte> source) => HashStatic<HashTrait>.HashData(source);
 
         /// <summary>
         /// Computes the hash of data using the MD5 algorithm.
@@ -71,12 +80,10 @@ namespace System.Security.Cryptography
         /// The buffer in <paramref name="destination"/> is too small to hold the calculated hash
         /// size. The MD5 algorithm always produces a 128-bit hash, or 16 bytes.
         /// </exception>
+        [UnsupportedOSPlatform("browser")]
         public static int HashData(ReadOnlySpan<byte> source, Span<byte> destination)
         {
-            if (!TryHashData(source, destination, out int bytesWritten))
-                throw new ArgumentException(SR.Argument_DestinationTooShort, nameof(destination));
-
-            return bytesWritten;
+            return HashStatic<HashTrait>.HashData(source, destination);
         }
 
         /// <summary>
@@ -91,18 +98,102 @@ namespace System.Security.Cryptography
         /// <see langword="false"/> if <paramref name="destination"/> is too small to hold the
         /// calculated hash, <see langword="true"/> otherwise.
         /// </returns>
+        [UnsupportedOSPlatform("browser")]
         public static bool TryHashData(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten)
         {
-            if (destination.Length < HashSizeBytes)
-            {
-                bytesWritten = 0;
-                return false;
-            }
+            return HashStatic<HashTrait>.TryHashData(source, destination, out bytesWritten);
+        }
 
-            bytesWritten = HashProviderDispenser.OneShotHashProvider.HashData(HashAlgorithmNames.MD5, source, destination);
-            Debug.Assert(bytesWritten == HashSizeBytes);
+        /// <summary>
+        /// Computes the hash of a stream using the MD5 algorithm.
+        /// </summary>
+        /// <param name="source">The stream to hash.</param>
+        /// <param name="destination">The buffer to receive the hash value.</param>
+        /// <returns>The total number of bytes written to <paramref name="destination" />.</returns>
+        /// <exception cref="ArgumentNullException">
+        ///   <paramref name="source" /> is <see langword="null" />.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        ///   <p>
+        ///   The buffer in <paramref name="destination"/> is too small to hold the calculated hash
+        ///   size. The MD5 algorithm always produces a 128-bit hash, or 16 bytes.
+        ///   </p>
+        ///   <p>-or-</p>
+        ///   <p>
+        ///   <paramref name="source" /> does not support reading.
+        ///   </p>
+        /// </exception>
+        [UnsupportedOSPlatform("browser")]
+        public static int HashData(Stream source, Span<byte> destination)
+        {
+            return HashStatic<HashTrait>.HashData(source, destination);
+        }
 
-            return true;
+        /// <summary>
+        /// Computes the hash of a stream using the MD5 algorithm.
+        /// </summary>
+        /// <param name="source">The stream to hash.</param>
+        /// <returns>The hash of the data.</returns>
+        /// <exception cref="ArgumentNullException">
+        ///   <paramref name="source" /> is <see langword="null" />.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        ///   <paramref name="source" /> does not support reading.
+        /// </exception>
+        [UnsupportedOSPlatform("browser")]
+        public static byte[] HashData(Stream source) => HashStatic<HashTrait>.HashData(source);
+
+        /// <summary>
+        /// Asynchronously computes the hash of a stream using the MD5 algorithm.
+        /// </summary>
+        /// <param name="source">The stream to hash.</param>
+        /// <param name="cancellationToken">
+        ///   The token to monitor for cancellation requests.
+        ///   The default value is <see cref="System.Threading.CancellationToken.None" />.
+        /// </param>
+        /// <returns>The hash of the data.</returns>
+        /// <exception cref="ArgumentNullException">
+        ///   <paramref name="source" /> is <see langword="null" />.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        ///   <paramref name="source" /> does not support reading.
+        /// </exception>
+        [UnsupportedOSPlatform("browser")]
+        public static ValueTask<byte[]> HashDataAsync(Stream source, CancellationToken cancellationToken = default)
+        {
+            return HashStatic<HashTrait>.HashDataAsync(source, cancellationToken);
+        }
+
+        /// <summary>
+        /// Asynchronously computes the hash of a stream using the MD5 algorithm.
+        /// </summary>
+        /// <param name="source">The stream to hash.</param>
+        /// <param name="destination">The buffer to receive the hash value.</param>
+        /// <param name="cancellationToken">
+        ///   The token to monitor for cancellation requests.
+        ///   The default value is <see cref="System.Threading.CancellationToken.None" />.
+        /// </param>
+        /// <returns>The total number of bytes written to <paramref name="destination" />.</returns>
+        /// <exception cref="ArgumentNullException">
+        ///   <paramref name="source" /> is <see langword="null" />.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        ///   <p>
+        ///   The buffer in <paramref name="destination"/> is too small to hold the calculated hash
+        ///   size. The MD5 algorithm always produces a 128-bit hash, or 16 bytes.
+        ///   </p>
+        ///   <p>-or-</p>
+        ///   <p>
+        ///   <paramref name="source" /> does not support reading.
+        ///   </p>
+        /// </exception>
+        [UnsupportedOSPlatform("browser")]
+        public static ValueTask<int> HashDataAsync(
+            Stream source,
+            Memory<byte> destination,
+            CancellationToken cancellationToken = default)
+        {
+            return HashStatic<HashTrait>.HashDataAsync(source, destination, cancellationToken);
         }
 
         private sealed class Implementation : MD5

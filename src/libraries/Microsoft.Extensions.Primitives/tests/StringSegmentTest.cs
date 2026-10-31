@@ -571,7 +571,7 @@ namespace Microsoft.Extensions.Primitives
             Assert.False(StringSegment.IsNullOrEmpty(new StringSegment("ABCDefg", 3, 2)));
         }
 
-        public static TheoryData GetHashCode_ReturnsSameValueForEqualSubstringsData => new TheoryData<StringSegment, StringSegment>
+        public static TheoryData<StringSegment, StringSegment> GetHashCode_ReturnsSameValueForEqualSubstringsData => new TheoryData<StringSegment, StringSegment>
         {
             { default(StringSegment), default(StringSegment) },
             { default(StringSegment), new StringSegment() },
@@ -593,7 +593,7 @@ namespace Microsoft.Extensions.Primitives
             Assert.Equal(hashCode1, hashCode2);
         }
 
-        public static TheoryData GetHashCode_ReturnsDifferentValuesForInequalSubstringsData
+        public static TheoryData<StringSegment, StringSegment> GetHashCode_ReturnsDifferentValuesForInequalSubstringsData
         {
             get
             {
@@ -806,7 +806,6 @@ namespace Microsoft.Extensions.Primitives
         }
 
         [Fact]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/50878", TestPlatforms.Android)]
         public void StringSegment_Substring_InvalidOffsetAndLength()
         {
             // Arrange
@@ -818,7 +817,6 @@ namespace Microsoft.Extensions.Primitives
         }
 
         [Fact]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/50878", TestPlatforms.Android)]
         public void StringSegment_Substring_OffsetAndLengthOverflows()
         {
             // Arrange
@@ -899,7 +897,6 @@ namespace Microsoft.Extensions.Primitives
         }
 
         [Fact]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/50878", TestPlatforms.Android)]
         public void StringSegment_Subsegment_InvalidOffsetAndLength()
         {
             // Arrange
@@ -911,7 +908,6 @@ namespace Microsoft.Extensions.Primitives
         }
 
         [Fact]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/50878", TestPlatforms.Android)]
         public void StringSegment_Subsegment_OffsetAndLengthOverflows()
         {
             // Arrange
@@ -1226,7 +1222,7 @@ namespace Microsoft.Extensions.Primitives
 
             // Act & Assert
             ArgumentOutOfRangeException exception = Assert.Throws<ArgumentOutOfRangeException>(() => segment.IndexOfAny(new []{ '5' }, 2, 3));
-            Assert.Equal("start", exception.ParamName);
+            Assert.Equal("startIndex", exception.ParamName);
         }
 
         [Fact]

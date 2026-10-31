@@ -3,41 +3,36 @@
 
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Net.Http;
 using System.Net.Security;
 using System.Runtime.InteropServices;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Win32.SafeHandles;
-
-#pragma warning disable CA1419 // TODO https://github.com/dotnet/roslyn-analyzers/issues/5232: not intended for use with P/Invoke
+using OSStatus = Interop.AppleCrypto.OSStatus;
 
 namespace System.Net
 {
     internal sealed class SafeDeleteSslContext : SafeDeleteContext
     {
         // mapped from OSX error codes
-        private const int OSStatus_writErr = -20;
-        private const int OSStatus_readErr = -19;
-        private const int OSStatus_noErr = 0;
-        private const int OSStatus_errSSLWouldBlock = -9803;
         private const int InitialBufferSize = 2048;
-        private SafeSslHandle _sslContext;
+        private readonly SafeSslHandle _sslContext;
+        private readonly object _lock = new object();
         private ArrayBuffer _inputBuffer = new ArrayBuffer(InitialBufferSize);
         private ArrayBuffer _outputBuffer = new ArrayBuffer(InitialBufferSize);
 
         public SafeSslHandle SslContext => _sslContext;
+        public SslApplicationProtocol SelectedApplicationProtocol;
+        public bool IsServer;
 
-        public SafeDeleteSslContext(SafeFreeSslCredentials credential, SslAuthenticationOptions sslAuthenticationOptions)
-            : base(credential)
+        public SafeDeleteSslContext(SslAuthenticationOptions sslAuthenticationOptions)
+            : base(IntPtr.Zero)
         {
-            Debug.Assert((null != credential) && !credential.IsInvalid, "Invalid credential used in SafeDeleteSslContext");
-
             try
             {
                 int osStatus;
 
-                _sslContext = CreateSslContext(credential, sslAuthenticationOptions.IsServer);
+                _sslContext = CreateSslContext(sslAuthenticationOptions);
 
                 // Make sure the class instance is associated to the session and is provided
                 // in the Read/Write callback connection parameter
@@ -79,10 +74,17 @@ namespace System.Net
 
                 if (sslAuthenticationOptions.ApplicationProtocols != null && sslAuthenticationOptions.ApplicationProtocols.Count != 0)
                 {
-                    // On OSX coretls supports only client side. For server, we will silently ignore the option.
-                    if (!sslAuthenticationOptions.IsServer)
+                    ValidateAlpnProtocolListSize(sslAuthenticationOptions.ApplicationProtocols);
+
+                    if (sslAuthenticationOptions.IsClient)
                     {
+                        // On macOS coreTls supports only client side.
                         Interop.AppleCrypto.SslCtxSetAlpnProtos(_sslContext, sslAuthenticationOptions.ApplicationProtocols);
+                    }
+                    else
+                    {
+                        // For Server, we do the selection in SslStream and we set it later
+                        Interop.AppleCrypto.SslBreakOnClientHello(_sslContext, true);
                     }
                 }
             }
@@ -92,23 +94,65 @@ namespace System.Net
                 Dispose();
                 throw;
             }
+
+            if (!string.IsNullOrEmpty(sslAuthenticationOptions.TargetHost) && !sslAuthenticationOptions.IsServer && !IPAddress.IsValid(sslAuthenticationOptions.TargetHost))
+            {
+                Interop.AppleCrypto.SslSetTargetName(_sslContext, sslAuthenticationOptions.TargetHost);
+            }
+
+            if (sslAuthenticationOptions.CertificateContext == null && sslAuthenticationOptions.CertSelectionDelegate != null)
+            {
+                // certificate was not provided but there is user callback. We can break handshake if server asks for certificate
+                // and we can try to get it based on remote certificate and trusted issuers.
+                Interop.AppleCrypto.SslBreakOnCertRequested(_sslContext, true);
+            }
+
+            if (sslAuthenticationOptions.IsServer)
+            {
+                IsServer = true;
+
+                if (sslAuthenticationOptions.RemoteCertRequired)
+                {
+                    Interop.AppleCrypto.SslSetAcceptClientCert(_sslContext);
+                }
+
+                if (sslAuthenticationOptions.CertificateContext?.Trust?._sendTrustInHandshake == true)
+                {
+                    SslCertificateTrust trust = sslAuthenticationOptions.CertificateContext!.Trust!;
+                    X509Certificate2Collection certList = (trust._trustList ?? trust._store!.Certificates);
+
+                    Debug.Assert(certList != null);
+                    Span<IntPtr> handles = certList.Count <= 256
+                        ? stackalloc IntPtr[256]
+                        : new IntPtr[certList.Count];
+
+                    for (int i = 0; i < certList.Count; i++)
+                    {
+                        handles[i] = certList[i].Handle;
+                    }
+
+                    Interop.AppleCrypto.SslSetCertificateAuthorities(_sslContext, handles.Slice(0, certList.Count), true);
+                }
+            }
         }
 
-        private static SafeSslHandle CreateSslContext(SafeFreeSslCredentials credential, bool isServer)
+        private static SafeSslHandle CreateSslContext(SslAuthenticationOptions sslAuthenticationOptions)
         {
-            switch (credential.Policy)
+            switch (sslAuthenticationOptions.EncryptionPolicy)
             {
                 case EncryptionPolicy.RequireEncryption:
+#pragma warning disable SYSLIB0040 // NoEncryption and AllowNoEncryption are obsolete
                 case EncryptionPolicy.AllowNoEncryption:
                     // SecureTransport doesn't allow TLS_NULL_NULL_WITH_NULL, but
                     // since AllowNoEncryption intersect OS-supported isn't nothing,
                     // let it pass.
                     break;
+#pragma warning restore SYSLIB0040
                 default:
-                    throw new PlatformNotSupportedException(SR.Format(SR.net_encryptionpolicy_notsupported, credential.Policy));
+                    throw new PlatformNotSupportedException(SR.Format(SR.net_encryptionpolicy_notsupported, sslAuthenticationOptions.EncryptionPolicy));
             }
 
-            SafeSslHandle sslContext = Interop.AppleCrypto.SslCreateContext(isServer ? 1 : 0);
+            SafeSslHandle sslContext = Interop.AppleCrypto.SslCreateContext(sslAuthenticationOptions.IsServer ? 1 : 0);
 
             try
             {
@@ -120,16 +164,19 @@ namespace System.Net
                 }
 
                 // Let None mean "system default"
-                if (credential.Protocols != SslProtocols.None)
+                if (sslAuthenticationOptions.EnabledSslProtocols != SslProtocols.None)
                 {
-                    SetProtocols(sslContext, credential.Protocols);
+                    SetProtocols(sslContext, sslAuthenticationOptions.EnabledSslProtocols);
                 }
 
-                if (credential.CertificateContext != null)
+                // SslBreakOnCertRequested does not seem to do anything when we already provide the cert here.
+                // So we set it only for server in order to reliably detect whether the peer asked for it on client.
+                if (sslAuthenticationOptions.CertificateContext != null && sslAuthenticationOptions.IsServer)
                 {
-                    SetCertificate(sslContext, credential.CertificateContext);
+                    SetCertificate(sslContext, sslAuthenticationOptions.CertificateContext);
                 }
 
+                Interop.AppleCrypto.SslBreakOnCertRequested(sslContext, true);
                 Interop.AppleCrypto.SslBreakOnServerAuth(sslContext, true);
                 Interop.AppleCrypto.SslBreakOnClientAuth(sslContext, true);
             }
@@ -144,9 +191,10 @@ namespace System.Net
 
         private void SslSetConnection(SafeSslHandle sslContext)
         {
-            GCHandle handle = GCHandle.Alloc(this, GCHandleType.Weak);
+            var handle = new GCHandle<SafeDeleteSslContext>(this);
+            sslContext.SetConnectionGCHandle(handle);
 
-            Interop.AppleCrypto.SslSetConnection(sslContext, GCHandle.ToIntPtr(handle));
+            Interop.AppleCrypto.SslSetConnection(sslContext, GCHandle<SafeDeleteSslContext>.ToIntPtr(handle));
         }
 
         public override bool IsInvalid => _sslContext?.IsInvalid ?? true;
@@ -158,7 +206,7 @@ namespace System.Net
                 SafeSslHandle sslContext = _sslContext;
                 if (null != sslContext)
                 {
-                    lock (_sslContext)
+                    lock (_lock)
                     {
                         _inputBuffer.Dispose();
                         _outputBuffer.Dispose();
@@ -173,15 +221,14 @@ namespace System.Net
         [UnmanagedCallersOnly]
         private static unsafe int WriteToConnection(IntPtr connection, byte* data, void** dataLength)
         {
-            SafeDeleteSslContext? context = (SafeDeleteSslContext?)GCHandle.FromIntPtr(connection).Target;
-            Debug.Assert(context != null);
+            SafeDeleteSslContext context = GCHandle<SafeDeleteSslContext>.FromIntPtr(connection).Target;
 
             // We don't pool these buffers and we can't because there's a race between their us in the native
             // read/write callbacks and being disposed when the SafeHandle is disposed. This race is benign currently,
             // but if we were to pool the buffers we would have a potential use-after-free issue.
             try
             {
-                lock (context)
+                lock (context._lock)
                 {
                     ulong length = (ulong)*dataLength;
                     Debug.Assert(length <= int.MaxValue);
@@ -194,32 +241,31 @@ namespace System.Net
                     context._outputBuffer.Commit(toWrite);
                     // Since we can enqueue everything, no need to re-assign *dataLength.
 
-                    return OSStatus_noErr;
+                    return OSStatus.NoErr;
                 }
             }
             catch (Exception e)
             {
                 if (NetEventSource.Log.IsEnabled())
                     NetEventSource.Error(context, $"WritingToConnection failed: {e.Message}");
-                return OSStatus_writErr;
+                return OSStatus.WritErr;
             }
         }
 
         [UnmanagedCallersOnly]
         private static unsafe int ReadFromConnection(IntPtr connection, byte* data, void** dataLength)
         {
-            SafeDeleteSslContext? context = (SafeDeleteSslContext?)GCHandle.FromIntPtr(connection).Target;
-            Debug.Assert(context != null);
+            SafeDeleteSslContext context = GCHandle<SafeDeleteSslContext>.FromIntPtr(connection).Target;
 
             try
             {
-                lock (context)
+                lock (context._lock)
                 {
                     ulong toRead = (ulong)*dataLength;
 
                     if (toRead == 0)
                     {
-                        return OSStatus_noErr;
+                        return OSStatus.NoErr;
                     }
 
                     uint transferred = 0;
@@ -227,7 +273,7 @@ namespace System.Net
                     if (context._inputBuffer.ActiveLength == 0)
                     {
                         *dataLength = (void*)0;
-                        return OSStatus_errSSLWouldBlock;
+                        return OSStatus.ErrSSLWouldBlock;
                     }
 
                     int limit = Math.Min((int)toRead, context._inputBuffer.ActiveLength);
@@ -237,20 +283,20 @@ namespace System.Net
                     transferred = (uint)limit;
 
                     *dataLength = (void*)transferred;
-                    return OSStatus_noErr;
+                    return OSStatus.NoErr;
                 }
             }
             catch (Exception e)
             {
                 if (NetEventSource.Log.IsEnabled())
                     NetEventSource.Error(context, $"ReadFromConnectionfailed: {e.Message}");
-                return OSStatus_readErr;
+                return OSStatus.ReadErr;
             }
         }
 
         internal void Write(ReadOnlySpan<byte> buf)
         {
-            lock (_sslContext)
+            lock (_lock)
             {
                 _inputBuffer.EnsureAvailableSpace(buf.Length);
                 buf.CopyTo(_inputBuffer.AvailableSpan);
@@ -260,19 +306,20 @@ namespace System.Net
 
         internal int BytesReadyForConnection => _outputBuffer.ActiveLength;
 
-        internal byte[]? ReadPendingWrites()
+        internal void ReadPendingWrites(ref ProtocolToken token)
         {
-            lock (_sslContext)
+            lock (_lock)
             {
                 if (_outputBuffer.ActiveLength == 0)
                 {
-                    return null;
+                    token.Size = 0;
+                    token.Payload = null;
+
+                    return;
                 }
 
-                byte[] buffer = _outputBuffer.ActiveSpan.ToArray();
-                _outputBuffer.Discard(_outputBuffer.ActiveLength);
-
-                return buffer;
+                token.SetPayload(_outputBuffer.ActiveSpan);
+                _outputBuffer.DiscardAll();
             }
         }
 
@@ -283,7 +330,7 @@ namespace System.Net
             Debug.Assert(count >= 0);
             Debug.Assert(count <= buf.Length - offset);
 
-            lock (_sslContext)
+            lock (_lock)
             {
                 int limit = Math.Min(count, _outputBuffer.ActiveLength);
 
@@ -300,8 +347,10 @@ namespace System.Net
             SslProtocols.Ssl2,
             SslProtocols.Ssl3,
 #pragma warning restore 0618
+#pragma warning disable SYSLIB0039 // TLS 1.0 and 1.1 are obsolete
             SslProtocols.Tls,
             SslProtocols.Tls11,
+#pragma warning restore SYSLIB0039
             SslProtocols.Tls12
         };
 
@@ -316,14 +365,18 @@ namespace System.Net
             Interop.AppleCrypto.SslSetMaxProtocolVersion(sslContext, maxProtocolId);
         }
 
-        private static void SetCertificate(SafeSslHandle sslContext, SslStreamCertificateContext context)
+        internal static void SetCertificate(SafeSslHandle sslContext, SslStreamCertificateContext context)
         {
-            Debug.Assert(sslContext != null, "sslContext != null");
+            Debug.Assert(sslContext != null);
 
+            const int StackallocThreshold = 128;
 
-            IntPtr[] ptrs = new IntPtr[context!.IntermediateCertificates!.Length + 1];
+            int certCount = context!.IntermediateCertificates.Count + 1;
+            Span<IntPtr> ptrs = certCount <= StackallocThreshold ?
+                stackalloc IntPtr[certCount] :
+                new IntPtr[certCount];
 
-            for (int i = 0; i < context.IntermediateCertificates.Length; i++)
+            for (int i = 0; i < context.IntermediateCertificates.Count; i++)
             {
                 X509Certificate2 intermediateCert = context.IntermediateCertificates[i];
 
@@ -335,15 +388,28 @@ namespace System.Net
                     // The current value of intermediateCert is still in elements, which will
                     // get Disposed at the end of this method.  The new value will be
                     // in the intermediate certs array, which also gets serially Disposed.
-                    intermediateCert = new X509Certificate2(intermediateCert.RawDataMemory.Span);
+                    intermediateCert = X509CertificateLoader.LoadCertificate(intermediateCert.RawDataMemory.Span);
                 }
 
                 ptrs[i + 1] = intermediateCert.Handle;
             }
 
-            ptrs[0] = context!.Certificate!.Handle;
+            ptrs[0] = context!.TargetCertificate.Handle;
 
             Interop.AppleCrypto.SslSetCertificate(sslContext, ptrs);
+        }
+
+        private static void ValidateAlpnProtocolListSize(List<SslApplicationProtocol> applicationProtocols)
+        {
+            int protocolListSize = 0;
+            foreach (SslApplicationProtocol protocol in applicationProtocols)
+            {
+                protocolListSize += protocol.Protocol.Length + 1;
+                if (protocolListSize > ushort.MaxValue)
+                {
+                    throw new ArgumentException(SR.net_ssl_app_protocols_invalid, nameof(applicationProtocols));
+                }
+            }
         }
     }
 }

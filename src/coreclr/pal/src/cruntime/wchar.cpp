@@ -2,21 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 /*++
-
-
-
 Module Name:
-
     wchar.c
 
 Abstract:
-
     Implementation of wide char string functions.
-
-
-
 --*/
-
 
 #include "pal/palinternal.h"
 #include "pal/cruntime.h"
@@ -25,12 +16,10 @@ Abstract:
 #include "pal/thread.hpp"
 #include "pal/threadsusp.hpp"
 
-
 #if HAVE_CONFIG_H
 #include "config.h"
 #endif
 
-#include <wctype.h>
 #include <errno.h>
 #include <algorithm>
 
@@ -61,10 +50,10 @@ _wtoi(
               GetLastError());
         return -1;
     }
-    tempStr = (char *) PAL_malloc(len);
+    tempStr = (char *) malloc(len);
     if (!tempStr)
     {
-        ERROR("PAL_malloc failed\n");
+        ERROR("malloc failed\n");
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         return -1;
     }
@@ -73,12 +62,12 @@ _wtoi(
     {
         ASSERT("WideCharToMultiByte failed.  Error is %d\n",
               GetLastError());
-        PAL_free(tempStr);
+        free(tempStr);
         return -1;
     }
     ret = atoi(tempStr);
 
-    PAL_free(tempStr);
+    free(tempStr);
     LOGEXIT("_wtoi returns int %d\n", ret);
     PERF_EXIT(_wtoi);
     return ret;
@@ -110,9 +99,9 @@ count                   Number of characters to compare
 
 Remarks
 
-The _strnicmp function lexicographically compares, at most, the first
+The _wcsnicmp function lexicographically compares, at most, the first
 count characters of string1 and string2. The comparison is performed
-without regard to case; _strnicmp is a case-insensitive version of
+without regard to case; _wcsnicmp is a case-insensitive version of
 strncmp. The comparison ends if a terminating null character is
 reached in either string before count characters are compared. If the
 strings are equal when a terminating null character is reached in
@@ -267,10 +256,10 @@ PAL_wcstoul(
         res = 0;
         goto PAL_wcstoulExit;
     }
-    s_nptr = (char *)PAL_malloc(size);
+    s_nptr = (char *)malloc(size);
     if (!s_nptr)
     {
-        ERROR("PAL_malloc failed\n");
+        ERROR("malloc failed\n");
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         res = 0;
         goto PAL_wcstoulExit;
@@ -316,7 +305,7 @@ PAL_wcstoul(
     }
 
 PAL_wcstoulExit:
-    PAL_free(s_nptr);
+    free(s_nptr);
     LOGEXIT("wcstoul returning unsigned long %lu\n", res);
     PERF_EXIT(wcstoul);
 
@@ -357,10 +346,10 @@ PAL__wcstoui64(
         res = 0;
         goto PAL__wcstoui64Exit;
     }
-    s_nptr = (char *)PAL_malloc(size);
+    s_nptr = (char *)malloc(size);
     if (!s_nptr)
     {
-        ERROR("PAL_malloc failed\n");
+        ERROR("malloc failed\n");
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         res = 0;
         goto PAL__wcstoui64Exit;
@@ -387,7 +376,7 @@ PAL__wcstoui64(
     }
 
 PAL__wcstoui64Exit:
-    PAL_free(s_nptr);
+    free(s_nptr);
     LOGEXIT("_wcstoui64 returning unsigned long long %llu\n", res);
     PERF_EXIT(_wcstoui64);
 
@@ -646,41 +635,6 @@ PAL_wcsrchr(
 
 /*++
 Function:
-  PAL_wcspbrk
-
-See MSDN or man page for wcspbrk.
---*/
-const wchar_16 *
-__cdecl
-PAL_wcspbrk(
-        const wchar_16 *string,
-        const wchar_16 *strCharSet)
-{
-    PERF_ENTRY(wcspbrk);
-    ENTRY("wcspbrk (string=%p (%S), strCharSet=%p (%S))\n",
-          string?string:W16_NULLSTRING,
-          string?string:W16_NULLSTRING, strCharSet?strCharSet:W16_NULLSTRING, strCharSet?strCharSet:W16_NULLSTRING);
-
-    while (*string)
-    {
-        if (PAL_wcschr(strCharSet, *string) != NULL)
-        {
-            LOGEXIT("wcspbrk returning wchar_t %p (%S)\n", string, string);
-            PERF_EXIT(wcspbrk);
-            return (wchar_16 *) string;
-        }
-
-        string++;
-    }
-
-    LOGEXIT("wcspbrk returning wchar_t NULL\n");
-    PERF_EXIT(wcspbrk);
-    return NULL;
-}
-
-
-/*++
-Function:
   PAL_wcsstr
 
 See MSDN or man page for wcsstr.
@@ -902,7 +856,7 @@ PAL_wcstod( const wchar_16 * nptr, wchar_16 **endptr )
     if ( lpEndOfExpression != lpStartOfExpression )
     {
         Length = lpEndOfExpression - lpStartOfExpression;
-        lpStringRep = (LPSTR)PAL_malloc( Length + 1);
+        lpStringRep = (LPSTR)malloc( Length + 1);
 
         if ( lpStringRep )
         {
@@ -945,51 +899,8 @@ PAL_wcstod( const wchar_16 * nptr, wchar_16 **endptr )
         *endptr = lpEndOfExpression;
     }
 
-    PAL_free( lpStringRep );
+    free( lpStringRep );
     LOGEXIT( "wcstod returning %f.\n", RetVal );
     PERF_EXIT(wcstod);
     return RetVal;
-}
-
-/*++
-Function:
-   PAL_wcscspn
-
-Finds the number of consecutive characters from the start of the string
-that are not in the set.
-
-Return value:
-
-The number of characters from the start of the string that are not in
-the set.
-
-Parameters:
-string          String
-strCharSet      Set of delimiter characters
-
---*/
-size_t
-__cdecl
-PAL_wcscspn(const wchar_16 *string, const wchar_16 *strCharSet)
-{
-    const wchar_16 *temp;
-    size_t count = 0;
-
-    PERF_ENTRY(wcscspn);
-
-    while(*string != 0)
-    {
-        for(temp = strCharSet; *temp != 0; temp++)
-        {
-            if (*string == *temp)
-            {
-                PERF_EXIT(wcscspn);
-                return count;
-            }
-        }
-        count++;
-        string++;
-    }
-    PERF_EXIT(wcscspn);
-    return count;
 }

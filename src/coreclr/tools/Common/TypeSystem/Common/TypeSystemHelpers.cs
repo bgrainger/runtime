@@ -5,6 +5,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 
+using Internal.Text;
+
 namespace Internal.TypeSystem
 {
     public static class TypeSystemHelpers
@@ -65,10 +67,6 @@ namespace Internal.TypeSystem
             return paramType.ParameterType;
         }
 
-        public static bool HasLayout(this MetadataType mdType)
-        {
-            return mdType.IsSequentialLayout || mdType.IsExplicitLayout;
-        }
 
         public static LayoutInt GetElementSize(this TypeDesc type)
         {
@@ -89,7 +87,7 @@ namespace Internal.TypeSystem
         {
             // TODO: Do we want check for specialname/rtspecialname? Maybe add another overload on GetMethod?
             var sig = new MethodSignature(0, 0, type.Context.GetWellKnownType(WellKnownType.Void), TypeDesc.EmptyTypes);
-            return type.GetMethod(".ctor", sig);
+            return type.GetMethod(".ctor"u8, sig);
         }
 
         public static bool HasExplicitOrImplicitDefaultConstructor(this TypeDesc type)
@@ -162,15 +160,6 @@ namespace Internal.TypeSystem
         }
 
         /// <summary>
-        /// Retrieves the namespace qualified name of a <see cref="DefType"/>.
-        /// </summary>
-        public static string GetFullName(this DefType metadataType)
-        {
-            string ns = metadataType.Namespace;
-            return ns.Length > 0 ? string.Concat(ns, ".", metadataType.Name) : metadataType.Name;
-        }
-
-        /// <summary>
         /// Retrieves all methods on a type, including the ones injected by the type system context.
         /// </summary>
         public static IEnumerable<MethodDesc> GetAllMethods(this TypeDesc type)
@@ -193,7 +182,7 @@ namespace Internal.TypeSystem
 
         /// <summary>
         /// Resolves interface method '<paramref name="interfaceMethod"/>' to a method on '<paramref name="type"/>'
-        /// that implements the the method.
+        /// that implements the method.
         /// </summary>
         public static MethodDesc ResolveInterfaceMethodToVirtualMethodOnType(this TypeDesc type, MethodDesc interfaceMethod)
         {
@@ -205,9 +194,24 @@ namespace Internal.TypeSystem
             return type.Context.GetVirtualMethodAlgorithmForType(type).ResolveVariantInterfaceMethodToVirtualMethodOnType(interfaceMethod, type);
         }
 
+        public static MethodDesc ResolveInterfaceMethodToStaticVirtualMethodOnType(this TypeDesc type, MethodDesc interfaceMethod)
+        {
+            return type.Context.GetVirtualMethodAlgorithmForType(type).ResolveInterfaceMethodToStaticVirtualMethodOnType(interfaceMethod, type);
+        }
+
+        public static MethodDesc ResolveVariantInterfaceMethodToStaticVirtualMethodOnType(this TypeDesc type, MethodDesc interfaceMethod)
+        {
+            return type.Context.GetVirtualMethodAlgorithmForType(type).ResolveVariantInterfaceMethodToStaticVirtualMethodOnType(interfaceMethod, type);
+        }
+
         public static DefaultInterfaceMethodResolution ResolveInterfaceMethodToDefaultImplementationOnType(this TypeDesc type, MethodDesc interfaceMethod, out MethodDesc implMethod)
         {
             return type.Context.GetVirtualMethodAlgorithmForType(type).ResolveInterfaceMethodToDefaultImplementationOnType(interfaceMethod, type, out implMethod);
+        }
+
+        public static DefaultInterfaceMethodResolution ResolveVariantInterfaceMethodToDefaultImplementationOnType(this TypeDesc type, MethodDesc interfaceMethod, out MethodDesc implMethod)
+        {
+            return type.Context.GetVirtualMethodAlgorithmForType(type).ResolveVariantInterfaceMethodToDefaultImplementationOnType(interfaceMethod, type, out implMethod);
         }
 
         /// <summary>
@@ -287,7 +291,7 @@ namespace Internal.TypeSystem
         {
             Debug.Assert(interfaceMethodToResolve.OwningType.IsInterface);
 
-            MethodDesc result = null;
+            MethodDesc result;
             TypeDesc currentType = thisType;
             do
             {
@@ -307,7 +311,7 @@ namespace Internal.TypeSystem
         {
             Debug.Assert(interfaceMethodToResolve.OwningType.IsInterface);
 
-            MethodDesc result = null;
+            MethodDesc result;
             TypeDesc currentType = thisType;
             do
             {
@@ -348,7 +352,7 @@ namespace Internal.TypeSystem
                     // It is generally a bug to have instantiations over generic parameters
                     // in the system. Typical instantiations are represented as instantiations
                     // over own formals - so these should be signature variables instead.
-                    throw new ArgumentException();
+                    throw new InvalidOperationException();
 
                 default:
                     Debug.Assert(thisType is DefType);
@@ -400,7 +404,7 @@ namespace Internal.TypeSystem
         /// </summary>
         public static bool RequiresAlign8(this TypeDesc type)
         {
-            if (type.Context.Target.Architecture != TargetArchitecture.ARM && type.Context.Target.Architecture != TargetArchitecture.Wasm32)
+            if (!type.Context.Target.SupportsAlign8)
             {
                 return false;
             }
@@ -427,6 +431,66 @@ namespace Internal.TypeSystem
             }
 
             return false;
+        }
+
+        public static ReadOnlySpan<byte> Append(this Utf8Span s1, Utf8Span s2)
+        {
+            Span<byte> buffer = new byte[s1.Length + s2.Length];
+
+            s1.AsSpan().CopyTo(buffer);
+            s2.AsSpan().CopyTo(buffer.Slice(s1.Length));
+
+            return buffer;
+        }
+
+        public static ReadOnlySpan<byte> Append(this ReadOnlySpan<byte> s1, Utf8Span s2)
+        {
+            Span<byte> buffer = new byte[s1.Length + s2.Length];
+
+            s1.CopyTo(buffer);
+            s2.AsSpan().CopyTo(buffer.Slice(s1.Length));
+
+            return buffer;
+        }
+
+        public static ReadOnlySpan<T> Append<T>(this ReadOnlySpan<T> s1, ReadOnlySpan<T> s2, ReadOnlySpan<T> s3)
+        {
+            Span<T> buffer = new T[s1.Length + s2.Length + s3.Length];
+
+            s1.CopyTo(buffer);
+            s2.CopyTo(buffer.Slice(s1.Length));
+            s3.CopyTo(buffer.Slice(s1.Length + s2.Length));
+
+            return buffer;
+        }
+
+        public static ReadOnlySpan<byte> Append(this Utf8Span s1, Utf8Span s2, Utf8Span s3)
+        {
+            ReadOnlySpan<byte> s1Span = s1.AsSpan();
+            ReadOnlySpan<byte> s2Span = s2.AsSpan();
+            ReadOnlySpan<byte> s3Span = s3.AsSpan();
+            Span<byte> buffer = new byte[s1Span.Length + s2Span.Length + s3Span.Length];
+
+            s1Span.CopyTo(buffer);
+            s2Span.CopyTo(buffer.Slice(s1Span.Length));
+            s3Span.CopyTo(buffer.Slice(s1Span.Length + s2Span.Length));
+
+            return buffer;
+        }
+
+        public static ReadOnlySpan<byte> Append(this Utf8Span s1, Utf8Span s2, Utf8Span s3, uint i)
+        {
+            Span<byte> s4 = stackalloc byte[16];
+            System.Buffers.Text.Utf8Formatter.TryFormat(i, s4, out int s4length);
+
+            Span<byte> buffer = new byte[s1.Length + s2.Length + s3.Length + s4length];
+
+            s1.AsSpan().CopyTo(buffer);
+            s2.AsSpan().CopyTo(buffer.Slice(s1.Length));
+            s3.AsSpan().CopyTo(buffer.Slice(s1.Length + s2.Length));
+            s4.Slice(0, s4length).CopyTo(buffer.Slice(s1.Length + s2.Length + s3.Length));
+
+            return buffer;
         }
     }
 }

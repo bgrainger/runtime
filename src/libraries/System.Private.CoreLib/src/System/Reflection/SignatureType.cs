@@ -18,6 +18,9 @@ namespace System.Reflection
     {
         public sealed override bool IsSignatureType => true;
 
+        // The base implementation does not expose Nullable<T> behavior; subclasses override when appropriate.
+        public override Type? GetNullableUnderlyingType() => null;
+
         // Type flavor predicates
         public abstract override bool IsTypeDefinition { get; }
         protected abstract override bool HasElementTypeImpl();
@@ -37,7 +40,9 @@ namespace System.Reflection
         public sealed override MemberTypes MemberType => MemberTypes.TypeInfo;
 
         // Compositors
+        [RequiresDynamicCode("The code for an array of the specified type might not be available.")]
         public sealed override Type MakeArrayType() => new SignatureArrayType(this, rank: 1, isMultiDim: false);
+        [RequiresDynamicCode("The code for an array of the specified type might not be available.")]
         public sealed override Type MakeArrayType(int rank)
         {
             if (rank <= 0)
@@ -46,7 +51,9 @@ namespace System.Reflection
         }
         public sealed override Type MakeByRefType() => new SignatureByRefType(this);
         public sealed override Type MakePointerType() => new SignaturePointerType(this);
+        public override Type MakeFunctionPointerType(Type[]? parameterTypes, bool isUnmanaged = false) => Type.MakeFunctionPointerSignatureType(this, parameterTypes, isUnmanaged);
 
+        [RequiresDynamicCode("The native code for this instantiation might not be available at runtime.")]
         [RequiresUnreferencedCode("If some of the generic arguments are annotated (either with DynamicallyAccessedMembersAttribute, or generic constraints), trimming can't validate that the requirements of those annotations are met.")]
         public sealed override Type MakeGenericType(params Type[] typeArguments) => throw new NotSupportedException(SR.NotSupported_SignatureType); // There is no SignatureType for type definition types so it would never be legal to call this.
 
@@ -65,7 +72,7 @@ namespace System.Reflection
         public sealed override bool Equals(Type? o) => base.Equals(o);
         public sealed override int GetHashCode() => base.GetHashCode();
 #endif
-        public sealed override Type UnderlyingSystemType => this;  // Equals(Type) depends on this.
+        public override Type UnderlyingSystemType => this;  // Equals(Type) depends on this.
 
         // Naming and diagnostics
         public abstract override string Name { get; }
@@ -96,6 +103,7 @@ namespace System.Reflection
         public sealed override string GetEnumName(object value) => throw new NotSupportedException(SR.NotSupported_SignatureType);
         public sealed override string[] GetEnumNames() => throw new NotSupportedException(SR.NotSupported_SignatureType);
         public sealed override Type GetEnumUnderlyingType() => throw new NotSupportedException(SR.NotSupported_SignatureType);
+        [RequiresDynamicCode("It might not be possible to create an array of the enum type at runtime. Use Enum.GetValues<T> or the GetEnumValuesAsUnderlyingType method instead.")]
         public sealed override Array GetEnumValues() => throw new NotSupportedException(SR.NotSupported_SignatureType);
         public sealed override Guid GUID => throw new NotSupportedException(SR.NotSupported_SignatureType);
         protected sealed override TypeCode GetTypeCodeImpl() => throw new NotSupportedException(SR.NotSupported_SignatureType);
@@ -131,7 +139,7 @@ namespace System.Reflection
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.NonPublicProperties)]
         public sealed override PropertyInfo[] GetProperties(BindingFlags bindingAttr) => throw new NotSupportedException(SR.NotSupported_SignatureType);
 
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)]
+        [DynamicallyAccessedMembers(InvokeMemberMembers)]
         public sealed override object InvokeMember(string name, BindingFlags invokeAttr, Binder? binder, object? target, object?[]? args, ParameterModifier[]? modifiers, CultureInfo? culture, string[]? namedParameters) => throw new NotSupportedException(SR.NotSupported_SignatureType);
 
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicMethods | DynamicallyAccessedMemberTypes.NonPublicMethods)]
@@ -143,7 +151,7 @@ namespace System.Reflection
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.NonPublicProperties)]
         protected sealed override PropertyInfo GetPropertyImpl(string name, BindingFlags bindingAttr, Binder? binder, Type? returnType, Type[]? types, ParameterModifier[]? modifiers) => throw new NotSupportedException(SR.NotSupported_SignatureType);
 
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)]
+        [DynamicallyAccessedMembers(GetAllMembers)]
         public sealed override MemberInfo[] FindMembers(MemberTypes memberType, BindingFlags bindingAttr, MemberFilter? filter, object? filterCriteria) => throw new NotSupportedException(SR.NotSupported_SignatureType);
 
         [DynamicallyAccessedMembers(GetAllMembers)]
@@ -171,8 +179,6 @@ namespace System.Reflection
 
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
         [return: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
-        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2063:UnrecognizedReflectionPattern",
-            Justification = "Linker doesn't recognize always throwing method. https://github.com/mono/linker/issues/2025")]
         public sealed override Type GetInterface(string name, bool ignoreCase) => throw new NotSupportedException(SR.NotSupported_SignatureType);
 
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors)]
@@ -186,16 +192,17 @@ namespace System.Reflection
         public sealed override Type[] FindInterfaces(TypeFilter filter, object? filterCriteria) => throw new NotSupportedException(SR.NotSupported_SignatureType);
         public sealed override InterfaceMapping GetInterfaceMap([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicMethods | DynamicallyAccessedMemberTypes.NonPublicMethods)] Type interfaceType) => throw new NotSupportedException(SR.NotSupported_SignatureType);
         protected sealed override bool IsContextfulImpl() => throw new NotSupportedException(SR.NotSupported_SignatureType);
-        public sealed override bool IsEnum => throw new NotSupportedException(SR.NotSupported_SignatureType);
+        public abstract override bool IsEnum { get; }
         public sealed override bool IsEquivalentTo([NotNullWhen(true)] Type? other) => throw new NotSupportedException(SR.NotSupported_SignatureType);
         public sealed override bool IsInstanceOfType([NotNullWhen(true)] object? o) => throw new NotSupportedException(SR.NotSupported_SignatureType);
         protected sealed override bool IsMarshalByRefImpl() => throw new NotSupportedException(SR.NotSupported_SignatureType);
         public sealed override bool IsSecurityCritical => throw new NotSupportedException(SR.NotSupported_SignatureType);
         public sealed override bool IsSecuritySafeCritical => throw new NotSupportedException(SR.NotSupported_SignatureType);
         public sealed override bool IsSecurityTransparent => throw new NotSupportedException(SR.NotSupported_SignatureType);
+        [Obsolete(Obsoletions.LegacyFormatterMessage, DiagnosticId = Obsoletions.LegacyFormatterDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
         public sealed override bool IsSerializable => throw new NotSupportedException(SR.NotSupported_SignatureType);
         public sealed override bool IsSubclassOf(Type c) => throw new NotSupportedException(SR.NotSupported_SignatureType);
-        protected sealed override bool IsValueTypeImpl() => throw new NotSupportedException(SR.NotSupported_SignatureType);
+        protected abstract override bool IsValueTypeImpl();
 
         public sealed override StructLayoutAttribute StructLayoutAttribute => throw new NotSupportedException(SR.NotSupported_SignatureType);
 

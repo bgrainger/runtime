@@ -103,7 +103,7 @@ struct DispatchHolder
         LIMITED_METHOD_CONTRACT;
 
         // Check that _implTarget is aligned in the DispatchHolder for backpatching
-        static_assert_no_msg(((offsetof(DispatchHolder, _stub) + offsetof(DispatchStub, _implTarget)) % sizeof(void *)) == 0);
+        static_assert(((offsetof(DispatchHolder, _stub) + offsetof(DispatchStub, _implTarget)) % sizeof(void *)) == 0);
     }
 
     void  Initialize(DispatchHolder* pDispatchHolderRX, PCODE implTarget, PCODE failTarget, size_t expectedMT)
@@ -344,8 +344,10 @@ struct ResolveHolder
          _ASSERTE(n == ResolveStub::slowEntryPointLen);
          // ResolveStub._failEntryPoint(x0:MethodToken, x1,.., x7 and x8, x11:IndirectionCellAndFlags)
          // {
-         //     if(--*(this._pCounter) < 0) x11 = x11 | SDF_ResolveBackPatch;
-         //     this._resolveEntryPoint(x0, [x1..x7 and x8]);
+         //     if (--*(this._pCounter) >= 0)
+         //         return this._resolveEntryPoint(x0, [x1..x7 and x8]);
+         //     x11 = x11 | SDF_ResolveBackPatch;
+         //     return this._slowEntryPoint(x0, [x1..x7 and x8]);
          // }
 
 #undef PC_REL_OFFSET //NOTE Offset can be negative
@@ -379,8 +381,10 @@ struct ResolveHolder
          _ASSERTE(SDF_ResolveBackPatch == 0x1);
          _stub._failEntryPoint[n++] = 0xB240016B;
 
-         //;;b resolveEntryPoint:
-         offset = PC_REL_OFFSET(_resolveEntryPoint);
+         // Force the slow path to observe SDF_ResolveBackPatch. A hit in the
+         // inline resolve cache branches directly to the target without
+         // processing the flag.
+         offset = PC_REL_OFFSET(_slowEntryPoint);
          _stub._failEntryPoint[n++] = 0x14000000 | ((offset>>2) & 0x3FFFFFF);
 
          _ASSERTE(n == ResolveStub::failEntryPointLen);
@@ -391,7 +395,7 @@ struct ResolveHolder
          _stub._resolveWorkerTarget = resolveWorkerTarget;
 
          _ASSERTE(resolveWorkerTarget == (PCODE)ResolveWorkerChainLookupAsmStub);
-         _ASSERTE(patcherTarget == NULL);
+         _ASSERTE(patcherTarget == (PCODE)NULL);
 
 #undef DATA_OFFSET
 #undef PC_REL_OFFSET
@@ -577,55 +581,6 @@ void VTableCallHolder::Initialize(unsigned slot)
 }
 
 #endif // DACCESS_COMPILE
-
-VirtualCallStubManager::StubKind VirtualCallStubManager::predictStubKind(PCODE stubStartAddress)
-{
-
-    SUPPORTS_DAC;
-#ifdef DACCESS_COMPILE
-
-    return SK_BREAKPOINT;  // Dac always uses the slower lookup
-
-#else
-
-    StubKind stubKind = SK_UNKNOWN;
-    TADDR pInstr = PCODEToPINSTR(stubStartAddress);
-
-    EX_TRY
-    {
-        // If stubStartAddress is completely bogus, then this might AV,
-        // so we protect it with SEH. An AV here is OK.
-        AVInRuntimeImplOkayHolder AVOkay;
-
-        DWORD firstDword = *((DWORD*) pInstr);
-
-        if (firstDword == DISPATCH_STUB_FIRST_DWORD) // assembly of first instruction of DispatchStub : ldr x13, [x0]
-        {
-            stubKind = SK_DISPATCH;
-        }
-        else if (firstDword == RESOLVE_STUB_FIRST_DWORD) // assembly of first instruction of ResolveStub : ldr x12, [x0,#Object.m_pMethTab ]
-        {
-            stubKind = SK_RESOLVE;
-        }
-        else if (firstDword == VTABLECALL_STUB_FIRST_DWORD) // assembly of first instruction of VTableCallStub : ldr x9, [x0]
-        {
-            stubKind = SK_VTABLECALL;
-        }
-        else if (firstDword == 0x10000089) // assembly of first instruction of LookupStub : adr x9, _resolveWorkerTarget
-        {
-            stubKind = SK_LOOKUP;
-        }
-    }
-    EX_CATCH
-    {
-        stubKind = SK_UNKNOWN;
-    }
-    EX_END_CATCH(SwallowAllExceptions);
-
-    return stubKind;
-
-#endif // DACCESS_COMPILE
-}
 
 #endif //DECLARE_DATA
 

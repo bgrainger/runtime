@@ -1,9 +1,13 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+
+namespace b19679;
+
 using System;
 using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
+using Xunit;
 
 #pragma warning disable 219
 public class Test_b19679
@@ -2815,7 +2819,8 @@ public class Test_b19679
         Console.WriteLine(a400);
         return 100;
     }
-    private static int Main()
+    [Fact]
+    public static void TestEntryPoint()
     {
         (new Test_b19679()).RunTest0_Inline();
 
@@ -3619,7 +3624,6 @@ public class Test_b19679
 
         (new Test_b19679()).RunTest400_NoInline();
 
-        return 100;
     }
 }
 

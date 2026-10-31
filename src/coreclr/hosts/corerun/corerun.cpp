@@ -3,11 +3,31 @@
 
 // Runtime headers
 #include <coreclrhost.h>
+#include <corehost/host_runtime_contract.h>
+#include <minipal/debugger.h>
 
 #include "corerun.hpp"
 #include "dotenv.hpp"
 
+#ifdef TARGET_WASM
+#include <pinvoke_override.hpp>
+#endif // TARGET_WASM
+
+#ifdef TARGET_BROWSER
+#include <emscripten/emscripten.h>
+#endif // TARGET_BROWSER
+
 #include <fstream>
+#include <unordered_map>
+#include <unordered_set>
+
+#if defined(TARGET_UNIX)
+#include <dlfcn.h>
+#endif
+
+#if defined(TARGET_WINDOWS)
+#include <windows.h>
+#endif
 
 using char_t = pal::char_t;
 using string_t = pal::string_t;
@@ -68,25 +88,37 @@ namespace envvar
 
     // Variable used to preload a mock hostpolicy for testing.
     const char_t* mockHostPolicy = W("MOCK_HOSTPOLICY");
+
+    // Variable used to indicate how app assemblies should be provided to the runtime
+    // - CALLBACK: corerun will pass assembly names and paths via the host runtime contract
+    // - PROPERTY: corerun will pass the paths via the TRUSTED_PLATFORM_ASSEMBLIES property
+    // - EXTERNAL: corerun will pass an external assembly probe to the runtime for app assemblies
+    // - Not set: same as CALLBACK
+    // - The TPA list as a platform delimited list of paths. The same format as the system's PATH env var.
+    const char_t* appAssemblies = W("APP_ASSEMBLIES");
+
+    // Variable indicating if a callback to support platform-native R2R should be provided to the runtime
+    const char_t* platformNativeR2R = W("PLATFORM_NATIVE_R2R");
 }
 
 static void wait_for_debugger()
 {
-    pal::debugger_state_t state = pal::is_debugger_attached();
-    if (state == pal::debugger_state_t::na)
+    if (!minipal_can_check_for_native_debugger())
     {
         pal::fprintf(stdout, W("Debugger attach is not available on this platform\n"));
         return;
     }
-    else if (state == pal::debugger_state_t::not_attached)
+
+    bool attached = minipal_is_native_debugger_present();
+    if (!attached)
     {
         uint32_t pid = pal::get_process_id();
         pal::fprintf(stdout, W("Waiting for the debugger to attach (PID: %u). Press any key to continue ...\n"), pid);
         (void)getchar();
-        state = pal::is_debugger_attached();
+        attached = minipal_is_native_debugger_present();
     }
 
-    if (state == pal::debugger_state_t::attached)
+    if (attached)
     {
         pal::fprintf(stdout, W("Debugger is attached.\n"));
     }
@@ -98,21 +130,18 @@ static void wait_for_debugger()
 
 // N.B. It seems that CoreCLR doesn't always use the first instance of an assembly on the TPA list
 // (for example, ni's may be preferred over il, even if they appear later). Therefore, when building
-// the TPA only include the first instance of a simple assembly name to allow users the opportunity to
+// the TPA only includes the first instance of a simple assembly name to allow users the opportunity to
 // override Framework assemblies by placing dlls in %CORE_LIBRARIES%.
-static string_t build_tpa(const string_t& core_root, const string_t& core_libraries)
+static std::unordered_map<string_t, string_t> build_tpa(const string_t& core_root, const string_t& core_libraries)
 {
     static const char_t* const tpa_extensions[] =
     {
-        W(".ni.dll"),  // Probe for .ni.dll first so that it's preferred if ni and il coexist in the same dir
         W(".dll"),
-        W(".ni.exe"),
         W(".exe"),
         nullptr
     };
 
-    std::set<string_t> name_set;
-    pal::stringstream_t tpa_list;
+    std::unordered_map<string_t, string_t> tpa;
 
     // Iterate over all extensions.
     for (const char_t* const* curr_ext = tpa_extensions; *curr_ext != nullptr; ++curr_ext)
@@ -127,7 +156,7 @@ static string_t build_tpa(const string_t& core_root, const string_t& core_librar
                 continue;
 
             assert(dir.back() == pal::dir_delim);
-            string_t tmp = pal::build_file_list(dir, ext, [&](const char_t* file)
+            pal::build_file_list(dir, ext, [&](const char_t* file)
                 {
                     string_t file_local{ file };
 
@@ -135,24 +164,36 @@ static string_t build_tpa(const string_t& core_root, const string_t& core_librar
                     if (pal::string_ends_with(file_local, ext_len, ext))
                         file_local = file_local.substr(0, file_local.length() - ext_len);
 
-                    // Return true if the file is new.
-                    return name_set.insert(file_local).second;
+                    return tpa.emplace(std::move(file_local), dir + file).second;
                 });
-
-            // Add to the TPA.
-            tpa_list << tmp;
         }
     }
 
-    return tpa_list.str();
+    return tpa;
 }
 
 static bool try_get_export(pal::mod_t mod, const char* symbol, void** fptr)
 {
+#ifndef TARGET_WASM
     assert(mod != nullptr && symbol != nullptr && fptr != nullptr);
     *fptr = pal::get_module_symbol(mod, symbol);
     if (*fptr != nullptr)
         return true;
+#else // !TARGET_WASM
+    if (!strcmp(symbol, "coreclr_initialize")){
+        *fptr = (void*)coreclr_initialize;
+        return true;
+    } else if (!strcmp(symbol, "coreclr_execute_assembly")){
+        *fptr = (void*)coreclr_execute_assembly;
+        return true;
+    } else if (!strcmp(symbol, "coreclr_shutdown_2")){
+        *fptr = (void*)coreclr_shutdown_2;
+        return true;
+    } else if (!strcmp(symbol, "coreclr_set_error_writer")){
+        *fptr = (void*)coreclr_set_error_writer;
+        return true;
+    }
+#endif // !TARGET_WASM
 
     pal::fprintf(stderr, W("Export '%s' not found.\n"), symbol);
     return false;
@@ -205,6 +246,238 @@ public:
 static void* CurrentClrInstance;
 static unsigned int CurrentAppDomainId;
 
+static void log_error_info(const char* line)
+{
+    std::fprintf(stderr, "%s\n", line);
+}
+
+struct host_runtime_contract_assembly_path
+{
+    const char* directory;
+    std::string file_name;
+};
+
+struct host_runtime_contract_context
+{
+    string_t entry_assembly_fullpath;
+    std::vector<string_t> user_defined_keys;
+    std::vector<string_t> user_defined_values;
+    std::vector<const char*> assembly_names;
+    std::unordered_set<std::string> assembly_directories;
+    std::unordered_map<std::string, host_runtime_contract_assembly_path> assembly_paths;
+};
+
+size_t HOST_CONTRACT_CALLTYPE get_runtime_property(
+    const char* key,
+    char* value_buffer,
+    size_t value_buffer_size,
+    void* contract_context)
+{
+    const host_runtime_contract_context* context = static_cast<host_runtime_contract_context*>(contract_context);
+
+    if (::strcmp(key, HOST_PROPERTY_ENTRY_ASSEMBLY_NAME) == 0)
+    {
+        // Compute the entry assembly name based on the entry assembly full path
+        pal::string_t dir;
+        pal::string_t file;
+        pal::split_path_to_dir_filename(context->entry_assembly_fullpath, dir, file);
+        file = file.substr(0, file.rfind(W('.')));
+
+        pal::string_utf8_t file_utf8 = pal::convert_to_utf8(file.c_str());
+        size_t len = file_utf8.size() + 1;
+        if (value_buffer_size < len)
+            return len;
+
+        ::strncpy(value_buffer, file_utf8.c_str(), len - 1);
+        value_buffer[len - 1] = '\0';
+        return len;
+    }
+
+    // Look up user-defined properties passed to corerun via -p/--property.
+    assert(context->user_defined_keys.size() == context->user_defined_values.size());
+    pal::string_t key_native = pal::convert_from_utf8(key);
+    for (size_t i = 0; i < context->user_defined_keys.size(); ++i)
+    {
+        if (context->user_defined_keys[i] == key_native)
+        {
+            pal::string_utf8_t value_utf8 = pal::convert_to_utf8(context->user_defined_values[i].c_str());
+            size_t len = value_utf8.size() + 1;
+            if (value_buffer_size < len)
+                return len;
+
+            ::strncpy(value_buffer, value_utf8.c_str(), len - 1);
+            value_buffer[len - 1] = '\0';
+            return len;
+        }
+    }
+
+    return -1;
+}
+
+static bool HOST_CONTRACT_CALLTYPE get_assembly_names(
+    const char* const** names,
+    size_t* count,
+    void* contract_context)
+{
+    if (names == nullptr || count == nullptr)
+        return false;
+
+    host_runtime_contract_context* context = static_cast<host_runtime_contract_context*>(contract_context);
+    if (context->assembly_names.empty())
+        return false;
+
+    *names = context->assembly_names.data();
+    *count = context->assembly_names.size();
+    return true;
+}
+
+static bool HOST_CONTRACT_CALLTYPE resolve_assembly_to_path(
+    const char* simple_name,
+    const char** directory,
+    const char** file_name,
+    void* contract_context)
+{
+    if (directory == nullptr || file_name == nullptr)
+        return false;
+
+    host_runtime_contract_context* context = static_cast<host_runtime_contract_context*>(contract_context);
+    std::unordered_map<std::string, host_runtime_contract_assembly_path>::const_iterator entry =
+        context->assembly_paths.find(simple_name);
+    if (entry == context->assembly_paths.end())
+        return false;
+
+    *directory = entry->second.directory;
+    *file_name = entry->second.file_name.c_str();
+    return true;
+}
+
+// Paths for external assembly probe
+static char* s_core_libs_path = nullptr;
+static char* s_core_root_path = nullptr;
+
+#ifdef TARGET_BROWSER
+extern "C" bool BrowserHost_ExternalAssemblyProbe(const char* pathPtr, /*out*/ void **outDataStartPtr, /*out*/ int64_t* outSize);
+#endif // TARGET_BROWSER
+
+#ifdef TARGET_WASI
+#ifndef WASI_R2R_IMAGE_CAP
+#define WASI_R2R_IMAGE_CAP (16u * 1024u * 1024u)
+#endif
+#define CORERUN_WASI_R2R_STRONG_CAP
+#include "wasi_r2r_probe.hpp"
+
+namespace wasi_r2r
+{
+extern "C"
+{
+alignas(16) uint8_t g_wasi_r2r_image[WASI_R2R_IMAGE_CAP] = {};
+uint32_t g_wasi_r2r_image_cap = sizeof(g_wasi_r2r_image);
+}
+}
+
+extern "C" __attribute__((export_name("wasi_r2r_image_cap"))) uint32_t wasi_r2r_image_cap(void)
+{
+    return WASI_R2R_IMAGE_CAP;
+}
+#endif // TARGET_WASI
+
+static bool HOST_CONTRACT_CALLTYPE get_native_code_data(
+    const host_runtime_contract_native_code_context* context,
+    host_runtime_contract_native_code_data* data)
+{
+#if !defined(TARGET_WINDOWS) && !defined(TARGET_OSX)
+    // Platform-native R2R is only supported on Windows and macOS
+    return false;
+#else
+    if (context == nullptr || data == nullptr)
+        return false;
+
+    const char* assembly_path = context->assembly_path;
+    const char* owner_name = context->owner_composite_name;
+
+    if (assembly_path == nullptr || owner_name == nullptr)
+        return false;
+
+    // Look for native library next to the assembly
+    pal::string_t native_image_path;
+    {
+        pal::string_t file;
+        pal::split_path_to_dir_filename(pal::convert_from_utf8(assembly_path), native_image_path, file);
+        pal::ensure_trailing_delimiter(native_image_path);
+    }
+    native_image_path.append(pal::convert_from_utf8(owner_name));
+
+    pal::mod_t native_image;
+    if (!pal::try_load_library(native_image_path, native_image))
+        return false;
+
+    // Get the R2R header export
+    void* header_ptr = pal::get_module_symbol(native_image, "RTR_HEADER");
+    if (header_ptr == nullptr)
+        return false;
+
+    // Get module information (base address and size)
+    void* base_address = pal::get_image_base(native_image, header_ptr);
+    if (base_address == nullptr)
+        return false;
+
+    size_t image_size = pal::get_image_size(base_address);
+    if (image_size == 0)
+        return false;
+
+    data->size = sizeof(host_runtime_contract_native_code_data);
+    data->r2r_header_ptr = header_ptr;
+    data->image_size = image_size;
+    data->image_base = base_address;
+    return true;
+#endif // TARGET_WINDOWS || TARGET_OSX
+}
+
+static bool HOST_CONTRACT_CALLTYPE external_assembly_probe(
+    const char* path,
+    void** data_start,
+    int64_t* size)
+{
+#ifdef TARGET_BROWSER
+    if (BrowserHost_ExternalAssemblyProbe(path, data_start, size))
+        return true;
+#endif // TARGET_BROWSER
+
+    // Get just the file name
+    const char* name = path;
+    const char* pos = strrchr(name, '/');
+    if (pos != NULL)
+        name = pos + 1;
+
+#ifdef TARGET_WASI
+    const char* const r2r_dirs[] = { s_core_libs_path, s_core_root_path };
+    if (wasi_r2r::WasiStaticR2RProbe(name, r2r_dirs, 2, data_start, size))
+        return true;
+#endif // TARGET_WASI
+
+    // Try to map the file from our known app assembly paths
+    for (const char* dir : { s_core_libs_path, s_core_root_path })
+    {
+        if (dir == nullptr)
+            continue;
+
+        std::string full_path = dir;
+        assert(full_path.back() == pal::dir_delim);
+        full_path.append(name);
+#ifdef TARGET_BROWSER
+        if (BrowserHost_ExternalAssemblyProbe(full_path.c_str(), data_start, size))
+            return true;
+#endif // TARGET_BROWSER
+        if (pal::try_map_file_readonly(full_path.c_str(), data_start, size))
+            return true;
+    }
+
+    return false;
+}
+
+extern "C" int corerun_shutdown(int exit_code);
+static pal::mod_t coreclr_mod;
+
 static int run(const configuration& config)
 {
     platform_specific_actions actions;
@@ -212,6 +485,8 @@ static int run(const configuration& config)
     // Check if debugger attach scenario was requested.
     if (config.wait_to_debug)
         wait_for_debugger();
+
+    config.dotenv_configuration.load_into_current_process();
 
     string_t exe_path = pal::get_exe_path();
 
@@ -256,7 +531,54 @@ static int run(const configuration& config)
         native_search_dirs << core_root << pal::env_path_delim;
     }
 
-    string_t tpa_list = build_tpa(core_root, core_libs);
+    std::unordered_map<string_t, string_t> tpa;
+    string_t tpa_property;
+    string_t app_assemblies_env = pal::getenv(envvar::appAssemblies);
+    bool use_tpa_callbacks = app_assemblies_env.empty() || app_assemblies_env == W("CALLBACK");
+    bool use_external_assembly_probe = false;
+#ifdef TARGET_BROWSER
+    use_external_assembly_probe = true;
+    use_tpa_callbacks = false;
+#endif // TARGET_BROWSER
+    if (use_tpa_callbacks)
+    {
+        tpa = build_tpa(core_root, core_libs);
+    }
+    else if (app_assemblies_env.empty() || app_assemblies_env == W("PROPERTY"))
+    {
+        // Use the TRUSTED_PLATFORM_ASSEMBLIES property to pass the app assemblies to the runtime.
+        pal::stringstream_t tpa_list;
+        for (const std::pair<const string_t, string_t>& entry : build_tpa(core_root, core_libs))
+            tpa_list << entry.second << pal::env_path_delim;
+
+        tpa_property = tpa_list.str();
+    }
+    else if (app_assemblies_env == W("EXTERNAL"))
+    {
+        // Use the external assembly probe to load assemblies from the app assembly paths.
+        use_external_assembly_probe = true;
+    }
+    else if (!app_assemblies_env.empty())
+    {
+        tpa_property = std::move(app_assemblies_env);
+    }
+
+    if (use_external_assembly_probe)
+    {
+        if (!core_libs.empty())
+        {
+            pal::string_utf8_t core_libs_utf8 = pal::convert_to_utf8(core_libs.c_str());
+            s_core_libs_path = (char*)::malloc(core_libs_utf8.length() + 1);
+            ::strcpy(s_core_libs_path, core_libs_utf8.c_str());
+        }
+
+        if (!core_root.empty())
+        {
+            pal::string_utf8_t core_root_utf8 = pal::convert_to_utf8(core_root.c_str());
+            s_core_root_path = (char*)::malloc(core_root_utf8.length() + 1);
+            ::strcpy(s_core_root_path, core_root_utf8.c_str());
+        }
+    }
 
     {
         // Load hostpolicy if requested.
@@ -268,12 +590,9 @@ static int run(const configuration& config)
         }
     }
 
-    config.dotenv_configuration.load_into_current_process();
-
     actions.before_coreclr_load();
 
     // Attempt to load CoreCLR.
-    pal::mod_t coreclr_mod;
     if (!pal::try_load_coreclr(core_root, coreclr_mod))
     {
         return -1;
@@ -282,6 +601,7 @@ static int run(const configuration& config)
     // Get CoreCLR exports
     coreclr_initialize_ptr coreclr_init_func = nullptr;
     coreclr_execute_assembly_ptr coreclr_execute_func = nullptr;
+    coreclr_set_error_writer_ptr coreclr_set_error_writer_func = nullptr;
     coreclr_shutdown_2_ptr coreclr_shutdown2_func = nullptr;
     if (!try_get_export(coreclr_mod, "coreclr_initialize", (void**)&coreclr_init_func)
         || !try_get_export(coreclr_mod, "coreclr_execute_assembly", (void**)&coreclr_execute_func)
@@ -290,10 +610,13 @@ static int run(const configuration& config)
         return -1;
     }
 
+    // The coreclr_set_error_writer is optional
+    (void)try_get_export(coreclr_mod, "coreclr_set_error_writer", (void**)&coreclr_set_error_writer_func);
+
     // Construct CoreCLR properties.
-    pal::string_utf8_t tpa_list_utf8 = pal::convert_to_utf8(std::move(tpa_list));
-    pal::string_utf8_t app_path_utf8 = pal::convert_to_utf8(std::move(app_path));
-    pal::string_utf8_t native_search_dirs_utf8 = pal::convert_to_utf8(native_search_dirs.str());
+    pal::string_utf8_t tpa_property_utf8 = pal::convert_to_utf8(tpa_property.c_str());
+    pal::string_utf8_t app_path_utf8 = pal::convert_to_utf8(app_path.c_str());
+    pal::string_utf8_t native_search_dirs_utf8 = pal::convert_to_utf8(native_search_dirs.str().c_str());
 
     std::vector<pal::string_utf8_t> user_defined_keys_utf8;
     std::vector<pal::string_utf8_t> user_defined_values_utf8;
@@ -306,10 +629,13 @@ static int run(const configuration& config)
     std::vector<const char*> propertyKeys;
     std::vector<const char*> propertyValues;
 
-    // TRUSTED_PLATFORM_ASSEMBLIES
-    // - The list of complete paths to each of the fully trusted assemblies
-    propertyKeys.push_back("TRUSTED_PLATFORM_ASSEMBLIES");
-    propertyValues.push_back(tpa_list_utf8.c_str());
+    if (!use_tpa_callbacks)
+    {
+        // TRUSTED_PLATFORM_ASSEMBLIES
+        // - The list of complete paths to each of the fully trusted assemblies
+        propertyKeys.push_back(HOST_PROPERTY_TRUSTED_PLATFORM_ASSEMBLIES);
+        propertyValues.push_back(tpa_property_utf8.c_str());
+    }
 
     // APP_PATHS
     // - The list of paths which will be probed by the assembly loader
@@ -330,11 +656,61 @@ static int run(const configuration& config)
     for (const pal::string_utf8_t& str : user_defined_values_utf8)
         propertyValues.push_back(str.c_str());
 
+    // The runtime can call back into the contract from any thread until the process exits, including
+    // after this function returns, so the contract state is intentionally never freed.
+    host_runtime_contract_context& contract_context = *new host_runtime_contract_context{
+        config.entry_assembly_fullpath, config.user_defined_keys, config.user_defined_values };
+    if (use_tpa_callbacks)
+    {
+        contract_context.assembly_names.reserve(tpa.size());
+        contract_context.assembly_directories.reserve(tpa.size());
+        contract_context.assembly_paths.reserve(tpa.size());
+        for (const std::pair<const string_t, string_t>& entry : tpa)
+        {
+            string_t directory;
+            string_t file_name;
+            pal::split_path_to_dir_filename(entry.second, directory, file_name);
+            pal::ensure_trailing_delimiter(directory);
+
+            pal::string_utf8_t name = pal::convert_to_utf8(entry.first.c_str());
+            pal::string_utf8_t directory_utf8 = pal::convert_to_utf8(directory.c_str());
+            pal::string_utf8_t file_name_utf8 = pal::convert_to_utf8(file_name.c_str());
+            std::pair<std::unordered_set<std::string>::iterator, bool> directory_result =
+                contract_context.assembly_directories.emplace(directory_utf8.c_str());
+            host_runtime_contract_assembly_path path{
+                directory_result.first->c_str(),
+                file_name_utf8.c_str()
+            };
+            std::pair<std::unordered_map<std::string, host_runtime_contract_assembly_path>::iterator, bool> result =
+                contract_context.assembly_paths.emplace(name.c_str(), std::move(path));
+            if (result.second)
+                contract_context.assembly_names.push_back(result.first->first.c_str());
+        }
+
+        tpa = {};
+    }
+
+    host_runtime_contract host_contract = {
+        sizeof(host_runtime_contract),
+        &contract_context,
+        &get_runtime_property,
+        nullptr,
+        nullptr,
+        use_external_assembly_probe ? &external_assembly_probe : nullptr,
+        pal::getenv(envvar::platformNativeR2R) == W("1") ? &get_native_code_data : nullptr,
+        &get_assembly_names,
+        &resolve_assembly_to_path };
+    propertyKeys.push_back(HOST_PROPERTY_RUNTIME_CONTRACT);
+    std::stringstream ss;
+    ss << "0x" << std::hex << (size_t)(&host_contract);
+    pal::string_utf8_t contract_str = ss.str();
+    propertyValues.push_back(contract_str.c_str());
+
     assert(propertyKeys.size() == propertyValues.size());
     int propertyCount = (int)propertyKeys.size();
 
     // Construct arguments
-    pal::string_utf8_t exe_path_utf8 = pal::convert_to_utf8(std::move(exe_path));
+    pal::string_utf8_t exe_path_utf8 = pal::convert_to_utf8(exe_path.c_str());
     std::vector<pal::string_utf8_t> argv_lifetime;
     pal::malloc_ptr<const char*> argv_utf8{ pal::convert_argv_to_utf8(config.entry_assembly_argc, config.entry_assembly_argv, argv_lifetime) };
     pal::string_utf8_t entry_assembly_utf8 = pal::convert_to_utf8(config.entry_assembly_fullpath.c_str());
@@ -343,6 +719,16 @@ static int run(const configuration& config)
         exe_path_utf8.c_str(),
         propertyCount, propertyKeys.data(), propertyValues.data(),
         entry_assembly_utf8.c_str(), config.entry_assembly_argc, argv_utf8.get() };
+
+    if (coreclr_set_error_writer_func != nullptr)
+    {
+        coreclr_set_error_writer_func(log_error_info);
+    }
+
+#ifdef TARGET_WASM
+    // install the pinvoke override callback to resolve p/invokes to statically linked libraries
+    add_pinvoke_override();
+#endif // TARGET_WASM
 
     int result;
     result = coreclr_init_func(
@@ -359,6 +745,11 @@ static int run(const configuration& config)
         logger.dump_details();
         pal::fprintf(stderr, W("END: coreclr_initialize failed - Error: 0x%08x\n"), result);
         return -1;
+    }
+
+    if (coreclr_set_error_writer_func != nullptr)
+    {
+        coreclr_set_error_writer_func(nullptr);
     }
 
     int exit_code;
@@ -383,8 +774,29 @@ static int run(const configuration& config)
         actions.after_execute_assembly();
     }
 
+#ifdef TARGET_BROWSER
+    // in NodeJS/Browser this is not really end of the process, JS keeps running.
+    // We want to keep the CoreCLR runtime alive to be able to process async work
+    // The NodeJS process is kept alive by pending async work via safeSetTimeout() -> runtimeKeepalivePush()
+    // The actual exit code would be set by SystemJS_ResolveMainPromise if the managed Main() is async.
+    // Or in Module.onExit handler when  managed Main() is synchronous.
+    return exit_code;
+#else // TARGET_BROWSER
+    int final_exit_code = corerun_shutdown(exit_code);
+    return final_exit_code;
+#endif // TARGET_BROWSER
+}
+
+extern "C" int corerun_shutdown(int exit_code)
+{
+    coreclr_shutdown_2_ptr coreclr_shutdown2_func = nullptr;
+    if (!try_get_export(coreclr_mod, "coreclr_shutdown_2", (void**)&coreclr_shutdown2_func))
+    {
+        return -1;
+    }
+
     int latched_exit_code = 0;
-    result = coreclr_shutdown2_func(CurrentClrInstance, CurrentAppDomainId, &latched_exit_code);
+    int result = coreclr_shutdown2_func(CurrentClrInstance, CurrentAppDomainId, &latched_exit_code);
     if (FAILED(result))
     {
         pal::fprintf(stderr, W("coreclr_shutdown_2 failed - Error: 0x%08x\n"), result);
@@ -394,6 +806,8 @@ static int run(const configuration& config)
     if (exit_code != -1)
         exit_code = latched_exit_code;
 
+    ::free((void*)s_core_libs_path);
+    ::free((void*)s_core_root_path);
     return exit_code;
 }
 
@@ -411,6 +825,7 @@ static void display_usage()
         W("  -p, --property - Property to pass to runtime during initialization.\n")
         W("                   If a property value contains spaces, quote the entire argument.\n")
         W("                   May be supplied multiple times. Format: <key>=<value>.\n")
+        W("  -l, --preload - path to shared library to load before loading the CLR.\n")
         W("  -d, --debug - causes corerun to wait for a debugger to attach before executing.\n")
         W("  -e, --env - path to a .env file with environment variables that corerun should set.\n")
         W("  -?, -h, --help - show this help.\n")
@@ -508,6 +923,22 @@ static bool parse_args(
             config.user_defined_keys.push_back(std::move(key));
             config.user_defined_values.push_back(std::move(value));
         }
+        else if (pal::strcmp(option, W("l")) == 0 || (pal::strcmp(option, W("preload")) == 0))
+        {
+            i++;
+            if (i >= argc)
+            {
+                pal::fprintf(stderr, W("Option %s: missing shared library path\n"), arg);
+                break;
+            }
+
+            string_t library = argv[i];
+            pal::mod_t hMod;
+            if (!pal::try_load_library(library, hMod))
+            {
+                break;
+            }
+        }
         else if (pal::strcmp(option, W("d")) == 0 || (pal::strcmp(option, W("debug")) == 0))
         {
             config.wait_to_debug = true;
@@ -561,19 +992,22 @@ int MAIN(const int argc, const char_t* argv[])
         return self_test();
 
     int exit_code = run(config);
+#ifdef TARGET_WASI
+    // Returning from main only reports success/failure through wasi:cli/run.
+    // exit() reports the actual code through wasi:cli/exit's exit-with-code.
+    exit(exit_code);
+#else
     return exit_code;
+#endif
 }
 
-#ifdef TARGET_WINDOWS
-// Used by CoreShim to determine running CoreCLR details.
-extern "C" __declspec(dllexport) HRESULT __cdecl GetCurrentClrDetails(void** clrInstance, unsigned int* appDomainId)
+extern "C" DLL_EXPORT HRESULT CDECL GetCurrentClrDetails(void** clrInstance, unsigned int* appDomainId)
 {
     assert(clrInstance != nullptr && appDomainId != nullptr);
     *clrInstance = CurrentClrInstance;
     *appDomainId = CurrentAppDomainId;
     return S_OK;
 }
-#endif // TARGET_WINDOWS
 
 //
 // Self testing for corerun.

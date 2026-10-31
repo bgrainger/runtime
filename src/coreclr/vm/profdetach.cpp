@@ -10,6 +10,7 @@
 // ======================================================================================
 
 #include "common.h"
+#include "CLREventBase.h"
 
 #ifdef FEATURE_PROFAPI_ATTACH_DETACH
 
@@ -17,10 +18,11 @@
 #include "profilinghelper.h"
 #include "profilinghelper.inl"
 #include "eetoprofinterfaceimpl.inl"
+#include "minipal/time.h"
 
 // Class static member variables
 CQuickArrayList<ProfilerDetachInfo> ProfilingAPIDetach::s_profilerDetachInfos;
-CLREvent                            ProfilingAPIDetach::s_eventDetachWorkAvailable;
+CLREventStatic                      ProfilingAPIDetach::s_eventDetachWorkAvailable;
 Volatile<BOOL>                      ProfilingAPIDetach::s_profilerDetachThreadCreated;
 
 // ---------------------------------------------------------------------------------------
@@ -54,9 +56,6 @@ void ProfilerDetachInfo::Init()
     m_dwExpectedCompletionMilliseconds = 0;
 }
 
-
-// ----------------------------------------------------------------------------
-// Implementation of ProfilingAPIAttachDetach statics
 
 
 // ----------------------------------------------------------------------------
@@ -92,8 +91,9 @@ HRESULT ProfilingAPIDetach::Initialize()
                 // For exceptions that give us useless hr's, just use E_FAIL
                 hr = E_FAIL;
             }
+            RethrowTerminalExceptions();
         }
-        EX_END_CATCH(RethrowTerminalExceptions)
+        EX_END_CATCH
 
         if (FAILED(hr))
         {
@@ -132,7 +132,7 @@ HRESULT ProfilingAPIDetach::Initialize()
 //        * The profiler must immediately call FreeLibraryAndExitThread() after
 //            RequestProfilerDetach returns.
 //
-//    The above invariants result in the following possiblities:
+//    The above invariants result in the following possibilities:
 //        * RequestProfilerDetach() may be called multi-threaded, but only from within
 //            profiler callbacks. As such, evacuation counters will have been incremented
 //            before entry into RequestProfilerDetach(), so the DetachThread will be
@@ -227,12 +227,12 @@ HRESULT ProfilingAPIDetach::RequestProfilerDetach(ProfilerInfo *pProfilerInfo, D
         {
             ProfilerDetachInfo detachInfo;
             detachInfo.m_pProfilerInfo = pProfilerInfo;
-            detachInfo.m_ui64DetachStartTime = CLRGetTickCount64();
+            detachInfo.m_ui64DetachStartTime = minipal_lowres_ticks();
             detachInfo.m_dwExpectedCompletionMilliseconds = dwExpectedCompletionMilliseconds;
             s_profilerDetachInfos.Push(detachInfo);
         }
         EX_CATCH_HRESULT(hr);
-        
+
         if (FAILED(hr))
         {
             return hr;
@@ -260,12 +260,9 @@ HRESULT ProfilingAPIDetach::RequestProfilerDetach(ProfilerInfo *pProfilerInfo, D
     {
         ProfilingAPIUtility::LogProfInfo(IDS_PROF_DETACH_INITIATED);
     }
-    EX_CATCH
-    {
-        // Oh well, rest of detach succeeded, so we should still return success to the
-        // profiler.
-    }
-    EX_END_CATCH(RethrowTerminalExceptions);
+    // Oh well, rest of detach succeeded, so we should still return success to the
+    // profiler.
+    EX_SWALLOW_NONTERMINAL
 
     return S_OK;
 }
@@ -294,7 +291,7 @@ void ProfilingAPIDetach::ExecuteEvacuationLoop()
         // Wait until there's a profiler to detach (or until this thread should "wake up"
         // for some other reason, such as exiting due to an unsuccessful startup-load of a
         // profiler).
-        DWORD dwRet = s_eventDetachWorkAvailable.Wait(INFINITE, FALSE /* alertable */);
+        DWORD dwRet = s_eventDetachWorkAvailable.Wait(INFINITE, FALSE /* alertable */, false);
         if (dwRet != WAIT_OBJECT_0)
         {
             // The wait ended due to a failure or a reason other than the event getting
@@ -326,7 +323,7 @@ void ProfilingAPIDetach::ExecuteEvacuationLoop()
         {
             CRITSEC_Holder csh(ProfilingAPIUtility::GetStatusCrst());
 
-            for (SIZE_T pos = 0; pos < s_profilerDetachInfos.Size(); ++pos)
+            while (s_profilerDetachInfos.Size() > 0)
             {
                 ProfilerDetachInfo current = s_profilerDetachInfos.Pop();
 
@@ -388,7 +385,7 @@ void ProfilingAPIDetach::SleepWhileProfilerEvacuates(ProfilerDetachInfo *pDetach
 
         // Here's the "within reason" part:  the user may not customize these values to
         // be more "extreme" than the constants, or to be 0 (which would confuse the
-        // issue of whether these statics were intialized yet).
+        // issue of whether these statics were initialized yet).
         if ((s_dwMinSleepMs < kdwDefaultMinSleepMs) || (s_dwMinSleepMs > kdwDefaultMaxSleepMs))
         {
             // Sleeping less than 300ms between evac checks could negatively affect the
@@ -425,7 +422,7 @@ void ProfilingAPIDetach::SleepWhileProfilerEvacuates(ProfilerDetachInfo *pDetach
     //         (but not too soon)
     //     * Occasionally thereafter (steady state)
 
-    ULONGLONG ui64ElapsedMilliseconds = CLRGetTickCount64() - ui64DetachStartTime;
+    ULONGLONG ui64ElapsedMilliseconds = minipal_lowres_ticks() - ui64DetachStartTime;
     ULONGLONG ui64SleepMilliseconds;
     if (ui64ExpectedCompletionMilliseconds > ui64ElapsedMilliseconds)
     {
@@ -446,14 +443,14 @@ void ProfilingAPIDetach::SleepWhileProfilerEvacuates(ProfilerDetachInfo *pDetach
     }
 
     // ...but keep it in bounds!
-    ui64SleepMilliseconds = min(
-        max(ui64SleepMilliseconds, s_dwMinSleepMs),
+    ui64SleepMilliseconds = min<ULONGLONG>(
+        max<ULONGLONG>(ui64SleepMilliseconds, s_dwMinSleepMs),
         s_dwMaxSleepMs);
 
     // At this point it's safe to cast ui64SleepMilliseconds down to a DWORD since we
     // know it's between s_dwMinSleepMs & s_dwMaxSleepMs
     _ASSERTE(ui64SleepMilliseconds <= 0xFFFFffff);
-    ClrSleepEx((DWORD) ui64SleepMilliseconds, FALSE /* alertable */);
+    minipal_sleep((DWORD)ui64SleepMilliseconds);
 }
 
 
@@ -489,7 +486,7 @@ void ProfilingAPIDetach::UnloadProfiler(ProfilerDetachInfo *pDetachInfo)
 
         // Notify profiler it's about to be unloaded
         _ASSERTE(pDetachInfo->m_pProfilerInfo != NULL);
-        
+
         {
             // This EvacuationCounterHolder is just to make asserts in EEToProfInterfaceImpl happy.
             // Using it like this without the dirty read/evac counter increment/clean read pattern
@@ -498,7 +495,7 @@ void ProfilingAPIDetach::UnloadProfiler(ProfilerDetachInfo *pDetachInfo)
             EvacuationCounterHolder evacuationCounter(pDetachInfo->m_pProfilerInfo);
             pDetachInfo->m_pProfilerInfo->pProfInterface->ProfilerDetachSucceeded();
         }
-        
+
         EEToProfInterfaceImpl *pProfInterface = pDetachInfo->m_pProfilerInfo->pProfInterface.Load();
         pDetachInfo->m_pProfilerInfo->pProfInterface.Store(NULL);
         delete pProfInterface;
@@ -571,8 +568,9 @@ DWORD WINAPI ProfilingAPIDetach::ProfilingAPIDetachThreadStart(LPVOID)
     EX_CATCH
     {
         _ASSERTE(!"Unhandled exception on profiling API detach thread");
+        RethrowTerminalExceptions();
     }
-    EX_END_CATCH(RethrowTerminalExceptions);
+    EX_END_CATCH
 
     LOG((
         LF_CORPROF,

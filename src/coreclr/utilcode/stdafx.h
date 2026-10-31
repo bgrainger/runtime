@@ -11,11 +11,13 @@
 
 #include <switches.h>
 #include <crtwrap.h>
+#include <dn-u16.h>
+#include <algorithm>
+using std::min;
+using std::max;
 
 #define IN_WINFIX_CPP
 
 #include <winwrap.h>
 
 #include "volatile.h"
-#include "static_assert.h"
-

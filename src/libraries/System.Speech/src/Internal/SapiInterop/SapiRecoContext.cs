@@ -39,7 +39,7 @@ namespace System.Speech.Internal.SapiInterop
         internal SapiGrammar CreateGrammar(ulong id)
         {
             ISpRecoGrammar sapiGrammar;
-            return (SapiGrammar)_proxy.Invoke(delegate { _recoContext.CreateGrammar(id, out sapiGrammar); return new SapiGrammar(sapiGrammar, _proxy); });
+            return (SapiGrammar)_proxy.Invoke(delegate { _recoContext.CreateGrammar(id, out sapiGrammar); return new SapiGrammar(sapiGrammar, _proxy); })!;
         }
 
         internal void SetMaxAlternates(uint count)
@@ -69,12 +69,12 @@ namespace System.Speech.Internal.SapiInterop
 
         internal EventNotify CreateEventNotify(AsyncSerializedWorker asyncWorker, bool supportsSapi53)
         {
-            return (EventNotify)_proxy.Invoke(delegate { return new EventNotify(_recoContext, asyncWorker, supportsSapi53); });
+            return (EventNotify)_proxy.Invoke(delegate { return new EventNotify(_recoContext, asyncWorker, supportsSapi53); })!;
         }
 
         internal void DisposeEventNotify(EventNotify eventNotify)
         {
-            _proxy.Invoke2(delegate { eventNotify.Dispose(); });
+            _proxy.Invoke2(eventNotify.Dispose);
         }
 
         internal void SetGrammarOptions(SPGRAMMAROPTIONS options)

@@ -7,6 +7,11 @@ bool GetVersionResilientTypeHashCode(IMDInternalImport *pMDImport, mdExportedTyp
 
 int GetVersionResilientMethodHashCode(MethodDesc *pMD);
 
+// Compute hashCode for a MethodDef (Note, this is not current capable of computing a hashcode for a MethodSpec, or MemberRef)
+bool GetVersionResilientMethodDefHashCode(IMDInternalImport *pMDImport, mdExportedType token, int * pdwHashCode);
+
 int GetVersionResilientModuleHashCode(Module* pModule);
 
-bool GetVersionResilientILCodeHashCode(MethodDesc *pMD, int* hashCode, unsigned* ilSize);
+bool GetVersionResilientILCodeHashCode(MethodDesc *pMD, const COR_ILMETHOD_DECODER* header, int* hashCode, unsigned* ilSize);
+
+extern "C" INT32 QCALLTYPE VersionResilientHashCode_TypeHashCode(QCall::TypeHandle pTypeHandle, QCallExceptionStatus* qcallError);

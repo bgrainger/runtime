@@ -18,7 +18,6 @@ HRESULT SigParser::SkipExactlyOne()
         INSTANCE_CHECK;
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
         SUPPORTS_DAC;
     }
     CONTRACTL_END
@@ -33,7 +32,6 @@ HRESULT SigParser::SkipExactlyOne()
         switch ((DWORD)typ)
         {
             default:
-                // _ASSERT(!"Illegal or unimplement type in COM+ sig.");
                 return META_E_BAD_SIGNATURE;
                 break;
             case ELEMENT_TYPE_VAR:
@@ -126,14 +124,13 @@ HRESULT SigParser::SkipExactlyOne()
 //
 HRESULT
 SigParser::SkipMethodHeaderSignature(
-    uint32_t * pcArgs)
+    uint32_t * pcArgs, bool skipReturnType /*= true*/)
 {
     CONTRACTL
     {
         INSTANCE_CHECK;
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
         SUPPORTS_DAC;
     }
     CONTRACTL_END
@@ -157,8 +154,11 @@ SigParser::SkipMethodHeaderSignature(
     // Get arg count;
     IfFailRet(GetData(pcArgs));
 
-    // Skip return type;
-    IfFailRet(SkipExactlyOne());
+    if (skipReturnType)
+    {
+        // Skip return type;
+        IfFailRet(SkipExactlyOne());
+    }
 
     return hr;
 } // SigParser::SkipMethodHeaderSignature
@@ -173,7 +173,6 @@ HRESULT SigParser::SkipSignature()
         INSTANCE_CHECK;
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
         SUPPORTS_DAC;
     }
     CONTRACTL_END

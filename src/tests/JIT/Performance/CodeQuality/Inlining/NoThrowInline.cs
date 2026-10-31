@@ -3,6 +3,8 @@
 
 using System;
 using System.Runtime.CompilerServices;
+using Xunit;
+using TestLibrary;
 
 namespace Inlining
 {
@@ -49,7 +51,9 @@ public static class NoThrowInline
         return a.Length + b.Length + c.Length + d.Length;
     }
 
-    public static int Main()
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+    [Fact]
+    public static int TestEntryPoint()
     {
         return (Bench("a", "bc", "def", "ghij") == 10) ? 100 : -1;
     }

@@ -6,6 +6,7 @@
 #include <error_codes.h>
 #include <nethost.h>
 #include "comhost_test.h"
+#include "ijwhost_test.h"
 #include <hostfxr.h>
 #include "host_context_test.h"
 #include "resolve_component_dependencies_test.h"
@@ -65,14 +66,14 @@ int main(const int argc, const pal::char_t *argv[])
         if (explicit_load)
         {
             pal::string_t nethost_path;
-            if (!pal::get_own_executable_path(&nethost_path) || !pal::realpath(&nethost_path))
+            if (!pal::get_own_executable_path(&nethost_path) || !pal::fullpath(&nethost_path))
             {
                 std::cout << "Failed to get path to current executable" << std::endl;
                 return EXIT_FAILURE;
             }
 
             nethost_path = get_directory(nethost_path);
-            nethost_path.append(MAKE_LIBNAME("nethost"));
+            nethost_path.append(LIB_FILE_NAME_X("nethost"));
 
             pal::dll_t nethost;
             if (!pal::load_library(&nethost_path, &nethost))
@@ -207,11 +208,117 @@ int main(const int argc, const pal::char_t *argv[])
             bool launch_as_if_dotnet = pal::strcmp(scenario, _X("non_context_mixed_dotnet")) == 0;
             success = host_context_test::non_context_mixed(check_properties, hostfxr_path, app_or_config_path, config_path, remaining_argc, remaining_argv, launch_as_if_dotnet, test_output);
         }
+        else if (pal::strcmp(scenario, _X("get_runtime_delegate_for_active_context")) == 0)
+        {
+            success = host_context_test::get_runtime_delegate_for_active_context(hostfxr_path, app_or_config_path, test_output);
+        }
         else
         {
             std::cerr << "Invalid scenario" << std::endl;
             return -1;
         }
+
+        std::cout << tostr(test_output.str()).data() << std::endl;
+        return success ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    else if (pal::strcmp(command, _X("component_load_assembly")) == 0)
+    {
+        // args: ... <hostfxr_path> <config_path> <load_context_identifier> <assembly_path> <type_name> <method_name> [...]
+        const int min_argc = 4;
+        if (argc < min_argc + 4)
+        {
+            std::cerr << "Invalid arguments" << std::endl;
+            return -1;
+        }
+
+        const pal::string_t hostfxr_path = argv[2];
+        const pal::char_t *config_path = argv[3];
+
+        int remaining_argc = argc - min_argc;
+        const pal::char_t **remaining_argv = nullptr;
+        if (argc > min_argc)
+            remaining_argv = &argv[min_argc];
+
+        pal::stringstream_t test_output;
+        bool success = false;
+
+        success = host_context_test::component_load_assembly(hostfxr_path, config_path, remaining_argc, remaining_argv, test_output);
+
+        std::cout << tostr(test_output.str()).data() << std::endl;
+        return success ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    else if (pal::strcmp(command, _X("app_load_assembly")) == 0)
+    {
+        // args: ... <hostfxr_path> <app_path> <assembly_path> <type_name> <method_name> [<assembly_path> <type_name> <method_name>...]
+        const int min_argc = 3;
+        if (argc < min_argc + 4)
+        {
+            std::cerr << "Invalid arguments" << std::endl;
+            return -1;
+        }
+
+        const pal::string_t hostfxr_path = argv[2];
+
+        int remaining_argc = argc - min_argc;
+        const pal::char_t **remaining_argv = nullptr;
+        if (argc > min_argc)
+            remaining_argv = &argv[min_argc];
+
+        pal::stringstream_t test_output;
+        bool success = false;
+
+        success = host_context_test::app_load_assembly(hostfxr_path, remaining_argc, remaining_argv, test_output);
+
+        std::cout << tostr(test_output.str()).data() << std::endl;
+        return success ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    else if (pal::strcmp(command, _X("component_load_assembly_bytes")) == 0)
+    {
+        // args: ... <hostfxr_path> <config_path> <load_context_identifier> <assembly_path> <symbols_path> <type_name> <method_name> [...]
+        const int min_argc = 4;
+        if (argc < min_argc + 5)
+        {
+            std::cerr << "Invalid arguments" << std::endl;
+            return -1;
+        }
+
+        const pal::string_t hostfxr_path = argv[2];
+        const pal::char_t *config_path = argv[3];
+
+        int remaining_argc = argc - min_argc;
+        const pal::char_t **remaining_argv = nullptr;
+        if (argc > min_argc)
+            remaining_argv = &argv[min_argc];
+
+        pal::stringstream_t test_output;
+        bool success = false;
+
+        success = host_context_test::component_load_assembly_bytes(hostfxr_path, config_path, remaining_argc, remaining_argv, test_output);
+
+        std::cout << tostr(test_output.str()).data() << std::endl;
+        return success ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    else if (pal::strcmp(command, _X("app_load_assembly_bytes")) == 0)
+    {
+        // args: ... <hostfxr_path> <app_path> <assembly_path> <symbols_path> <type_name> <method_name> [<assembly_path> <type_name> <method_name>...]
+        const int min_argc = 3;
+        if (argc < min_argc + 5)
+        {
+            std::cerr << "Invalid arguments" << std::endl;
+            return -1;
+        }
+
+        const pal::string_t hostfxr_path = argv[2];
+
+        int remaining_argc = argc - min_argc;
+        const pal::char_t **remaining_argv = nullptr;
+        if (argc > min_argc)
+            remaining_argv = &argv[min_argc];
+
+        pal::stringstream_t test_output;
+        bool success = false;
+
+        success = host_context_test::app_load_assembly_bytes(hostfxr_path, remaining_argc, remaining_argv, test_output);
 
         std::cout << tostr(test_output.str()).data() << std::endl;
         return success ? EXIT_SUCCESS : EXIT_FAILURE;
@@ -387,28 +494,96 @@ int main(const int argc, const pal::char_t *argv[])
 
         const pal::char_t *scenario = argv[2];
         int count = pal::xtoi(argv[3]);
-        const pal::string_t comhost_path = argv[4];
-        const pal::string_t clsid_str = argv[5];
-
         bool success = false;
-        if (pal::strcmp(scenario, _X("synchronous")) == 0)
+        if (pal::strcmp(scenario, _X("loadcontext")) == 0)
         {
+            int argument_count = argc - 4;
+            if (count <= 0 || (argument_count % 2) != 0 || count != argument_count / 2)
+            {
+                std::cerr << "Invalid arguments" << std::endl;
+                return -1;
+            }
+
+            std::vector<pal::string_t> comhost_paths;
+            std::vector<pal::string_t> clsid_strings;
+            comhost_paths.reserve(count);
+            clsid_strings.reserve(count);
+            for (int i = 0; i < count; ++i)
+            {
+                comhost_paths.push_back(argv[4 + (i * 2)]);
+                clsid_strings.push_back(argv[5 + (i * 2)]);
+            }
+
+            success = comhost_test::load_context(comhost_paths, clsid_strings);
+        }
+        else if (pal::strcmp(scenario, _X("synchronous")) == 0)
+        {
+            const pal::string_t comhost_path = argv[4];
+            const pal::string_t clsid_str = argv[5];
             success = comhost_test::synchronous(comhost_path, clsid_str, count);
         }
         else if (pal::strcmp(scenario, _X("concurrent")) == 0)
         {
+            const pal::string_t comhost_path = argv[4];
+            const pal::string_t clsid_str = argv[5];
             success = comhost_test::concurrent(comhost_path, clsid_str, count);
         }
         else if (pal::strcmp(scenario, _X("errorinfo")) == 0)
         {
+            const pal::string_t comhost_path = argv[4];
+            const pal::string_t clsid_str = argv[5];
             success = comhost_test::errorinfo(comhost_path, clsid_str, count);
         }
         else if (pal::strcmp(scenario, _X("typelib")) == 0)
         {
+            const pal::string_t comhost_path = argv[4];
             success = comhost_test::typelib(comhost_path, count);
         }
 
         return success ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    else if (pal::strcmp(command, _X("ijwhost_loadcontext")) == 0)
+    {
+        // args: ... <ijw_library_path> <entry_point> [<ijw_library_path> <entry_point> ...]
+        if (argc < 6 || (argc % 2) != 0)
+        {
+            std::cerr << "Invalid arguments" << std::endl;
+            return -1;
+        }
+
+        std::vector<pal::string_t> library_paths;
+        std::vector<pal::string_t> entry_points;
+        for (int i = 2; i < argc; i += 2)
+        {
+            library_paths.push_back(argv[i]);
+            entry_points.push_back(argv[i + 1]);
+        }
+
+        return ijwhost_test::load_context(library_paths, entry_points) ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    else if (pal::strcmp(command, _X("ijwhost")) == 0)
+    {
+        // args: ... <ijw_library_path> <entry_point>
+        if (argc < 4)
+        {
+            std::cerr << "Invalid arguments" << std::endl;
+            return -1;
+        }
+
+        // 2 optional arguments indicating whether we should start the runtime
+        if (argc > 5)
+        {
+            const pal::string_t hostfxr_path = argv[4];
+            const pal::char_t* config_path = argv[5];
+            pal::stringstream_t test_output;
+            if (!host_context_test::config(host_context_test::check_properties::none, hostfxr_path, config_path, 0, nullptr, test_output))
+            {
+                std::cout << "Failed to start runtime from path: " << tostr(hostfxr_path).data() << std::endl;
+                return EXIT_FAILURE;
+            }
+        }
+
+        return ijwhost_test::run(argv[2], argv[3]) ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 #endif
     else if (pal::strcmp(command, _X("get_native_search_directories")) == 0)

@@ -128,7 +128,7 @@ namespace System.Xml.Xsl
                     }
                 }
 
-                if (match == false)
+                if (!match)
                     return false;
             }
 
@@ -218,7 +218,7 @@ namespace System.Xml.Xsl
                     }
                 }
 
-                if (match == false)
+                if (!match)
                     return false;
             }
 
@@ -906,7 +906,7 @@ namespace System.Xml.Xsl
                 set
                 {
                     Debug.Assert(index1 < _bits.Length && index2 < _bits.Length, "Index out of range.");
-                    if (value == true)
+                    if (value)
                     {
                         _bits[index1] |= (ulong)1 << index2;
                     }

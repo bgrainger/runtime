@@ -8,7 +8,7 @@ using Debug = System.Diagnostics.Debug;
 namespace ILCompiler
 {
     /// <summary>
-    /// Represents an algorithm that adds a target pointer of space at the beggining of all types
+    /// Represents an algorithm that adds a target pointer of space at the beginning of all types
     /// deriving from System.Object used for the MethodTable pointer in the CoreCLR runtime.
     /// </summary>
     internal class SystemObjectFieldLayoutAlgorithm : FieldLayoutAlgorithm
@@ -46,6 +46,11 @@ namespace ILCompiler
         }
 
         public override bool ComputeContainsGCPointers(DefType type)
+        {
+            return false;
+        }
+
+        public override bool ComputeContainsByRefs(DefType type)
         {
             return false;
         }

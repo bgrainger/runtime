@@ -93,20 +93,16 @@ internal static partial class Interop
                 return new FakeSafeWinHttpHandle(false);
             }
 
-            if (accessType == Interop.WinHttp.WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY &&
-                !TestControl.WinHttpAutomaticProxySupport)
-            {
-                TestControl.LastWin32Error = (int)Interop.WinHttp.ERROR_INVALID_PARAMETER;
-                return new FakeSafeWinHttpHandle(false);
-            }
-
             APICallHistory.ProxyInfo proxyInfo;
             proxyInfo.AccessType = accessType;
             proxyInfo.Proxy = proxyName;
             proxyInfo.ProxyBypass = proxyBypass;
             APICallHistory.SessionProxySettings = proxyInfo;
 
-            return new FakeSafeWinHttpHandle(true);
+            return new FakeSafeWinHttpHandle(true)
+            {
+                ProxySettings = proxyInfo
+            };
         }
 
         public static bool WinHttpCloseHandle(IntPtr sessionHandle)
@@ -122,6 +118,8 @@ internal static partial class Interop
             ushort serverPort,
             uint reserved)
         {
+            // Feature-detection sessions must not replace the settings of the session used for the request.
+            APICallHistory.SessionProxySettings = ((FakeSafeWinHttpHandle)sessionHandle).ProxySettings;
             return new FakeSafeWinHttpHandle(true);
         }
 
@@ -481,12 +479,6 @@ internal static partial class Interop
             ref uint optionData,
             uint optionLength = sizeof(uint))
         {
-            if (option == Interop.WinHttp.WINHTTP_OPTION_DECOMPRESSION & !TestControl.WinHttpDecompressionSupport)
-            {
-                TestControl.LastWin32Error = (int)Interop.WinHttp.ERROR_WINHTTP_INVALID_OPTION;
-                return false;
-            }
-
             if (option == Interop.WinHttp.WINHTTP_OPTION_DISABLE_FEATURE &&
                 optionData == Interop.WinHttp.WINHTTP_DISABLE_COOKIES)
             {

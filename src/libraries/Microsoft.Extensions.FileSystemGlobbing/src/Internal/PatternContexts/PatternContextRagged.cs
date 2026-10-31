@@ -11,7 +11,9 @@ namespace Microsoft.Extensions.FileSystemGlobbing.Internal.PatternContexts
     {
         public PatternContextRagged(IRaggedPattern pattern)
         {
-            Pattern = pattern ?? throw new ArgumentNullException(nameof(pattern));
+            ArgumentNullException.ThrowIfNull(pattern);
+
+            Pattern = pattern;
         }
 
         public override PatternTestResult Test(FileInfoBase file)
@@ -32,6 +34,7 @@ namespace Microsoft.Extensions.FileSystemGlobbing.Internal.PatternContexts
         {
             // copy the current frame
             FrameData frame = Frame;
+            frame.AddedStemItem = false;
 
             if (IsStackEmpty())
             {
@@ -75,6 +78,7 @@ namespace Microsoft.Extensions.FileSystemGlobbing.Internal.PatternContexts
             if (frame.InStem)
             {
                 frame.StemItems.Add(directory.Name);
+                frame.AddedStemItem = true;
             }
 
             while (
@@ -101,8 +105,9 @@ namespace Microsoft.Extensions.FileSystemGlobbing.Internal.PatternContexts
 
         public override void PopDirectory()
         {
+            bool addedStem = Frame.AddedStemItem;
             base.PopDirectory();
-            if (Frame.StemItems.Count > 0)
+            if (addedStem && Frame.HasStemItems)
             {
                 Frame.StemItems.RemoveAt(Frame.StemItems.Count - 1);
             }
@@ -122,9 +127,13 @@ namespace Microsoft.Extensions.FileSystemGlobbing.Internal.PatternContexts
 
             public bool InStem;
 
-            private IList<string>? _stemItems;
+            private List<string>? _stemItems;
+
+            internal bool AddedStemItem;
 
             public IList<string> StemItems => _stemItems ??= new List<string>();
+
+            internal readonly bool HasStemItems => _stemItems is not null && _stemItems.Count > 0;
 
             public string? Stem => _stemItems == null ? null : string.Join("/", _stemItems);
         }

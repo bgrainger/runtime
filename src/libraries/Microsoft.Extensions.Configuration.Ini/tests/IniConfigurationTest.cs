@@ -161,6 +161,28 @@ SubHeader:Provider=MySql";
         }
 
         [Fact]
+        public void ShouldRemoveLeadingAndTrailingWhiteSpacesFromKeyAndValue()
+        {
+            var ini = "[section]\n" +
+                      " \t key \t = \t value\t ";
+            var iniConfigSrc = new IniConfigurationProvider(new IniConfigurationSource());
+            iniConfigSrc.Load(TestStreamHelpers.StringToStream(ini));
+
+            Assert.Equal("value", iniConfigSrc.Get("section:key"));
+        }
+
+        [Fact]
+        public void ShouldRemoveLeadingAndTrailingWhiteSpacesFromSectionName()
+        {
+            var ini = "[ \t section \t ]\n" +
+                      "key=value";
+            var iniConfigSrc = new IniConfigurationProvider(new IniConfigurationSource());
+            iniConfigSrc.Load(TestStreamHelpers.StringToStream(ini));
+
+            Assert.Equal("value", iniConfigSrc.Get("section:key"));
+        }
+
+        [Fact]
         public void ThrowExceptionWhenFoundInvalidLine()
         {
             var ini = @"
@@ -229,7 +251,6 @@ DefaultConnection=TestConnectionString
         }
 
         [Fact]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/50867", TestPlatforms.Android)]
         public void IniConfiguration_Throws_On_Missing_Configuration_File()
         {
             var exception = Assert.Throws<FileNotFoundException>(() => new ConfigurationBuilder().AddIniFile("NotExistingConfig.ini").Build());

@@ -2,12 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.Diagnostics.CodeAnalysis;
-using System.Text;
-using System.Globalization;
-using System.Runtime.InteropServices;
 using System.Collections;
 using System.Collections.Specialized;
+using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Text;
 
 namespace System.Diagnostics
 {
@@ -21,7 +21,6 @@ namespace System.Diagnostics
         private int _indentSize = 4;
         private TraceOptions _traceOptions = TraceOptions.None;
         private bool _needIndent = true;
-        private StringDictionary? _attributes;
 
         private string? _listenerName;
         private TraceFilter? _filter;
@@ -42,15 +41,7 @@ namespace System.Diagnostics
             _listenerName = name;
         }
 
-        public StringDictionary Attributes
-        {
-            get
-            {
-                if (_attributes == null)
-                    _attributes = new StringDictionary();
-                return _attributes;
-            }
-        }
+        public StringDictionary Attributes => field ??= new StringDictionary();
 
         /// <devdoc>
         /// <para> Gets or sets a name for this <see cref='System.Diagnostics.TraceListener'/>.</para>
@@ -59,7 +50,6 @@ namespace System.Diagnostics
         public virtual string Name
         {
             get { return _listenerName ?? ""; }
-
             set { _listenerName = value; }
         }
 
@@ -237,7 +227,7 @@ namespace System.Diagnostics
             if (category == null)
                 Write(message);
             else
-                Write(category + ": " + ((message == null) ? string.Empty : message));
+                Write(category + ": " + (message ?? string.Empty));
         }
 
         /// <devdoc>
@@ -310,7 +300,7 @@ namespace System.Diagnostics
             if (category == null)
                 WriteLine(message);
             else
-                WriteLine(category + ": " + ((message == null) ? string.Empty : message));
+                WriteLine(category + ": " + (message ?? string.Empty));
         }
 
         /// <devdoc>
@@ -374,7 +364,7 @@ namespace System.Diagnostics
             WriteFooter(eventCache);
         }
 
-        public virtual void TraceEvent(TraceEventCache? eventCache, string source, TraceEventType eventType, int id, string? format, params object?[]? args)
+        public virtual void TraceEvent(TraceEventCache? eventCache, string source, TraceEventType eventType, int id, [StringSyntax(StringSyntaxAttribute.CompositeFormat)] string? format, params object?[]? args)
         {
             if (Filter != null && !Filter.ShouldTrace(eventCache, source, eventType, id, format, args))
                 return;
@@ -393,7 +383,7 @@ namespace System.Diagnostics
             Write(string.Create(CultureInfo.InvariantCulture, stackalloc char[256], $"{source} {eventType}: {id} : "));
         }
 
-        private void WriteFooter(TraceEventCache? eventCache)
+        private unsafe void WriteFooter(TraceEventCache? eventCache)
         {
             if (eventCache == null)
                 return;

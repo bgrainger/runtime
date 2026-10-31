@@ -12,11 +12,11 @@ namespace System.Text.Json.Serialization.Converters
         : JsonCollectionConverter<TAsyncEnumerable, TElement>
         where TAsyncEnumerable : IAsyncEnumerable<TElement>
     {
-        internal override bool OnTryRead(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options, ref ReadStack state, out TAsyncEnumerable value)
+        internal override bool OnTryRead(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options, scoped ref ReadStack state, out TAsyncEnumerable value)
         {
             if (!typeToConvert.IsAssignableFrom(typeof(IAsyncEnumerable<TElement>)))
             {
-                ThrowHelper.ThrowNotSupportedException_CannotPopulateCollection(TypeToConvert, ref reader, ref state);
+                ThrowHelper.ThrowNotSupportedException_CannotPopulateCollection(Type, ref reader, ref state);
             }
 
             return base.OnTryRead(ref reader, typeToConvert, options, ref state, out value!);
@@ -27,16 +27,17 @@ namespace System.Text.Json.Serialization.Converters
             ((BufferedAsyncEnumerable)state.Current.ReturnValue!)._buffer.Add(value);
         }
 
-        protected override void CreateCollection(ref Utf8JsonReader reader, ref ReadStack state, JsonSerializerOptions options)
+        internal override bool SupportsCreateObjectDelegate => false;
+        protected override void CreateCollection(ref Utf8JsonReader reader, scoped ref ReadStack state, JsonSerializerOptions options)
         {
             state.Current.ReturnValue = new BufferedAsyncEnumerable();
         }
 
         internal override bool OnTryWrite(Utf8JsonWriter writer, TAsyncEnumerable value, JsonSerializerOptions options, ref WriteStack state)
         {
-            if (!state.SupportContinuation)
+            if (!state.SupportAsync)
             {
-                ThrowHelper.ThrowNotSupportedException_TypeRequiresAsyncSerialization(TypeToConvert);
+                ThrowHelper.ThrowNotSupportedException_TypeRequiresAsyncSerialization(Type);
             }
 
             return base.OnTryWrite(writer, value, options, ref state);
@@ -48,47 +49,61 @@ namespace System.Text.Json.Serialization.Converters
             IAsyncEnumerator<TElement> enumerator;
             ValueTask<bool> moveNextTask;
 
-            if (state.Current.AsyncDisposable is null)
+            switch (state.Current.AsyncEnumeratorState)
             {
-                enumerator = value.GetAsyncEnumerator(state.CancellationToken);
-                // async enumerators can only be disposed asynchronously;
-                // store in the WriteStack for future disposal
-                // by the root async serialization context.
-                state.Current.AsyncDisposable = enumerator;
-                // enumerator.MoveNextAsync() calls can throw,
-                // ensure the enumerator already is stored
-                // in the WriteStack for proper disposal.
-                moveNextTask = enumerator.MoveNextAsync();
+                case AsyncEnumeratorState.None:
+                    enumerator = value.GetAsyncEnumerator(state.CancellationToken);
+                    // async enumerators can only be disposed asynchronously;
+                    // store in the WriteStack for disposal on exception.
+                    state.Current.AsyncEnumerator = enumerator;
+                    state.Current.AsyncEnumeratorState = AsyncEnumeratorState.Enumerating;
+                    // enumerator.MoveNextAsync() calls can throw,
+                    // ensure the enumerator already is stored
+                    // in the WriteStack for proper disposal.
+                    moveNextTask = enumerator.MoveNextAsync();
 
-                if (!moveNextTask.IsCompleted)
-                {
-                    // It is common for first-time MoveNextAsync() calls to return pending tasks,
-                    // since typically that is when underlying network connections are being established.
-                    // For this case only, suppress flushing the current buffer contents (e.g. the leading '[' token of the written array)
-                    // to give the stream owner the ability to recover in case of a connection error.
-                    state.SuppressFlush = true;
-                    goto SuspendDueToPendingTask;
-                }
-            }
-            else
-            {
-                Debug.Assert(state.Current.AsyncDisposable is IAsyncEnumerator<TElement>);
-                enumerator = (IAsyncEnumerator<TElement>)state.Current.AsyncDisposable;
+                    if (!moveNextTask.IsCompleted)
+                    {
+                        // It is common for first-time MoveNextAsync() calls to return pending tasks,
+                        // since typically that is when underlying network connections are being established.
+                        // For this case only, suppress flushing the current buffer contents (e.g. the leading '[' token of the written array)
+                        // to give the stream owner the ability to recover in case of a connection error.
+                        state.SuppressFlush = true;
+                        goto SuspendDueToPendingTask;
+                    }
+                    break;
 
-                if (state.Current.AsyncEnumeratorIsPendingCompletion)
-                {
+                case AsyncEnumeratorState.PendingMoveNext:
+                    Debug.Assert(state.Current.AsyncEnumerator is IAsyncEnumerator<TElement>);
+                    enumerator = (IAsyncEnumerator<TElement>)state.Current.AsyncEnumerator;
+
                     // converter was previously suspended due to a pending MoveNextAsync() task
                     Debug.Assert(state.PendingTask is Task<bool> && state.PendingTask.IsCompleted);
                     moveNextTask = new ValueTask<bool>((Task<bool>)state.PendingTask);
-                    state.Current.AsyncEnumeratorIsPendingCompletion = false;
+                    state.Current.AsyncEnumeratorState = AsyncEnumeratorState.Enumerating;
                     state.PendingTask = null;
-                }
-                else
-                {
+                    break;
+
+                case AsyncEnumeratorState.PendingDisposal:
+                    // Converter was previously suspended due to a pending DisposeAsync() task.
+                    Debug.Assert(state.Current.AsyncEnumerator is null);
+                    Debug.Assert(state.PendingTask is not null && state.PendingTask.IsCompleted);
+                    state.PendingTask.GetAwaiter().GetResult();
+                    state.Current.AsyncEnumeratorState = AsyncEnumeratorState.None;
+                    state.PendingTask = null;
+                    return true;
+
+                case AsyncEnumeratorState.Enumerating:
+                    Debug.Assert(state.Current.AsyncEnumerator is IAsyncEnumerator<TElement>);
+                    enumerator = (IAsyncEnumerator<TElement>)state.Current.AsyncEnumerator;
+
                     // converter was suspended for a different reason;
                     // the last MoveNextAsync() call can only have completed with 'true'.
                     moveNextTask = new ValueTask<bool>(true);
-                }
+                    break;
+
+                default:
+                    throw new InvalidOperationException("Invalid async enumerator state.");
             }
 
             Debug.Assert(moveNextTask.IsCompleted);
@@ -99,14 +114,25 @@ namespace System.Text.Json.Serialization.Converters
             {
                 if (!moveNextTask.Result)
                 {
-                    // we have completed serialization for the enumerator,
-                    // clear from the stack and schedule for async disposal.
-                    state.Current.AsyncDisposable = null;
-                    state.AddCompletedAsyncDisposable(enumerator);
+                    // Enumeration complete, dispose the enumerator inline.
+                    // Clear from the stack first to prevent double disposal on exception.
+                    state.Current.AsyncEnumerator = null;
+                    state.Current.AsyncEnumeratorState = AsyncEnumeratorState.None;
+                    ValueTask disposeTask = enumerator.DisposeAsync();
+                    if (!disposeTask.IsCompleted)
+                    {
+                        // DisposeAsync is pending; store as a pending task
+                        // and yield control to the root-level async serialization loop.
+                        state.PendingTask = disposeTask.AsTask();
+                        state.Current.AsyncEnumeratorState = AsyncEnumeratorState.PendingDisposal;
+                        return false;
+                    }
+
+                    disposeTask.GetAwaiter().GetResult();
                     return true;
                 }
 
-                if (ShouldFlush(writer, ref state))
+                if (ShouldFlush(ref state, writer))
                 {
                     return false;
                 }
@@ -117,6 +143,7 @@ namespace System.Text.Json.Serialization.Converters
                     return false;
                 }
 
+                state.Current.EndCollectionElement();
                 moveNextTask = enumerator.MoveNextAsync();
             } while (moveNextTask.IsCompleted);
 
@@ -126,7 +153,7 @@ namespace System.Text.Json.Serialization.Converters
             // mark the current stackframe as pending completion.
             Debug.Assert(state.PendingTask is null);
             state.PendingTask = moveNextTask.AsTask();
-            state.Current.AsyncEnumeratorIsPendingCompletion = true;
+            state.Current.AsyncEnumeratorState = AsyncEnumeratorState.PendingMoveNext;
             return false;
         }
 

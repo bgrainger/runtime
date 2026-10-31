@@ -31,6 +31,8 @@ public:
     BYTE    m_rgbBlobData[1];
 };
 
+class LoaderAllocator;
+
 //
 // This class caches MethodDesc's for dynamically generated IL stubs, it is not
 // persisted in NGEN images.
@@ -42,17 +44,19 @@ public:
     //---------------------------------------------------------
     // Constructor
     //---------------------------------------------------------
-    ILStubCache(LoaderHeap* heap = NULL);
+    ILStubCache(LoaderAllocator* pAllocator = NULL);
 
-    void Init(LoaderHeap* pHeap);
+    void Init(LoaderAllocator* pAllocator);
 
     MethodDesc* GetStubMethodDesc(
         MethodDesc *pTargetMD,
         ILStubHashBlob* pHashBlob,
-        DWORD dwStubFlags,      // bitmask of NDirectStubFlags
+        DWORD dwStubFlags,      // bitmask of PInvokeStubFlags
         Module* pSigModule,
+        Module* pSigLoaderModule,
         PCCOR_SIGNATURE pSig,
         DWORD cbSig,
+        SigTypeContext* pTypeContext,
         AllocMemTracker* pamTracker,
         bool& bILStubCreator,
         MethodDesc* pLastMD);
@@ -64,12 +68,25 @@ public:
     static MethodDesc* CreateAndLinkNewILStubMethodDesc(
         LoaderAllocator* pAllocator,
         MethodTable* pMT,
-        DWORD dwStubFlags,      // bitmask of NDirectStubFlags
+        DWORD dwStubFlags,      // bitmask of PInvokeStubFlags
         Module* pSigModule,
         PCCOR_SIGNATURE pSig,
         DWORD cbSig,
         SigTypeContext *pTypeContext,
-        ILStubLinker* pStubLinker);
+        ILStubLinker* pStubLinker,
+        BOOL isAsync = FALSE);
+
+    // Creates a DynamicMethodDesc that wraps pre-compiled R2R stub code.
+    // Unlike regular IL stubs, this does not create a resolver or precode - it points
+    // directly to the R2R native code.
+    MethodDesc* CreateR2RBackedILStub(
+        LoaderAllocator* pAllocator,
+        MethodTable* pMT,
+        PCODE r2rEntryPoint,
+        DWORD stubType,         // DynamicMethodDesc::ILStubType
+        PCCOR_SIGNATURE pSig,
+        DWORD cbSig,
+        AllocMemTracker* pamTracker);
 
     MethodTable * GetStubMethodTable()
     {
@@ -79,14 +96,21 @@ public:
 
     MethodTable* GetOrCreateStubMethodTable(Module* pLoaderModule);
 
+    MethodDesc* LookupStubMethodDesc(ILStubHashBlob* pHashBlob);
+
+    // Insert a stub MethodDesc into the cache
+    // If one is already present at a matching hash blob, return the already present one, otherwise, return pMD
+    MethodDesc* InsertStubMethodDesc(MethodDesc* pMD, ILStubHashBlob* pHashBlob);
+
 private: // static
     static MethodDesc* CreateNewMethodDesc(
         LoaderHeap* pCreationHeap,
         MethodTable* pMT,
-        DWORD dwStubFlags,      // bitmask of NDirectStubFlags
+        DWORD dwStubFlags,      // bitmask of PInvokeStubFlags
         Module* pSigModule,
         PCCOR_SIGNATURE pSig,
         DWORD cbSig,
+        BOOL isAsync,
         SigTypeContext *pTypeContext,
         AllocMemTracker* pamTracker);
 
@@ -112,7 +136,7 @@ private: // Inner classes
 
 private:
     Crst            m_crst;
-    LoaderHeap*     m_heap;
+    LoaderAllocator*m_pAllocator;
     MethodTable*    m_pStubMT;
     SHash<ILStubCacheTraits> m_hashMap;
 };

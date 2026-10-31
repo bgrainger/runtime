@@ -2,8 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
-using System.Reflection;
 using System.Composition.Convention;
+using System.Reflection;
 
 namespace System.Composition.TypedParts.Util
 {
@@ -11,8 +11,8 @@ namespace System.Composition.TypedParts.Util
     {
         public override IEnumerable<Attribute> GetCustomAttributes(Type reflectedType, Reflection.MemberInfo member)
         {
-            if (reflectedType == null) throw new ArgumentNullException(nameof(reflectedType));
-            if (member == null) throw new ArgumentNullException(nameof(member));
+            ArgumentNullException.ThrowIfNull(reflectedType);
+            ArgumentNullException.ThrowIfNull(member);
 
             if (!(member is TypeInfo) && member.DeclaringType != reflectedType)
                 return Array.Empty<Attribute>();
@@ -22,8 +22,9 @@ namespace System.Composition.TypedParts.Util
 
         public override IEnumerable<Attribute> GetCustomAttributes(Type reflectedType, Reflection.ParameterInfo parameter)
         {
-            if (reflectedType == null) throw new ArgumentNullException(nameof(reflectedType));
-            if (parameter == null) throw new ArgumentNullException(nameof(parameter));
+            ArgumentNullException.ThrowIfNull(parameter);
+
+            ArgumentNullException.ThrowIfNull(reflectedType);
 
             return Attribute.GetCustomAttributes(parameter, false);
         }

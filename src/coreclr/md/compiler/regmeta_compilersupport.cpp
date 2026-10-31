@@ -17,7 +17,6 @@
 #include "mdlog.h"
 #include "importhelper.h"
 #include "filtermanager.h"
-#include "mdperf.h"
 #include "switches.h"
 #include "posterror.h"
 #include "stgio.h"
@@ -25,18 +24,10 @@
 
 #include <metamodelrw.h>
 
-#define DEFINE_CUSTOM_NODUPCHECK    1
-#define DEFINE_CUSTOM_DUPCHECK      2
-#define SET_CUSTOM                  3
-
-#if defined(_DEBUG) && defined(_TRACE_REMAPS)
+#if defined(_DEBUG)
 #define LOGGING
 #endif
 #include <log.h>
-
-#ifdef _MSC_VER
-#pragma warning(disable: 4102)
-#endif
 
 #ifdef FEATURE_METADATA_EMIT
 
@@ -71,8 +62,6 @@ STDMETHODIMP RegMeta::GetDeltaSaveSize(      // S_OK or error.
 #ifdef FEATURE_METADATA_EMIT_ALL
     HRESULT hr = S_OK;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     // Make sure we're in EnC mode
     if (!IsENCOn())
     {
@@ -85,8 +74,6 @@ STDMETHODIMP RegMeta::GetDeltaSaveSize(      // S_OK or error.
     m_pStgdb->m_MiniMd.DisableDeltaMetadataGeneration();
 
 ErrExit:
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 #else //!FEATURE_METADATA_EMIT_ALL
     return E_NOTIMPL;
@@ -103,9 +90,6 @@ STDMETHODIMP RegMeta::SaveDelta(                     // S_OK or error.
 #ifdef FEATURE_METADATA_EMIT_ALL
     HRESULT hr = S_OK;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
-
     // Make sure we're in EnC mode
     if (!IsENCOn())
     {
@@ -113,16 +97,11 @@ STDMETHODIMP RegMeta::SaveDelta(                     // S_OK or error.
         IfFailGo(META_E_NOT_IN_ENC_MODE);
     }
 
-
-
     m_pStgdb->m_MiniMd.EnableDeltaMetadataGeneration();
     hr = Save(szFile, dwSaveFlags);
     m_pStgdb->m_MiniMd.DisableDeltaMetadataGeneration();
 
 ErrExit:
-
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 #else //!FEATURE_METADATA_EMIT_ALL
     return E_NOTIMPL;
@@ -139,8 +118,6 @@ STDMETHODIMP RegMeta::SaveDeltaToStream(     // S_OK or error.
 #ifdef FEATURE_METADATA_EMIT_ALL
     HRESULT hr = S_OK;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     // Make sure we're in EnC mode
     if (!IsENCOn())
     {
@@ -148,15 +125,11 @@ STDMETHODIMP RegMeta::SaveDeltaToStream(     // S_OK or error.
         IfFailGo(META_E_NOT_IN_ENC_MODE);
     }
 
-
-
     m_pStgdb->m_MiniMd.EnableDeltaMetadataGeneration();
     hr = SaveToStream(pIStream, dwSaveFlags);
     m_pStgdb->m_MiniMd.DisableDeltaMetadataGeneration();
 
 ErrExit:
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 #else //!FEATURE_METADATA_EMIT_ALL
     return E_NOTIMPL;
@@ -172,25 +145,16 @@ STDMETHODIMP RegMeta::SaveDeltaToMemory(           // S_OK or error.
     ULONG       cbData)                 // [IN] Max size of data buffer.
 {
 #ifdef FEATURE_METADATA_EMIT_ALL
-    HRESULT hr = S_OK;
-
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     // Make sure we're in EnC mode
     if (!IsENCOn())
     {
         _ASSERTE(!"Not in EnC mode!");
-        IfFailGo(META_E_NOT_IN_ENC_MODE);
+        return META_E_NOT_IN_ENC_MODE;
     }
 
-
     m_pStgdb->m_MiniMd.EnableDeltaMetadataGeneration();
-    hr = SaveToMemory(pbData, cbData);
+    HRESULT hr = SaveToMemory(pbData, cbData);
     m_pStgdb->m_MiniMd.DisableDeltaMetadataGeneration();
-
-ErrExit:
-
-    END_ENTRYPOINT_NOTHROW;
 
     return hr;
 #else //!FEATURE_METADATA_EMIT_ALL
@@ -209,8 +173,6 @@ RegMeta::ResetENCLog()
 #ifdef FEATURE_METADATA_EMIT_ALL
     HRESULT hr = S_OK;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     // Make sure we're in EnC mode
     if (!IsENCOn())
     {
@@ -220,8 +182,6 @@ RegMeta::ResetENCLog()
 
     IfFailGo(m_pStgdb->m_MiniMd.ResetENCLog());
 ErrExit:
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 #else //!FEATURE_METADATA_EMIT_ALL
     return E_NOTIMPL;

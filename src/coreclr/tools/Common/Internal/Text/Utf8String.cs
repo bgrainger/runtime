@@ -3,18 +3,25 @@
 
 using System;
 using System.Numerics;
-using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace Internal.Text
 {
-    public struct Utf8String : IEquatable<Utf8String>, IComparable<Utf8String>
+    public readonly struct Utf8String : IEquatable<Utf8String>, IComparable<Utf8String>
     {
-        private byte[] _value;
+        private readonly byte[] _value;
+
+        public bool IsNull => _value == null;
+        public static readonly Utf8String Empty = new Utf8String([]);
 
         public Utf8String(byte[] underlyingArray)
         {
             _value = underlyingArray;
+        }
+
+        public Utf8String(ReadOnlySpan<byte> underlyingSpan)
+        {
+            _value = underlyingSpan.ToArray();
         }
 
         public Utf8String(string s)
@@ -22,16 +29,11 @@ namespace Internal.Text
             _value = Encoding.UTF8.GetBytes(s);
         }
 
-        // TODO: This should return ReadOnlySpan<byte> instead once available
-        public byte[] UnderlyingArray => _value;
+        public static implicit operator Utf8Span(Utf8String s) => s._value;
+
         public int Length => _value.Length;
 
-        // For now, define implicit conversions between string and Utf8String to aid the transition
-        // These conversions will be removed eventually
-        public static implicit operator Utf8String(string s)
-        {
-            return new Utf8String(s);
-        }
+        public ReadOnlySpan<byte> AsSpan() => _value;
 
         public override string ToString()
         {
@@ -40,10 +42,10 @@ namespace Internal.Text
 
         public override bool Equals(object obj)
         {
-            return (obj is Utf8String) && Equals((Utf8String)obj);
+            return (obj is Utf8String utf8String) && Equals(utf8String);
         }
 
-        public unsafe override int GetHashCode()
+        public override unsafe int GetHashCode()
         {
             int length = _value.Length;
             uint hash = (uint)length;
@@ -73,72 +75,73 @@ namespace Internal.Text
 
         public bool Equals(Utf8String other)
         {
-            int length = _value.Length;
-            if (length != other.Length)
-                return false;
-
-            if (_value == other._value)
-                return true;
-
-            unsafe
-            {
-                fixed (byte* ap = _value) fixed (byte* bp = other._value)
-                {
-                    byte* a = ap;
-                    byte* b = bp;
-
-                    while (length >= 4)
-                    {
-                        if (*(int*)a != *(int*)b) return false;
-                        a += 4; b += 4; length -= 4;
-                    }
-                    if (length >= 2)
-                    {
-                        if (*(short*)a != *(short*)b) return false;
-                        a += 2; b += 2; length -= 2;
-                    }
-                    if (length > 0)
-                    {
-                        if (*a != *b) return false;
-                    }
-                    return true;
-                }
-            }
+            return AsSpan().SequenceEqual(other.AsSpan());
         }
 
         private static int Compare(Utf8String strA, Utf8String strB)
         {
-            int length = Math.Min(strA.Length, strB.Length);
-
-            unsafe
-            {
-                fixed (byte* ap = strA._value)
-                fixed (byte* bp = strB._value)
-                {
-                    byte* a = ap;
-                    byte* b = bp;
-
-                    while (length > 0)
-                    {
-                        if (*a != *b)
-                            return *a - *b;
-                        a += 1;
-                        b += 1;
-                        length -= 1;
-                    }
-
-                    // At this point, we have compared all the characters in at least one string.
-                    // The longer string will be larger.
-                    // We could optimize and compare lengths before iterating strings, but we want
-                    // Foo and Foo1 to be sorted adjacent to eachother.
-                    return strA.Length - strB.Length;
-                }
-            }
+            return strA.AsSpan().SequenceCompareTo(strB.AsSpan());
         }
 
         public int CompareTo(Utf8String other)
         {
             return Compare(this, other);
+        }
+
+        public static Utf8String Concat(params ReadOnlySpan<Utf8String> strings)
+        {
+            int length = 0;
+            foreach (Utf8String s in strings)
+                length += s.Length;
+
+            var result = new byte[length];
+            Span<byte> resultSpan = result;
+
+            foreach (Utf8String s in strings)
+            {
+                s.AsSpan().CopyTo(resultSpan);
+                resultSpan = resultSpan.Slice(s.Length);
+            }
+
+            return new Utf8String(result);
+        }
+
+        public static Utf8String Concat(ReadOnlySpan<byte> s1, ReadOnlySpan<byte> s2)
+        {
+            var result = new byte[s1.Length + s2.Length];
+            s1.CopyTo(result);
+            s2.CopyTo(result.AsSpan(s1.Length));
+            return new Utf8String(result);
+        }
+
+        public static Utf8String Concat(ReadOnlySpan<byte> s1, ReadOnlySpan<byte> s2, ReadOnlySpan<byte> s3)
+        {
+            var result = new byte[s1.Length + s2.Length + s3.Length];
+            s1.CopyTo(result);
+            s2.CopyTo(result.AsSpan(s1.Length));
+            s3.CopyTo(result.AsSpan(s1.Length + s2.Length));
+            return new Utf8String(result);
+        }
+
+        public static Utf8String Concat(ReadOnlySpan<byte> s1, ReadOnlySpan<byte> s2, ReadOnlySpan<byte> s3, ReadOnlySpan<byte> s4)
+        {
+            var result = new byte[s1.Length + s2.Length + s3.Length + s4.Length];
+            s1.CopyTo(result);
+            s2.CopyTo(result.AsSpan(s1.Length));
+            s3.CopyTo(result.AsSpan(s1.Length + s2.Length));
+            s4.CopyTo(result.AsSpan(s1.Length + s2.Length + s3.Length));
+            return new Utf8String(result);
+        }
+
+        public static Utf8String Concat(ReadOnlySpan<byte> s1, ReadOnlySpan<byte> s2, ReadOnlySpan<byte> s3, ReadOnlySpan<byte> s4, ReadOnlySpan<byte> s5)
+        {
+            var result = new byte[s1.Length + s2.Length + s3.Length + s4.Length + s5.Length];
+            s1.CopyTo(result);
+            s2.CopyTo(result.AsSpan(s1.Length));
+            s3.CopyTo(result.AsSpan(s1.Length + s2.Length));
+            s4.CopyTo(result.AsSpan(s1.Length + s2.Length + s3.Length));
+            s5.CopyTo(result.AsSpan(s1.Length + s2.Length + s3.Length + s4.Length));
+            return new Utf8String(result);
         }
     }
 }

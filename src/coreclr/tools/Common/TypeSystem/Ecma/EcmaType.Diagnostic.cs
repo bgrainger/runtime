@@ -1,15 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
-using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
-using System.Threading;
-using Debug = System.Diagnostics.Debug;
-
-using Internal.NativeFormat;
 
 namespace Internal.TypeSystem.Ecma
 {
@@ -24,7 +17,7 @@ namespace Internal.TypeSystem.Ecma
             {
                 try
                 {
-                    return Name;
+                    return GetName();
                 }
                 catch
                 {
@@ -38,7 +31,7 @@ namespace Internal.TypeSystem.Ecma
             {
                 try
                 {
-                    return Namespace;
+                    return GetNamespace();
                 }
                 catch
                 {

@@ -1,8 +1,11 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+namespace JitTest_Directed_ConstantFolding_value_numbering_unordered_comparisons_of_constants;
+
 using System;
 using System.Runtime.CompilerServices;
+using Xunit;
 
 public class ValueNumberingUnorderedComparisonsOfConstants
 {
@@ -11,7 +14,9 @@ public class ValueNumberingUnorderedComparisonsOfConstants
 
     private static int _counter = 100;
 
-    public static int Main()
+    [OuterLoop]
+    [Fact]
+    public static int TestEntryPoint()
     {
         // The conditions of the loops get reversed and duplicated.
         // As part of this a comparison like a > b, which is really !IsNaN(a) && !IsNaN(b) && a > b

@@ -5,13 +5,16 @@ using System;
 using System.Runtime;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using Xunit;
+using TestLibrary;
 
 public static class BasicTest
 {
-    private static int Main()
+    [ActiveIssue("No crossgen folder under Core_Root", typeof(Utilities), nameof(Utilities.IsNativeAot))]
+    [ActiveIssue("No crossgen folder under Core_Root", TestPlatforms.Android)]
+    [Fact]
+    public static void TestEntryPoint()
     {
-        const int Pass = 100;
-
         ProfileOptimization.SetProfileRoot(Environment.CurrentDirectory);
         ProfileOptimization.StartProfile("profile.mcj");
 
@@ -23,7 +26,6 @@ public static class BasicTest
 
         // Stop the profile again after timeout (just verifying that it works)
         ProfileOptimization.StartProfile(null);
-        return Pass;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

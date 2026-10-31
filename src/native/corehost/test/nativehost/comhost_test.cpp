@@ -40,7 +40,7 @@ namespace
         pal::dll_t _dll;
     };
 
-    HRESULT activate_class(comhost_exports &comhost, REFCLSID clsid)
+    HRESULT activate_class(const comhost_exports &comhost, REFCLSID clsid)
     {
         IClassFactory *classFactory;
         HRESULT hr = comhost.get_class_obj_fn(clsid, __uuidof(IClassFactory), (void**)&classFactory);
@@ -61,7 +61,7 @@ namespace
     {
         if (FAILED(::CLSIDFromString(clsid_str.c_str(), clsid)))
         {
-            std::cout << "Invalid CLSID: " << clsid_str.c_str() << std::endl;
+            std::wcout << _X("Invalid CLSID: ") << clsid_str.c_str() << std::endl;
             return false;
         }
 
@@ -209,7 +209,7 @@ bool comhost_test::typelib(const pal::string_t &comhost_path, int count)
     for (int i = 1; i < count + 1; i++)
     {
         // The path format for a non-default embedded TLB is 'C:\file\path\to.exe\\2' where '2' is the resource name of the tlb to load.
-        // See https://docs.microsoft.com/windows/win32/api/oleauto/nf-oleauto-loadtypelib#remarks for documentation on the path format.
+        // See https://learn.microsoft.com/windows/win32/api/oleauto/nf-oleauto-loadtypelib#remarks for documentation on the path format.
         pal::stringstream_t tlb_path;
         tlb_path << comhost_path << '\\' << i;
         hr = load_typelib(tlb_path.str());
@@ -217,5 +217,27 @@ bool comhost_test::typelib(const pal::string_t &comhost_path, int count)
         if (FAILED(hr))
             return false;
     }
+    return true;
+}
+
+bool comhost_test::load_context(const std::vector<pal::string_t> &comhost_paths, const std::vector<pal::string_t> &clsid_strings)
+{
+    if (comhost_paths.size() != clsid_strings.size())
+        return false;
+
+    for (size_t i = 0; i < comhost_paths.size(); ++i)
+    {
+        CLSID clsid;
+        std::vector<char> clsidVect;
+        if (!get_clsid(clsid_strings[i], &clsid, clsidVect))
+            return false;
+
+        comhost_exports comhost(comhost_paths[i]);
+        HRESULT hr = activate_class(comhost, clsid);
+        log_activation(clsidVect.data(), static_cast<int>(i + 1), static_cast<int>(comhost_paths.size()), hr, std::cout);
+        if (FAILED(hr))
+            return false;
+    }
+
     return true;
 }

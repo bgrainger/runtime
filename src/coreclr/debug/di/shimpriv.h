@@ -11,6 +11,7 @@
 #ifndef SHIMPRIV_H
 #define SHIMPRIV_H
 
+#include "CLREventBase.h"
 #include "helpers.h"
 
 #include "shimdatatarget.h"
@@ -20,6 +21,7 @@
 // Forward declarations
 class CordbWin32EventThread;
 class Cordb;
+struct IDacDbiInterface;
 
 class ShimStackWalk;
 class ShimChain;
@@ -128,15 +130,15 @@ public:
     COM_METHOD LogMessage( ICorDebugAppDomain *pAppDomain,
         ICorDebugThread *pThread,
         LONG lLevel,
-        __in LPWSTR pLogSwitchName,
-        __in LPWSTR pMessage);
+        _In_ LPWSTR pLogSwitchName,
+        _In_ LPWSTR pMessage);
 
     COM_METHOD LogSwitch( ICorDebugAppDomain *pAppDomain,
         ICorDebugThread *pThread,
         LONG lLevel,
         ULONG ulReason,
-        __in LPWSTR pLogSwitchName,
-        __in LPWSTR pParentName);
+        _In_ LPWSTR pLogSwitchName,
+        _In_ LPWSTR pParentName);
 
     COM_METHOD CreateAppDomain(ICorDebugProcess *pProcess,
         ICorDebugAppDomain *pAppDomain);
@@ -178,7 +180,7 @@ public:
         ICorDebugFunction *pNewFunction,
         ULONG32 oldILOffset);
 
-    COM_METHOD CreateConnection(ICorDebugProcess *pProcess, CONNID dwConnectionId, __in LPWSTR pConnName);
+    COM_METHOD CreateConnection(ICorDebugProcess *pProcess, CONNID dwConnectionId, _In_ LPWSTR pConnName);
 
     COM_METHOD ChangeConnection(ICorDebugProcess *pProcess, CONNID dwConnectionId );
 
@@ -352,7 +354,7 @@ public:
     // Initialization phases.
     // 1. allocate new ShimProcess(). This lets us spin up a Win32 EventThread, which can then
     //    be used to
-    // 2. Call ShimProcess::CreateProcess/DebugActiveProcess. This will call CreateAndStartWin32ET to
+    // 2. Call ShimProcess::DebugActiveProcess. This will call CreateAndStartWin32ET to
     //     craete the w32et.
     // 3. Create OS-debugging pipeline. This establishes the physical OS process and gets us a pid/handle
     // 4. pShim->InitializeDataTarget - this creates a reader/writer abstraction around the OS process.
@@ -364,22 +366,6 @@ public:
     // Creation
     //-----------------------------------------------------------
 
-    static HRESULT CreateProcess(
-          Cordb * pCordb,
-          ICorDebugRemoteTarget * pRemoteTarget,
-          LPCWSTR programName,
-          __in_z LPWSTR  programArgs,
-          LPSECURITY_ATTRIBUTES lpProcessAttributes,
-          LPSECURITY_ATTRIBUTES lpThreadAttributes,
-          BOOL bInheritHandles,
-          DWORD dwCreationFlags,
-          PVOID lpEnvironment,
-          LPCWSTR lpCurrentDirectory,
-          LPSTARTUPINFOW lpStartupInfo,
-          LPPROCESS_INFORMATION lpProcessInformation,
-          CorDebugCreateProcessFlags corDebugFlags
-    );
-
     static HRESULT DebugActiveProcess(
         Cordb * pCordb,
         ICorDebugRemoteTarget * pRemoteTarget,
@@ -389,7 +375,7 @@ public:
     );
 
     // Locates the DAC module adjacent to DBI
-    static HMODULE GetDacModule();
+    static HMODULE GetDacModule(PathString& dacModulePath);
 
     //
     // Functions used by CordbProcess
@@ -426,13 +412,12 @@ public:
     // Helper to queue fake assembly and mdule events
     void QueueFakeAssemblyAndModuleEvent(ICorDebugAssembly * pAssembly);
 
-    // Queue fake thread-create events on attach. Order via native threads.
-    HRESULT QueueFakeThreadAttachEventsNativeOrder();
-
     // Queue fake thread-create events on attach. No ordering.
     HRESULT QueueFakeThreadAttachEventsNoOrder();
 
     bool IsThreadSuspendedOrHijacked(ICorDebugThread * pThread);
+
+    bool IsUnmanagedThreadHijacked(ICorDebugThread * pThread);
 
     // Expose m_attached to CordbProcess.
     bool GetAttached();
@@ -491,9 +476,6 @@ public:
     // dispatching an event.
     void PreDispatchEvent(bool fRealCreateProcessEvent = false);
 
-    // Look for a CLR in the process and if found, return it's instance ID
-    HRESULT FindLoadedCLR(CORDB_ADDRESS * pClrInstanceId);
-
     // Retrieve the IP address and the port number of the debugger proxy.
     MachineInfo GetMachineInfo();
 
@@ -523,11 +505,8 @@ protected:
     // Synchronization events to ensure that AttachPending bit is marked before DebugActiveProcess
     // returns or debugger is detaching
     //
-    HANDLE  m_markAttachPendingEvent;
-    HANDLE  m_terminatingEvent;
-
-    // Finds the base address of [core]clr.dll
-    CORDB_ADDRESS GetCLRInstanceBaseAddress();
+    CLREventBase m_markAttachPendingEvent;
+    CLREventBase m_terminatingEvent;
 
     //
     // Event Queues
@@ -789,6 +768,8 @@ private:
 
         // Indicate whether we are processing a converted frame.
         bool m_fHasConvertedFrame;
+
+        bool m_fHasException;
     };
 
     // A ShimStackWalk is deleted when a process is continued, or when the stack is changed in any way
@@ -1067,4 +1048,3 @@ private:
 
 
 #endif // SHIMPRIV_H
-

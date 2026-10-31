@@ -3,26 +3,44 @@
 
 using System.IO;
 using System.Net.Quic;
-using System.Net.Quic.Implementations;
+using System.Net.Sockets;
 using System.Net.Test.Common;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace System.Net.Http.Functional.Tests
 {
     public abstract partial class HttpClientHandlerTestBase : FileCleanupTestBase
     {
+        protected static async Task<Stream> DefaultConnectCallback(EndPoint endPoint, CancellationToken cancellationToken)
+        {
+            // WASI doesn't support dual-mode sockets, so match the endpoint's address family there.
+            Socket socket = PlatformDetection.IsWasi && endPoint is IPEndPoint ipEndPoint ?
+                new Socket(ipEndPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true } :
+                new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+            try
+            {
+                await socket.ConnectAsync(endPoint, cancellationToken);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch
+            {
+                socket.Dispose();
+                throw;
+            }
+        }
+
         protected static bool IsWinHttpHandler => false;
 
-        protected virtual QuicImplementationProvider UseQuicImplementationProvider => null;
-
-        public static bool IsMsQuicSupported
+        public static bool IsHttp3Supported
         {
             get
             {
                 try
                 {
-                    return QuicImplementationProviders.MsQuic.IsSupported;
+                    return QuicConnection.IsSupported
+                        && (bool)Type.GetType("System.Net.Http.GlobalHttpSettings+SocketsHttpHandler, System.Net.Http").GetProperty("AllowHttp3").GetValue(null);
                 }
                 catch (System.PlatformNotSupportedException)
                 {
@@ -31,53 +49,48 @@ namespace System.Net.Http.Functional.Tests
             }
         }
 
-        // This should correspond to platforms on which System.Net.Quic is supported. See also HttpConnectionPool.IsHttp3Supported().
-        public static bool IsMockQuicSupported
-            => (OperatingSystem.IsLinux() && !OperatingSystem.IsAndroid()) || OperatingSystem.IsWindows() || OperatingSystem.IsMacOS();
-
-        protected static HttpClientHandler CreateHttpClientHandler(Version useVersion = null, QuicImplementationProvider quicImplementationProvider = null, bool allowAllHttp2Certificates = true)
+        protected static HttpClientHandler CreateHttpClientHandler(Version useVersion = null, bool allowAllCertificates = true, bool allowTlsResume = true)
         {
             useVersion ??= HttpVersion.Version11;
 
             HttpClientHandler handler = (PlatformDetection.SupportsAlpn && useVersion != HttpVersion.Version30) ? new HttpClientHandler() : new VersionHttpClientHandler(useVersion);
 
-            if (useVersion >= HttpVersion.Version20 && allowAllHttp2Certificates)
+            if (allowAllCertificates && PlatformDetection.IsTlsSupported)
             {
                 handler.ServerCertificateCustomValidationCallback = TestHelper.AllowAllCertificates;
             }
 
-            if (quicImplementationProvider != null)
+            // Native mobile handlers do not use SslStream or expose its resumption setting.
+            if (!allowTlsResume && PlatformDetection.IsTlsSupported &&
+                GetUnderlyingSocketsHttpHandler(handler) is SocketsHttpHandler socketsHandler)
             {
-                SocketsHttpHandler socketsHttpHandler = (SocketsHttpHandler)GetUnderlyingSocketsHttpHandler(handler);
-                SetQuicImplementationProvider(socketsHttpHandler, quicImplementationProvider);
-                socketsHttpHandler.SslOptions.RemoteCertificateValidationCallback = (sender, certificate, chain, errors) => true;
+                socketsHandler.SslOptions.AllowTlsResume = false;
             }
 
             return handler;
         }
 
-        protected Http3LoopbackServer CreateHttp3LoopbackServer(Http3Options options = default)
+        protected static SocketsHttpHandler CreateSocketsHttpHandler(bool allowAllCertificates)
+            => TestHelper.CreateSocketsHttpHandler(allowAllCertificates);
+
+        protected static Http3LoopbackServer CreateHttp3LoopbackServer(Http3Options options = default)
         {
-            return new Http3LoopbackServer(UseQuicImplementationProvider, options);
+            return new Http3LoopbackServer(options);
         }
 
-        protected HttpClientHandler CreateHttpClientHandler() => CreateHttpClientHandler(UseVersion, UseQuicImplementationProvider);
+        protected HttpClientHandler CreateHttpClientHandler() => CreateHttpClientHandler(UseVersion);
 
-        protected static HttpClientHandler CreateHttpClientHandler(string useVersionString) =>
-            CreateHttpClientHandler(Version.Parse(useVersionString));
+        protected HttpClientHandler CreateHttpClientHandler(bool allowTlsResume) =>
+            CreateHttpClientHandler(UseVersion, allowTlsResume: allowTlsResume);
+
+        protected static HttpClientHandler CreateHttpClientHandler(string useVersionString, bool allowTlsResume = true) =>
+            CreateHttpClientHandler(Version.Parse(useVersionString), allowTlsResume: allowTlsResume);
 
         protected static SocketsHttpHandler GetUnderlyingSocketsHttpHandler(HttpClientHandler handler)
         {
-            FieldInfo field = typeof(HttpClientHandler).GetField("_underlyingHandler", BindingFlags.Instance | BindingFlags.NonPublic);
+            var fieldName = PlatformDetection.IsMobile ? "_socketHandler" : "_underlyingHandler";
+            FieldInfo field = typeof(HttpClientHandler).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
             return (SocketsHttpHandler)field?.GetValue(handler);
-        }
-
-        protected static void SetQuicImplementationProvider(SocketsHttpHandler handler, QuicImplementationProvider quicImplementationProvider)
-        {
-            FieldInfo settingsField = typeof(SocketsHttpHandler).GetField("_settings", BindingFlags.Instance | BindingFlags.NonPublic);
-            object settings = settingsField.GetValue(handler);
-            FieldInfo field = settings.GetType().GetField("_quicImplementationProvider", BindingFlags.Instance | BindingFlags.NonPublic);
-            field.SetValue(settings, quicImplementationProvider);
         }
 
         protected static HttpRequestMessage CreateRequest(HttpMethod method, Uri uri, Version version, bool exactVersion = false) =>
@@ -87,18 +100,18 @@ namespace System.Net.Http.Functional.Tests
                 VersionPolicy = exactVersion ? HttpVersionPolicy.RequestVersionExact : HttpVersionPolicy.RequestVersionOrLower
             };
 
-        protected LoopbackServerFactory LoopbackServerFactory => GetFactoryForVersion(UseVersion, UseQuicImplementationProvider);
+        protected LoopbackServerFactory LoopbackServerFactory => GetFactoryForVersion(UseVersion);
 
-        protected static LoopbackServerFactory GetFactoryForVersion(string useVersion, QuicImplementationProvider quicImplementationProvider = null) =>
-            GetFactoryForVersion(Version.Parse(useVersion), quicImplementationProvider);
+        protected static LoopbackServerFactory GetFactoryForVersion(string useVersion) =>
+            GetFactoryForVersion(Version.Parse(useVersion));
 
-        protected static LoopbackServerFactory GetFactoryForVersion(Version useVersion, QuicImplementationProvider quicImplementationProvider = null)
+        protected static LoopbackServerFactory GetFactoryForVersion(Version useVersion)
         {
             return useVersion.Major switch
             {
-#if NETCOREAPP
+#if NET
 #if HTTP3
-                3 => new Http3LoopbackServerFactory(quicImplementationProvider),
+                3 => Http3LoopbackServerFactory.Singleton,
 #endif
                 2 => Http2LoopbackServerFactory.Singleton,
 #endif

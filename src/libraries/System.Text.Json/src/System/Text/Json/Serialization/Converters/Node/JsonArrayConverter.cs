@@ -3,14 +3,20 @@
 
 using System.Diagnostics;
 using System.Text.Json.Nodes;
+using System.Text.Json.Schema;
 
 namespace System.Text.Json.Serialization.Converters
 {
-    internal sealed class JsonArrayConverter : JsonConverter<JsonArray>
+    internal sealed class JsonArrayConverter : JsonConverter<JsonArray?>
     {
-        public override void Write(Utf8JsonWriter writer, JsonArray value, JsonSerializerOptions options)
+        public override void Write(Utf8JsonWriter writer, JsonArray? value, JsonSerializerOptions options)
         {
-            Debug.Assert(value != null);
+            if (value is null)
+            {
+                writer.WriteNullValue();
+                return;
+            }
+
             value.WriteTo(writer, options);
         }
 
@@ -19,17 +25,47 @@ namespace System.Text.Json.Serialization.Converters
             switch (reader.TokenType)
             {
                 case JsonTokenType.StartArray:
-                    return ReadList(ref reader, options.GetNodeOptions());
+                    return options.AllowDuplicateProperties
+                        ? ReadAsJsonElement(ref reader, options.GetNodeOptions())
+                        : ReadAsJsonNode(ref reader, options.GetNodeOptions());
+                case JsonTokenType.Null:
+                    return null;
                 default:
-                    Debug.Assert(false);
                     throw ThrowHelper.GetInvalidOperationException_ExpectedArray(reader.TokenType);
             }
         }
 
-        public JsonArray ReadList(ref Utf8JsonReader reader, JsonNodeOptions? options = null)
+        internal static JsonArray ReadAsJsonElement(ref Utf8JsonReader reader, JsonNodeOptions options)
         {
             JsonElement jElement = JsonElement.ParseValue(ref reader);
             return new JsonArray(jElement, options);
         }
+
+        internal static JsonArray ReadAsJsonNode(ref Utf8JsonReader reader, JsonNodeOptions options)
+        {
+            Debug.Assert(reader.TokenType == JsonTokenType.StartArray);
+
+            JsonArray jArray = new JsonArray(options);
+
+            while (reader.Read())
+            {
+                if (reader.TokenType == JsonTokenType.EndArray)
+                {
+                    return jArray;
+                }
+
+                JsonNode? item = JsonNodeConverter.ReadAsJsonNode(ref reader, options);
+                jArray.Add(item);
+            }
+
+            // JSON is invalid so reader would have already thrown.
+            Debug.Fail("End array token not found.");
+            ThrowHelper.ThrowJsonException();
+            return null;
+        }
+
+        internal override JsonValueType GetSupportedJsonValueTypes(JsonNumberHandling _) => JsonValueType.Array;
+
+        internal override JsonSchema? GetSchema(JsonNumberHandling _) => new() { Type = JsonSchemaType.Array };
     }
 }

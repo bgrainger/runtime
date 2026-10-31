@@ -8,7 +8,7 @@ using System.IO;
 
 namespace Microsoft.Extensions.DependencyModel.Resolution
 {
-    public class ReferenceAssemblyPathResolver: ICompilationAssemblyResolver
+    public class ReferenceAssemblyPathResolver : ICompilationAssemblyResolver
     {
         private readonly IFileSystem _fileSystem;
         private readonly string? _defaultReferenceAssembliesPath;
@@ -33,17 +33,17 @@ namespace Microsoft.Extensions.DependencyModel.Resolution
 
         internal ReferenceAssemblyPathResolver(IFileSystem fileSystem, string? defaultReferenceAssembliesPath, string[] fallbackSearchPaths)
         {
-            _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
+            ArgumentNullException.ThrowIfNull(fileSystem);
+            ArgumentNullException.ThrowIfNull(fallbackSearchPaths);
+
+            _fileSystem = fileSystem;
             _defaultReferenceAssembliesPath = defaultReferenceAssembliesPath;
-            _fallbackSearchPaths = fallbackSearchPaths ?? throw new ArgumentNullException(nameof(fallbackSearchPaths));
+            _fallbackSearchPaths = fallbackSearchPaths;
         }
 
         public bool TryResolveAssemblyPaths(CompilationLibrary library, List<string>? assemblies)
         {
-            if (library is null)
-            {
-                throw new ArgumentNullException(nameof(library));
-            }
+            ArgumentNullException.ThrowIfNull(library);
 
             if (!string.Equals(library.Type, "referenceassembly", StringComparison.OrdinalIgnoreCase))
             {

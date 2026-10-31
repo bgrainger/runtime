@@ -23,7 +23,6 @@ namespace System.Security.Cryptography
 
         public OpenSslCipherLite(
             IntPtr algorithm,
-            CipherMode cipherMode,
             int blockSizeInBytes,
             int paddingSizeInBytes,
             ReadOnlySpan<byte> key,
@@ -125,7 +124,7 @@ namespace System.Security.Cryptography
 
         public void Reset(ReadOnlySpan<byte> iv)
         {
-            bool status = Interop.Crypto.EvpCipherReset(_ctx);
+            bool status = Interop.Crypto.EvpCipherReset(_ctx, iv);
             CheckBoolReturn(status);
 
 #if DEBUG
@@ -140,11 +139,11 @@ namespace System.Security.Cryptography
 
         private int CipherUpdate(ReadOnlySpan<byte> input, Span<byte> output)
         {
-            Interop.Crypto.EvpCipherUpdate(
+            CheckBoolReturn(Interop.Crypto.EvpCipherUpdate(
                 _ctx,
                 output,
                 out int bytesWritten,
-                input);
+                input));
 
             return bytesWritten;
         }

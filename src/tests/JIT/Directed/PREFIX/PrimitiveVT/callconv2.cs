@@ -2,10 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-namespace PrimitiveVT
+using PrimitiveVT;
+using Xunit;
+namespace JitTest_Directed_PREFIX_PrimitiveVT_callconv2
 {
 
-    unsafe class CallConv2
+    public unsafe class CallConv2
     {
         public const int DefaultSeed = 20010415;
         public static int Seed = Environment.GetEnvironmentVariable("CORECLR_SEED") switch
@@ -35,7 +37,9 @@ namespace PrimitiveVT
         uint f10(params VT2B[] args) { uint sum = 0; for (uint i = 0; i < args.Length; sum += args[i], i++) { }; return sum; }
 
 
-        static int Main()
+        [OuterLoop]
+        [Fact]
+        public static int TestEntryPoint()
         {
             uint a = (uint)rand.Next();
 
@@ -122,4 +126,3 @@ namespace PrimitiveVT
     }
 
 }
-

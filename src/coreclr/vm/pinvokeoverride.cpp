@@ -27,10 +27,12 @@ namespace
 // here we handle PInvokes whose implementation is always statically linked (even in .so/.dll case)
 static const void* DefaultResolveDllImport(const char* libraryName, const char* entrypointName)
 {
+#ifndef TARGET_WASM
     if (strcmp(libraryName, GLOBALIZATION_DLL_NAME) == 0)
     {
         return GlobalizationResolveDllImport(entrypointName);
     }
+#endif // TARGET_WASM
 
     return nullptr;
 }
@@ -55,7 +57,7 @@ const void* PInvokeOverride::GetMethodImpl(const char* libraryName, const char* 
             const void* result = overrideImpl(libraryName, entrypointName);
             if (result != nullptr)
             {
-                LOG((LF_INTEROP, LL_INFO1000, "PInvoke overriden for: lib: %s, entry: %s \n", libraryName, entrypointName));
+                LOG((LF_INTEROP, LL_INFO1000, "PInvoke overridden for: lib: %s, entry: %s \n", libraryName, entrypointName));
                 return result;
             }
         }

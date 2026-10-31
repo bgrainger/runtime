@@ -40,12 +40,16 @@ public:
 		m_providerConfigsLen = providerConfigsLen;
 		if (m_providerConfigs) {
 			for (uint32_t i = 0; i < providerConfigsLen; ++i) {
+				ep_char8_t *providerName = ep_rt_utf16_to_utf8_string (reinterpret_cast<const ep_char16_t *>(providerConfigs[i].providerName));
+				ep_char8_t *filterData = ep_rt_utf16_to_utf8_string (reinterpret_cast<const ep_char16_t *>(providerConfigs[i].filterData));
 				ep_provider_config_init (
 					&m_providerConfigs[i],
-					ep_rt_utf16_to_utf8_string (reinterpret_cast<const ep_char16_t *>(providerConfigs[i].providerName), -1),
+					providerName,
 					providerConfigs[i].keywords,
 					static_cast<EventPipeEventLevel>(providerConfigs[i].loggingLevel),
-					ep_rt_utf16_to_utf8_string (reinterpret_cast<const ep_char16_t *>(providerConfigs[i].filterData), -1));
+					filterData);
+				ep_rt_utf8_string_free (providerName);
+				ep_rt_utf8_string_free (filterData);
 			}
 		}
 	}
@@ -54,10 +58,8 @@ public:
 	{
 		STATIC_CONTRACT_NOTHROW;
 		if (m_providerConfigs) {
-			for (uint32_t i = 0; i < m_providerConfigsLen; ++i) {
-				ep_rt_utf8_string_free ((ep_char8_t *)ep_provider_config_get_provider_name (&m_providerConfigs[i]));
-				ep_rt_utf8_string_free ((ep_char8_t *)ep_provider_config_get_filter_data (&m_providerConfigs[i]));
-			}
+			for (uint32_t i = 0; i < m_providerConfigsLen; ++i)
+				ep_provider_config_fini(&m_providerConfigs[i]);
 			delete [] m_providerConfigs;
 		}
 	}
@@ -213,8 +215,8 @@ public:
 
 		ep_char8_t *outputPathUTF8 = NULL;
 		if (outputPath)
-			outputPathUTF8 = ep_rt_utf16_to_utf8_string (reinterpret_cast<const ep_char16_t *>(outputPath), -1);
-		EventPipeSessionID result = ep_enable (
+			outputPathUTF8 = ep_rt_utf16_to_utf8_string (reinterpret_cast<const ep_char16_t *>(outputPath));
+		EventPipeSessionID result = ep_init_session (
 			outputPathUTF8,
 			circularBufferSizeInMB,
 			providerConfigs.GetProviderConfigs(),
@@ -252,7 +254,7 @@ public:
 		}
 		CONTRACTL_END;
 
-		ep_start_streaming(id);
+		ep_start_session(id);
 	}
 
 	static inline EventPipeSession * GetSession(EventPipeSessionID id)
@@ -261,11 +263,36 @@ public:
 		return ep_get_session(id);
 	}
 
-	static inline HANDLE GetWaitHandle(EventPipeSessionID id)
+	static inline bool SignalSession(EventPipeSessionID id)
 	{
 		STATIC_CONTRACT_NOTHROW;
-		return reinterpret_cast<HANDLE>(ep_get_wait_handle(id));
+
+		EventPipeSession *const session = ep_get_session (id);
+		if (!session)
+			return false;
+
+		return ep_rt_wait_event_set (ep_session_get_wait_event (session));
 	}
+
+	static inline bool WaitForSessionSignal(EventPipeSessionID id, INT32 timeoutMs)
+	{
+		STATIC_CONTRACT_NOTHROW;
+
+		EventPipeSession *const session = ep_get_session (id);
+		if (!session)
+			return false;
+
+		return !ep_rt_wait_event_wait (ep_session_get_wait_event (session), (uint32_t)timeoutMs, false) ? true : false;
+	}
+
+#if defined(TARGET_WASI) && defined(PERFTRACING_DISABLE_THREADS)
+	// Runs the queued EventPipe jobs; returns true if any remain queued.
+	static inline bool RunWasiJobs()
+	{
+		STATIC_CONTRACT_NOTHROW;
+		return ep_rt_coreclr_wasi_run_jobs ();
+	}
+#endif // TARGET_WASI && PERFTRACING_DISABLE_THREADS
 
 	static inline FILETIME GetSessionStartTime(EventPipeSession *session)
 	{
@@ -302,7 +329,7 @@ public:
 		ep_add_provider_to_session (provider, session);
 	}
 
-	static inline EventPipeProvider * CreateProvider(const SString &providerName, EventPipeCallback callback)
+	static inline EventPipeProvider * CreateProvider(const WCHAR* providerName, EventPipeCallback callback, void* callbackContext = nullptr)
 	{
 		CONTRACTL
 		{
@@ -312,8 +339,8 @@ public:
 		}
 		CONTRACTL_END;
 
-		ep_char8_t *providerNameUTF8 = ep_rt_utf16_to_utf8_string(reinterpret_cast<const ep_char16_t *>(providerName.GetUnicode ()), -1);
-		EventPipeProvider * provider = ep_create_provider (providerNameUTF8, callback, NULL, NULL);
+		ep_char8_t *providerNameUTF8 = ep_rt_utf16_to_utf8_string(reinterpret_cast<const ep_char16_t *>(providerName));
+		EventPipeProvider * provider = ep_create_provider (providerNameUTF8, callback, callbackContext);
 		ep_rt_utf8_string_free (providerNameUTF8);
 		return provider;
 	}
@@ -344,7 +371,7 @@ public:
 		if (!providerName)
 			return NULL;
 
-		ep_char8_t *providerNameUTF8 = ep_rt_utf16_to_utf8_string(reinterpret_cast<const ep_char16_t *>(providerName), -1);
+		ep_char8_t *providerNameUTF8 = ep_rt_utf16_to_utf8_string(reinterpret_cast<const ep_char16_t *>(providerName));
 		EventPipeProvider * provider = ep_get_provider (providerNameUTF8);
 		ep_rt_utf8_string_free(providerNameUTF8);
 		return provider;
@@ -369,7 +396,9 @@ public:
 			ep_provider_config_get_provider_name (&config[0]),
 			ep_provider_config_get_keywords (&config[0]),
 			(EventPipeEventLevel)ep_provider_config_get_logging_level (&config[0]),
-			ep_provider_config_get_filter_data (&config[0]));
+			ep_provider_config_get_filter_data (&config[0]),
+			NULL,
+			NULL);
 	}
 
 	static HRESULT GetProviderName(const EventPipeProvider *provider, ULONG numNameChars, ULONG *numNameCharsOut, LPWSTR name)
@@ -571,14 +600,14 @@ public:
 	static inline LPCGUID GetEventActivityID (EventPipeEventInstance *eventInstance)
 	{
 		STATIC_CONTRACT_NOTHROW;
-		static_assert(sizeof(GUID) == EP_ACTIVITY_ID_SIZE, "Size missmatch, sizeof(GUID) should be equal to EP_ACTIVITY_ID_SIZE");
+		static_assert(sizeof(GUID) == EP_ACTIVITY_ID_SIZE, "Size mismatch, sizeof(GUID) should be equal to EP_ACTIVITY_ID_SIZE");
 		return reinterpret_cast<LPCGUID>(ep_event_instance_get_activity_id_cref(eventInstance));
 	}
 
 	static inline LPCGUID GetEventRelativeActivityID (EventPipeEventInstance *eventInstance)
 	{
 		STATIC_CONTRACT_NOTHROW;
-		static_assert(sizeof(GUID) == EP_ACTIVITY_ID_SIZE, "Size missmatch, sizeof(GUID) should be equal to EP_ACTIVITY_ID_SIZE");
+		static_assert(sizeof(GUID) == EP_ACTIVITY_ID_SIZE, "Size mismatch, sizeof(GUID) should be equal to EP_ACTIVITY_ID_SIZE");
 		return reinterpret_cast<LPCGUID>(ep_event_instance_get_related_activity_id_cref(eventInstance));
 	}
 

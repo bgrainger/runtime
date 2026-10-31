@@ -1,4 +1,4 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
@@ -223,12 +223,12 @@ namespace Common.Tests.Tests.System.Net.aspnetcore.Http3
             MemorySegment<byte> memorySegment2 = memorySegment1.Append(new byte[] { 0, 0, 0, 0, 0, 0, 2 });
             ReadOnlySequence<byte> readOnlySequence = new ReadOnlySequence<byte>(
                 memorySegment1, 0, memorySegment2, memorySegment2.Memory.Length);
-            long result = VariableLengthIntegerHelper.GetInteger(readOnlySequence,
-                out SequencePosition consumed, out SequencePosition examined);
+            bool result = VariableLengthIntegerHelper.TryGetInteger(readOnlySequence,
+                out SequencePosition consumed, out long integer);
 
-            Assert.Equal(2, result);
+            Assert.True(result);
+            Assert.Equal(2, integer);
             Assert.Equal(7, consumed.GetInteger());
-            Assert.Equal(7, examined.GetInteger());
         }
 
         [Fact]
@@ -238,12 +238,11 @@ namespace Common.Tests.Tests.System.Net.aspnetcore.Http3
             MemorySegment<byte> memorySegment2 = memorySegment1.Append(new byte[] { 0, 0, 0, 0, 0, 2 });
             ReadOnlySequence<byte> readOnlySequence = new ReadOnlySequence<byte>(
                 memorySegment1, 0, memorySegment2, memorySegment2.Memory.Length);
-            long result = VariableLengthIntegerHelper.GetInteger(readOnlySequence,
-                out SequencePosition consumed, out SequencePosition examined);
+            bool result = VariableLengthIntegerHelper.TryGetInteger(readOnlySequence,
+                out SequencePosition consumed, out long integer);
 
-            Assert.Equal(-1, result);
+            Assert.False(result);
             Assert.Equal(0, consumed.GetInteger());
-            Assert.Equal(6, examined.GetInteger());
         }
 
         [Fact]
@@ -276,7 +275,7 @@ namespace Common.Tests.Tests.System.Net.aspnetcore.Http3
         [Theory]
         [InlineData(64, new byte[] { 64, 64 })]
         [InlineData(66, new byte[] { 64, 66 })]
-        [InlineData(16383, new byte[] { 127, 255})]
+        [InlineData(16383, new byte[] { 127, 255 })]
         public void TryWrite_BufferNotEmpty_TwoByteLimit(long longToEncode,
             byte[] expected)
         {
@@ -302,7 +301,7 @@ namespace Common.Tests.Tests.System.Net.aspnetcore.Http3
         }
 
         [Theory]
-        [InlineData(16384, new byte[] {128, 0, 64, 0})]
+        [InlineData(16384, new byte[] {128, 0, 64, 0 })]
         [InlineData(16386, new byte[] { 128, 0, 64, 2 })]
         [InlineData(1073741823, new byte[] { 191, 255, 255, 255 })]
         public void TryWrite_BufferNotEmpty_FourByteLimit(long longToEncode,

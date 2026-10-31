@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Collections.Generic;
 using NativeCallManagedComVisible;
 using Xunit;
+using TestLibrary;
 
 // Setting ComVisible to false makes the types in this assembly not visible
 // to COM components by default.  If you need to access a type in this assembly from
@@ -348,6 +349,9 @@ public sealed class ClassVisibleTrueServerNoGuid : IInterfaceVisibleTrue
     private int privateVal;
 }
 
+[ConditionalClass(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsNotNativeAot))]
+[PlatformSpecific(TestPlatforms.Windows)]
+[SkipOnMono("Requires COM support")]
 public class ComVisibleServer
 {
     /// <summary>
@@ -701,7 +705,10 @@ public class ComVisibleServer
     /// Test case set for ComVisible. The assembly is set as [assembly: ComVisible(false)]
     /// </summary>
     /// <returns></returns>
-    private static void RunComVisibleTests()
+    [ActiveIssue("Requires COM support, disabled on all Mono platforms", TestRuntimes.Mono)]
+    [Fact]
+    [Xunit.SkipOnCoreClrAttribute("Depends on marshalled calli", RuntimeTestModes.InterpreterActive)]
+    public static void RunComVisibleTests()
     {
         int fooSuccessVal = 0;
         //
@@ -998,18 +1005,11 @@ public class ComVisibleServer
         Assert.Equal<Guid>(new Guid("0ea2cb33-db9f-3655-9240-47ef1dea0f1e"), typeof(INestedInterfaceVisibleTrueNoGuid).GetTypeInfo().GUID);
     }
 
-    public static int Main()
+    [ActiveIssue("Requires COM support, disabled on all Mono platforms", TestRuntimes.Mono)]
+    [Fact]
+    [Xunit.SkipOnCoreClrAttribute("Depends on marshalled calli", RuntimeTestModes.InterpreterActive)]
+    public static void RunTestsInALC()
     {
-        try
-        {
-            RunComVisibleTests();
-
-            return 100;
-        }
-        catch (Exception e)
-        {
-            Console.WriteLine($"Test Failure: {e}");
-            return 101;
-        }
+        TestLibrary.Utilities.ExecuteAndUnload(typeof(ComVisibleServer).Assembly.Location, nameof(ComVisibleServer), nameof(RunComVisibleTests));
     }
 }

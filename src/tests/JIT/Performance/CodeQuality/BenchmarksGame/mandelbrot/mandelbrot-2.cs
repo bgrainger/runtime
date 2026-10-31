@@ -7,6 +7,7 @@
 // Best-scoring single-threaded C# .NET Core version as of 2017-09-01
 
 /* The Computer Language Benchmarks Game
+using TestLibrary;
    http://benchmarksgame.alioth.debian.org/
  *
  * Adapted by Antti Lankila from the earlier Isaac Gouy's implementation
@@ -14,17 +15,25 @@
 
 using System;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
+using Xunit;
 
 namespace BenchmarksGame
 {
     public class Mandelbrot_2
     {
-        public static int Main(String[] args)
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+        [Fact]
+        public static int TestEntryPoint()
         {
-            int width = 80;
-            if (args.Length > 0)
-                width = Int32.Parse(args[0]);
+            return Test(null);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static int Test(int? arg)
+        {
+            int width = arg ?? 80;
 
             int lineLen = (width - 1) / 8 + 1;
             var bytes = new byte[width * lineLen];

@@ -2,14 +2,14 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 #include "ijwhost.h"
-#include "hostfxr.h"
-#include "fxr_resolver.h"
-#include "pal.h"
-#include "trace.h"
-#include "error_codes.h"
-#include "utils.h"
+#include <coreclr_delegates.h>
+#include <hostfxr.h>
+#include <load_fxr_and_get_delegate.h>
+#include <pal.h>
+#include <trace.h>
+#include <error_codes.h>
+#include <utils.h>
 #include "bootstrap_thunk.h"
-
 
 #if defined(_WIN32)
 // IJW entry points are defined without the __declspec(dllexport) attribute.
@@ -20,17 +20,18 @@
 #define IJW_API SHARED_API
 #endif // _WIN32
 
-pal::hresult_t get_load_in_memory_assembly_delegate(pal::dll_t handle, load_in_memory_assembly_fn* delegate)
+pal::hresult_t get_load_in_memory_assembly_delegate(pal::dll_t handle, load_in_memory_assembly_fn* delegate, load_context_storage& load_context)
 {
-    return load_fxr_and_get_delegate(
-        hostfxr_delegate_type::hdt_load_in_memory_assembly,
+    get_function_pointer_fn get_function_pointer;
+    int status = load_fxr_and_get_delegate(
+        hostfxr_delegate_type::hdt_get_function_pointer,
         [handle](const pal::string_t& host_path, pal::string_t* config_path_out)
         {
             pal::string_t mod_path;
             if (!pal::get_module_path(handle, &mod_path))
             {
                 trace::error(_X("Failed to resolve full path of the current mixed-mode module [%s]"), host_path.c_str());
-                return StatusCode::LibHostCurExeFindFailure;
+                return StatusCode::CurrentHostFindFailure;
             }
 
             pal::string_t config_path_local { strip_file_ext(mod_path) };
@@ -39,8 +40,58 @@ pal::hresult_t get_load_in_memory_assembly_delegate(pal::dll_t handle, load_in_m
 
             return StatusCode::Success;
         },
-        delegate
+        [&load_context](pal::dll_t fxr, hostfxr_handle context)
+        {
+            constexpr const pal::char_t* isolated_context_property = _X("System.Runtime.InteropServices.CppCLI.LoadComponentInIsolatedContext");
+            constexpr const pal::char_t* identifier_property = _X("System.Runtime.InteropServices.CppCLI.LoadContextIdentifier");
+
+            auto get_runtime_property_value = reinterpret_cast<hostfxr_get_runtime_property_value_fn>(pal::get_symbol(fxr, "hostfxr_get_runtime_property_value"));
+            const pal::char_t* use_isolated_context;
+            bool has_isolated_context_prop = get_runtime_property_value(context, isolated_context_property, &use_isolated_context) == StatusCode::Success;
+            const pal::char_t* identifier;
+            bool has_identifier_prop = get_runtime_property_value(context, identifier_property, &identifier) == StatusCode::Success;
+            if (has_isolated_context_prop && has_identifier_prop)
+            {
+                trace::error(_X("%s and %s cannot both be set."), isolated_context_property, identifier_property);
+                return StatusCode::InvalidConfigFile;
+            }
+
+            if (has_isolated_context_prop)
+            {
+                load_context = pal::strcasecmp(use_isolated_context, _X("true")) == 0
+                    ? load_context_storage::create_isolated()
+                    : load_context_storage::create_default();
+            }
+            else if (has_identifier_prop)
+            {
+                if (identifier[0] == '\0')
+                {
+                    trace::error(_X("%s cannot be empty."), identifier_property);
+                    return StatusCode::InvalidConfigFile;
+                }
+
+                load_context = load_context_storage::create_named(identifier);
+            }
+            else
+            {
+                load_context = load_context_storage::create_default();
+            }
+
+            return StatusCode::Success;
+        },
+        reinterpret_cast<void**>(&get_function_pointer),
+        true // ignore missing config file if there's an active context
     );
+    if (status != StatusCode::Success)
+        return status;
+
+    return get_function_pointer(
+        _X("Internal.Runtime.InteropServices.InMemoryAssemblyLoader, System.Private.CoreLib"),
+        _X("LoadInMemoryAssemblyInContext"),
+        UNMANAGEDCALLERSONLY_METHOD,
+        nullptr, // load context
+        nullptr, // reserved
+        (void**)delegate);
 }
 
 IJW_API BOOL STDMETHODCALLTYPE _CorDllMain(HINSTANCE hInst,

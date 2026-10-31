@@ -10,16 +10,14 @@
 //*****************************************************************************
 
 #include "stdafx.h"
+#include "CLREventBase.h"
+#include <minipal/time.h>
 
 #include "safewrap.h"
 #include "check.h"
 
 #include <limits.h>
 #include "shimpriv.h"
-
-#if !defined(FEATURE_CORESYSTEM)
-#include <tlhelp32.h>
-#endif
 
 //---------------------------------------------------------------------------------------
 //
@@ -56,16 +54,15 @@ ShimProcess::ShimProcess() :
 
     m_machineInfo.Clear();
 
-    m_markAttachPendingEvent = WszCreateEvent(NULL, TRUE, FALSE, NULL);
-    if (m_markAttachPendingEvent == NULL)
+    if (!m_markAttachPendingEvent.CreateManualEventNoThrow(false))
     {
-        ThrowLastError();
+        ThrowOutOfMemory();
     }
 
-    m_terminatingEvent = WszCreateEvent(NULL, TRUE, FALSE, NULL);
-    if (m_terminatingEvent == NULL)
+    if (!m_terminatingEvent.CreateManualEventNoThrow(false))
     {
-        ThrowLastError();
+        m_markAttachPendingEvent.CloseEvent();
+        ThrowOutOfMemory();
     }
 }
 
@@ -86,17 +83,8 @@ ShimProcess::~ShimProcess()
     _ASSERTE(m_ShimProcessDisposeLock.IsInit());
     m_ShimProcessDisposeLock.Destroy();
 
-    if (m_markAttachPendingEvent != NULL)
-    {
-        CloseHandle(m_markAttachPendingEvent);
-        m_markAttachPendingEvent = NULL;
-    }
-
-    if (m_terminatingEvent != NULL)
-    {
-        CloseHandle(m_terminatingEvent);
-        m_terminatingEvent = NULL;
-    }
+    m_markAttachPendingEvent.CloseEvent();
+    m_terminatingEvent.CloseEvent();
 
     // Dtor will release m_pLiveDataTarget
 }
@@ -348,7 +336,7 @@ void ShimProcess::TrackFileHandleForDebugEvent(const DEBUG_EVENT * pEvent)
 //
 //    We do this in a new thread proc to avoid thread restrictions:
 //    Can't call this on win32 event thread because that can't send the IPC event to
-//    make the aysnc-break request.
+//    make the async-break request.
 //    Can't call this on the RCET because that can't send an async-break (see SendIPCEvent for details)
 //    So we just spin up a new thread to do the work.
 //---------------------------------------------------------------------------------------
@@ -793,6 +781,14 @@ HRESULT ShimProcess::HandleWin32DebugEvent(const DEBUG_EVENT * pEvent)
             }
         }
     }
+#ifdef OUT_OF_PROCESS_SETTHREADCONTEXT
+    else if (pEvent->dwDebugEventCode == CREATE_THREAD_DEBUG_EVENT || 
+            pEvent->dwDebugEventCode == EXIT_THREAD_DEBUG_EVENT ||
+            pEvent->dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT)
+    {
+        m_pProcess->HandleDebugEventForInPlaceStepping(pEvent);
+    }
+#endif
 
     // Do standard event handling, including Handling loader-breakpoint,
     // and callback into CordbProcess for Attach if needed.
@@ -870,9 +866,7 @@ HRESULT ShimProcess::HandleWin32DebugEvent(const DEBUG_EVENT * pEvent)
             DWORD fSkipResume = config.val(CLRConfig::UNSUPPORTED_DbgDontResumeThreadsOnUnhandledException);
             if (!fSkipResume)
             {
-                ::Sleep(500);
-                hrIgnore = GetNativePipeline()->EnsureThreadsRunning();
-                SIMPLIFYING_ASSUMPTION_SUCCEEDED(hrIgnore);
+                minipal_sleep(500);
             }
         }
     }
@@ -938,7 +932,7 @@ CordbWin32EventThread * ShimProcess::GetWin32EventThread()
 
 
 // Trivial accessor to mark whether we're interop-debugging.
-// Retreived via code:ShimProcess::IsInteropDebugging
+// Retrieved via code:ShimProcess::IsInteropDebugging
 void ShimProcess::SetIsInteropDebugging(bool fIsInteropDebugging)
 {
     m_fIsInteropDebugging = fIsInteropDebugging;
@@ -1020,9 +1014,6 @@ void ShimProcess::QueueFakeAttachEventsIfNeeded(bool fRealCreateProcessEvent)
 //    same order that V2 used. So without using platform-specific thread-enumeration,
 //    we can't get the V2 ordering.
 //
-//    Compare to code:ShimProcess::QueueFakeThreadAttachEventsNativeOrder,
-//    which sends threads in the OS native thread create order.
-//
 HRESULT ShimProcess::QueueFakeThreadAttachEventsNoOrder()
 {
     ICorDebugProcess * pProcess = GetProcess();
@@ -1062,136 +1053,6 @@ HRESULT ShimProcess::QueueFakeThreadAttachEventsNoOrder()
 }
 
 //---------------------------------------------------------------------------------------
-// Send fake Thread-create events for attach, using the order of the OS native
-// thread list.
-//
-// Returns:
-//    S_OK on success, else error.
-//
-// Notes:
-//    This sends fake thread-create events, ala V2 attach.
-//    See code:ShimProcess::QueueFakeAttachEvents for details
-//    The order of the thread creates matches the OS's native thread list.
-//    This is important because the debugger can use the order of thread-create
-//    callbacks to associate logical thread-ids (0,1,2...) with threads. Users
-//    may rely on thread 0 always being the main thread.
-//    In contrast, the order from ICorDebugProcess::EnumerateThreads is random.
-//
-//    Compare to code:ShimProcess::QueueFakeThreadAttachEventsNoOrder, which
-//    sends the threads in an arbitrary order.
-HRESULT ShimProcess::QueueFakeThreadAttachEventsNativeOrder()
-{
-#ifdef FEATURE_CORESYSTEM
-    _ASSERTE("NYI");
-    return E_FAIL;
-#else
-    ICorDebugProcess * pProcess = GetProcess();
-
-    DWORD dwProcessId;
-    HRESULT hr = pProcess->GetID(&dwProcessId);
-    SIMPLIFYING_ASSUMPTION_SUCCEEDED(hr);
-    if (FAILED(hr))
-    {
-        return hr;
-    }
-
-    HANDLE hThreadSnap = INVALID_HANDLE_VALUE;
-    THREADENTRY32 te32;
-
-    // Take a snapshot of all running threads
-    hThreadSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (hThreadSnap == INVALID_HANDLE_VALUE)
-    {
-        hr = HRESULT_FROM_GetLastError();
-        SIMPLIFYING_ASSUMPTION_SUCCEEDED(hr);
-        return hr;
-    }
-    // HandleHolder doesn't deal with INVALID_HANDLE_VALUE, so we only assign if we have a legal value.
-    HandleHolder hSnapshotHolder(hThreadSnap);
-
-    // Fill in the size of the structure before using it.
-    te32.dwSize = sizeof(THREADENTRY32);
-
-    // Retrieve information about the first thread, and exit if unsuccessful
-    if (!Thread32First(hThreadSnap, &te32))
-    {
-        hr = HRESULT_FROM_GetLastError();
-        return hr;
-    }
-
-    // Now walk the thread list of the system,
-    // and display information about each thread
-    // associated with the specified process
-    do
-    {
-        if (te32.th32OwnerProcessID == dwProcessId)
-        {
-            RSExtSmartPtr<ICorDebugThread> pThread;
-            pProcess->GetThread(te32.th32ThreadID, &pThread);
-            if (pThread != NULL)
-            {
-                // If we fail to get the appdomain for some reason, then then
-                // we can't dispatch this thread callback. But we can still
-                // finish enumerating.
-                RSExtSmartPtr<ICorDebugAppDomain> pAppDomain;
-                HRESULT hrGetAppDomain = pThread->GetAppDomain(&pAppDomain);
-                SIMPLIFYING_ASSUMPTION_SUCCEEDED(hrGetAppDomain);
-                if (pAppDomain != NULL)
-                {
-                    GetShimCallback()->CreateThread(pAppDomain, pThread);
-                    AddDuplicateCreationEvent(pThread);
-
-                    //fix for issue DevDiv2\DevDiv 77523 - threads are switched out in SQL don't get thread create notifications
-                    // mark that this thread has queued a create event
-                    CordbThread* pThreadInternal = static_cast<CordbThread*>(pThread.GetValue());
-                    pThreadInternal->SetCreateEventQueued();
-                }
-            }
-        }
-    } while(Thread32Next(hThreadSnap, &te32));
-
-
-    //fix for issue DevDiv2\DevDiv 77523 - threads are switched out in SQL don't get thread create notifications
-    //
-
-
-    // Threads which were switched out won't be present in the native thread order enumeration above.
-    // In order to not miss them we will enumerate all the managed thread objects and for any that we haven't
-    // already queued a notification for, we will queue a notification now.
-    RSExtSmartPtr<ICorDebugThreadEnum> pThreadEnum;
-    RSExtSmartPtr<ICorDebugThread> pThread;
-    hr = pProcess->EnumerateThreads(&pThreadEnum);
-    if (FAILED(hr))
-    {
-        return hr;
-    }
-
-    ULONG cDummy;
-
-    while(SUCCEEDED(pThreadEnum->Next(1, &pThread, &cDummy)) && (pThread != NULL))
-    {
-        RSExtSmartPtr<ICorDebugAppDomain> pAppDomain;
-        hr = pThread->GetAppDomain(&pAppDomain);
-        CordbThread* pThreadInternal = static_cast<CordbThread*>(pThread.GetValue());
-
-        // Getting the appdomain shouldn't fail. If it does, we can't dispatch
-        // this callback, but we can still dispatch the other thread creates.
-        SIMPLIFYING_ASSUMPTION_SUCCEEDED(hr);
-        if (pAppDomain != NULL && !pThreadInternal->CreateEventWasQueued())
-        {
-            GetShimCallback()->CreateThread(pAppDomain, pThread);
-            AddDuplicateCreationEvent(pThread);
-            pThreadInternal->SetCreateEventQueued();
-        }
-        pThread.Clear();
-    }
-
-
-    return S_OK;
-#endif
-}
-
-//---------------------------------------------------------------------------------------
 // Queues the fake Assembly and Module load events
 //
 // Arguments:
@@ -1214,43 +1075,14 @@ void ShimProcess::QueueFakeAssemblyAndModuleEvent(ICorDebugAssembly * pAssembly)
     GetShimCallback()->LoadAssembly(pAppDomain, pAssembly);
     AddDuplicateCreationEvent(pAssembly);
 
-    //
-    // Send Modules - must be in load order
-    //
-    RSExtSmartPtr<ICorDebugModuleEnum> pModuleEnum;
-    hr = pAssembly->EnumerateModules(&pModuleEnum);
-    SIMPLIFYING_ASSUMPTION_SUCCEEDED(hr);
-
-    ULONG countModules;
-    hr = pModuleEnum->GetCount(&countModules);
-    SIMPLIFYING_ASSUMPTION_SUCCEEDED(hr);
-
-    // ISSUE WORKAROUND 835869
-    // The CordbEnumFilter used as the implementation of CordbAssembly::EnumerateModules has
-    // a ref counting bug in it. It adds one ref to each item when it is constructed and never
-    // removes that ref. Expected behavior would be that it adds a ref at construction, another on
-    // every call to next, and releases the construction ref when the enumerator is destroyed. The
-    // user is expected to release the reference they receive from Next. Thus enumerating exactly
-    // one time and calling Release() does the correct thing regardless of whether this bug is present
-    // or not. Note that with the bug the enumerator holds 0 references at the end of this loop,
-    // however the assembly also holds references so the modules will not be prematurely released.
-    for(ULONG i = 0; i < countModules; i++)
+    BOOL isModuleLoaded;
+    CordbAssembly * pAssemblyInternal = static_cast<CordbAssembly *> (pAssembly);
+    VMPTR_Assembly vmAssembly = pAssemblyInternal->GetAssemblyPtr();
+    VMPTR_Module vmModule = VMPTR_Module::NullPtr();
+    static_cast<CordbProcess *>(m_pProcess)->GetDAC()->GetModuleForAssembly(vmAssembly, &vmModule, &isModuleLoaded);
+    if (isModuleLoaded)
     {
-        ICorDebugModule* pModule = NULL;
-        ULONG countFetched = 0;
-        pModuleEnum->Next(1, &pModule, &countFetched);
-        _ASSERTE(pModule != NULL);
-        if(pModule != NULL)
-        {
-            pModule->Release();
-        }
-    }
-
-    RSExtSmartPtr<ICorDebugModule> * pModules = new RSExtSmartPtr<ICorDebugModule> [countModules];
-    m_pProcess->GetModulesInLoadOrder(pAssembly, pModules, countModules);
-    for(ULONG iModule = 0; iModule < countModules; iModule++)
-    {
-        ICorDebugModule * pModule = pModules[iModule];
+        CordbModule * pModule = pAssemblyInternal->GetAppDomain()->LookupOrCreateModule(vmAssembly, vmModule);
 
         GetShimCallback()->FakeLoadModule(pAppDomain, pModule);
         AddDuplicateCreationEvent(pModule);
@@ -1268,11 +1100,10 @@ void ShimProcess::QueueFakeAssemblyAndModuleEvent(ICorDebugAssembly * pAssembly)
         // don't want people taking a dependency on a specific format (to give us the ability
         // to innovate for the RefEmit case).  So we must use a private hook here to get the
         // symbol data.
-        CordbModule * pCordbModule = static_cast<CordbModule *>(pModule);
         IDacDbiInterface::SymbolFormat symFormat = IDacDbiInterface::kSymbolFormatNone;
         EX_TRY
         {
-            symFormat = pCordbModule->GetInMemorySymbolStream(&pSymbolStream);
+            symFormat = pModule->GetInMemorySymbolStream(&pSymbolStream);
         }
         EX_CATCH_HRESULT(hr);
         SIMPLIFYING_ASSUMPTION_SUCCEEDED(hr);   // Shouldn't be any errors trying to read symbols
@@ -1285,9 +1116,7 @@ void ShimProcess::QueueFakeAssemblyAndModuleEvent(ICorDebugAssembly * pAssembly)
             _ASSERTE(pSymbolStream != NULL);    // symFormat should have been kSymbolFormatNone if null stream
             GetShimCallback()->UpdateModuleSymbols(pAppDomain, pModule, pSymbolStream);
         }
-
     }
-    delete [] pModules;
 }
 
 //---------------------------------------------------------------------------------------
@@ -1476,15 +1305,9 @@ void ShimProcess::QueueFakeAttachEvents()
     //
     // Third, Queue all Threads
     //
-#if !defined(FEATURE_DBGIPC_TRANSPORT_DI) && !defined(FEATURE_CORESYSTEM)
-    // Use OS thread enumeration facilities to ensure that the managed thread
-    // thread order is the same as the corresponding native thread order.
-    QueueFakeThreadAttachEventsNativeOrder();
-#else
     // Use ICorDebug to enumerate threads. The order of managed threads may
     // not match the order the threads were created in.
     QueueFakeThreadAttachEventsNoOrder();
-#endif
 
     // Forth, Queue all Connections.
     // Enumerate connections is not exposed through ICorDebug, so we need to go use a private hook on CordbProcess.
@@ -1708,7 +1531,7 @@ void ShimProcess::PreDispatchEvent(bool fRealCreateProcessEvent /*= false*/)
         // Remember that we're processing the first managed event so that we only call HandleFirstRCEvent() once
         m_fFirstManagedEvent = true;
 
-        // This can fail with the incompatable version HR. The process has already been terminated if this
+        // This can fail with the incompatible version HR. The process has already been terminated if this
         // is the case. This will dispatch an Error callback
         // If this fails, the process is in an undefined state.
         // @dbgtodo ipc-block: this will go away once we get rid
@@ -1730,86 +1553,6 @@ void ShimProcess::PreDispatchEvent(bool fRealCreateProcessEvent /*= false*/)
 
 }
 
-// ----------------------------------------------------------------------------
-// ShimProcess::GetCLRInstanceBaseAddress
-// Finds the base address of [core]clr.dll
-// Arguments: none
-// Return value: returns the base address of [core]clr.dll if possible or NULL otherwise
-//
-CORDB_ADDRESS ShimProcess::GetCLRInstanceBaseAddress()
-{
-    CORDB_ADDRESS baseAddress = CORDB_ADDRESS(NULL);
-    DWORD dwPid = m_pLiveDataTarget->GetPid();
-
-#if defined(FEATURE_CORESYSTEM)
-    // Debugger attaching to CoreCLR via CoreCLRCreateCordbObject should have already specified CLR module address.
-    // Code that help to find it now lives in dbgshim.
-#else
-    // get a "snapshot" of all modules in the target
-    HandleHolder hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, dwPid);
-    MODULEENTRY32 moduleEntry = { 0 };
-
-    if (hSnapshot == INVALID_HANDLE_VALUE)
-    {
-        // we haven't got a loaded CLR yet
-        baseAddress = CORDB_ADDRESS(NULL);
-    }
-    else
-    {
-        // we need to loop through the modules until we find mscorwks.dll
-        moduleEntry.dwSize = sizeof(MODULEENTRY32);
-
-        if (!Module32First(hSnapshot, &moduleEntry))
-        {
-            baseAddress = CORDB_ADDRESS(NULL);
-        }
-        else
-        {
-
-            do
-            {
-                if (!_wcsicmp(moduleEntry.szModule, MAKEDLLNAME_W(MAIN_CLR_MODULE_NAME_W)))
-                {
-                    // we found it, so save the base address
-                    baseAddress = PTR_TO_CORDB_ADDRESS(moduleEntry.modBaseAddr);
-                }
-            } while (Module32Next(hSnapshot, &moduleEntry));
-        }
-    }
-#endif
-    return baseAddress;
-} // ShimProcess::GetCLRInstanceBaseAddress
-
-// ----------------------------------------------------------------------------
-// ShimProcess::FindLoadedCLR
-//
-// Description:
-//    Look for any CLR loaded into the process.  If found, return the instance ID for it.
-//
-// Arguments:
-//    * pClrInstanceId - out parameter for the instance ID of the CLR
-//
-// Return Value:
-//    Returns S_OK if a CLR was found, and stores its instance ID in pClrInstanceId.
-//    Otherwise returns an error code.
-//
-// Notes:
-//    If there are multiple CLRs loaded in the process, the one chosen for the returned
-//    instance ID is unspecified.
-//
-HRESULT ShimProcess::FindLoadedCLR(CORDB_ADDRESS * pClrInstanceId)
-{
-    *pClrInstanceId = GetCLRInstanceBaseAddress();
-
-    if (*pClrInstanceId == 0)
-    {
-        return E_UNEXPECTED;
-    }
-
-    return S_OK;
-}
-
-
 //---------------------------------------------------------------------------------------
 //
 // Locates DAC by finding mscordac{wks|core} next to DBI
@@ -1819,28 +1562,26 @@ HRESULT ShimProcess::FindLoadedCLR(CORDB_ADDRESS * pClrInstanceId)
 //    Throws on errors.
 //
 
-HMODULE ShimProcess::GetDacModule()
+HMODULE ShimProcess::GetDacModule(PathString& dacModulePath)
 {
-    HModuleHolder hDacDll;
-    PathString wszAccessDllPath;
+    HMODULE hDacDll;
+    PathString wszAccessDllPath(dacModulePath);
 
-    //
-    // Load the access DLL from the same directory as the the current CLR Debugging Services DLL.
-    //
-    if (GetClrModuleDirectory(wszAccessDllPath) != S_OK)
+    if (wszAccessDllPath.IsEmpty())
     {
-        ThrowLastError();
+        //
+        // Load the access DLL from the same directory as the current CLR Debugging Services DLL.
+        //
+        if (GetClrModuleDirectory(wszAccessDllPath) != S_OK)
+        {
+            ThrowLastError();
+        }
+
+        PCWSTR eeFlavor = MAKEDLLNAME_W(W("mscordaccore"));
+        wszAccessDllPath.Append(eeFlavor);
     }
-
-    // Dac Dll is named:
-    //   mscordaccore.dll  <-- coreclr
-    //   mscordacwks.dll   <-- desktop
-    PCWSTR eeFlavor = MAKEDLLNAME_W(W("mscordaccore"));
-
-    wszAccessDllPath.Append(eeFlavor);
-
-    hDacDll.Assign(WszLoadLibrary(wszAccessDllPath));
-    if (!hDacDll)
+    hDacDll = WszLoadLibrary(wszAccessDllPath);
+    if (hDacDll == NULL)
     {
         DWORD dwLastError = GetLastError();
         if (dwLastError == ERROR_MOD_NOT_FOUND)
@@ -1853,8 +1594,7 @@ HMODULE ShimProcess::GetDacModule()
             ThrowWin32(dwLastError);
         }
     }
-    hDacDll.SuppressRelease();
-    return (HMODULE) hDacDll;
+    return hDacDll;
 }
 
 MachineInfo ShimProcess::GetMachineInfo()
@@ -1864,12 +1604,12 @@ MachineInfo ShimProcess::GetMachineInfo()
 
 void ShimProcess::SetMarkAttachPendingEvent()
 {
-    SetEvent(m_markAttachPendingEvent);
+    m_markAttachPendingEvent.Set();
 }
 
 void ShimProcess::SetTerminatingEvent()
 {
-    SetEvent(m_terminatingEvent);
+    m_terminatingEvent.Set();
 }
 
 RSLock * ShimProcess::GetShimLock()
@@ -1881,4 +1621,13 @@ RSLock * ShimProcess::GetShimLock()
 bool ShimProcess::IsThreadSuspendedOrHijacked(ICorDebugThread * pThread)
 {
     return m_pProcess->IsThreadSuspendedOrHijacked(pThread);
+}
+
+bool ShimProcess::IsUnmanagedThreadHijacked(ICorDebugThread * pThread)
+{
+#ifdef FEATURE_INTEROP_DEBUGGING
+    return m_pProcess->IsUnmanagedThreadHijacked(pThread);
+#else
+    return false;
+#endif
 }

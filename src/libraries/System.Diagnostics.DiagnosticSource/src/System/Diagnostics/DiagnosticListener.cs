@@ -1,9 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Threading;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Threading;
 
 namespace System.Diagnostics
 {
@@ -23,7 +23,7 @@ namespace System.Diagnostics
     /// will fire for every live DiagnosticListener in the appdomain (past or present).
     ///
     /// Please See the DiagnosticSource Users Guide
-    /// https://github.com/dotnet/corefx/blob/master/src/System.Diagnostics.DiagnosticSource/src/DiagnosticSourceUsersGuide.md
+    /// https://github.com/dotnet/runtime/blob/main/src/libraries/System.Diagnostics.DiagnosticSource/src/DiagnosticSourceUsersGuide.md
     /// for instructions on its use.
     /// </summary>
     public partial class DiagnosticListener : DiagnosticSource, IObservable<KeyValuePair<string, object?>>, IDisposable
@@ -107,9 +107,13 @@ namespace System.Diagnostics
         /// </param>
         public virtual IDisposable Subscribe(IObserver<KeyValuePair<string, object?>> observer, Func<string, object?, object?, bool>? isEnabled)
         {
-            return isEnabled == null ?
-             SubscribeInternal(observer, null, null, null, null) :
-             SubscribeInternal(observer, name => IsEnabled(name, null, null), isEnabled, null, null);
+            if (isEnabled == null)
+            {
+                return SubscribeInternal(observer, null, null, null, null);
+            }
+
+            Func<string, object?, object?, bool> localIsEnabled = isEnabled;
+            return SubscribeInternal(observer, name => localIsEnabled(name, null, null), isEnabled, null, null);
         }
 
         /// <summary>
@@ -183,7 +187,7 @@ namespace System.Diagnostics
 
             // Indicate completion to all subscribers.
             DiagnosticSubscription? subscriber = null;
-            Interlocked.Exchange(ref subscriber, _subscriptions);
+            subscriber = Interlocked.Exchange(ref _subscriptions, subscriber);
             while (subscriber != null)
             {
                 subscriber.Observer.OnCompleted();
@@ -195,7 +199,7 @@ namespace System.Diagnostics
         /// <summary>
         /// When a DiagnosticListener is created it is given a name.   Return this.
         /// </summary>
-        public string Name { get; private set; }
+        public string Name { get; }
 
         /// <summary>
         /// Return the name for the ToString() to aid in debugging.
@@ -325,7 +329,7 @@ namespace System.Diagnostics
                 for (int i = 0; i < 100; i++)
                     GC.KeepAlive("");
 #endif
-                return new DiagnosticSubscription() { Observer = subscriptions.Observer, Owner = subscriptions.Owner, IsEnabled1Arg = subscriptions.IsEnabled1Arg, IsEnabled3Arg = subscriptions.IsEnabled3Arg, Next = Remove(subscriptions.Next, subscription) };
+                return new DiagnosticSubscription() { Observer = subscriptions.Observer, Owner = subscriptions.Owner, IsEnabled1Arg = subscriptions.IsEnabled1Arg, IsEnabled3Arg = subscriptions.IsEnabled3Arg, OnActivityImport = subscriptions.OnActivityImport, OnActivityExport = subscriptions.OnActivityExport, Next = Remove(subscriptions.Next, subscription) };
             }
         }
 
@@ -426,7 +430,7 @@ namespace System.Diagnostics
         }
         #endregion
 
-        private IDisposable SubscribeInternal(IObserver<KeyValuePair<string, object?>> observer,
+        private DiagnosticSubscription SubscribeInternal(IObserver<KeyValuePair<string, object?>> observer,
             Predicate<string>? isEnabled1Arg, Func<string, object?, object?, bool>? isEnabled3Arg,
             Action<Activity, object?>? onActivityImport, Action<Activity, object?>? onActivityExport)
         {

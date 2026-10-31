@@ -7,9 +7,10 @@
 // Best-scoring single-threaded C# .NET Core version as of 2017-09-01
 
 /* The Computer Language Benchmarks Game
+using TestLibrary;
    http://benchmarksgame.alioth.debian.org/
- * 
- * regex-dna program contributed by Isaac Gouy 
+ *
+ * regex-dna program contributed by Isaac Gouy
  * converted from regex-dna program
  *
 */
@@ -17,12 +18,15 @@
 using System;
 using System.IO;
 using System.Text.RegularExpressions;
+using Xunit;
 
 namespace BenchmarksGame
 {
     public class RegexRedux_1
     {
-        static int Main(string[] args)
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+        [Fact]
+        public static int TestEntryPoint()
         {
             var helpers = new TestHarnessHelpers(bigInput: false);
 

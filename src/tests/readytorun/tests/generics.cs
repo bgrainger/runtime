@@ -9,10 +9,14 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
+using Xunit;
+using TestLibrary;
 
-class Program
+public class Program
 {
-    static int Main()
+    [ActiveIssue("These tests are not supposed to be run with mono.", TestRuntimes.Mono)]
+    [Fact]
+    public static int TestEntryPoint()
     {
         // Run all tests 3x times to exercise both slow and fast paths work
         for (int i = 0; i < 3; i++)
@@ -58,6 +62,334 @@ class Program
         TestMDArrayAddressMethod.Run();
         TestNativeLayoutGeneration.Run();
         TestByRefLikeVTables.Run();
+        TestSignatureDependencyPreparation.Run();
+    }
+
+    public static class TestSignatureDependencyPreparation
+    {
+        public sealed class Marker
+        {
+            public int Value;
+        }
+
+        public struct ReferenceValue
+        {
+            public Marker Reference;
+        }
+
+        public struct NestedValue<T>
+        {
+            public ReferenceValue Reference;
+            public T Value;
+        }
+
+        public interface IColdTransform
+        {
+            ReferenceValue Transform(ReferenceValue value);
+        }
+
+        public sealed class ColdReferenceTransform : IColdTransform
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            public ReferenceValue Transform(ReferenceValue value)
+            {
+                GC.Collect(2, GCCollectionMode.Forced, true, true);
+                return value;
+            }
+        }
+
+        public struct ColdValueTransform : IColdTransform
+        {
+            public Marker State;
+
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            public ReferenceValue Transform(ReferenceValue value)
+            {
+                GC.Collect(2, GCCollectionMode.Forced, true, true);
+                Assert.AreEqual(12345, State.Value);
+                return value;
+            }
+        }
+
+        public class InheritedTransform
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            public ReferenceValue Transform(ReferenceValue value)
+            {
+                GC.Collect(2, GCCollectionMode.Forced, true, true);
+                return value;
+            }
+        }
+
+        public sealed class DerivedInheritedTransform : InheritedTransform, IColdTransform
+        {
+        }
+
+        public interface IDefaultTransform<T> : IColdTransform
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            ReferenceValue IColdTransform.Transform(ReferenceValue value)
+            {
+                GC.Collect(2, GCCollectionMode.Forced, true, true);
+                Assert.AreEqual(typeof(T), typeof(string));
+                return value;
+            }
+        }
+
+        public sealed class DefaultTransform : IDefaultTransform<string>
+        {
+        }
+
+        public class DispatchResult
+        {
+            public Marker Reference;
+        }
+
+        public sealed class DerivedDispatchResult : DispatchResult
+        {
+        }
+
+        public class CovariantBase
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            public virtual object Transform(ReferenceValue value) => value.Reference;
+        }
+
+        public class CovariantMiddle : CovariantBase
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            public override DispatchResult Transform(ReferenceValue value) => new DispatchResult { Reference = value.Reference };
+        }
+
+        public sealed class CovariantLeaf : CovariantMiddle
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            public override DerivedDispatchResult Transform(ReferenceValue value)
+            {
+                GC.Collect(2, GCCollectionMode.Forced, true, true);
+                return new DerivedDispatchResult { Reference = value.Reference };
+            }
+        }
+
+        public struct LargeValue
+        {
+            public Marker First;
+            public Marker Second;
+            public Marker Third;
+        }
+
+        public interface ILargeTransform
+        {
+            LargeValue Transform(LargeValue value);
+        }
+
+        public struct LargeValueTransform : ILargeTransform
+        {
+            public Marker State;
+
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            public LargeValue Transform(LargeValue value)
+            {
+                GC.Collect(2, GCCollectionMode.Forced, true, true);
+                Assert.AreEqual(12345, State.Value);
+                return value;
+            }
+        }
+
+        public interface ITransform<T>
+        {
+            T Transform(T value);
+        }
+
+        public class ReferenceTransform<T> : ITransform<T>
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            public virtual T Transform(T value)
+            {
+                GC.Collect(2, GCCollectionMode.Forced, true, true);
+                return value;
+            }
+        }
+
+        public struct ValueTransform<T> : ITransform<T>
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            public T Transform(T value)
+            {
+                GC.Collect(2, GCCollectionMode.Forced, true, true);
+                return value;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static ReferenceValue RoundTrip(ReferenceValue value)
+        {
+            GC.Collect(2, GCCollectionMode.Forced, true, true);
+            return value;
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static NestedValue<T> RoundTripGeneric<T>(NestedValue<T> value)
+        {
+            GC.Collect(2, GCCollectionMode.Forced, true, true);
+            return value;
+        }
+
+        private static class GenericTarget<T>
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            internal static NestedValue<T> RoundTrip(NestedValue<T> value)
+            {
+                GC.Collect(2, GCCollectionMode.Forced, true, true);
+                Assert.AreEqual(typeof(T), typeof(string));
+                return value;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static T InvokeInterface<T>(ITransform<T> target, T value)
+        {
+            return target.Transform(value);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static T InvokeConstrained<TTarget, T>(TTarget target, T value) where TTarget : struct, ITransform<T>
+        {
+            return target.Transform(value);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static Marker CreateMarker()
+        {
+            return new Marker { Value = 12345 };
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static LargeValue RoundTripManyArguments(
+            Marker first, Marker second, Marker third, Marker fourth, Marker fifth, Marker sixth,
+            Marker seventh, Marker eighth, Marker ninth, Marker tenth, ref Marker reference, LargeValue value)
+        {
+            GC.Collect(2, GCCollectionMode.Forced, true, true);
+            Assert.AreEqual(12345, first.Value);
+            Assert.AreEqual(12345, second.Value);
+            Assert.AreEqual(12345, third.Value);
+            Assert.AreEqual(12345, fourth.Value);
+            Assert.AreEqual(12345, fifth.Value);
+            Assert.AreEqual(12345, sixth.Value);
+            Assert.AreEqual(12345, seventh.Value);
+            Assert.AreEqual(12345, eighth.Value);
+            Assert.AreEqual(12345, ninth.Value);
+            Assert.AreEqual(12345, tenth.Value);
+            Assert.AreEqual(12345, reference.Value);
+            reference = value.Third;
+
+            return value;
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static void RunColdInterface(IColdTransform target)
+        {
+            ReferenceValue result = target.Transform(new ReferenceValue { Reference = CreateMarker() });
+            Assert.AreEqual(12345, result.Reference.Value);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static void RunCovariantBase(CovariantBase target)
+        {
+            DispatchResult result = (DispatchResult)target.Transform(new ReferenceValue { Reference = CreateMarker() });
+            Assert.AreEqual(12345, result.Reference.Value);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static void RunCovariantMiddle(CovariantMiddle target)
+        {
+            DispatchResult result = target.Transform(new ReferenceValue { Reference = CreateMarker() });
+            Assert.AreEqual(12345, result.Reference.Value);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static void RunLargeInterface(ILargeTransform target)
+        {
+            LargeValue result = target.Transform(new LargeValue
+            {
+                First = CreateMarker(),
+                Second = CreateMarker(),
+                Third = CreateMarker()
+            });
+            Assert.AreEqual(12345, result.First.Value);
+            Assert.AreEqual(12345, result.Second.Value);
+            Assert.AreEqual(12345, result.Third.Value);
+        }
+
+        public static unsafe void Run()
+        {
+            RunColdInterface(new ColdReferenceTransform());
+            ColdValueTransform valueTarget = new ColdValueTransform { State = CreateMarker() };
+            RunColdInterface(valueTarget);
+            Assert.AreEqual(12345, valueTarget.Transform(new ReferenceValue { Reference = CreateMarker() }).Reference.Value);
+            RunColdInterface(new DerivedInheritedTransform());
+            RunColdInterface(new DefaultTransform());
+            RunCovariantBase(new CovariantLeaf());
+            RunCovariantMiddle(new CovariantLeaf());
+            LargeValueTransform largeTarget = new LargeValueTransform { State = CreateMarker() };
+            RunLargeInterface(largeTarget);
+            Assert.AreEqual(12345, largeTarget.Transform(new LargeValue { First = CreateMarker() }).First.Value);
+
+            Assert.AreEqual(true, RoundTrip(default).Reference is null);
+            Assert.AreEqual(true, RoundTripGeneric<string>(default).Reference.Reference is null);
+            Assert.AreEqual(0, RoundTripGeneric<int>(default).Value);
+
+            Marker marker = CreateMarker();
+            NestedValue<string> genericValue = new NestedValue<string>
+            {
+                Reference = new ReferenceValue { Reference = marker },
+                Value = "generic context"
+            };
+            NestedValue<string> genericResult = GenericTarget<string>.RoundTrip(genericValue);
+            Assert.AreEqual(marker, genericResult.Reference.Reference);
+            Assert.AreEqual("generic context", genericResult.Value);
+            genericResult = RoundTripGeneric(genericValue);
+            Assert.AreEqual(marker, genericResult.Reference.Reference);
+            Assert.AreEqual("generic context", genericResult.Value);
+            ReferenceValue value = new ReferenceValue { Reference = marker };
+            Assert.AreEqual(marker, RoundTrip(value).Reference);
+
+            Func<ReferenceValue, ReferenceValue> callback = RoundTrip;
+            Assert.AreEqual(marker, callback(value).Reference);
+            delegate* managed<ReferenceValue, ReferenceValue> pointer = &RoundTrip;
+            Assert.AreEqual(marker, pointer(value).Reference);
+
+            NestedValue<int> nested = new NestedValue<int> { Reference = value, Value = 37 };
+            NestedValue<int> result = RoundTripGeneric(nested);
+            Assert.AreEqual(marker, result.Reference.Reference);
+            Assert.AreEqual(37, result.Value);
+
+            ReferenceTransform<NestedValue<int>> target = new ReferenceTransform<NestedValue<int>>();
+            result = target.Transform(nested);
+            Assert.AreEqual(marker, result.Reference.Reference);
+            result = InvokeInterface(target, nested);
+            Assert.AreEqual(marker, result.Reference.Reference);
+            Assert.AreEqual(37, result.Value);
+
+            result = InvokeConstrained<ValueTransform<NestedValue<int>>, NestedValue<int>>(default, nested);
+            Assert.AreEqual(marker, result.Reference.Reference);
+            Assert.AreEqual(37, result.Value);
+            Assert.AreEqual(12345, marker.Value);
+            Assert.AreEqual(marker, InvokeInterface<object>(new ReferenceTransform<object>(), marker));
+            Assert.AreEqual(marker, InvokeInterface<object>(new ValueTransform<object>(), marker));
+
+            for (int i = 0; i < 16; i++)
+            {
+                Marker reference = CreateMarker();
+                LargeValue manyArguments = RoundTripManyArguments(
+                    CreateMarker(), CreateMarker(), CreateMarker(), CreateMarker(), CreateMarker(),
+                    CreateMarker(), CreateMarker(), CreateMarker(), CreateMarker(), CreateMarker(), ref reference,
+                    new LargeValue { First = CreateMarker(), Second = CreateMarker(), Third = CreateMarker() });
+                Assert.AreEqual(12345, manyArguments.First.Value);
+                Assert.AreEqual(12345, manyArguments.Second.Value);
+                Assert.AreEqual(reference, manyArguments.Third);
+            }
+        }
     }
 
     static void RunTest1()
@@ -175,6 +507,11 @@ class Program
 
         GenBase<MyIdClass0, int>.GetFieldsTest(fobj1, "MyIdClass0=1", "MyIdClass0=2", "MyIdClass0=3", 1, 2, 3);
         GenBase<MyIdClass1, int>.GetFieldsTest(fobj2, "MyIdClass1=1", "MyIdClass1=2", "MyIdClass1=3", 1, 2, 3);
+
+        if (!PlatformDetection.IsMultithreadingSupported)
+        {
+            return;
+        }
 
         Thread t = new Thread(new ThreadStart(() =>
         {
@@ -1045,7 +1382,7 @@ class Program
                     s_NumErrors++;
             }
 
-            // Uncomment when we have the type loader to buld invoke stub dictionaries.
+            // Uncomment when we have the type loader to build invoke stub dictionaries.
             {
                 MethodInfo mi = typeof(Foo<string>).GetMethod("SetAndCheck").MakeGenericMethod(typeof(object));
                 if ((bool)mi.Invoke(o, new object[] { 123, new object() }))
@@ -1147,9 +1484,8 @@ class Program
                 Verify("DerivedClass2.GVMethod3", gvm3.Invoke(new DerivedClass2<string>(), new[] { "", "" }));
                 Verify("DerivedClass2.GVMethod4", gvm4.Invoke(new DerivedClass2<string>(), new[] { "", "" }));
 
-                // BaseClass<int>.Method1 has the same slot as BaseClass<float>.Method3 on CoreRT, because vtable entries
+                // BaseClass<int>.Method1 has the same slot as BaseClass<float>.Method3 on NativeAOT, because vtable entries
                 // get populated on demand (the first type won't get a Method3 entry, and the latter won't get a Method1 entry)
-                // On ProjectN, both types will get vtable entries for both methods.
                 new BaseClass<int>().Method1(1);
                 m1 = typeof(BaseClass<int>).GetMethod("Method1");
                 Verify("BaseClass.Method1", m1.Invoke(new BaseClass<int>(), new object[] { (int)1 }));
@@ -2991,7 +3327,7 @@ public class GenBase<T, U> : IFoo<T> where T : new()
         var f = new MyGenClass3<T>[5,13];
         return "NewTest - " + a + " - " + b + " - " + c + " - " + d + " - " + e + " - " + f;
     }
-    
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     public string BoxingAndNullableTest(MyGenClass1<KeyValuePair<T,U>> t, MyGenStruct1<Dictionary<T,U>> u, MyGenStruct1<Dictionary<T,U>>? u2)
     {

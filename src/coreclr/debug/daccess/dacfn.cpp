@@ -17,27 +17,11 @@
 
 #include "gcinterface.h"
 #include "gcinterface.dac.h"
-
-DacTableInfo g_dacTableInfo;
-DacGlobals g_dacGlobals;
-
 struct DacHostVtPtrs
 {
 #define VPTR_CLASS(name) PVOID name;
-#define VPTR_MULTI_CLASS(name, keyBase) PVOID name##__##keyBase;
 #include <vptr_list.h>
 #undef VPTR_CLASS
-#undef VPTR_MULTI_CLASS
-};
-
-
-const WCHAR *g_dacVtStrings[] =
-{
-#define VPTR_CLASS(name) W(#name),
-#define VPTR_MULTI_CLASS(name, keyBase) W(#name),
-#include <vptr_list.h>
-#undef VPTR_CLASS
-#undef VPTR_MULTI_CLASS
 };
 
 DacHostVtPtrs g_dacHostVtPtrs;
@@ -47,11 +31,8 @@ DacGetHostVtPtrs(void)
 {
 #define VPTR_CLASS(name) \
     g_dacHostVtPtrs.name = name::VPtrHostVTable();
-#define VPTR_MULTI_CLASS(name, keyBase) \
-    g_dacHostVtPtrs.name##__##keyBase = name::VPtrHostVTable();
 #include <vptr_list.h>
 #undef VPTR_CLASS
-#undef VPTR_MULTI_CLASS
 
     return S_OK;
 }
@@ -68,12 +49,14 @@ DacExceptionFilter(Exception* ex, ClrDataAccess* access,
     // other than an unexpected SEH exception.
     // If we're not debugging, handle SEH exceptions also
     // so that dac absorbs all exceptions by default.
+#ifdef TARGET_WINDOWS
     if ((access && access->m_debugMode) &&
         ex->IsType(SEHException::GetType()))
     {
         // Indicate this exception should be rethrown.
         return FALSE;
     }
+#endif // TARGET_WINDOWS
 
     // Indicate this exception is handled.
     // XXX Microsoft - The C++-based EH has broken the ability
@@ -89,7 +72,7 @@ DacExceptionFilter(Exception* ex, ClrDataAccess* access,
 }
 
 void __cdecl
-DacWarning(__in char* format, ...)
+DacWarning(_In_ char* format, ...)
 {
     char text[256];
     va_list args;
@@ -133,6 +116,18 @@ DacGlobalBase(void)
     return g_dacImpl->m_globalBase;
 }
 
+DacGlobals*
+DacGlobalValues(void)
+{
+    if (!g_dacImpl)
+    {
+        DacError(E_UNEXPECTED);
+        UNREACHABLE();
+    }
+
+    return &g_dacImpl->m_dacGlobals;
+}
+
 HRESULT
 DacReadAll(TADDR addr, PVOID buffer, ULONG32 size, bool throwEx)
 {
@@ -153,7 +148,7 @@ DacReadAll(TADDR addr, PVOID buffer, ULONG32 size, bool throwEx)
     ULONG32 returned;
 
 #if defined(DAC_MEASURE_PERF)
-    unsigned __int64  nStart, nEnd;
+    uint64_t  nStart, nEnd;
     nStart = GetCycleCount();
 #endif // #if defined(DAC_MEASURE_PERF)
 
@@ -210,87 +205,6 @@ DacWriteAll(TADDR addr, PVOID buffer, ULONG32 size, bool throwEx)
 
     return S_OK;
 }
-
-#ifdef TARGET_UNIX
-
-static BOOL DacReadAllAdapter(PVOID address, PVOID buffer, SIZE_T size)
-{
-    DAC_INSTANCE* inst = g_dacImpl->m_instances.Find((TADDR)address);
-    if (inst == nullptr || inst->size < size)
-    {
-        inst = g_dacImpl->m_instances.Alloc((TADDR)address, (ULONG32)size, DAC_PAL);
-        if (inst == nullptr)
-        {
-            return FALSE;
-        }
-        inst->noReport = 0;
-        HRESULT hr = DacReadAll((TADDR)address, inst + 1, (ULONG32)size, false);
-        if (FAILED(hr))
-        {
-            g_dacImpl->m_instances.ReturnAlloc(inst);
-            return FALSE;
-        }
-        if (!g_dacImpl->m_instances.Add(inst))
-        {
-            g_dacImpl->m_instances.ReturnAlloc(inst);
-            return FALSE;
-        }
-    }
-    memcpy(buffer, inst + 1, size);
-    return TRUE;
-}
-
-#ifdef HOST_WINDOWS
-// For the cross OS dac, we don't have the full pal layer
-// Use these minimal prototypes instead of the full pal header
-typedef BOOL(*UnwindReadMemoryCallback)(PVOID address, PVOID buffer, SIZE_T size);
-
-extern
-BOOL
-PAL_VirtualUnwindOutOfProc(PT_CONTEXT context, PT_KNONVOLATILE_CONTEXT_POINTERS contextPointers, PULONG64 functionStart, SIZE_T baseAddress, UnwindReadMemoryCallback readMemoryCallback);
-#endif
-
-HRESULT
-DacVirtualUnwind(ULONG32 threadId, PT_CONTEXT context, PT_KNONVOLATILE_CONTEXT_POINTERS contextPointers)
-{
-    if (!g_dacImpl)
-    {
-        DacError(E_UNEXPECTED);
-        UNREACHABLE();
-    }
-
-    // The DAC code doesn't use these context pointers but zero them out to be safe.
-    if (contextPointers != NULL)
-    {
-        memset(contextPointers, 0, sizeof(T_KNONVOLATILE_CONTEXT_POINTERS));
-    }
-
-    HRESULT hr = E_NOINTERFACE;
-
-#ifdef FEATURE_DATATARGET4
-    ReleaseHolder<ICorDebugDataTarget4> dt;
-    hr = g_dacImpl->m_pTarget->QueryInterface(IID_ICorDebugDataTarget4, (void **)&dt);
-    if (SUCCEEDED(hr))
-    {
-        hr = dt->VirtualUnwind(threadId, sizeof(CONTEXT), (BYTE*)context);
-    }
-#endif
-
-    if (hr == E_NOINTERFACE || hr == E_NOTIMPL)
-    {
-        hr = S_OK;
-
-        SIZE_T baseAddress = DacGlobalBase();
-        if (baseAddress == 0 || !PAL_VirtualUnwindOutOfProc(context, contextPointers, nullptr, baseAddress, DacReadAllAdapter))
-        {
-            hr = E_FAIL;
-        }
-    }
-
-    return hr;
-}
-
-#endif // TARGET_UNIX
 
 // DacAllocVirtual - Allocate memory from the target process
 // Note: this is only available to clients supporting the legacy
@@ -366,14 +280,6 @@ DacFreeVirtual(TADDR mem, ULONG32 size, ULONG32 typeFlags,
 PVOID
 DacInstantiateTypeByAddressHelper(TADDR addr, ULONG32 size, bool throwEx, bool fReport)
 {
-#ifdef _PREFIX_
-
-    // Dac accesses are not interesting for PREfix and cause a lot of PREfix noise
-    // so we just return the unmodified pointer for our PREFIX builds
-    return (PVOID)addr;
-
-#else // !_PREFIX_
-
     if (!g_dacImpl)
     {
         DacError(E_UNEXPECTED);
@@ -470,6 +376,7 @@ DacInstantiateTypeByAddressHelper(TADDR addr, ULONG32 size, bool throwEx, bool f
         g_dacImpl->m_instances.ReturnAlloc(inst);
         if (throwEx)
         {
+            DacLogMessage("DacReadAll(%p, %08x) FAILED %08x\n", addr, size, status);
             DacError(status);
         }
         return NULL;
@@ -488,8 +395,6 @@ DacInstantiateTypeByAddressHelper(TADDR addr, ULONG32 size, bool throwEx, bool f
     }
 
     return inst + 1;
-
-#endif // !_PREFIX_
 }
 
 PVOID   DacInstantiateTypeByAddress(TADDR addr, ULONG32 size, bool throwEx)
@@ -506,14 +411,6 @@ PVOID   DacInstantiateTypeByAddressNoReport(TADDR addr, ULONG32 size, bool throw
 PVOID
 DacInstantiateClassByVTable(TADDR addr, ULONG32 minSize, bool throwEx)
 {
-#ifdef _PREFIX_
-
-    // Dac accesses are not interesting for PREfix and cause a lot of PREfix noise
-    // so we just return the unmodified pointer for our PREFIX builds
-    return (PVOID)addr;
-
-#else // !_PREFIX_
-
     if (!g_dacImpl)
     {
         DacError(E_UNEXPECTED);
@@ -591,25 +488,15 @@ DacInstantiateClassByVTable(TADDR addr, ULONG32 minSize, bool throwEx)
     // class identity.
     //
 
-#define VPTR_CLASS(name)                       \
-    if (vtAddr == g_dacImpl->m_globalBase +    \
-        g_dacGlobals.name##__vtAddr)           \
-    {                                          \
-        size = sizeof(name);                   \
-        hostVtPtr = g_dacHostVtPtrs.name;      \
-    }                                          \
-    else
-#define VPTR_MULTI_CLASS(name, keyBase)        \
-    if (vtAddr == g_dacImpl->m_globalBase +    \
-        g_dacGlobals.name##__##keyBase##__mvtAddr) \
-    {                                          \
-        size = sizeof(name);                   \
-        hostVtPtr = g_dacHostVtPtrs.name##__##keyBase; \
-    }                                          \
+#define VPTR_CLASS(name)                        \
+    if (vtAddr == DacGlobalValues()->name##__vtAddr) \
+    {                                           \
+        size = sizeof(name);                    \
+        hostVtPtr = g_dacHostVtPtrs.name;       \
+    }                                           \
     else
 #include <vptr_list.h>
 #undef VPTR_CLASS
-#undef VPTR_MULTI_CLASS
 
     {
         // Can't identify the vtable pointer.
@@ -624,9 +511,10 @@ DacInstantiateClassByVTable(TADDR addr, ULONG32 minSize, bool throwEx)
     // Sanity check that the object we're returning is big enough to fill the PTR type it's being
     // accessed with.
     // If this is not true, it means the type being marshalled isn't a sub-type (or the same type)
-    // as the PTR type it's being used as.  For example, trying to marshal an instance of a SystemDomain
-    // object into a PTR_AppDomain will cause this ASSERT to fire (because both SystemDomain and AppDomain
-    // derived from BaseDomain, and SystemDomain is smaller than AppDomain).
+    // as the PTR type it's being used as. For example, trying to marshal an AssemblyLoaderAllocator
+    // into a PTR_GlobalLoaderAllocator will cause this ASSERT to fire (because AssemblyLoaderAllocator
+    // and GlobalLoaderAllocator derived from LoaderAllocator and AssemblyLoaderAllocator is smaller
+    // than GlobalLoaderAllocator).
     _ASSERTE_MSG(size >= minSize, "DAC coding error: Attempt to instantiate a VPTR from an object that is too small");
 
     inst = g_dacImpl->m_instances.Alloc(addr, size, DAC_VPTR);
@@ -667,8 +555,6 @@ DacInstantiateClassByVTable(TADDR addr, ULONG32 minSize, bool throwEx)
         g_dacImpl->m_instances.Supersede(oldInst);
     }
     return inst + 1;
-
-#endif // !_PREFIX_
 }
 
 #define LOCAL_STR_BUF 256
@@ -676,14 +562,6 @@ DacInstantiateClassByVTable(TADDR addr, ULONG32 minSize, bool throwEx)
 PSTR
 DacInstantiateStringA(TADDR addr, ULONG32 maxChars, bool throwEx)
 {
-#ifdef _PREFIX_
-
-    // Dac accesses are not interesting for PREfix and cause a lot of PREfix noise
-    // so we just return the unmodified pointer for our PREFIX builds
-    return (PSTR)addr;
-
-#else // !_PREFIX_
-
     HRESULT status;
 
     if (!g_dacImpl)
@@ -801,21 +679,11 @@ DacInstantiateStringA(TADDR addr, ULONG32 maxChars, bool throwEx)
         inst->usage = DAC_STRA;
     }
     return retVal;
-
-#endif // !_PREFIX_
 }
 
 PWSTR
 DacInstantiateStringW(TADDR addr, ULONG32 maxChars, bool throwEx)
 {
-#ifdef _PREFIX_
-
-    // Dac accesses are not interesting for PREfix and cause a lot of PREfix noise
-    // so we just return the unmodified pointer for our PREFIX builds
-    return (PWSTR)addr;
-
-#else // !_PREFIX_
-
     HRESULT status;
 
     if (!g_dacImpl)
@@ -933,21 +801,11 @@ DacInstantiateStringW(TADDR addr, ULONG32 maxChars, bool throwEx)
         inst->usage = DAC_STRW;
     }
     return retVal;
-
-#endif // !_PREFIX_
 }
 
 TADDR
 DacGetTargetAddrForHostAddr(LPCVOID ptr, bool throwEx)
 {
-#ifdef _PREFIX_
-
-    // Dac accesses are not interesting for PREfix and cause a lot of PREfix noise
-    // so we just return the unmodified pointer for our PREFIX builds
-    return (TADDR) ptr;
-
-#else // !_PREFIX_
-
     // Preserve special pointer values.
     if (ptr == NULL || ((TADDR) ptr == (TADDR)-1))
     {
@@ -975,7 +833,7 @@ DacGetTargetAddrForHostAddr(LPCVOID ptr, bool throwEx)
         {
             status = E_INVALIDARG;
         }
-        EX_END_CATCH(SwallowAllExceptions)
+        EX_END_CATCH
 
         if (status != S_OK)
         {
@@ -996,8 +854,6 @@ DacGetTargetAddrForHostAddr(LPCVOID ptr, bool throwEx)
 
         return addr;
     }
-
-#endif // !_PREFIX_
 }
 
 // Similar to DacGetTargetAddrForHostAddr above except that ptr can represent any pointer within a host data
@@ -1013,14 +869,6 @@ DacGetTargetAddrForHostInteriorAddr(LPCVOID ptr, bool throwEx)
     // will bound the amount of time it takes to report an error in the case where code has been incorrectly
     // DAC-ized.
     const DWORD kMaxSearchIterations = 100;
-
-#ifdef _PREFIX_
-
-    // Dac accesses are not interesting for PREfix and cause a lot of PREfix noise
-    // so we just return the unmodified pointer for our PREFIX builds
-    return (TADDR) ptr;
-
-#else // !_PREFIX_
 
     // Preserve special pointer values.
     if (ptr == NULL || ((TADDR) ptr == (TADDR)-1))
@@ -1117,7 +965,7 @@ DacGetTargetAddrForHostInteriorAddr(LPCVOID ptr, bool throwEx)
         {
             status = E_INVALIDARG;
         }
-        EX_END_CATCH(SwallowAllExceptions)
+        EX_END_CATCH
 
         if (status != S_OK)
         {
@@ -1138,45 +986,25 @@ DacGetTargetAddrForHostInteriorAddr(LPCVOID ptr, bool throwEx)
 
         return addr;
     }
-#endif // !_PREFIX_
-}
-
-PWSTR    DacGetVtNameW(TADDR targetVtable)
-{
-    PWSTR pszRet = NULL;
-
-    ULONG *targ = &g_dacGlobals.EEJitManager__vtAddr;
-    ULONG *targStart = targ;
-    for (ULONG i = 0; i < sizeof(g_dacHostVtPtrs) / sizeof(PVOID); i++)
-    {
-        if (targetVtable == (*targ + DacGlobalBase()))
-        {
-            pszRet = (PWSTR) *(g_dacVtStrings + (targ - targStart));
-            break;
-        }
-
-        targ++;
-    }
-    return pszRet;
 }
 
 TADDR
 DacGetTargetVtForHostVt(LPCVOID vtHost, bool throwEx)
 {
     PVOID* host;
-    ULONG* targ;
+    TADDR* targ;
     ULONG i;
 
     // The host vtable table exactly parallels the
     // target vtable table, so just iterate to a match
     // return the matching entry.
     host = &g_dacHostVtPtrs.EEJitManager;
-    targ = &g_dacGlobals.EEJitManager__vtAddr;
+    targ = &DacGlobalValues()->EEJitManager__vtAddr;
     for (i = 0; i < sizeof(g_dacHostVtPtrs) / sizeof(PVOID); i++)
     {
         if (*host == vtHost)
         {
-            return *targ + DacGlobalBase();
+            return *targ;
         }
 
         host++;
@@ -1394,6 +1222,15 @@ DacAllocHostOnlyInstance(ULONG32 size, bool throwEx)
     return inst + 1;
 }
 
+thread_local bool t_DacAssertsUnconditionally = false;
+
+bool DacSetEnableDacAssertsUnconditionally(bool enable)
+{
+    bool oldValue = t_DacAssertsUnconditionally;
+    t_DacAssertsUnconditionally = enable;
+    return oldValue;
+}
+
 //
 // Queries whether ASSERTs should be raised when inconsistencies in the target are detected
 //
@@ -1411,6 +1248,10 @@ bool DacTargetConsistencyAssertsEnabled()
         // the case should only be host-asserts (i.e. always bugs), and so we should just return true.
         return true;
     }
+
+    // If asserts are unconditionally enabled via the thread local, simply return true.
+    if (t_DacAssertsUnconditionally)
+        return true;
 
     return g_dacImpl->TargetConsistencyAssertsEnabled();
 }
@@ -1464,7 +1305,7 @@ void DacEnumCodeForStackwalk(TADDR taCallEnd)
     // Note that this only handles absolute indirect calls (ModR/M byte of 0x15), all the other forms of
     // indirect calls are register-relative, and so we'd have to do a much more complicated decoding based
     // on the register context.  Regardless, it seems like this is fundamentally error-prone because it's
-    // aways possible that the call instruction was not 6 bytes long, and we could have some other instructions
+    // always possible that the call instruction was not 6 bytes long, and we could have some other instructions
     // that happen to match the pattern we're looking for.
     PTR_BYTE callCode = PTR_BYTE(taCallEnd - 6);
     PTR_BYTE callMrm = PTR_BYTE(taCallEnd - 5);
@@ -1490,7 +1331,7 @@ void DacEnumCodeForStackwalk(TADDR taCallEnd)
 //
 // Arguments:
 //    * range   - the address and the size of the memory range
-//    * pBuffer - the buffer containting the memory range
+//    * pBuffer - the buffer containing the memory range
 //
 // Return Value:
 //    Return S_OK if everything succeeds.
@@ -1513,43 +1354,68 @@ HRESULT DacReplacePatchesInHostMemory(MemoryRange range, PVOID pBuffer)
         return S_OK;
     }
 
-    HASHFIND info;
+    if (g_dacImpl == nullptr)
+    {
+        return E_UNEXPECTED;
+    }
+
+    // Cache the patches as the target is not running during DAC operations, and hash
+    // table iteration is pretty slow.
+    const SArray<DacPatchCacheEntry>& entries = g_dacImpl->m_patchCache.GetEntries();
+
+    CORDB_ADDRESS address = (CORDB_ADDRESS)(dac_cast<TADDR>(range.StartAddress()));
+    SIZE_T        cbSize  = range.Size();
+
+    for (COUNT_T i = 0; i < entries.GetCount(); i++)
+    {
+        const DacPatchCacheEntry& entry = entries[i];
+
+        if (IsPatchInRequestedRange(address, cbSize, entry.address))
+        {
+            CORDbgSetInstructionEx(reinterpret_cast<PBYTE>(pBuffer), address, entry.address, entry.opcode, cbSize);
+        }
+    }
+
+    return S_OK;
+}
+
+const SArray<DacPatchCacheEntry>& DacPatchCache::GetEntries()
+{
+    Populate();
+    return m_entries;
+}
+
+void DacPatchCache::Populate()
+{
+    SUPPORTS_DAC;
+
+    if (m_isPopulated)
+    {
+        return;
+    }
+
+    // Clear any stale entries from previous failed population attempts
+    m_entries.Clear();
+
+    ULONG patchIndex;
 
     DebuggerPatchTable *      pTable = DebuggerController::GetPatchTable();
-    DebuggerControllerPatch * pPatch = pTable->GetFirstPatch(&info);
+    DebuggerControllerPatch * pPatch = pTable->GetFirstPatch(&patchIndex);
 
-    // <PERF>
-    // The unwinder needs to read the stack very often to restore pushed registers, retrieve the
-    // return addres, etc.  However, stack addresses should never be patched.
-    // One way to optimize this code is to pass the stack base and the stack limit of the thread to this
-    // function and use those two values to filter out stack addresses.
-    //
-    // Another thing we can do is instead of enumerating the patches, we could enumerate the address.
-    // This is more efficient when we have a large number of patches and a small memory range.  Perhaps
-    // we could do a hybrid approach, i.e. use the size of the range and the number of patches to dynamically
-    // determine which enumeration is more efficient.
-    // </PERF>
     while (pPatch != NULL)
     {
         CORDB_ADDRESS patchAddress = (CORDB_ADDRESS)dac_cast<TADDR>(pPatch->address);
 
-        if (patchAddress != NULL)
+        if (patchAddress != (CORDB_ADDRESS)NULL)
         {
-            PRD_TYPE opcode = pPatch->opcode;
-
-            CORDB_ADDRESS address = (CORDB_ADDRESS)(dac_cast<TADDR>(range.StartAddress()));
-            SIZE_T        cbSize  = range.Size();
-
-            // Check if the address of the patch is in the specified memory range.
-            if (IsPatchInRequestedRange(address, cbSize, patchAddress))
-            {
-                // Replace the patch in the buffer with the original opcode.
-                CORDbgSetInstructionEx(reinterpret_cast<PBYTE>(pBuffer), address, patchAddress, opcode, cbSize);
-            }
+            DacPatchCacheEntry entry;
+            entry.address = patchAddress;
+            entry.opcode = pPatch->opcode;
+            m_entries.Append(entry);
         }
 
-        pPatch = pTable->GetNextPatch(&info);
+        pPatch = pTable->GetNextPatch(&patchIndex);
     }
 
-    return S_OK;
+    m_isPopulated = true;
 }

@@ -15,7 +15,7 @@ char* SystemNative_GetEnv(const char* variable)
     return getenv(variable);
 }
 
-char** SystemNative_GetEnviron()
+char** SystemNative_GetEnviron(void)
 {
 #if HAVE_NSGETENVIRON
     return *(_NSGetEnviron());
@@ -25,8 +25,8 @@ char** SystemNative_GetEnviron()
 #endif
 }
 
-void SystemNative_FreeEnviron(char** environ)
+void SystemNative_FreeEnviron(char** environment)
 {
     // no op
-    (void)environ;
+    (void)environment;
 }

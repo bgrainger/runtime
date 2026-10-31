@@ -13,6 +13,26 @@ private:
     BasicBlock* m_block;
     Statement*  m_statement;
 
+    struct ParameterUse
+    {
+        GenTreeLclVarCommon* Node;
+        BasicBlock*          Block;
+    };
+
+    struct ParameterUses
+    {
+        ArrayStack<ParameterUse> Uses;
+        bool                     HasKills = false;
+        bool                     HasReads = false;
+
+        ParameterUses(CompAllocator allocator)
+            : Uses(allocator)
+        {
+        }
+    };
+
+    ParameterUses** m_parameterUses = nullptr;
+
 public:
     Rationalizer(Compiler* comp);
 
@@ -29,43 +49,91 @@ public:
 
     virtual PhaseStatus DoPhase() override;
 
-    static void RewriteAssignmentIntoStoreLcl(GenTreeOp* assignment);
+private:
+    class RationalizeVisitor final : public GenTreeVisitor<RationalizeVisitor>
+    {
+        Rationalizer& m_rationalizer;
+
+    public:
+        enum
+        {
+            ComputeStack      = true,
+            DoPreOrder        = true,
+            DoPostOrder       = true,
+            UseExecutionOrder = true,
+        };
+
+        RationalizeVisitor(Rationalizer& rationalizer)
+            : GenTreeVisitor<RationalizeVisitor>(rationalizer.m_compiler)
+            , m_rationalizer(rationalizer)
+        {
+        }
+
+        fgWalkResult PreOrderVisit(GenTree** use, GenTree* user);
+        fgWalkResult PostOrderVisit(GenTree** use, GenTree* user);
+    };
+
+    // Root visitor
+    Compiler::fgWalkResult RewriteNode(GenTree** useEdge, Compiler::GenTreeStack& parents);
 
 private:
+    bool ShouldRecordParameterUse(GenTree* node);
+    void RecordParameterUse(GenTree* node);
+    void ForgetParameterUses(const LIR::ReadOnlyRange& range);
+    void RewriteParameterUses();
+    void RewriteParameterField(BasicBlock* block, GenTreeLclFld* field);
+
     inline LIR::Range& BlockRange() const
     {
         return LIR::AsRange(m_block);
     }
 
-    void RewriteIndir(LIR::Use& use);
-
-    // SIMD related
-    void RewriteSIMDIndir(LIR::Use& use);
-
     // Intrinsic related transformations
     void RewriteNodeAsCall(GenTree**             use,
+                           CORINFO_SIG_INFO*     sig,
                            ArrayStack<GenTree*>& parents,
                            CORINFO_METHOD_HANDLE callHnd,
-#ifdef FEATURE_READYTORUN
+#if defined(FEATURE_READYTORUN)
                            CORINFO_CONST_LOOKUP entryPoint,
-#endif
-                           GenTreeCall::Use* args);
+#endif // FEATURE_READYTORUN
+                           GenTree** operands,
+                           size_t    operandCount,
+                           bool      isSpecialIntrinsic);
 
     void RewriteIntrinsicAsUserCall(GenTree** use, Compiler::GenTreeStack& parents);
+#if defined(FEATURE_HW_INTRINSICS)
+    // pre-order rewriting
+    void RewriteHWIntrinsicAsUserCall(GenTree** use, Compiler::GenTreeStack& parents, RationalizeVisitor* revisitor);
 
-    // Other transformations
-    void RewriteAssignment(LIR::Use& use);
-    void RewriteAddress(LIR::Use& use);
+    // post-order rewriting
+    void RewriteHWIntrinsic(GenTree** use, Compiler::GenTreeStack& parents);
 
-    // Root visitor
-    Compiler::fgWalkResult RewriteNode(GenTree** useEdge, Compiler::GenTreeStack& parents);
+#if defined(TARGET_XARCH)
+    void RewriteHWIntrinsicBlendv(GenTree** use, Compiler::GenTreeStack& parents);
+    void RewriteHWIntrinsicMaskOp(GenTree** use, Compiler::GenTreeStack& parents);
+    void RewriteHWIntrinsicToNonMask(GenTree** use, Compiler::GenTreeStack& parents);
+    void RewriteHWIntrinsicBitwiseOpToNonMask(GenTree** use, Compiler::GenTreeStack& parents, genTreeOps oper);
+
+    bool ShouldRewriteToNonMaskHWIntrinsic(GenTree* node);
+#endif // TARGET_XARCH
+
+#if defined(TARGET_ARM64)
+    bool RewriteHWIntrinsicCmpMaskExtractMsb(GenTree** use, Compiler::GenTreeStack& parents);
+    bool RewriteHWIntrinsicCmpMaskExtractMsbPopCount(GenTree** use, Compiler::GenTreeStack& parents);
+    bool RewriteHWIntrinsicCmpMaskExtractMsbZeroCount(GenTree** use, Compiler::GenTreeStack& parents);
+#endif // TARGET_ARM64
+
+    void RewriteHWIntrinsicExtractMsb(GenTree** use, Compiler::GenTreeStack& parents);
+#endif // FEATURE_HW_INTRINSICS
+
+#ifdef TARGET_ARM64
+    void RewriteSubLshDiv(GenTree** use);
+#endif
 };
 
-inline Rationalizer::Rationalizer(Compiler* _comp) : Phase(_comp, PHASE_RATIONALIZE)
+inline Rationalizer::Rationalizer(Compiler* _comp)
+    : Phase(_comp, PHASE_RATIONALIZE)
 {
-#ifdef DEBUG
-    comp->compNumStatementLinksTraversed = 0;
-#endif
 }
 
 #endif

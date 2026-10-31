@@ -10,6 +10,12 @@ namespace System.Net.NetworkInformation
         private unsafe TcpConnectionInformation[] GetTcpConnections(bool listeners)
         {
             int realCount = Interop.Sys.GetEstimatedTcpConnectionCount();
+            if (realCount == -1)
+            {
+                // The platform (e.g. OpenBSD) does not expose the TCP connection table.
+                throw new PlatformNotSupportedException(SR.net_InformationUnavailableOnPlatform);
+            }
+
             int infoCount = realCount * 2;
             Interop.Sys.NativeTcpConnectionInformation[] infos = new Interop.Sys.NativeTcpConnectionInformation[infoCount];
             fixed (Interop.Sys.NativeTcpConnectionInformation* infosPtr = infos)
@@ -32,28 +38,12 @@ namespace System.Net.NetworkInformation
                     continue;
                 }
 
-                byte[] localBytes = new byte[nativeInfo.LocalEndPoint.NumAddressBytes];
-                fixed (byte* localBytesPtr = localBytes)
-                {
-                    Buffer.MemoryCopy(nativeInfo.LocalEndPoint.AddressBytes, localBytesPtr, localBytes.Length, localBytes.Length);
-                }
-                IPAddress localIPAddress = new IPAddress(localBytes);
+                IPAddress localIPAddress = new IPAddress(((ReadOnlySpan<byte>)nativeInfo.LocalEndPoint.AddressBytes)[..checked((int)nativeInfo.LocalEndPoint.NumAddressBytes)]);
                 IPEndPoint local = new IPEndPoint(localIPAddress, (int)nativeInfo.LocalEndPoint.Port);
 
-                IPAddress remoteIPAddress;
-                if (nativeInfo.RemoteEndPoint.NumAddressBytes == 0)
-                {
-                    remoteIPAddress = IPAddress.Any;
-                }
-                else
-                {
-                    byte[] remoteBytes = new byte[nativeInfo.RemoteEndPoint.NumAddressBytes];
-                    fixed (byte* remoteBytesPtr = &remoteBytes[0])
-                    {
-                        Buffer.MemoryCopy(nativeInfo.RemoteEndPoint.AddressBytes, remoteBytesPtr, remoteBytes.Length, remoteBytes.Length);
-                    }
-                    remoteIPAddress = new IPAddress(remoteBytes);
-                }
+                IPAddress remoteIPAddress = nativeInfo.RemoteEndPoint.NumAddressBytes == 0 ?
+                    IPAddress.Any :
+                    new IPAddress(((ReadOnlySpan<byte>)nativeInfo.RemoteEndPoint.AddressBytes)[..checked((int)nativeInfo.RemoteEndPoint.NumAddressBytes)]);
 
                 IPEndPoint remote = new IPEndPoint(remoteIPAddress, (int)nativeInfo.RemoteEndPoint.Port);
                 connectionInformations[nextResultIndex++] = new SimpleTcpConnectionInformation(local, remote, state);
@@ -69,12 +59,12 @@ namespace System.Net.NetworkInformation
 
         public override TcpConnectionInformation[] GetActiveTcpConnections()
         {
-            return GetTcpConnections(listeners:false);
+            return GetTcpConnections(listeners: false);
         }
 
         public override IPEndPoint[] GetActiveTcpListeners()
         {
-            TcpConnectionInformation[] allConnections = GetTcpConnections(listeners:true);
+            TcpConnectionInformation[] allConnections = GetTcpConnections(listeners: true);
             var endPoints = new IPEndPoint[allConnections.Length];
             for (int i = 0; i < allConnections.Length; i++)
             {
@@ -83,9 +73,15 @@ namespace System.Net.NetworkInformation
             return endPoints;
         }
 
-        public unsafe override IPEndPoint[] GetActiveUdpListeners()
+        public override unsafe IPEndPoint[] GetActiveUdpListeners()
         {
             int realCount = Interop.Sys.GetEstimatedUdpListenerCount();
+            if (realCount == -1)
+            {
+                // The platform (e.g. OpenBSD) does not expose the UDP listener table.
+                throw new PlatformNotSupportedException(SR.net_InformationUnavailableOnPlatform);
+            }
+
             int infoCount = realCount * 2;
             Interop.Sys.IPEndPointInfo[] infos = new Interop.Sys.IPEndPointInfo[infoCount];
             fixed (Interop.Sys.IPEndPointInfo* infosPtr = infos)
@@ -101,20 +97,9 @@ namespace System.Net.NetworkInformation
             {
                 Interop.Sys.IPEndPointInfo endPointInfo = infos[i];
                 int port = (int)endPointInfo.Port;
-                IPAddress ipAddress;
-                if (endPointInfo.NumAddressBytes == 0)
-                {
-                    ipAddress = IPAddress.Any;
-                }
-                else
-                {
-                    byte[] bytes = new byte[endPointInfo.NumAddressBytes];
-                    fixed (byte* bytesPtr = &bytes[0])
-                    {
-                        Buffer.MemoryCopy(endPointInfo.AddressBytes, bytesPtr, bytes.Length, bytes.Length);
-                    }
-                    ipAddress = new IPAddress(bytes);
-                }
+                IPAddress ipAddress = endPointInfo.NumAddressBytes == 0 ?
+                    IPAddress.Any :
+                    new IPAddress(((ReadOnlySpan<byte>)endPointInfo.AddressBytes)[..checked((int)endPointInfo.NumAddressBytes)]);
 
                 endPoints[i] = new IPEndPoint(ipAddress, port);
             }

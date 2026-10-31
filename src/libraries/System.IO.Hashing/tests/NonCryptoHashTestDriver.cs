@@ -1,12 +1,15 @@
 ﻿// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using Xunit;
 
 namespace System.IO.Hashing.Tests
 {
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicMethods)]
     public abstract class NonCryptoHashTestDriver
     {
         private readonly int _hashLengthInBytes;
@@ -20,6 +23,7 @@ namespace System.IO.Hashing.Tests
         }
 
         protected abstract NonCryptographicHashAlgorithm CreateInstance();
+        protected abstract NonCryptographicHashAlgorithm Clone(NonCryptographicHashAlgorithm instance);
 
         protected abstract byte[] StaticOneShot(byte[] source);
         protected abstract byte[] StaticOneShot(ReadOnlySpan<byte> source);
@@ -48,7 +52,7 @@ namespace System.IO.Hashing.Tests
                         targetMethodName,
                         BindingFlags.Instance | BindingFlags.Public);
 
-                    if (info2 is null)
+                    if (info2 is null && !info.IsDefined(typeof(OverrideOptionalAttribute)))
                     {
                         missingMethods ??= new List<string>();
                         missingMethods.Add(targetMethodName);
@@ -113,6 +117,20 @@ namespace System.IO.Hashing.Tests
 
             destination.Clear();
             hash.GetCurrentHash(destination);
+            testCase.VerifyResponse(answer);
+        }
+
+        [OverrideOptional]
+        protected void InstanceMultiAppendLargeInputDriver(LargeTestCase testCase)
+        {
+            NonCryptographicHashAlgorithm hash = CreateInstance();
+
+            foreach (ReadOnlyMemory<byte> chunk in testCase.EnumerateDataChunks())
+            {
+                hash.Append(chunk.Span);
+            }
+
+            byte[] answer = hash.GetHashAndReset();
             testCase.VerifyResponse(answer);
         }
 
@@ -268,6 +286,47 @@ namespace System.IO.Hashing.Tests
             }
         }
 
+        [Fact]
+        public void Clone_ProducesSameSequence()
+        {
+            NonCryptographicHashAlgorithm hash = CreateInstance();
+
+            for (int outer = 0; outer < 4; outer++)
+            {
+                NonCryptographicHashAlgorithm clone = Clone(hash);
+                Assert.Equal(hash.HashLengthInBytes, clone.HashLengthInBytes);
+                Assert.Equal(hash.GetCurrentHash(), clone.GetCurrentHash());
+
+                Random r = new Random(42);
+                byte[] bytes = new byte[r.Next(1, 10)];
+
+                for (int inner = 0; inner < 4; inner++)
+                {
+                    r.NextBytes(bytes);
+                    hash.Append(bytes);
+                    clone.Append(bytes);
+
+                    Assert.Equal(hash.GetCurrentHash(), clone.GetCurrentHash());
+                }
+            }
+        }
+
+        [Fact]
+        public void AppendingEmptyHasNoEffect()
+        {
+            NonCryptographicHashAlgorithm reference = CreateInstance();
+            reference.Append(new byte[] { 1, 2, 3 });
+            byte[] expected = reference.GetCurrentHash();
+
+            NonCryptographicHashAlgorithm hash = CreateInstance();
+            hash.Append(ReadOnlySpan<byte>.Empty);
+            hash.Append(new byte[] { 1, 2, 3 });
+            hash.Append(ReadOnlySpan<byte>.Empty);
+            byte[] actual = hash.GetCurrentHash();
+
+            Assert.Equal(expected, actual);
+        }
+
         private void VerifyEmptyResult(ReadOnlySpan<byte> result)
         {
             if (!result.SequenceEqual(_emptyHash))
@@ -280,51 +339,46 @@ namespace System.IO.Hashing.Tests
             }
         }
 
-        public sealed class TestCase
+        protected static void AssertEqualHashNumber(string hex, uint hash, bool littleEndian = false)
         {
-            private byte[] _input;
-            private byte[] _output;
+            if (littleEndian)
+            {
+                hash = BinaryPrimitives.ReverseEndianness(hash);
+            }
+            Assert.Equal(hex, hash.ToString("X8"));
+        }
 
+        protected static void AssertEqualHashNumber(string hex, ulong hash, bool littleEndian = false)
+        {
+            if (littleEndian)
+            {
+                hash = BinaryPrimitives.ReverseEndianness(hash);
+            }
+            Assert.Equal(hex, hash.ToString("X16"));
+        }
+
+        public abstract class TestCaseBase
+        {
+            private readonly byte[] _output;
             public string Name { get; }
-            public ReadOnlySpan<byte> Input => new ReadOnlySpan<byte>(_input);
+            public ReadOnlySpan<byte> OutputBytes => _output;
             public string OutputHex { get; }
 
-            public TestCase(string name, byte[] input, byte[] output)
+            protected TestCaseBase(string name, byte[] output)
             {
-                Name = name;
-                _input = input;
-                OutputHex = ToHexString(output);
-                _output = FromHexString(OutputHex);
-            }
-
-            public TestCase(string name, byte[] input, string outputHex)
-            {
-                Name = name;
-                _input = input;
-                OutputHex = outputHex.ToUpperInvariant();
-                _output = FromHexString(OutputHex);
-            }
-
-            public TestCase(string name, string inputHex, string outputHex)
-            {
-                Name = name;
-                _input = FromHexString(inputHex);
-                OutputHex = outputHex.ToUpperInvariant();
-                _output = FromHexString(OutputHex);
-            }
-
-            internal void VerifyResponse(ReadOnlySpan<byte> response)
-            {
-                if (!response.SequenceEqual(_output))
+                if (output is null || output.Length == 0)
                 {
-                    // We know this will fail, but it gives a nice presentation.
-                    Assert.Equal(OutputHex, ToHexString(response));
+                    throw new ArgumentException("Argument should not be null or empty.", nameof(output));
                 }
+
+                Name = name;
+                _output = output;
+                OutputHex = ToHexString(output);
             }
 
             internal static string ToHexString(ReadOnlySpan<byte> input)
             {
-#if NET5_0_OR_GREATER
+#if NET
                 return Convert.ToHexString(input);
 #else
                 var builder = new global::System.Text.StringBuilder(input.Length * 2);
@@ -340,7 +394,7 @@ namespace System.IO.Hashing.Tests
 
             internal static byte[] FromHexString(string hexString)
             {
-#if NET5_0_OR_GREATER
+#if NET
                 return Convert.FromHexString(hexString);
 #else
                 byte[] bytes = new byte[hexString.Length / 2];
@@ -356,6 +410,80 @@ namespace System.IO.Hashing.Tests
             }
 
             public override string ToString() => Name;
+
+            internal void VerifyResponse(ReadOnlySpan<byte> response)
+            {
+                if (!response.SequenceEqual(OutputBytes))
+                {
+                    // We know this will fail, but it gives a nice presentation.
+                    Assert.Equal(OutputHex, ToHexString(response));
+                }
+            }
+        }
+
+        public sealed class TestCase : TestCaseBase
+        {
+            private readonly byte[] _input;
+            public ReadOnlySpan<byte> Input => new ReadOnlySpan<byte>(_input);
+
+            public TestCase(string name, byte[] input, byte[] output)
+                : base(name, output)
+            {
+                _input = input;
+            }
+
+            public TestCase(string name, byte[] input, string outputHex)
+                : base(name, FromHexString(outputHex))
+            {
+                _input = input;
+            }
+
+            public TestCase(string name, string inputHex, string outputHex)
+                : base(name, FromHexString(outputHex))
+            {
+                _input = FromHexString(inputHex);
+            }
+        }
+
+        public sealed class LargeTestCase : TestCaseBase
+        {
+            private readonly byte _data;
+            private readonly long _repeatCount;
+
+            public LargeTestCase(string name, byte data, long repeatCount, string outputHex)
+                : base(name, FromHexString(outputHex))
+            {
+                if (repeatCount < 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(repeatCount));
+                }
+
+                _data = data;
+                _repeatCount = repeatCount;
+            }
+
+            public IEnumerable<ReadOnlyMemory<byte>> EnumerateDataChunks()
+            {
+#if NET
+                byte[] chunk = GC.AllocateUninitializedArray<byte>(1024 * 1024);
+#else
+                byte[] chunk = new byte[1024 * 1024];
+#endif
+                chunk.AsSpan().Fill(_data);
+
+                long remaining = _repeatCount;
+                while (remaining > 0)
+                {
+                    int thisChunkLength = (int)Math.Min(remaining, chunk.Length);
+                    yield return chunk.AsMemory(0, thisChunkLength);
+                    remaining -= thisChunkLength;
+                }
+            }
+        }
+
+        [AttributeUsage(AttributeTargets.Method, AllowMultiple = false, Inherited = false)]
+        private sealed class OverrideOptionalAttribute : Attribute
+        {
         }
     }
 }

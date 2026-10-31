@@ -1,16 +1,16 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Runtime.InteropServices;
-using System.Diagnostics;
-using System.DirectoryServices.Interop;
 using System.ComponentModel;
-using System.Threading;
-using System.Reflection;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.DirectoryServices.Design;
 using System.Globalization;
 using System.Net;
-using System.Diagnostics.CodeAnalysis;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
+using System.Threading;
 
 namespace System.DirectoryServices
 {
@@ -141,7 +141,7 @@ namespace System.DirectoryServices
             _options = new DirectoryEntryConfiguration(this);
 
             // We are starting from an already bound connection so make sure the options are set properly.
-            // If this is an externallly managed com object then we don't want to change it's current behavior
+            // If this is an externally managed com object then we don't want to change it's current behavior
             if (!AdsObjIsExternal)
             {
                 InitADsObjectOptions();
@@ -228,10 +228,7 @@ namespace System.DirectoryServices
             }
             set
             {
-                if (value == null)
-                {
-                    throw new ArgumentNullException(nameof(value));
-                }
+                ArgumentNullException.ThrowIfNull(value);
 
                 _objectSecurity = value;
                 _objectSecurityInitialized = true;
@@ -340,8 +337,7 @@ namespace System.DirectoryServices
             get => _path;
             set
             {
-                if (value == null)
-                    value = "";
+                value ??= "";
 
                 if (System.DirectoryServices.ActiveDirectory.Utils.Compare(_path, value) == 0)
                     return;
@@ -354,18 +350,8 @@ namespace System.DirectoryServices
         /// <devdoc>
         /// Gets a <see cref='System.DirectoryServices.PropertyCollection'/> of properties set on this object.
         /// </devdoc>
-        public PropertyCollection Properties
-        {
-            get
-            {
-                if (_propertyCollection == null)
-                {
-                    _propertyCollection = new PropertyCollection(this);
-                }
-
-                return _propertyCollection;
-            }
-        }
+        public PropertyCollection Properties =>
+            _propertyCollection ??= new PropertyCollection(this);
 
         /// <devdoc>
         /// Gets the name of the schema used for this <see cref='System.DirectoryServices.DirectoryEntry'/>
@@ -446,10 +432,7 @@ namespace System.DirectoryServices
                     _passwordIsNull = true;
                 }
 
-                if (value == null)
-                    _userNameIsNull = true;
-                else
-                    _userNameIsNull = false;
+                _userNameIsNull = value == null;
 
                 _credentials.UserName = value;
 
@@ -496,9 +479,7 @@ namespace System.DirectoryServices
                 }
 
                 // the new option is available, set it so we get the new PutEx behavior that will allow multiple changes
-                Variant value = default;
-                value.varType = 11; //VT_BOOL
-                value.boolvalue = -1;
+                ComVariant value = ComVariant.Create(true);
                 ((UnsafeNativeMethods.IAdsObjectOptions2)_adsObject).SetOption(8, value);
 
                 allowMultipleChange = true;
@@ -525,7 +506,7 @@ namespace System.DirectoryServices
             if (_adsObject == null)
             {
                 string pathToUse = Path;
-                if (pathToUse == null || pathToUse.Length == 0)
+                if (string.IsNullOrEmpty(pathToUse))
                 {
                     // get the default naming context. This should be the default root for the search.
                     DirectoryEntry rootDSE = new DirectoryEntry("LDAP://RootDSE", true, null, null, AuthenticationTypes.Secure);
@@ -640,7 +621,7 @@ namespace System.DirectoryServices
         internal void CommitIfNotCaching()
         {
             if (JustCreated)
-                return;   // Do not write changes, beacuse the entry is just under construction until CommitChanges() is called.
+                return;   // Do not write changes, because the entry is just under construction until CommitChanges() is called.
 
             if (_useCache)
                 return;
@@ -806,13 +787,9 @@ namespace System.DirectoryServices
             }
             catch (TargetInvocationException e)
             {
-                if (e.InnerException != null)
+                if (e.InnerException is COMException inner)
                 {
-                    if (e.InnerException is COMException)
-                    {
-                        COMException inner = (COMException)e.InnerException;
-                        throw new TargetInvocationException(e.Message, COMExceptionHelper.CreateFormattedComException(inner));
-                    }
+                    throw new TargetInvocationException(e.Message, COMExceptionHelper.CreateFormattedComException(inner));
                 }
 
                 throw;
@@ -843,13 +820,9 @@ namespace System.DirectoryServices
             }
             catch (TargetInvocationException e)
             {
-                if (e.InnerException != null)
+                if (e.InnerException is COMException inner)
                 {
-                    if (e.InnerException is COMException)
-                    {
-                        COMException inner = (COMException)e.InnerException;
-                        throw new TargetInvocationException(e.Message, COMExceptionHelper.CreateFormattedComException(inner));
-                    }
+                    throw new TargetInvocationException(e.Message, COMExceptionHelper.CreateFormattedComException(inner));
                 }
 
                 throw;
@@ -876,13 +849,9 @@ namespace System.DirectoryServices
             }
             catch (TargetInvocationException e)
             {
-                if (e.InnerException != null)
+                if (e.InnerException is COMException inner)
                 {
-                    if (e.InnerException is COMException)
-                    {
-                        COMException inner = (COMException)e.InnerException;
-                        throw new TargetInvocationException(e.Message, COMExceptionHelper.CreateFormattedComException(inner));
-                    }
+                    throw new TargetInvocationException(e.Message, COMExceptionHelper.CreateFormattedComException(inner));
                 }
 
                 throw;

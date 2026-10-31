@@ -1,10 +1,11 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json.Serialization.Converters;
+using System.Threading;
 
 namespace System.Text.Json.Nodes
 {
@@ -21,6 +22,8 @@ namespace System.Text.Json.Nodes
     {
         private JsonElement? _jsonElement;
         private List<JsonNode?>? _list;
+
+        internal override JsonElement? UnderlyingElement => _jsonElement;
 
         /// <summary>
         ///   Initializes a new instance of the <see cref="JsonArray"/> class that is empty.
@@ -39,6 +42,16 @@ namespace System.Text.Json.Nodes
         }
 
         /// <summary>
+        ///   Initializes a new instance of the <see cref="JsonArray"/> class that contains items from the specified params span.
+        /// </summary>
+        /// <param name="options">Options to control the behavior.</param>
+        /// <param name="items">The items to add to the new <see cref="JsonArray"/>.</param>
+        public JsonArray(JsonNodeOptions options, params ReadOnlySpan<JsonNode?> items) : base(options)
+        {
+            InitializeFromSpan(items);
+        }
+
+        /// <summary>
         ///   Initializes a new instance of the <see cref="JsonArray"/> class that contains items from the specified array.
         /// </summary>
         /// <param name="items">The items to add to the new <see cref="JsonArray"/>.</param>
@@ -47,13 +60,113 @@ namespace System.Text.Json.Nodes
             InitializeFromArray(items);
         }
 
+        /// <summary>
+        ///   Initializes a new instance of the <see cref="JsonArray"/> class that contains items from the specified span.
+        /// </summary>
+        /// <param name="items">The items to add to the new <see cref="JsonArray"/>.</param>
+        public JsonArray(params ReadOnlySpan<JsonNode?> items) : base()
+        {
+            InitializeFromSpan(items);
+        }
+
+        private protected override JsonValueKind GetValueKindCore() => JsonValueKind.Array;
+
+        internal override JsonNode DeepCloneCore()
+        {
+            GetUnderlyingRepresentation(out List<JsonNode?>? list, out JsonElement? jsonElement);
+
+            if (list is null)
+            {
+                return jsonElement.HasValue
+                    ? new JsonArray(jsonElement.Value.Clone(), Options)
+                    : new JsonArray(Options);
+            }
+
+            var jsonArray = new JsonArray(Options)
+            {
+                _list = new List<JsonNode?>(list.Count)
+            };
+
+            for (int i = 0; i < list.Count; i++)
+            {
+                jsonArray.Add(list[i]?.DeepCloneCore());
+            }
+
+            return jsonArray;
+        }
+
+        internal override bool DeepEqualsCore(JsonNode node)
+        {
+            switch (node)
+            {
+                case JsonObject:
+                    return false;
+                case JsonValue value:
+                    // JsonValue instances have special comparison semantics, dispatch to their implementation.
+                    return value.DeepEqualsCore(this);
+                case JsonArray array:
+                    List<JsonNode?> currentList = List;
+                    List<JsonNode?> otherList = array.List;
+
+                    if (currentList.Count != otherList.Count)
+                    {
+                        return false;
+                    }
+
+                    for (int i = 0; i < currentList.Count; i++)
+                    {
+                        if (!DeepEquals(currentList[i], otherList[i]))
+                        {
+                            return false;
+                        }
+                    }
+
+                    return true;
+                default:
+                    Debug.Fail("Impossible case");
+                    return false;
+            }
+        }
+
+        internal int GetElementIndex(JsonNode? node)
+        {
+            return List.IndexOf(node);
+        }
+
+        /// <summary>
+        /// Returns an enumerable that wraps calls to <see cref="JsonNode.GetValue{T}"/>.
+        /// </summary>
+        /// <typeparam name="T">The type of the value to obtain from the <see cref="JsonValue"/>.</typeparam>
+        /// <returns>An enumerable iterating over values of the array.</returns>
+        public IEnumerable<T> GetValues<T>()
+        {
+            foreach (JsonNode? item in List)
+            {
+                yield return item is null ? (T)(object?)null! : item.GetValue<T>();
+            }
+        }
+
         private void InitializeFromArray(JsonNode?[] items)
         {
             var list = new List<JsonNode?>(items);
 
-            for (int i = 0; i < items.Length; i++)
+            for (int i = 0; i < list.Count; i++)
             {
-                items[i]?.AssignParent(this);
+                list[i]?.AssignParent(this);
+            }
+
+            _list = list;
+        }
+
+        private void InitializeFromSpan(ReadOnlySpan<JsonNode?> items)
+        {
+            List<JsonNode?> list = new(items.Length);
+
+            list.AddRange(items);
+
+            for (int i = 0; i < list.Count; i++)
+            {
+                list[i]?.AssignParent(this);
             }
 
             _list = list;
@@ -72,20 +185,15 @@ namespace System.Text.Json.Nodes
         /// </exception>
         public static JsonArray? Create(JsonElement element, JsonNodeOptions? options = null)
         {
-            if (element.ValueKind == JsonValueKind.Null)
+            return element.ValueKind switch
             {
-                return null;
-            }
-
-            if (element.ValueKind == JsonValueKind.Array)
-            {
-                return new JsonArray(element, options);
-            }
-
-            throw new InvalidOperationException(SR.Format(SR.NodeElementWrongType, nameof(JsonValueKind.Array)));
+                JsonValueKind.Null => null,
+                JsonValueKind.Array => new JsonArray(element, options),
+                _ => throw new InvalidOperationException(SR.Format(SR.NodeElementWrongType, nameof(JsonValueKind.Array))),
+            };
         }
 
-        internal JsonArray (JsonElement element, JsonNodeOptions? options = null) : base(options)
+        internal JsonArray(JsonElement element, JsonNodeOptions? options = null) : base(options)
         {
             Debug.Assert(element.ValueKind == JsonValueKind.Array);
             _jsonElement = element;
@@ -99,101 +207,92 @@ namespace System.Text.Json.Nodes
         ///   The object to be added to the end of the <see cref="JsonArray"/>.
         /// </param>
         [RequiresUnreferencedCode(JsonValue.CreateUnreferencedCodeMessage)]
+        [RequiresDynamicCode(JsonValue.CreateDynamicCodeMessage)]
         public void Add<T>(T? value)
         {
-            if (value == null)
-            {
-                Add(null);
-            }
-            else
-            {
-                JsonNode? jNode = value as JsonNode;
-                if (jNode == null)
-                {
-                    jNode = new JsonValueNotTrimmable<T>(value);
-                }
-
-                // Call the IList.Add() implementation.
-                Add(jNode);
-            }
+            JsonNode? nodeToAdd = ConvertFromValue(value, Options);
+            Add(nodeToAdd);
         }
 
-        internal List<JsonNode?> List
-        {
-            get
-            {
-                CreateNodes();
-                Debug.Assert(_list != null);
-                return _list;
-            }
-        }
+        /// <summary>
+        /// Gets or creates the underlying list containing the element nodes of the array.
+        /// </summary>
+        private List<JsonNode?> List => _list ?? InitializeList();
 
-        internal JsonNode? GetItem(int index)
+        private protected override JsonNode? GetItem(int index)
         {
             return List[index];
         }
 
-        internal void SetItem(int index, JsonNode? value)
+        private protected override void SetItem(int index, JsonNode? value)
         {
             value?.AssignParent(this);
             DetachParent(List[index]);
             List[index] = value;
         }
 
-        internal override void GetPath(List<string> path, JsonNode? child)
+        internal override unsafe void GetPath(ref ValueStringBuilder path, JsonNode? child)
         {
-            if (child != null)
+            Parent?.GetPath(ref path, this);
+
+            if (child is not null)
             {
                 int index = List.IndexOf(child);
-                path.Add($"[{index}]");
-            }
+                Debug.Assert(index >= 0);
 
-            Parent?.GetPath(path, this);
+                path.Append('[');
+#if NET
+                Span<char> chars = stackalloc char[JsonConstants.MaximumFormatUInt32Length];
+                bool formatted = ((uint)index).TryFormat(chars, out int charsWritten);
+                Debug.Assert(formatted);
+                path.Append(chars.Slice(0, charsWritten));
+#else
+                path.Append(index.ToString());
+#endif
+                path.Append(']');
+            }
         }
 
         /// <inheritdoc/>
         public override void WriteTo(Utf8JsonWriter writer, JsonSerializerOptions? options = null)
         {
-            if (writer == null)
-            {
-                throw new ArgumentNullException(nameof(writer));
-            }
+            ArgumentNullException.ThrowIfNull(writer);
 
-            if (_jsonElement.HasValue)
+            GetUnderlyingRepresentation(out List<JsonNode?>? list, out JsonElement? jsonElement);
+
+            if (list is null && jsonElement.HasValue)
             {
-                _jsonElement.Value.WriteTo(writer);
+                jsonElement.Value.WriteTo(writer);
             }
             else
             {
-                CreateNodes();
-                Debug.Assert(_list != null);
-
-                options ??= JsonSerializerOptions.Default;
-
                 writer.WriteStartArray();
 
-                for (int i = 0; i < _list.Count; i++)
+                foreach (JsonNode? element in List)
                 {
-                    JsonNodeConverter.Instance.Write(writer, _list[i]!, options);
+                    if (element is null)
+                    {
+                        writer.WriteNullValue();
+                    }
+                    else
+                    {
+                        element.WriteTo(writer, options);
+                    }
                 }
 
                 writer.WriteEndArray();
             }
         }
 
-        private void CreateNodes()
+        private List<JsonNode?> InitializeList()
         {
-            if (_list == null)
-            {
-                List<JsonNode?> list;
+            GetUnderlyingRepresentation(out List<JsonNode?>? list, out JsonElement? jsonElement);
 
-                if (_jsonElement == null)
+            if (list is null)
+            {
+                if (jsonElement.HasValue)
                 {
-                    list = new List<JsonNode?>();
-                }
-                else
-                {
-                    JsonElement jElement = _jsonElement.Value;
+                    JsonElement jElement = jsonElement.Value;
                     Debug.Assert(jElement.ValueKind == JsonValueKind.Array);
 
                     list = new List<JsonNode?>(jElement.GetArrayLength());
@@ -204,20 +303,49 @@ namespace System.Text.Json.Nodes
                         node?.AssignParent(this);
                         list.Add(node);
                     }
-
-                    // Clear since no longer needed.
-                    _jsonElement = null;
+                }
+                else
+                {
+                    list = new();
                 }
 
-                _list = list;
+                // Ensure only one list instance is published using CompareExchange
+                List<JsonNode?>? exchangedList = Interlocked.CompareExchange(ref _list, list, null);
+                if (exchangedList is null)
+                {
+                    // We won the race and published our list
+                    // Ensure _jsonElement is written to after _list
+                    _jsonElement = null;
+                }
+                else
+                {
+                    // Another thread published a list first
+                    list = exchangedList;
+                }
             }
+
+            return list;
+        }
+
+        /// <summary>
+        /// Provides a coherent view of the underlying representation of the current node.
+        /// The jsonElement value should be consumed if and only if the list value is null.
+        /// </summary>
+        private void GetUnderlyingRepresentation(out List<JsonNode?>? list, out JsonElement? jsonElement)
+        {
+            // Because JsonElement cannot be read atomically there might be torn reads,
+            // however the order of read/write operations guarantees that that's only
+            // possible if the value of _list is non-null.
+            jsonElement = _jsonElement;
+            Volatile.ReadBarrier();
+            list = _list;
         }
 
         [ExcludeFromCodeCoverage] // Justification = "Design-time"
         private sealed class DebugView
         {
             [DebuggerBrowsable(DebuggerBrowsableState.Never)]
-            private JsonArray _node;
+            private readonly JsonArray _node;
 
             public DebugView(JsonArray node)
             {
@@ -254,7 +382,7 @@ namespace System.Text.Json.Nodes
                 {
                     get
                     {
-                        if (Value == null)
+                        if (Value is null)
                         {
                             return $"null";
                         }

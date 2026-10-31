@@ -1,9 +1,5 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-// ===========================================================================
-// File: TieredCompilation.h
-//
-// ===========================================================================
 
 // Exceptions (OOM)
 // - On foreground threads, exceptions are propagated unless they can be handled without any compromise
@@ -37,12 +33,14 @@ public:
 public:
     static NativeCodeVersion::OptimizationTier GetInitialOptimizationTier(PTR_MethodDesc pMethodDesc);
 
+    bool IsTieringDelayActive();
+
 #ifdef FEATURE_TIERED_COMPILATION
 
 public:
     void HandleCallCountingForFirstCall(MethodDesc* pMethodDesc);
     bool TrySetCodeEntryPointAndRecordMethodForCallCounting(MethodDesc* pMethodDesc, PCODE codeEntryPoint);
-    void AsyncPromoteToTier1(NativeCodeVersion tier0NativeCodeVersion, bool *createTieringBackgroundWorkerRef);
+    void AsyncPromoteToTier1(NativeCodeVersion currentNativeCodeVersion, bool *createTieringBackgroundWorkerRef);
     static CORJIT_FLAGS GetJitFlags(PrepareCodeConfig *config);
 
 #if !defined(DACCESS_COMPILE) && defined(_DEBUG)
@@ -63,7 +61,6 @@ private:
     void BackgroundWorkerStart();
 
 private:
-    bool IsTieringDelayActive();
     bool TryDeactivateTieringDelay();
 
 public:
@@ -71,13 +68,17 @@ public:
 
 private:
     static DWORD StaticBackgroundWorkCallback(void* args);
-    bool DoBackgroundWork(UINT64 *workDurationTicksRef, UINT64 minWorkDurationTicks, UINT64 maxWorkDurationTicks);
+    bool DoBackgroundWork(int64_t *workDurationTicksRef, int64_t minWorkDurationTicks, int64_t maxWorkDurationTicks);
 
 private:
     void OptimizeMethod(NativeCodeVersion nativeCodeVersion);
+    HRESULT DeoptimizeMethodHelper(Module* pModule, mdMethodDef methodDef);
+
     NativeCodeVersion GetNextMethodToOptimize();
     BOOL CompileCodeVersion(NativeCodeVersion nativeCodeVersion);
     void ActivateCodeVersion(NativeCodeVersion nativeCodeVersion);
+public:
+    HRESULT DeoptimizeMethod(Module* pModule, mdMethodDef methodDef);
 
 #ifndef DACCESS_COMPILE
 public:
@@ -116,13 +117,15 @@ private:
 #ifdef _DEBUG
     static Thread *s_backgroundWorkerThread;
 #endif
-    static CLREvent s_backgroundWorkAvailableEvent;
+    static CLREventStatic s_backgroundWorkAvailableEvent;
     static bool s_isBackgroundWorkerRunning;
     static bool s_isBackgroundWorkerProcessingWork;
 #endif // !DACCESS_COMPILE
 
 private:
-    SList<SListElem<NativeCodeVersion>> m_methodsToOptimize;
+    typedef SListTail<SListElem<NativeCodeVersion>> OptimizationQueue;
+
+    OptimizationQueue m_methodsToOptimize;
     UINT32 m_countOfMethodsToOptimize;
     UINT32 m_countOfNewMethodsCalledDuringDelay;
     SArray<MethodDesc*>* m_methodsPendingCountingForTier1;

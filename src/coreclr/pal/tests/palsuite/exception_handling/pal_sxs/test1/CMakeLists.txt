@@ -1,18 +1,28 @@
+if(NOT CLR_CMAKE_HOST_BROWSER)
+
 if(CLR_CMAKE_HOST_UNIX)
     add_definitions(-DFEATURE_ENABLE_HARDWARE_EXCEPTIONS)
 endif(CLR_CMAKE_HOST_UNIX)
 
+# OpenBSD's libc++ compares exception type_info by pointer and relies on ld.so merging it
+# across DSOs. Each side-by-side DSO statically links the PAL, so export PAL_SEHException's
+# type_info (default visibility, see pal.h) from both via an extra version script while the
+# generated one keeps the rest of the PAL private.
+if(CLR_CMAKE_TARGET_OPENBSD)
+    set(SXS_EXPORT_EXCEPTION_TYPEINFO -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/openbsd_exception_typeinfo.exports)
+endif(CLR_CMAKE_TARGET_OPENBSD)
+
 # Set the RPATH of paltest_pal_sxs_test1 so that it can find dependencies without needing to set LD_LIBRARY
 # For more information: http://www.cmake.org/Wiki/CMake_RPATH_handling.
 if(CORECLR_SET_RPATH)
+  set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
   if(CLR_CMAKE_HOST_OSX)
-    set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+    set(CMAKE_BUILD_WITH_INSTALL_NAME_DIR ON)
+    set(CMAKE_INSTALL_NAME_DIR "@rpath")
     set(CMAKE_INSTALL_RPATH "@loader_path")
-  endif(CLR_CMAKE_HOST_OSX)
-  if(CLR_CMAKE_HOST_LINUX)
-    set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+  else()
     set(CMAKE_INSTALL_RPATH "\$ORIGIN")
-  endif(CLR_CMAKE_HOST_LINUX)
+  endif(CLR_CMAKE_HOST_OSX)
 endif(CORECLR_SET_RPATH)
 
 # Test DLL1
@@ -30,6 +40,7 @@ set(DLL1SOURCES dlltest1.cpp)
 add_library_clr(paltest_pal_sxs_test1_dll1 SHARED EXCLUDE_FROM_ALL ${DLL1SOURCES})
 add_custom_target(dlltest1_exports DEPENDS ${EXPORTS_FILE1})
 set_property(TARGET paltest_pal_sxs_test1_dll1 APPEND_STRING PROPERTY LINK_FLAGS ${EXPORTS_LINKER_OPTION1})
+set_property(TARGET paltest_pal_sxs_test1_dll1 APPEND_STRING PROPERTY LINK_FLAGS " ${SXS_EXPORT_EXCEPTION_TYPEINFO}")
 set_property(TARGET paltest_pal_sxs_test1_dll1 APPEND_STRING PROPERTY LINK_DEPENDS ${EXPORTS_FILE1})
 
 add_dependencies(paltest_pal_sxs_test1_dll1
@@ -38,6 +49,7 @@ add_dependencies(paltest_pal_sxs_test1_dll1
 )
 
 target_link_libraries(paltest_pal_sxs_test1_dll1
+    PUBLIC
     ${COMMON_TEST_LIBRARIES}
     m
     coreclrpal
@@ -62,6 +74,7 @@ set(DLL2SOURCES dlltest2.cpp)
 add_library_clr(paltest_pal_sxs_test1_dll2 SHARED EXCLUDE_FROM_ALL ${DLL2SOURCES})
 add_custom_target(dlltest2_exports DEPENDS ${EXPORTS_FILE2})
 set_property(TARGET paltest_pal_sxs_test1_dll2 APPEND_STRING PROPERTY LINK_FLAGS ${EXPORTS_LINKER_OPTION2})
+set_property(TARGET paltest_pal_sxs_test1_dll2 APPEND_STRING PROPERTY LINK_FLAGS " ${SXS_EXPORT_EXCEPTION_TYPEINFO}")
 set_property(TARGET paltest_pal_sxs_test1_dll2 APPEND_STRING PROPERTY LINK_DEPENDS ${EXPORTS_FILE2})
 
 add_dependencies(paltest_pal_sxs_test1_dll2
@@ -69,6 +82,7 @@ add_dependencies(paltest_pal_sxs_test1_dll2
 )
 
 target_link_libraries(paltest_pal_sxs_test1_dll2
+  PUBLIC
    ${COMMON_TEST_LIBRARIES}
 )
 
@@ -84,6 +98,7 @@ add_dependencies(paltest_pal_sxs_test1
 )
 
 target_link_libraries(paltest_pal_sxs_test1
+  PUBLIC
    paltest_pal_sxs_test1_dll1
    paltest_pal_sxs_test1_dll2
 )
@@ -92,3 +107,5 @@ install (TARGETS paltest_pal_sxs_test1 DESTINATION paltests/exception_handling/p
 install (TARGETS paltest_pal_sxs_test1_dll1 DESTINATION paltests/exception_handling/pal_sxs/test1 COMPONENT paltests EXCLUDE_FROM_ALL)
 install (TARGETS paltest_pal_sxs_test1_dll2 DESTINATION paltests/exception_handling/pal_sxs/test1 COMPONENT paltests EXCLUDE_FROM_ALL)
 add_dependencies(paltests_install paltest_pal_sxs_test1 paltest_pal_sxs_test1_dll1 paltest_pal_sxs_test1_dll2)
+
+endif(NOT CLR_CMAKE_HOST_BROWSER)

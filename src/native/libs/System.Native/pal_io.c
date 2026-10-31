@@ -10,9 +10,10 @@
 #include "pal_types.h"
 
 #include <assert.h>
-#include <errno.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <fnmatch.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
@@ -22,9 +23,16 @@
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#if !HAVE_MAKEDEV_FILEH && HAVE_MAKEDEV_SYSMACROSH
+#include <sys/sysmacros.h>
+#endif
 #include <sys/uio.h>
+#if HAVE_SYSLOG_H
 #include <syslog.h>
+#endif
+#if HAVE_TERMIOS_H
 #include <termios.h>
+#endif
 #include <unistd.h>
 #include <limits.h>
 #if HAVE_FCOPYFILE
@@ -35,49 +43,84 @@
 #if HAVE_INOTIFY
 #include <sys/inotify.h>
 #endif
+#if HAVE_EPOLL
+#include <sys/epoll.h>
+#elif HAVE_KQUEUE
+#include <sys/event.h>
+#endif
 #if HAVE_STATFS_VFS // Linux
 #include <sys/vfs.h>
 #elif HAVE_STATFS_MOUNT // BSD
 #include <sys/mount.h>
-#elif !HAVE_NON_LEGACY_STATFS // SunOS
+#elif HAVE_SYS_STATVFS_H && !HAVE_NON_LEGACY_STATFS && HAVE_STATVFS_BASETYPE // SunOS
 #include <sys/types.h>
 #include <sys/statvfs.h>
+#if HAVE_STATFS_VFS
 #include <sys/vfs.h>
 #endif
+#endif
+
+#ifdef TARGET_SUNOS
+#include <sys/param.h>
+#endif
+
+#ifdef TARGET_HAIKU
+#include <fs_info.h>
+#endif // TARGET_HAIKU
 
 #ifdef _AIX
 #include <alloca.h>
 // Somehow, AIX mangles the definition for this behind a C++ def
 // Redeclare it here
 extern int     getpeereid(int, uid_t *__restrict__, gid_t *__restrict__);
-#elif defined(TARGET_SUNOS)
-#ifndef _KERNEL
-#define _KERNEL
-#define UNDEF_KERNEL
-#endif
-#include <sys/procfs.h>
-#ifdef UNDEF_KERNEL
-#undef _KERNEL
-#endif
 #endif
 
-// The portable build is performed on RHEL7 which doesn't define FICLONE yet.
-// Ensure FICLONE is defined for all Linux builds.
+#if defined(TARGET_SUNOS)
+#include <procfs.h>
+#endif
+
+#if defined(TARGET_WASI)
+#include <sys/random.h> // getentropy
+#endif
+
 #ifdef __linux__
+#include <sys/utsname.h>
+
+// Ensure FICLONE is defined for all Linux builds.
 #ifndef FICLONE
 #define FICLONE _IOW(0x94, 9, int)
-#endif
+#endif /* __linux__ */
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wreserved-id-macro"
+// Ensure __NR_copy_file_range is defined for portable builds.
+#include <sys/syscall.h> // __NR_copy_file_range
+# if !defined(__NR_copy_file_range)
+#  if defined(__amd64__)
+#   define __NR_copy_file_range  326
+#  elif defined(__i386__)
+#   define __NR_copy_file_range  377
+#  elif defined(__arm__)
+#   define __NR_copy_file_range  391
+#  elif defined(__aarch64__)
+#   define __NR_copy_file_range  285
+#  else
+#   error Unknown architecture
+#  endif
+# endif
+#pragma clang diagnostic pop
+
 #endif
 
 #if HAVE_STAT64
 #define stat_ stat64
 #define fstat_ fstat64
 #define lstat_ lstat64
-#else
+#else /* HAVE_STAT64 */
 #define stat_ stat
 #define fstat_ fstat
 #define lstat_ lstat
-#endif
+#endif  /* HAVE_STAT64 */
 
 // These numeric values are specified by POSIX.
 // Validate that our definitions match.
@@ -100,8 +143,11 @@ c_static_assert(PAL_S_ISGID == S_ISGID);
 // are common to our current targets.  If these static asserts fail,
 // ConvertFileStatus needs to be updated to twiddle mode bits
 // accordingly.
+#if !defined(TARGET_WASI)
 c_static_assert(PAL_S_IFMT == S_IFMT);
 c_static_assert(PAL_S_IFIFO == S_IFIFO);
+#endif /* TARGET_WASI */
+c_static_assert(PAL_S_IFBLK == S_IFBLK);
 c_static_assert(PAL_S_IFCHR == S_IFCHR);
 c_static_assert(PAL_S_IFDIR == S_IFDIR);
 c_static_assert(PAL_S_IFREG == S_IFREG);
@@ -114,7 +160,7 @@ c_static_assert(PAL_S_IFSOCK == S_IFSOCK);
 // WebAssembly (BROWSER) has dirent d_type but is not correct
 // by returning UNKNOWN the managed code properly stats the file
 // to detect if entry is directory or not.
-#if defined(DT_UNKNOWN) || defined(TARGET_WASM)
+#if (defined(DT_UNKNOWN) || defined(TARGET_WASM)) && !defined(TARGET_WASI)
 c_static_assert((int)PAL_DT_UNKNOWN == (int)DT_UNKNOWN);
 c_static_assert((int)PAL_DT_FIFO == (int)DT_FIFO);
 c_static_assert((int)PAL_DT_CHR == (int)DT_CHR);
@@ -123,7 +169,9 @@ c_static_assert((int)PAL_DT_BLK == (int)DT_BLK);
 c_static_assert((int)PAL_DT_REG == (int)DT_REG);
 c_static_assert((int)PAL_DT_LNK == (int)DT_LNK);
 c_static_assert((int)PAL_DT_SOCK == (int)DT_SOCK);
+#ifdef DT_WHT // not available in OpenBSD
 c_static_assert((int)PAL_DT_WHT == (int)DT_WHT);
+#endif
 #endif
 
 // Validate that our Lock enum value are correct for the platform
@@ -159,12 +207,20 @@ c_static_assert(PAL_IN_DONT_FOLLOW == IN_DONT_FOLLOW);
 #if HAVE_IN_EXCL_UNLINK
 c_static_assert(PAL_IN_EXCL_UNLINK == IN_EXCL_UNLINK);
 #endif // HAVE_IN_EXCL_UNLINK
+c_static_assert(PAL_IN_MOVE_SELF == IN_MOVE_SELF);
 c_static_assert(PAL_IN_ISDIR == IN_ISDIR);
 #endif // HAVE_INOTIFY
+
+// Validate that our UserFlags enum values match the platform, since
+// SystemNative_LChflags and SystemNative_FChflags pass them directly to the OS.
+#if HAVE_STAT_FLAGS && defined(UF_HIDDEN)
+c_static_assert(PAL_UF_HIDDEN == UF_HIDDEN);
+#endif
 
 static void ConvertFileStatus(const struct stat_* src, FileStatus* dst)
 {
     dst->Dev = (int64_t)src->st_dev;
+    dst->RDev = (int64_t)src->st_rdev;
     dst->Ino = (int64_t)src->st_ino;
     dst->Flags = FILESTATUS_FLAGS_NONE;
     dst->Mode = (int32_t)src->st_mode;
@@ -190,11 +246,13 @@ static void ConvertFileStatus(const struct stat_* src, FileStatus* dst)
     dst->BirthTimeNsec = 0;
 #endif
 
-#if defined(HAVE_STAT_FLAGS) && defined(UF_HIDDEN)
-    dst->UserFlags = ((src->st_flags & UF_HIDDEN) == UF_HIDDEN) ? PAL_UF_HIDDEN : 0;
+#if HAVE_STAT_FLAGS && defined(UF_HIDDEN)
+    dst->UserFlags = (uint32_t)src->st_flags;
 #else
     dst->UserFlags = 0;
 #endif
+
+    dst->HardLinkCount = (uint32_t)src->st_nlink;
 }
 
 int32_t SystemNative_Stat(const char* path, FileStatus* output)
@@ -257,7 +315,7 @@ static int32_t ConvertOpenFlags(int32_t flags)
             return -1;
     }
 
-    if (flags & ~(PAL_O_ACCESS_MODE_MASK | PAL_O_CLOEXEC | PAL_O_CREAT | PAL_O_EXCL | PAL_O_TRUNC | PAL_O_SYNC))
+    if (flags & ~(PAL_O_ACCESS_MODE_MASK | PAL_O_CLOEXEC | PAL_O_CREAT | PAL_O_EXCL | PAL_O_TRUNC | PAL_O_SYNC | PAL_O_NOFOLLOW | PAL_O_DIRECTORY))
     {
         assert_msg(false, "Unknown Open flag", (int)flags);
         return -1;
@@ -275,18 +333,17 @@ static int32_t ConvertOpenFlags(int32_t flags)
         ret |= O_TRUNC;
     if (flags & PAL_O_SYNC)
         ret |= O_SYNC;
+    if (flags & PAL_O_NOFOLLOW)
+        ret |= O_NOFOLLOW;
+    if (flags & PAL_O_DIRECTORY)
+        ret |= O_DIRECTORY;
 
     assert(ret != -1);
     return ret;
 }
 
-intptr_t SystemNative_Open(const char* path, int32_t flags, int32_t mode)
+static int32_t ConvertOpenFlagsAndAddDefaults(int32_t flags)
 {
-// these two ifdefs are for platforms where we dont have the open version of CLOEXEC and thus
-// must simulate it by doing a fcntl with the SETFFD version after the open instead
-#if !HAVE_O_CLOEXEC
-    int32_t old_flags = flags;
-#endif
     flags = ConvertOpenFlags(flags);
     if (flags == -1)
     {
@@ -294,20 +351,61 @@ intptr_t SystemNative_Open(const char* path, int32_t flags, int32_t mode)
         return -1;
     }
 
-    int result;
-    while ((result = open(path, flags, (mode_t)mode)) < 0 && errno == EINTR);
+    // Prevent terminal devices from becoming the controlling terminal of this process.
+    // WASM (browser/WASI) has no controlling terminals, and WASMFS's doOpen rejects any
+    // flag outside its known set (O_NOCTTY is not among them), so skip it there.
+#ifndef TARGET_WASM
+    flags |= O_NOCTTY;
+#endif
+    return flags;
+}
+
+static void SetCloseOnExecIfNeeded(int result, int32_t flags)
+{
 #if !HAVE_O_CLOEXEC
-    if (old_flags & PAL_O_CLOEXEC)
+    if (result >= 0 && (flags & PAL_O_CLOEXEC))
     {
         fcntl(result, F_SETFD, FD_CLOEXEC);
     }
+#else
+    (void)result;
+    (void)flags;
 #endif
+}
+
+intptr_t SystemNative_Open(const char* path, int32_t flags, int32_t mode)
+{
+    int32_t nativeFlags = ConvertOpenFlagsAndAddDefaults(flags);
+    if (nativeFlags == -1)
+    {
+        return -1;
+    }
+
+    int result;
+    while ((result = open(path, nativeFlags, (mode_t)mode)) < 0 && errno == EINTR);
+    SetCloseOnExecIfNeeded(result, flags);
+    return result;
+}
+
+intptr_t SystemNative_OpenAt(intptr_t dirfd, const char* path, int32_t flags, int32_t mode)
+{
+    int32_t nativeFlags = ConvertOpenFlagsAndAddDefaults(flags);
+    if (nativeFlags == -1)
+    {
+        return -1;
+    }
+
+    int result;
+    while ((result = openat(ToFileDescriptor(dirfd), path, nativeFlags, (mode_t)mode)) < 0 && errno == EINTR);
+    SetCloseOnExecIfNeeded(result, flags);
     return result;
 }
 
 int32_t SystemNative_Close(intptr_t fd)
 {
-    return close(ToFileDescriptor(fd));
+    int result = close(ToFileDescriptor(fd));
+    if (result < 0 && errno == EINTR) result = 0; // on all supported platforms, close(2) returning EINTR still means it was released
+    return result;
 }
 
 intptr_t SystemNative_Dup(intptr_t oldfd)
@@ -315,10 +413,14 @@ intptr_t SystemNative_Dup(intptr_t oldfd)
     int result;
 #if HAVE_F_DUPFD_CLOEXEC
     while ((result = fcntl(ToFileDescriptor(oldfd), F_DUPFD_CLOEXEC, 0)) < 0 && errno == EINTR);
-#else
+#elif HAVE_F_DUPFD
     while ((result = fcntl(ToFileDescriptor(oldfd), F_DUPFD, 0)) < 0 && errno == EINTR);
     // do CLOEXEC here too
     fcntl(result, F_SETFD, FD_CLOEXEC);
+#else
+    // The main use cases for dup are setting up the classic Unix dance of setting up file descriptors in advance of performing a fork. Since WASI has no fork, these don't apply.
+    // https://github.com/bytecodealliance/wasmtime/blob/b2fefe77148582a9b8013e34fe5808ada82b6efc/docs/WASI-rationale.md#why-no-dup
+    result = oldfd;
 #endif
     return result;
 }
@@ -330,8 +432,101 @@ int32_t SystemNative_Unlink(const char* path)
     return result;
 }
 
+int32_t SystemNative_UnlinkAt(intptr_t dirfd, const char* path, int32_t flags)
+{
+    int nativeFlags;
+    switch (flags)
+    {
+        case 0:
+            nativeFlags = 0;
+            break;
+        case PAL_AT_REMOVEDIR:
+            nativeFlags = AT_REMOVEDIR;
+            break;
+        default:
+            errno = EINVAL;
+            return -1;
+    }
+
+    int32_t result;
+    while ((result = unlinkat(ToFileDescriptor(dirfd), path, nativeFlags)) < 0 && errno == EINTR);
+    return result;
+}
+
+#ifdef __NR_memfd_create
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC 0x0001U
+#endif
+#ifndef MFD_ALLOW_SEALING
+#define MFD_ALLOW_SEALING 0x0002U
+#endif
+#ifndef F_ADD_SEALS
+#define F_ADD_SEALS (1024 + 9)
+#endif
+#ifndef F_SEAL_WRITE
+#define F_SEAL_WRITE 0x0008
+#endif
+#endif
+
+int32_t SystemNative_IsMemfdSupported(void)
+{
+#ifdef __NR_memfd_create
+#ifdef TARGET_LINUX
+    struct utsname uts;
+    int32_t major, minor;
+
+    // memfd_create is known to only work properly on kernel version > 3.17.
+    // On earlier versions, it may raise SIGSEGV instead of returning ENOTSUP.
+    if (uname(&uts) == 0 && sscanf(uts.release, "%d.%d", &major, &minor) == 2 && (major < 3 || (major == 3 && minor < 17)))
+    {
+        return 0;
+    }
+#endif
+
+    // Note that the name has no affect on file descriptor behavior. From linux manpage:
+    //   Names do not affect the behavior of the file descriptor, and as such multiple files can have the same name without any side effects.
+    int32_t fd = (int32_t)syscall(__NR_memfd_create, "test", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    if (fd < 0) return 0;
+
+    close(fd);
+    return 1;
+#else
+    errno = ENOTSUP;
+    return 0;
+#endif
+}
+
+intptr_t SystemNative_MemfdCreate(const char* name, int32_t isReadonly)
+{
+#ifdef __NR_memfd_create
+#if defined(SHM_NAME_MAX) // macOS
+    assert(strlen(name) <= SHM_NAME_MAX);
+#elif defined(PATH_MAX) // other Unixes
+    assert(strlen(name) <= PATH_MAX);
+#endif
+
+    int32_t fd = (int32_t)syscall(__NR_memfd_create, name, MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    if (!isReadonly || fd < 0) return fd;
+
+    // Add a write seal when readonly protection requested
+    while (fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE) < 0 && errno == EINTR);
+    return fd;
+#else
+    (void)name;
+    (void)isReadonly;
+    errno = ENOTSUP;
+    return -1;
+#endif
+}
+
 intptr_t SystemNative_ShmOpen(const char* name, int32_t flags, int32_t mode)
 {
+#if defined(SHM_NAME_MAX) // macOS
+    assert(strlen(name) <= SHM_NAME_MAX);
+#elif defined(PATH_MAX) // other Unixes
+    assert(strlen(name) <= PATH_MAX);
+#endif
+
 #if HAVE_SHM_OPEN_THAT_WORKS_WELL_ENOUGH_WITH_MMAP
     flags = ConvertOpenFlags(flags);
     if (flags == -1)
@@ -387,90 +582,13 @@ static void ConvertDirent(const struct dirent* entry, DirectoryEntry* outputEntr
 #endif
 }
 
-#if HAVE_READDIR_R
-// struct dirent typically contains 64-bit numbers (e.g. d_ino), so we align it at 8-byte.
-static const size_t dirent_alignment = 8;
-#endif
-
-int32_t SystemNative_GetReadDirRBufferSize(void)
-{
-#if HAVE_READDIR_R
-    // dirent should be under 2k in size
-    assert(sizeof(struct dirent) < 2048);
-    // add some extra space so we can align the buffer to dirent.
-    return sizeof(struct dirent) + dirent_alignment - 1;
-#else
-    return 0;
-#endif
-}
-
-// To reduce the number of string copies, the caller of this function is responsible to ensure the memory
-// referenced by outputEntry remains valid until it is read.
-// If the platform supports readdir_r, the caller provides a buffer into which the data is read.
-// If the platform uses readdir, the caller must ensure no calls are made to readdir/closedir since those will invalidate
+// The caller must ensure no calls are made to readdir/closedir since those will invalidate
 // the current dirent. We assume the platform supports concurrent readdir calls to different DIRs.
-int32_t SystemNative_ReadDirR(DIR* dir, uint8_t* buffer, int32_t bufferSize, DirectoryEntry* outputEntry)
+int32_t SystemNative_ReadDir(DIR* dir, DirectoryEntry* outputEntry)
 {
     assert(dir != NULL);
     assert(outputEntry != NULL);
 
-#if HAVE_READDIR_R
-    assert(buffer != NULL);
-
-    // align to dirent
-    struct dirent* entry = (struct dirent*)((size_t)(buffer + dirent_alignment - 1) & ~(dirent_alignment - 1));
-
-    // check there is dirent size available at entry
-    if ((buffer + bufferSize) < ((uint8_t*)entry + sizeof(struct dirent)))
-    {
-        assert(false && "Buffer size too small; use GetReadDirRBufferSize to get required buffer size");
-        return ERANGE;
-    }
-
-    struct dirent* result = NULL;
-#ifdef _AIX
-    // AIX returns 0 on success, but bizarrely, it returns 9 for both error and
-    // end-of-directory. result is NULL for both cases. The API returns the
-    // same thing for EOD/error, so disambiguation between the two is nearly
-    // impossible without clobbering errno for yourself and seeing if the API
-    // changed it. See:
-    // https://www.ibm.com/support/knowledgecenter/ssw_aix_71/com.ibm.aix.basetrf2/readdir_r.htm
-
-    errno = 0; // create a success condition for the API to clobber
-    int error = readdir_r(dir, entry, &result);
-
-    if (error == 9)
-    {
-        memset(outputEntry, 0, sizeof(*outputEntry)); // managed out param must be initialized
-        return errno == 0 ? -1 : errno;
-    }
-#else
-    int error;
-
-    // EINTR isn't documented, happens in practice on macOS.
-    while ((error = readdir_r(dir, entry, &result)) && errno == EINTR);
-
-    // positive error number returned -> failure
-    if (error != 0)
-    {
-        assert(error > 0);
-        memset(outputEntry, 0, sizeof(*outputEntry)); // managed out param must be initialized
-        return error;
-    }
-
-    // 0 returned with null result -> end-of-stream
-    if (result == NULL)
-    {
-        memset(outputEntry, 0, sizeof(*outputEntry)); // managed out param must be initialized
-        return -1;         // shim convention for end-of-stream
-    }
-#endif
-
-    // 0 returned with non-null result (guaranteed to be set to entry arg) -> success
-    assert(result == entry);
-#else
-    (void)buffer;     // unused
-    (void)bufferSize; // unused
     errno = 0;
     struct dirent* entry = readdir(dir);
 
@@ -487,7 +605,7 @@ int32_t SystemNative_ReadDirR(DIR* dir, uint8_t* buffer, int32_t bufferSize, Dir
         }
         return -1;
     }
-#endif
+
     ConvertDirent(entry, outputEntry);
     return 0;
 }
@@ -517,34 +635,50 @@ int32_t SystemNative_CloseDir(DIR* dir)
     return result;
 }
 
+int32_t SystemNative_IsAtomicNonInheritablePipeCreationSupported(void)
+{
+#if HAVE_PIPE2
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 int32_t SystemNative_Pipe(int32_t pipeFds[2], int32_t flags)
 {
-    switch (flags)
+#ifdef TARGET_WASM
+    // Pipe is not supported on Wasm (browser or WASI)
+    (void)pipeFds;
+    (void)flags;
+    errno = ENOTSUP;
+    return -1;
+#else // TARGET_WASM
+    if ((flags & ~(PAL_O_CLOEXEC | PAL_O_NONBLOCK_READ | PAL_O_NONBLOCK_WRITE)) != 0)
     {
-        case 0:
-            break;
-        case PAL_O_CLOEXEC:
+        assert_msg(false, "Unknown pipe flag", (int)flags);
+        errno = EINVAL;
+        return -1;
+    }
+
+    int32_t pipeFlags = 0;
+    if ((flags & PAL_O_CLOEXEC) != 0)
+    {
 #if HAVE_O_CLOEXEC
-            flags = O_CLOEXEC;
+        pipeFlags = O_CLOEXEC;
 #endif
-            break;
-        default:
-            assert_msg(false, "Unknown pipe flag", (int)flags);
-            errno = EINVAL;
-            return -1;
     }
 
     int32_t result;
 #if HAVE_PIPE2
     // If pipe2 is available, use it.  This will handle O_CLOEXEC if it was set.
-    while ((result = pipe2(pipeFds, flags)) < 0 && errno == EINTR);
-#else
+    while ((result = pipe2(pipeFds, pipeFlags)) < 0 && errno == EINTR);
+#elif HAVE_PIPE
     // Otherwise, use pipe.
     while ((result = pipe(pipeFds)) < 0 && errno == EINTR);
 
     // Then, if O_CLOEXEC was specified, use fcntl to configure the file descriptors appropriately.
 #if HAVE_O_CLOEXEC
-    if ((flags & O_CLOEXEC) != 0 && result == 0)
+    if ((pipeFlags & O_CLOEXEC) != 0 && result == 0)
 #else
     if ((flags & PAL_O_CLOEXEC) != 0 && result == 0)
 #endif
@@ -563,8 +697,33 @@ int32_t SystemNative_Pipe(int32_t pipeFds[2], int32_t flags)
             errno = tmpErrno;
         }
     }
-#endif
+#else /* HAVE_PIPE */
+    result = -1;
+#endif /* HAVE_PIPE */
+
+    if (result == 0 && ((flags & (PAL_O_NONBLOCK_READ | PAL_O_NONBLOCK_WRITE)) != 0))
+    {
+        if ((flags & PAL_O_NONBLOCK_READ) != 0)
+        {
+            result = SystemNative_FcntlSetIsNonBlocking((intptr_t)pipeFds[0], 1);
+        }
+
+        if (result == 0 && (flags & PAL_O_NONBLOCK_WRITE) != 0)
+        {
+            result = SystemNative_FcntlSetIsNonBlocking((intptr_t)pipeFds[1], 1);
+        }
+
+        if (result != 0)
+        {
+            int tmpErrno = errno;
+            close(pipeFds[0]);
+            close(pipeFds[1]);
+            errno = tmpErrno;
+        }
+    }
+
     return result;
+#endif // TARGET_WASM
 }
 
 int32_t SystemNative_FcntlSetFD(intptr_t fd, int32_t flags)
@@ -661,18 +820,37 @@ int32_t SystemNative_MkDir(const char* path, int32_t mode)
     return result;
 }
 
+int32_t SystemNative_MkDirAt(intptr_t dirfd, const char* path, int32_t mode)
+{
+    int32_t result;
+    while ((result = mkdirat(ToFileDescriptor(dirfd), path, (mode_t)mode)) < 0 && errno == EINTR);
+    return result;
+}
+
 int32_t SystemNative_ChMod(const char* path, int32_t mode)
 {
+#if HAVE_CHMOD
     int32_t result;
     while ((result = chmod(path, (mode_t)mode)) < 0 && errno == EINTR);
     return result;
+#else /* HAVE_CHMOD */
+    (void)path; // unused
+    (void)mode; // unused
+    return EINTR;
+#endif /* HAVE_CHMOD */
 }
 
 int32_t SystemNative_FChMod(intptr_t fd, int32_t mode)
 {
+#if HAVE_FCHMOD
     int32_t result;
     while ((result = fchmod(ToFileDescriptor(fd), (mode_t)mode)) < 0 && errno == EINTR);
     return result;
+#else /* HAVE_FCHMOD */
+    (void)fd; // unused
+    (void)mode; // unused
+    return EINTR;
+#endif /* HAVE_FCHMOD */
 }
 
 int32_t SystemNative_FSync(intptr_t fd)
@@ -680,20 +858,29 @@ int32_t SystemNative_FSync(intptr_t fd)
     int fileDescriptor = ToFileDescriptor(fd);
 
     int32_t result;
-    while ((result =
-#if defined(TARGET_OSX) && HAVE_F_FULLFSYNC
-    fcntl(fileDescriptor, F_FULLFSYNC)
-#else
-    fsync(fileDescriptor)
+#ifdef TARGET_OSX
+    while ((result = fcntl(fileDescriptor, F_FULLFSYNC)) < 0 && errno == EINTR);
+    if (result >= 0)
+    {
+        return result;
+    }
+
+    // F_FULLFSYNC is not supported on all file systems and handle types (e.g.,
+    // network file systems, read-only handles). Fall back to fsync.
+    // For genuine I/O errors (e.g., EIO), fsync will also fail and propagate the error.
 #endif
-    < 0) && errno == EINTR);
+    while ((result = fsync(fileDescriptor)) < 0 && errno == EINTR);
     return result;
 }
 
 int32_t SystemNative_FLock(intptr_t fd, int32_t operation)
 {
     int32_t result;
+#if !defined(TARGET_WASI)
     while ((result = flock(ToFileDescriptor(fd), operation)) < 0 && errno == EINTR);
+#else /* TARGET_WASI */
+    result = EINTR;
+#endif /* TARGET_WASI */
     return result;
 }
 
@@ -716,12 +903,15 @@ int64_t SystemNative_LSeek(intptr_t fd, int64_t offset, int32_t whence)
         result =
 #if HAVE_LSEEK64
             lseek64(
-#else
-            lseek(
-#endif
                  ToFileDescriptor(fd),
                  (off_t)offset,
                  whence)) < 0 && errno == EINTR);
+#else
+            lseek(
+                 ToFileDescriptor(fd),
+                 (off_t)offset,
+                 whence)) < 0 && errno == EINTR);
+#endif
     return result;
 }
 
@@ -737,6 +927,143 @@ int32_t SystemNative_SymLink(const char* target, const char* linkPath)
     int32_t result;
     while ((result = symlink(target, linkPath)) < 0 && errno == EINTR);
     return result;
+}
+
+void SystemNative_GetDeviceIdentifiers(uint64_t dev, uint32_t* majorNumber, uint32_t* minorNumber)
+{
+#if !defined(TARGET_WASI)
+    dev_t castedDev = (dev_t)dev;
+#if !defined(TARGET_HAIKU)
+    *majorNumber = (uint32_t)major(castedDev);
+    *minorNumber = (uint32_t)minor(castedDev);
+#else
+    // Haiku has no concept of major/minor numbers, but it does have device IDs.
+    *majorNumber = 0;
+    *minorNumber = (uint32_t)dev;
+#endif // TARGET_HAIKU
+#else /* TARGET_WASI */
+    dev_t castedDev = (dev_t)dev;
+    *majorNumber = 0;
+    *minorNumber = 0;
+#endif /* TARGET_WASI */
+}
+
+int32_t SystemNative_MkNod(const char* pathName, uint32_t mode, uint32_t major, uint32_t minor)
+{
+#if !defined(TARGET_WASI)
+#if !defined(TARGET_HAIKU)
+    dev_t dev = (dev_t)makedev(major, minor);
+#else
+    (void)major;
+    dev_t dev = (dev_t)minor;
+#endif // !TARGET_HAIKU
+
+    int32_t result;
+    while ((result = mknod(pathName, (mode_t)mode, dev)) < 0 && errno == EINTR);
+    return result;
+#else /* TARGET_WASI */
+    return EINTR;
+#endif /* TARGET_WASI */
+}
+
+int32_t SystemNative_MkFifo(const char* pathName, uint32_t mode)
+{
+#if !defined(TARGET_WASI)
+    int32_t result;
+    while ((result = mkfifo(pathName, (mode_t)mode)) < 0 && errno == EINTR);
+    return result;
+#else /* TARGET_WASI */
+    return EINTR;
+#endif /* TARGET_WASI */
+}
+
+#if defined(TARGET_WASI)
+// wasi-libc provides neither mkstemp(s) nor mkdtemp, so emulate them the way libc does:
+// replace the trailing XXXXXX with random characters and try to create the entry exclusively,
+// retrying on name collisions.
+#define TEMP_NAME_RANDOM_CHARS 6
+#define TEMP_NAME_MAX_ATTEMPTS 100
+
+// Validates the template and returns a pointer to the first of the six 'X' characters that
+// precede a suffix of suffixLength characters. Returns NULL and sets errno on failure.
+static char* GetTempNameRandomChars(char* pathTemplate, int32_t suffixLength)
+{
+    size_t pathTemplateLength = strlen(pathTemplate);
+    if (suffixLength < 0 || pathTemplateLength < TEMP_NAME_RANDOM_CHARS || (size_t)suffixLength > pathTemplateLength - TEMP_NAME_RANDOM_CHARS)
+    {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    char* randomChars = pathTemplate + pathTemplateLength - (size_t)suffixLength - TEMP_NAME_RANDOM_CHARS;
+    for (int32_t i = 0; i < TEMP_NAME_RANDOM_CHARS; i++)
+    {
+        if (randomChars[i] != 'X')
+        {
+            errno = EINVAL;
+            return NULL;
+        }
+    }
+
+    return randomChars;
+}
+
+// Replaces the six characters at randomChars with random [A-Za-z0-9] characters.
+// Returns 0 on success, or -1 with errno set on failure.
+static int32_t FillTempNameRandomChars(char* randomChars)
+{
+    static const char s_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    uint8_t randomBytes[TEMP_NAME_RANDOM_CHARS];
+    if (getentropy(randomBytes, sizeof(randomBytes)) != 0)
+    {
+        return -1;
+    }
+
+    for (int32_t i = 0; i < TEMP_NAME_RANDOM_CHARS; i++)
+    {
+        randomChars[i] = s_chars[randomBytes[i] % (sizeof(s_chars) - 1)];
+    }
+
+    return 0;
+}
+#endif /* TARGET_WASI */
+
+char* SystemNative_MkdTemp(char* pathTemplate)
+{
+#if !defined(TARGET_WASI)
+    char* result = NULL;
+    while ((result = mkdtemp(pathTemplate)) == NULL && errno == EINTR);
+    return result;
+#else /* TARGET_WASI */
+    char* randomChars = GetTempNameRandomChars(pathTemplate, 0);
+    if (randomChars == NULL)
+    {
+        return NULL;
+    }
+
+    for (int32_t attempt = 0; attempt < TEMP_NAME_MAX_ATTEMPTS; attempt++)
+    {
+        if (FillTempNameRandomChars(randomChars) != 0)
+        {
+            return NULL;
+        }
+
+        int result;
+        while ((result = mkdir(pathTemplate, 0700)) < 0 && errno == EINTR);
+        if (result == 0)
+        {
+            return pathTemplate;
+        }
+
+        if (errno != EEXIST)
+        {
+            return NULL;
+        }
+    }
+
+    errno = EEXIST;
+    return NULL;
+#endif /* TARGET_WASI */
 }
 
 intptr_t SystemNative_MksTemps(char* pathTemplate, int32_t suffixLength)
@@ -778,6 +1105,29 @@ intptr_t SystemNative_MksTemps(char* pathTemplate, int32_t suffixLength)
     {
         pathTemplate[firstSuffixIndex] = firstSuffixChar;
     }
+#elif defined(TARGET_WASI)
+    char* randomChars = GetTempNameRandomChars(pathTemplate, suffixLength);
+    if (randomChars == NULL)
+    {
+        return -1;
+    }
+
+    for (int32_t attempt = 0; attempt < TEMP_NAME_MAX_ATTEMPTS; attempt++)
+    {
+        if (FillTempNameRandomChars(randomChars) != 0)
+        {
+            return -1;
+        }
+
+        while ((result = open(pathTemplate, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600)) < 0 && errno == EINTR);
+        if (result >= 0 || errno != EEXIST)
+        {
+            return result;
+        }
+    }
+
+    errno = EEXIST;
+    result = -1;
 #else
 #error "Cannot find mkstemps nor mkstemp on this platform"
 #endif
@@ -903,6 +1253,19 @@ int32_t SystemNative_MUnmap(void* address, uint64_t length)
     return munmap(address, (size_t)length);
 }
 
+int32_t SystemNative_MProtect(void* address, uint64_t length, int32_t protection)
+{
+    if (length > SIZE_MAX)
+    {
+        errno =  ERANGE;
+        return -1;
+    }
+
+    protection = ConvertMMapProtection(protection);
+
+    return mprotect(address, (size_t)length, protection);
+}
+
 int32_t SystemNative_MAdvise(void* address, uint64_t length, int32_t advice)
 {
     if (length > SIZE_MAX)
@@ -914,13 +1277,15 @@ int32_t SystemNative_MAdvise(void* address, uint64_t length, int32_t advice)
     switch (advice)
     {
         case PAL_MADV_DONTFORK:
-#ifdef MADV_DONTFORK
+#if defined(MADV_DONTFORK) && !defined(TARGET_WASM)
             return madvise(address, (size_t)length, MADV_DONTFORK);
 #else
             (void)address, (void)length, (void)advice;
             errno = ENOTSUP;
             return -1;
-#endif
+#endif // MADV_DONTFORK && !TARGET_WASM
+        default:
+            break; // fall through to error
     }
 
     assert_msg(false, "Unknown MemoryAdvice", (int)advice);
@@ -943,7 +1308,11 @@ int32_t SystemNative_MSync(void* address, uint64_t length, int32_t flags)
         return -1;
     }
 
+#if !defined(TARGET_WASI)
     return msync(address, (size_t)length, flags);
+#else
+    return -1;
+#endif
 }
 
 int64_t SystemNative_SysConf(int32_t name)
@@ -954,6 +1323,8 @@ int64_t SystemNative_SysConf(int32_t name)
             return sysconf(_SC_CLK_TCK);
         case PAL_SC_PAGESIZE:
             return sysconf(_SC_PAGESIZE);
+        default:
+            break; // fall through to error
     }
 
     assert_msg(false, "Unknown SysConf name", (int)name);
@@ -1050,6 +1421,67 @@ int32_t SystemNative_Read(intptr_t fd, void* buffer, int32_t bufferSize)
     return Common_Read(fd, buffer, bufferSize);
 }
 
+int32_t SystemNative_ReadFromNonblocking(intptr_t fd, void* buffer, int32_t bufferSize)
+{
+    while (1)
+    {
+        int32_t result = Common_Read(fd, buffer, bufferSize);
+        if (result != -1 || (errno != EAGAIN && errno != EWOULDBLOCK))
+        {
+            return result;
+        }
+
+        // The fd is non-blocking and no data is available yet.
+        // Block (on a thread pool thread) until data arrives or the pipe/socket is closed.
+        PollEvent pollEvent = { .FileDescriptor = (int32_t)fd, .Events = PAL_POLLIN, .TriggeredEvents = 0 };
+        uint32_t triggered = 0;
+        int32_t pollResult = Common_Poll(&pollEvent, 1, -1, &triggered);
+        if (pollResult != Error_SUCCESS)
+        {
+            errno = ConvertErrorPalToPlatform(pollResult);
+            return -1;
+        }
+
+        if ((pollEvent.TriggeredEvents & (PAL_POLLHUP | PAL_POLLERR)) != 0 &&
+            (pollEvent.TriggeredEvents & PAL_POLLIN) == 0)
+        {
+            // The pipe/socket was closed with no data available (EOF).
+            return 0;
+        }
+    }
+}
+
+int32_t SystemNative_WriteToNonblocking(intptr_t fd, const void* buffer, int32_t bufferSize)
+{
+    while (1)
+    {
+        int32_t result = Common_Write(fd, buffer, bufferSize);
+        if (result != -1 || (errno != EAGAIN && errno != EWOULDBLOCK))
+        {
+            return result;
+        }
+
+        // The fd is non-blocking and the write buffer is full.
+        // Block (on a thread pool thread) until space is available or the pipe/socket is closed.
+        PollEvent pollEvent = { .FileDescriptor = (int32_t)fd, .Events = PAL_POLLOUT, .TriggeredEvents = 0 };
+        uint32_t triggered = 0;
+        int32_t pollResult = Common_Poll(&pollEvent, 1, -1, &triggered);
+        if (pollResult != Error_SUCCESS)
+        {
+            errno = ConvertErrorPalToPlatform(pollResult);
+            return -1;
+        }
+
+        if ((pollEvent.TriggeredEvents & (PAL_POLLHUP | PAL_POLLERR)) != 0 &&
+            (pollEvent.TriggeredEvents & PAL_POLLOUT) == 0)
+        {
+            // The pipe/socket was closed.
+            errno = EPIPE;
+            return -1;
+        }
+    }
+}
+
 int32_t SystemNative_ReadLink(const char* path, char* buffer, int32_t bufferSize)
 {
     assert(buffer != NULL || bufferSize == 0);
@@ -1083,7 +1515,9 @@ int32_t SystemNative_RmDir(const char* path)
 
 void SystemNative_Sync(void)
 {
+#if !defined(TARGET_WASI)
     sync();
+#endif /* TARGET_WASI */
 }
 
 int32_t SystemNative_Write(intptr_t fd, const void* buffer, int32_t bufferSize)
@@ -1146,9 +1580,44 @@ static int32_t CopyFile_ReadWrite(int inFd, int outFd)
 }
 #endif // !HAVE_FCOPYFILE
 
+
+#ifdef __linux__
+static ssize_t CopyFileRange(int inFd, int outFd, size_t len)
+{
+    return syscall(__NR_copy_file_range, inFd, NULL, outFd, NULL, len, 0);
+}
+
+static bool SupportsCopyFileRange(void)
+{
+    static volatile int s_isSupported = 0;
+
+    int isSupported = s_isSupported;
+    if (isSupported == 0)
+    {
+        isSupported = -1;
+
+        // Avoid known issues with copy_file_range that are fixed in Linux 5.3+ (https://lwn.net/Articles/789527/).
+        struct utsname name;
+        if (uname(&name) == 0)
+        {
+            unsigned int major = 0, minor = 0;
+            sscanf(name.release, "%u.%u", &major, &minor);
+            if (major > 5 || (major == 5 && minor >=3))
+            {
+                isSupported = CopyFileRange(-1, -1, 0) == -1 && errno != ENOSYS ? 1 : -1;
+            }
+        }
+
+        s_isSupported = isSupported;
+    }
+    return isSupported == 1;
+}
+#endif
+
 int32_t SystemNative_CopyFile(intptr_t sourceFd, intptr_t destinationFd, int64_t sourceLength)
 {
-    (void)sourceLength; // unused on some platforms.
+    // unused on some platforms.
+    (void)sourceLength;
 
     int inFd = ToFileDescriptor(sourceFd);
     int outFd = ToFileDescriptor(destinationFd);
@@ -1162,6 +1631,7 @@ int32_t SystemNative_CopyFile(intptr_t sourceFd, intptr_t destinationFd, int64_t
     // Get the stats on the source file.
     int ret;
     bool copied = false;
+    bool trySendFile = true;
 
     // Certain files (e.g. procfs) may return a size of 0 even though reading them will
     // produce data. We use plain read/write for those.
@@ -1169,19 +1639,47 @@ int32_t SystemNative_CopyFile(intptr_t sourceFd, intptr_t destinationFd, int64_t
     // Try copying data using a copy-on-write clone. This shares storage between the files.
     if (sourceLength != 0)
     {
+#if HAVE_IOCTL_WITH_INT_REQUEST
+        while ((ret = ioctl(outFd, (int)FICLONE, inFd)) < 0 && errno == EINTR);
+#else
         while ((ret = ioctl(outFd, FICLONE, inFd)) < 0 && errno == EINTR);
+#endif
         copied = ret == 0;
+    }
+#endif
+#ifdef __linux__
+    if (SupportsCopyFileRange() && !copied && sourceLength != 0)
+    {
+        do
+        {
+            size_t copyLength = (sourceLength >= SSIZE_MAX ? SSIZE_MAX : (size_t)sourceLength);
+            ssize_t sent = CopyFileRange(inFd, outFd, copyLength);
+            if (sent <= 0)
+            {
+                // sendfile will likely encounter the same error, don't try it.
+                trySendFile = false;
+                break; // Fall through.
+            }
+            else
+            {
+                assert(sent <= sourceLength);
+                sourceLength -= sent;
+            }
+        } while (sourceLength > 0);
+
+        copied = sourceLength == 0;
     }
 #endif
 #if HAVE_SENDFILE_4
     // Try copying the data using sendfile.
-    if (!copied && sourceLength != 0)
+    if (trySendFile && !copied && sourceLength != 0)
     {
         // Note that per man page for large files, you have to iterate until the
         // whole file is copied (Linux has a limit of 0x7ffff000 bytes copied).
         do
         {
-            ssize_t sent = sendfile(outFd, inFd, NULL, (sourceLength >= SSIZE_MAX ? SSIZE_MAX : (size_t)sourceLength));
+            size_t copyLength = (sourceLength >= SSIZE_MAX ? SSIZE_MAX : (size_t)sourceLength);
+            ssize_t sent = sendfile(outFd, inFd, NULL, copyLength);
             if (sent < 0)
             {
                 if (errno != EINVAL && errno != ENOSYS)
@@ -1222,7 +1720,7 @@ int32_t SystemNative_CopyFile(intptr_t sourceFd, intptr_t destinationFd, int64_t
     if (ret == 0)
     {
 #if HAVE_FUTIMENS
-        // futimens is prefered because it has a higher resolution.
+        // futimens is preferred because it has a higher resolution.
         struct timespec origTimes[2];
         origTimes[0].tv_sec = (time_t)sourceStat.st_atime;
         origTimes[0].tv_nsec = ST_ATIME_NSEC(&sourceStat);
@@ -1238,6 +1736,13 @@ int32_t SystemNative_CopyFile(intptr_t sourceFd, intptr_t destinationFd, int64_t
         while ((ret = futimes(outFd, origTimes)) < 0 && errno == EINTR);
 #endif
     }
+#if defined(TARGET_WASI)
+    // WASI hosts are not required to support setting file times, so copying them is best effort.
+    if (ret != 0 && (errno == ENOSYS || errno == ENOTSUP))
+    {
+        ret = 0;
+    }
+#endif /* TARGET_WASI */
     // If we copied to a filesystem (eg EXFAT) that does not preserve POSIX ownership, all files appear
     // to be owned by root. If we aren't running as root, then we won't be an owner of our new file, and
     // attempting to copy metadata to it will fail with EPERM. We have copied successfully, we just can't
@@ -1247,7 +1752,8 @@ int32_t SystemNative_CopyFile(intptr_t sourceFd, intptr_t destinationFd, int64_t
         return -1;
     }
 
-    // Copy permissions.
+#if HAVE_FCHMOD && !defined(TARGET_WASI)
+    // Copy permissions. WASI has no permission bits and wasi-libc's fchmod always fails with ENOSYS.
     // Even though managed code created the file with permissions matching those of the source file,
     // we need to copy permissions because the open permissions may be filtered by 'umask'.
     while ((ret = fchmod(outFd, sourceStat.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO))) < 0 && errno == EINTR);
@@ -1255,6 +1761,7 @@ int32_t SystemNative_CopyFile(intptr_t sourceFd, intptr_t destinationFd, int64_t
     {
         return -1;
     }
+#endif /* HAVE_FCHMOD && !defined(TARGET_WASI) */
 
     return 0;
 #endif // HAVE_FCOPYFILE
@@ -1263,7 +1770,7 @@ int32_t SystemNative_CopyFile(intptr_t sourceFd, intptr_t destinationFd, int64_t
 intptr_t SystemNative_INotifyInit(void)
 {
 #if HAVE_INOTIFY
-    return inotify_init();
+    return inotify_init1(IN_CLOEXEC);
 #else
     errno = ENOTSUP;
     return -1;
@@ -1313,7 +1820,9 @@ int32_t SystemNative_GetPeerID(intptr_t socket, uid_t* euid)
 
     // ucred causes Emscripten to fail even though it's defined,
     // but getting peer credentials won't work for WebAssembly anyway
-#if defined(SO_PEERCRED) && !defined(TARGET_WASM)
+    // ucred also causes OpeBSD to fail because the struct definition is named
+    // differently and on OpenBSD we can use getpeereid(3) instead anyways.
+#if defined(SO_PEERCRED) && !defined(TARGET_WASM) && !defined(TARGET_OPENBSD)
     struct ucred creds;
     socklen_t len = sizeof(creds);
     if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &creds, &len) == 0)
@@ -1336,9 +1845,14 @@ int32_t SystemNative_GetPeerID(intptr_t socket, uid_t* euid)
 char* SystemNative_RealPath(const char* path)
 {
     assert(path != NULL);
+#if !defined(TARGET_WASI)
     return realpath(path, NULL);
+#else /* TARGET_WASI */
+    return NULL;
+#endif /* TARGET_WASI */
 }
 
+#if !defined(TARGET_WASI)
 static int16_t ConvertLockType(int16_t managedLockType)
 {
     // the managed enum Interop.Sys.LockType has no 1:1 mapping with corresponding Unix values
@@ -1357,156 +1871,82 @@ static int16_t ConvertLockType(int16_t managedLockType)
     }
 }
 
-int64_t SystemNative_GetFileSystemType(intptr_t fd)
+#if HAVE_STATFS_FSTYPENAME || HAVE_STATVFS_BASETYPE || defined(TARGET_HAIKU)
+static uint32_t FileSystemNameSupportsLocking(const char* fileSystemName)
 {
-#if HAVE_STATFS_VFS || HAVE_STATFS_MOUNT
+    if (strcmp(fileSystemName, "nfs") == 0 ||
+        strcmp(fileSystemName, "cifs") == 0 ||
+        strcmp(fileSystemName, "smb") == 0 ||
+        strcmp(fileSystemName, "smb2") == 0)
+    {
+        return 0;
+    }
+    return 1;
+}
+#endif
+#endif /* TARGET_WASI */
+
+// LOCK_SH does not work well for write access on nfs/cifs/samba. For example, writes are dropped silently.
+// See https://github.com/dotnet/runtime/issues/44546 and https://github.com/dotnet/runtime/issues/53182.
+uint32_t SystemNative_FileSystemSupportsLocking(intptr_t fd, int32_t lockOperation, int32_t accessWrite)
+{
+    assert(lockOperation == PAL_LOCK_SH || lockOperation == PAL_LOCK_EX);
+#if defined(TARGET_WASI) || defined(TARGET_WASM)
+    return 0; // WASI/WASM doesn't support locking.
+#else
+    if (lockOperation == PAL_LOCK_EX || accessWrite == 0)
+    {
+        return 1;
+    }
+#if defined(TARGET_HAIKU)
+    struct stat st;
+    int fstatRes;
+    while ((fstatRes = fstat(ToFileDescriptor(fd), &st)) == -1 && errno == EINTR);
+    if (fstatRes == -1) return 0;
+
+    struct fs_info info;
+    int fsStatDevRes;
+    while ((fsStatDevRes = fs_stat_dev(st.st_dev, &info)) == -1 && errno == EINTR);
+    if (fsStatDevRes == -1) return 0;
+
+    return FileSystemNameSupportsLocking(info.fsh_name);
+#elif HAVE_STATFS_FSTYPENAME || defined(TARGET_LINUX)
     int statfsRes;
     struct statfs statfsArgs;
     // for our needs (get file system type) statfs is always enough and there is no need to use statfs64
     // which got deprecated in macOS 10.6, in favor of statfs
     while ((statfsRes = fstatfs(ToFileDescriptor(fd), &statfsArgs)) == -1 && errno == EINTR) ;
-    return statfsRes == -1 ? (int64_t)-1 : (int64_t)statfsArgs.f_type;
-#elif !HAVE_NON_LEGACY_STATFS
+    if (statfsRes == -1) return 0;
+
+#if HAVE_STATFS_FSTYPENAME
+    return FileSystemNameSupportsLocking(statfsArgs.f_fstypename);
+#elif defined(TARGET_LINUX)
+    unsigned int f_type = (unsigned int)statfsArgs.f_type;
+    if (f_type == 0x6969 ||     // NFS_SUPER_MAGIC
+        f_type == 0xFF534D42 || // CIFS_SUPER_MAGIC
+        f_type == 0x517B ||     // SMB_SUPER_MAGIC
+        f_type == 0xFE534D42)   // SMB2_SUPER_MAGIC
+    {
+        return 0;
+    }
+    return 1;
+#endif
+#elif HAVE_STATVFS_BASETYPE
     int statfsRes;
     struct statvfs statfsArgs;
     while ((statfsRes = fstatvfs(ToFileDescriptor(fd), &statfsArgs)) == -1 && errno == EINTR) ;
-    if (statfsRes == -1) return (int64_t)-1;
+    if (statfsRes == -1) return 0;
 
-    int64_t result = -1;
-
-    if (strcmp(statfsArgs.f_basetype, "adfs") == 0) result = 0xADF5;
-    else if (strcmp(statfsArgs.f_basetype, "affs") == 0) result = 0xADFF;
-    else if (strcmp(statfsArgs.f_basetype, "afs") == 0) result = 0x5346414F;
-    else if (strcmp(statfsArgs.f_basetype, "anoninode") == 0) result = 0x09041934;
-    else if (strcmp(statfsArgs.f_basetype, "aufs") == 0) result = 0x61756673;
-    else if (strcmp(statfsArgs.f_basetype, "autofs") == 0) result = 0x0187;
-    else if (strcmp(statfsArgs.f_basetype, "autofs4") == 0) result = 0x6D4A556D;
-    else if (strcmp(statfsArgs.f_basetype, "befs") == 0) result = 0x42465331;
-    else if (strcmp(statfsArgs.f_basetype, "bdevfs") == 0) result = 0x62646576;
-    else if (strcmp(statfsArgs.f_basetype, "bfs") == 0) result = 0x1BADFACE;
-    else if (strcmp(statfsArgs.f_basetype, "bpf_fs") == 0) result = 0xCAFE4A11;
-    else if (strcmp(statfsArgs.f_basetype, "binfmt_misc") == 0) result = 0x42494E4D;
-    else if (strcmp(statfsArgs.f_basetype, "bootfs") == 0) result = 0xA56D3FF9;
-    else if (strcmp(statfsArgs.f_basetype, "btrfs") == 0) result = 0x9123683E;
-    else if (strcmp(statfsArgs.f_basetype, "ceph") == 0) result = 0x00C36400;
-    else if (strcmp(statfsArgs.f_basetype, "cgroupfs") == 0) result = 0x0027E0EB;
-    else if (strcmp(statfsArgs.f_basetype, "cgroup2fs") == 0) result = 0x63677270;
-    else if (strcmp(statfsArgs.f_basetype, "cifs") == 0) result = 0xFF534D42;
-    else if (strcmp(statfsArgs.f_basetype, "coda") == 0) result = 0x73757245;
-    else if (strcmp(statfsArgs.f_basetype, "coherent") == 0) result = 0x012FF7B7;
-    else if (strcmp(statfsArgs.f_basetype, "configfs") == 0) result = 0x62656570;
-    else if (strcmp(statfsArgs.f_basetype, "cpuset") == 0) result = 0x01021994;
-    else if (strcmp(statfsArgs.f_basetype, "cramfs") == 0) result = 0x28CD3D45;
-    else if (strcmp(statfsArgs.f_basetype, "ctfs") == 0) result = 0x01021994;
-    else if (strcmp(statfsArgs.f_basetype, "debugfs") == 0) result = 0x64626720;
-    else if (strcmp(statfsArgs.f_basetype, "dev") == 0) result = 0x1373;
-    else if (strcmp(statfsArgs.f_basetype, "devfs") == 0) result = 0x1373;
-    else if (strcmp(statfsArgs.f_basetype, "devpts") == 0) result = 0x1CD1;
-    else if (strcmp(statfsArgs.f_basetype, "ecryptfs") == 0) result = 0xF15F;
-    else if (strcmp(statfsArgs.f_basetype, "efs") == 0) result = 0x00414A53;
-    else if (strcmp(statfsArgs.f_basetype, "exofs") == 0) result = 0x5DF5;
-    else if (strcmp(statfsArgs.f_basetype, "ext") == 0) result = 0x137D;
-    else if (strcmp(statfsArgs.f_basetype, "ext2_old") == 0) result = 0xEF51;
-    else if (strcmp(statfsArgs.f_basetype, "ext2") == 0) result = 0xEF53;
-    else if (strcmp(statfsArgs.f_basetype, "ext3") == 0) result = 0xEF53;
-    else if (strcmp(statfsArgs.f_basetype, "ext4") == 0) result = 0xEF53;
-    else if (strcmp(statfsArgs.f_basetype, "f2fs") == 0) result = 0xF2F52010;
-    else if (strcmp(statfsArgs.f_basetype, "fat") == 0) result = 0x4006;
-    else if (strcmp(statfsArgs.f_basetype, "fd") == 0) result = 0xF00D1E;
-    else if (strcmp(statfsArgs.f_basetype, "fhgfs") == 0) result = 0x19830326;
-    else if (strcmp(statfsArgs.f_basetype, "fuse") == 0) result = 0x65735546;
-    else if (strcmp(statfsArgs.f_basetype, "fuseblk") == 0) result = 0x65735546;
-    else if (strcmp(statfsArgs.f_basetype, "fusectl") == 0) result = 0x65735543;
-    else if (strcmp(statfsArgs.f_basetype, "futexfs") == 0) result = 0x0BAD1DEA;
-    else if (strcmp(statfsArgs.f_basetype, "gfsgfs2") == 0) result = 0x1161970;
-    else if (strcmp(statfsArgs.f_basetype, "gfs2") == 0) result = 0x01161970;
-    else if (strcmp(statfsArgs.f_basetype, "gpfs") == 0) result = 0x47504653;
-    else if (strcmp(statfsArgs.f_basetype, "hfs") == 0) result = 0x4244;
-    else if (strcmp(statfsArgs.f_basetype, "hfsplus") == 0) result = 0x482B;
-    else if (strcmp(statfsArgs.f_basetype, "hpfs") == 0) result = 0xF995E849;
-    else if (strcmp(statfsArgs.f_basetype, "hugetlbfs") == 0) result = 0x958458F6;
-    else if (strcmp(statfsArgs.f_basetype, "inodefs") == 0) result = 0x11307854;
-    else if (strcmp(statfsArgs.f_basetype, "inotifyfs") == 0) result = 0x2BAD1DEA;
-    else if (strcmp(statfsArgs.f_basetype, "isofs") == 0) result = 0x9660;
-    else if (strcmp(statfsArgs.f_basetype, "jffs") == 0) result = 0x07C0;
-    else if (strcmp(statfsArgs.f_basetype, "jffs2") == 0) result = 0x72B6;
-    else if (strcmp(statfsArgs.f_basetype, "jfs") == 0) result = 0x3153464A;
-    else if (strcmp(statfsArgs.f_basetype, "kafs") == 0) result = 0x6B414653;
-    else if (strcmp(statfsArgs.f_basetype, "lofs") == 0) result = 0xEF53;
-    else if (strcmp(statfsArgs.f_basetype, "logfs") == 0) result = 0xC97E8168;
-    else if (strcmp(statfsArgs.f_basetype, "lustre") == 0) result = 0x0BD00BD0;
-    else if (strcmp(statfsArgs.f_basetype, "minix_old") == 0) result = 0x137F;
-    else if (strcmp(statfsArgs.f_basetype, "minix") == 0) result = 0x138F;
-    else if (strcmp(statfsArgs.f_basetype, "minix2") == 0) result = 0x2468;
-    else if (strcmp(statfsArgs.f_basetype, "minix2v2") == 0) result = 0x2478;
-    else if (strcmp(statfsArgs.f_basetype, "minix3") == 0) result = 0x4D5A;
-    else if (strcmp(statfsArgs.f_basetype, "mntfs") == 0) result = 0x01021994;
-    else if (strcmp(statfsArgs.f_basetype, "mqueue") == 0) result = 0x19800202;
-    else if (strcmp(statfsArgs.f_basetype, "msdos") == 0) result = 0x4D44;
-    else if (strcmp(statfsArgs.f_basetype, "nfs") == 0) result = 0x6969;
-    else if (strcmp(statfsArgs.f_basetype, "nfsd") == 0) result = 0x6E667364;
-    else if (strcmp(statfsArgs.f_basetype, "nilfs") == 0) result = 0x3434;
-    else if (strcmp(statfsArgs.f_basetype, "novell") == 0) result = 0x564C;
-    else if (strcmp(statfsArgs.f_basetype, "ntfs") == 0) result = 0x5346544E;
-    else if (strcmp(statfsArgs.f_basetype, "objfs") == 0) result = 0x01021994;
-    else if (strcmp(statfsArgs.f_basetype, "ocfs2") == 0) result = 0x7461636F;
-    else if (strcmp(statfsArgs.f_basetype, "openprom") == 0) result = 0x9FA1;
-    else if (strcmp(statfsArgs.f_basetype, "omfs") == 0) result = 0xC2993D87;
-    else if (strcmp(statfsArgs.f_basetype, "overlay") == 0) result = 0x794C7630;
-    else if (strcmp(statfsArgs.f_basetype, "overlayfs") == 0) result = 0x794C764F;
-    else if (strcmp(statfsArgs.f_basetype, "panfs") == 0) result = 0xAAD7AAEA;
-    else if (strcmp(statfsArgs.f_basetype, "pipefs") == 0) result = 0x50495045;
-    else if (strcmp(statfsArgs.f_basetype, "proc") == 0) result = 0x9FA0;
-    else if (strcmp(statfsArgs.f_basetype, "pstorefs") == 0) result = 0x6165676C;
-    else if (strcmp(statfsArgs.f_basetype, "qnx4") == 0) result = 0x002F;
-    else if (strcmp(statfsArgs.f_basetype, "qnx6") == 0) result = 0x68191122;
-    else if (strcmp(statfsArgs.f_basetype, "ramfs") == 0) result = 0x858458F6;
-    else if (strcmp(statfsArgs.f_basetype, "reiserfs") == 0) result = 0x52654973;
-    else if (strcmp(statfsArgs.f_basetype, "romfs") == 0) result = 0x7275;
-    else if (strcmp(statfsArgs.f_basetype, "rootfs") == 0) result = 0x53464846;
-    else if (strcmp(statfsArgs.f_basetype, "rpc_pipefs") == 0) result = 0x67596969;
-    else if (strcmp(statfsArgs.f_basetype, "samba") == 0) result = 0x517B;
-    else if (strcmp(statfsArgs.f_basetype, "securityfs") == 0) result = 0x73636673;
-    else if (strcmp(statfsArgs.f_basetype, "selinux") == 0) result = 0xF97CFF8C;
-    else if (strcmp(statfsArgs.f_basetype, "sffs") == 0) result = 0x786F4256;
-    else if (strcmp(statfsArgs.f_basetype, "sharefs") == 0) result = 0x01021994;
-    else if (strcmp(statfsArgs.f_basetype, "smb") == 0) result = 0x517B;
-    else if (strcmp(statfsArgs.f_basetype, "smb2") == 0) result = 0xFE534D42;
-    else if (strcmp(statfsArgs.f_basetype, "sockfs") == 0) result = 0x534F434B;
-    else if (strcmp(statfsArgs.f_basetype, "squashfs") == 0) result = 0x73717368;
-    else if (strcmp(statfsArgs.f_basetype, "sysfs") == 0) result = 0x62656572;
-    else if (strcmp(statfsArgs.f_basetype, "sysv2") == 0) result = 0x012FF7B6;
-    else if (strcmp(statfsArgs.f_basetype, "sysv4") == 0) result = 0x012FF7B5;
-    else if (strcmp(statfsArgs.f_basetype, "tmpfs") == 0) result = 0x01021994;
-    else if (strcmp(statfsArgs.f_basetype, "tracefs") == 0) result = 0x74726163;
-    else if (strcmp(statfsArgs.f_basetype, "ubifs") == 0) result = 0x24051905;
-    else if (strcmp(statfsArgs.f_basetype, "udf") == 0) result = 0x15013346;
-    else if (strcmp(statfsArgs.f_basetype, "ufs") == 0) result = 0x00011954;
-    else if (strcmp(statfsArgs.f_basetype, "ufscigam") == 0) result = 0x54190100;
-    else if (strcmp(statfsArgs.f_basetype, "ufs2") == 0) result = 0x19540119;
-    else if (strcmp(statfsArgs.f_basetype, "usbdevice") == 0) result = 0x9FA2;
-    else if (strcmp(statfsArgs.f_basetype, "v9fs") == 0) result = 0x01021997;
-    else if (strcmp(statfsArgs.f_basetype, "vagrant") == 0) result = 0x786F4256;
-    else if (strcmp(statfsArgs.f_basetype, "vboxfs") == 0) result = 0x786F4256;
-    else if (strcmp(statfsArgs.f_basetype, "vmhgfs") == 0) result = 0xBACBACBC;
-    else if (strcmp(statfsArgs.f_basetype, "vxfs") == 0) result = 0xA501FCF5;
-    else if (strcmp(statfsArgs.f_basetype, "vzfs") == 0) result = 0x565A4653;
-    else if (strcmp(statfsArgs.f_basetype, "xenfs") == 0) result = 0xABBA1974;
-    else if (strcmp(statfsArgs.f_basetype, "xenix") == 0) result = 0x012FF7B4;
-    else if (strcmp(statfsArgs.f_basetype, "xfs") == 0) result = 0x58465342;
-    else if (strcmp(statfsArgs.f_basetype, "xia") == 0) result = 0x012FD16D;
-    else if (strcmp(statfsArgs.f_basetype, "udev") == 0) result = 0x01021994;
-    else if (strcmp(statfsArgs.f_basetype, "zfs") == 0) result = 0x2FC12FC1;
-
-    assert(result != -1);
-    return result;
+    return FileSystemNameSupportsLocking(statfsArgs.f_basetype);
 #else
     #error "Platform doesn't support fstatfs or fstatvfs"
+#endif
 #endif
 }
 
 int32_t SystemNative_LockFileRegion(intptr_t fd, int64_t offset, int64_t length, int16_t lockType)
 {
+#if !defined(TARGET_WASI)
     int16_t unixLockType = ConvertLockType(lockType);
     if (offset < 0 || length < 0)
     {
@@ -1520,7 +1960,7 @@ int32_t SystemNative_LockFileRegion(intptr_t fd, int64_t offset, int64_t length,
     struct flock lockArgs;
 #endif
 
-#if defined(TARGET_ANDROID) && defined(HAVE_FLOCK64)
+#if defined(TARGET_ANDROID) && HAVE_FLOCK64
     // On Android, fcntl is always implemented by fcntl64 but before https://github.com/aosp-mirror/platform_bionic/commit/09e77f35ab8d291bf88302bb9673aaa518c6bcb0
     // there was no remapping of F_SETLK to F_SETLK64 when _FILE_OFFSET_BITS=64 (which we set in eng/native/configurecompiler.cmake) so we need to always pass F_SETLK64
     int command = F_SETLK64;
@@ -1536,6 +1976,9 @@ int32_t SystemNative_LockFileRegion(intptr_t fd, int64_t offset, int64_t length,
     int32_t ret;
     while ((ret = fcntl (ToFileDescriptor(fd), command, &lockArgs)) < 0 && errno == EINTR);
     return ret;
+#else /* TARGET_WASI */
+    return EINTR;
+#endif /* TARGET_WASI */
 }
 
 int32_t SystemNative_LChflags(const char* path, uint32_t flags)
@@ -1551,40 +1994,128 @@ int32_t SystemNative_LChflags(const char* path, uint32_t flags)
 #endif
 }
 
+int32_t SystemNative_FChflags(intptr_t fd, uint32_t flags)
+{
+#if HAVE_LCHFLAGS
+    int32_t result;
+    while ((result = fchflags(ToFileDescriptor(fd), flags)) < 0 && errno == EINTR);
+    return result;
+#else
+    (void)fd, (void)flags;
+    errno = ENOTSUP;
+    return -1;
+#endif
+}
+
 int32_t SystemNative_LChflagsCanSetHiddenFlag(void)
 {
-#if defined(UF_HIDDEN) && defined(HAVE_STAT_FLAGS) && defined(HAVE_LCHFLAGS)
+#if HAVE_LCHFLAGS
+    return SystemNative_CanGetHiddenFlag();
+#else
+    return false;
+#endif
+}
+
+int32_t SystemNative_CanGetHiddenFlag(void)
+{
+#if HAVE_STAT_FLAGS && defined(UF_HIDDEN)
     return true;
 #else
     return false;
 #endif
 }
 
-int32_t SystemNative_ReadProcessStatusInfo(pid_t pid, ProcessStatus* processStatus)
+int32_t SystemNative_ReadThreadInfo(int32_t pid, int32_t tid, ThreadInfo* threadInfo)
 {
 #ifdef __sun
-    char statusFilename[64];
-    snprintf(statusFilename, sizeof(statusFilename), "/proc/%d/psinfo", pid);
+    char infoFilename[64];
+    snprintf(infoFilename, sizeof(infoFilename), "/proc/%d/lwp/%d/lwpsinfo", pid, tid);
 
     intptr_t fd;
-    while ((fd = open(statusFilename, O_RDONLY)) < 0 && errno == EINTR);
+    while ((fd = open(infoFilename, O_RDONLY)) < 0 && errno == EINTR);
     if (fd < 0)
     {
         return 0;
     }
 
-    psinfo_t status;
-    int result = Common_Read(fd, &status, sizeof(psinfo_t));
-    close(fd);
-    if (result >= 0)
+    lwpsinfo_t pr;
+    int result = Common_Read(fd, &pr, sizeof(pr));
+    close(ToFileDescriptor(fd));
+    if (result < (int)sizeof(pr))
     {
-        processStatus->ResidentSetSize = status.pr_rssize * 1024; // pr_rssize is in Kbytes
-        return 1;
+        errno = EIO;
+        return -1;
+    }
+
+    threadInfo->Tid = pr.pr_lwpid;
+    threadInfo->Priority = pr.pr_pri;
+    threadInfo->NiceVal = pr.pr_nice;
+    // Status code, a char: ...
+    threadInfo->StatusCode = (uchar_t)pr.pr_sname;
+    // Thread start time and CPU time
+    threadInfo->StartTime = pr.pr_start.tv_sec;
+    threadInfo->StartTimeNsec = pr.pr_start.tv_nsec;
+    threadInfo->CpuTotalTime = pr.pr_time.tv_sec;
+    threadInfo->CpuTotalTimeNsec = pr.pr_time.tv_nsec;
+
+    return 0;
+#else
+    (void)pid, (void)tid, (void)threadInfo;
+    errno = ENOTSUP;
+    return -1;
+#endif // __sun
+}
+
+// The struct passing is limited, so the args string is handled separately here.
+int32_t SystemNative_ReadProcessInfo(int32_t pid, ProcessInfo* processInfo, uint8_t *argBuf, int32_t argBufSize)
+{
+#ifdef __sun
+    if (argBufSize != 0 && argBufSize < PRARGSZ)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    char infoFilename[64];
+    snprintf(infoFilename, sizeof(infoFilename), "/proc/%d/psinfo", pid);
+
+    intptr_t fd;
+    while ((fd = open(infoFilename, O_RDONLY)) < 0 && errno == EINTR);
+    if (fd < 0)
+    {
+        return 0;
+    }
+
+    psinfo_t pr;
+    int result = Common_Read(fd, &pr, sizeof(pr));
+    close(ToFileDescriptor(fd));
+    if (result < (int)sizeof(pr))
+    {
+        errno = EIO;
+        return -1;
+    }
+
+    processInfo->Pid = pr.pr_pid;
+    processInfo->ParentPid = pr.pr_ppid;
+    processInfo->SessionId = pr.pr_sid;
+    processInfo->Priority = pr.pr_lwp.pr_pri;
+    processInfo->NiceVal = pr.pr_lwp.pr_nice;
+    // pr_size and pr_rsize are in Kbytes.
+    processInfo->VirtualSize = (uint64_t)pr.pr_size * 1024;
+    processInfo->ResidentSetSize = (uint64_t)pr.pr_rssize * 1024;
+    processInfo->StartTime = pr.pr_start.tv_sec;
+    processInfo->StartTimeNsec = pr.pr_start.tv_nsec;
+    processInfo->CpuTotalTime = pr.pr_time.tv_sec;
+    processInfo->CpuTotalTimeNsec = pr.pr_time.tv_nsec;
+
+    if (argBuf != NULL && argBufSize != 0)
+    {
+        SafeStringCopy((char*)argBuf, PRARGSZ, pr.pr_psargs);
     }
 
     return 0;
 #else
-    (void)pid, (void)processStatus;
+    (void)pid, (void)processInfo, (void)argBuf, (void)argBufSize;
     errno = ENOTSUP;
     return -1;
 #endif // __sun
@@ -1614,6 +2145,90 @@ int32_t SystemNative_PWrite(intptr_t fd, void* buffer, int32_t bufferSize, int64
     return (int32_t)count;
 }
 
+static int GetAllowedVectorCount(IOVector* vectors, int32_t vectorCount)
+{
+#if defined(IOV_MAX)
+    const int IovMax = IOV_MAX;
+#else
+    // In theory all the platforms that we support define IOV_MAX,
+    // but we want to be extra safe and provde a fallback
+    // in case it turns out to not be true.
+    // 16 is low, but supported on every platform.
+    const int IovMax = 16;
+#endif
+
+    int allowedCount = (int)vectorCount;
+
+    // We need to respect the limit of items that can be passed in iov.
+    // In case of writes, the managed code is responsible for handling incomplete writes.
+    // In case of reads, we simply returns the number of bytes read and it's up to the users.
+    if (IovMax < allowedCount)
+    {
+        allowedCount = IovMax;
+    }
+
+#if defined(TARGET_APPLE)
+    // For macOS preadv and pwritev can fail with EINVAL when the total length
+    // of all vectors overflows a 32-bit integer.
+    size_t totalLength = 0;
+    for (int i = 0; i < allowedCount; i++)
+    {
+        assert(INT_MAX >= vectors[i].Count);
+
+        totalLength += vectors[i].Count;
+
+        if (totalLength > INT_MAX)
+        {
+            allowedCount = i;
+            break;
+        }
+    }
+#else
+    (void)vectors;
+#endif
+
+    return allowedCount;
+}
+
+int64_t SystemNative_ReadV(intptr_t fd, IOVector* vectors, int32_t vectorCount)
+{
+    assert(vectors != NULL);
+    assert(vectorCount >= 0);
+
+    int fileDescriptor = ToFileDescriptor(fd);
+    int allowedVectorCount = GetAllowedVectorCount(vectors, vectorCount);
+
+    while (1)
+    {
+        int64_t count;
+        while ((count = readv(fileDescriptor, (struct iovec*)vectors, allowedVectorCount)) < 0 && errno == EINTR);
+
+        if (count != -1 || (errno != EAGAIN && errno != EWOULDBLOCK))
+        {
+            assert(count >= -1);
+            return count;
+        }
+
+        // The fd is non-blocking and no data is available yet.
+        // Block (on a thread pool thread) until data arrives or the pipe/socket is closed.
+        PollEvent pollEvent = { .FileDescriptor = fileDescriptor, .Events = PAL_POLLIN, .TriggeredEvents = 0 };
+        uint32_t triggered = 0;
+        int32_t pollResult = Common_Poll(&pollEvent, 1, -1, &triggered);
+        if (pollResult != Error_SUCCESS)
+        {
+            errno = ConvertErrorPalToPlatform(pollResult);
+            return -1;
+        }
+
+        if ((pollEvent.TriggeredEvents & (PAL_POLLHUP | PAL_POLLERR)) != 0 &&
+            (pollEvent.TriggeredEvents & PAL_POLLIN) == 0)
+        {
+            // The pipe/socket was closed with no data available (EOF).
+            return 0;
+        }
+    }
+}
+
 int64_t SystemNative_PReadV(intptr_t fd, IOVector* vectors, int32_t vectorCount, int64_t fileOffset)
 {
     assert(vectors != NULL);
@@ -1622,7 +2237,8 @@ int64_t SystemNative_PReadV(intptr_t fd, IOVector* vectors, int32_t vectorCount,
     int64_t count = 0;
     int fileDescriptor = ToFileDescriptor(fd);
 #if HAVE_PREADV && !defined(TARGET_WASM) // preadv is buggy on WASM
-    while ((count = preadv(fileDescriptor, (struct iovec*)vectors, (int)vectorCount, (off_t)fileOffset)) < 0 && errno == EINTR);
+    int allowedVectorCount = GetAllowedVectorCount(vectors, vectorCount);
+    while ((count = preadv(fileDescriptor, (struct iovec*)vectors, allowedVectorCount, (off_t)fileOffset)) < 0 && errno == EINTR);
 #else
     int64_t current;
     for (int i = 0; i < vectorCount; i++)
@@ -1632,7 +2248,7 @@ int64_t SystemNative_PReadV(intptr_t fd, IOVector* vectors, int32_t vectorCount,
 
         if (current < 0)
         {
-            // if previous calls were succesfull, we return what we got so far
+            // if previous calls were successful, we return what we got so far
             // otherwise, we return the error code
             return count > 0 ? count : current;
         }
@@ -1654,6 +2270,46 @@ int64_t SystemNative_PReadV(intptr_t fd, IOVector* vectors, int32_t vectorCount,
     return count;
 }
 
+int64_t SystemNative_WriteV(intptr_t fd, IOVector* vectors, int32_t vectorCount)
+{
+    assert(vectors != NULL);
+    assert(vectorCount >= 0);
+
+    int fileDescriptor = ToFileDescriptor(fd);
+    int allowedVectorCount = GetAllowedVectorCount(vectors, vectorCount);
+
+    while (1)
+    {
+        int64_t count;
+        while ((count = writev(fileDescriptor, (struct iovec*)vectors, allowedVectorCount)) < 0 && errno == EINTR);
+
+        if (count != -1 || (errno != EAGAIN && errno != EWOULDBLOCK))
+        {
+            assert(count >= -1);
+            return count;
+        }
+
+        // The fd is non-blocking and the write buffer is full.
+        // Block (on a thread pool thread) until space is available or the pipe/socket is closed.
+        PollEvent pollEvent = { .FileDescriptor = fileDescriptor, .Events = PAL_POLLOUT, .TriggeredEvents = 0 };
+        uint32_t triggered = 0;
+        int32_t pollResult = Common_Poll(&pollEvent, 1, -1, &triggered);
+        if (pollResult != Error_SUCCESS)
+        {
+            errno = ConvertErrorPalToPlatform(pollResult);
+            return -1;
+        }
+
+        if ((pollEvent.TriggeredEvents & (PAL_POLLHUP | PAL_POLLERR)) != 0 &&
+            (pollEvent.TriggeredEvents & PAL_POLLOUT) == 0)
+        {
+            // The pipe/socket was closed.
+            errno = EPIPE;
+            return -1;
+        }
+    }
+}
+
 int64_t SystemNative_PWriteV(intptr_t fd, IOVector* vectors, int32_t vectorCount, int64_t fileOffset)
 {
     assert(vectors != NULL);
@@ -1662,7 +2318,8 @@ int64_t SystemNative_PWriteV(intptr_t fd, IOVector* vectors, int32_t vectorCount
     int64_t count = 0;
     int fileDescriptor = ToFileDescriptor(fd);
 #if HAVE_PWRITEV && !defined(TARGET_WASM) // pwritev is buggy on WASM
-    while ((count = pwritev(fileDescriptor, (struct iovec*)vectors, (int)vectorCount, (off_t)fileOffset)) < 0 && errno == EINTR);
+    int allowedVectorCount = GetAllowedVectorCount(vectors, vectorCount);
+    while ((count = pwritev(fileDescriptor, (struct iovec*)vectors, allowedVectorCount, (off_t)fileOffset)) < 0 && errno == EINTR);
 #else
     int64_t current;
     for (int i = 0; i < vectorCount; i++)
@@ -1672,7 +2329,7 @@ int64_t SystemNative_PWriteV(intptr_t fd, IOVector* vectors, int32_t vectorCount
 
         if (current < 0)
         {
-            // if previous calls were succesfull, we return what we got so far
+            // if previous calls were successful, we return what we got so far
             // otherwise, we return the error code
             return count > 0 ? count : current;
         }
@@ -1692,4 +2349,425 @@ int64_t SystemNative_PWriteV(intptr_t fd, IOVector* vectors, int32_t vectorCount
 
     assert(count >= -1);
     return count;
+}
+
+#if HAVE_KQUEUE
+#if KEVENT_HAS_VOID_UDATA
+static void* GetKeventUdata(uintptr_t udata)
+{
+    return (void*)udata;
+}
+static uintptr_t GetHandleEventData(void* udata)
+{
+    return (uintptr_t)udata;
+}
+#else
+static intptr_t GetKeventUdata(uintptr_t udata)
+{
+    return (intptr_t)udata;
+}
+static uintptr_t GetHandleEventData(intptr_t udata)
+{
+    return (uintptr_t)udata;
+}
+#endif
+#if KEVENT_REQUIRES_INT_PARAMS
+static int GetKeventNchanges(int nchanges)
+{
+    return nchanges;
+}
+static int16_t GetKeventFilter(int16_t filter)
+{
+    return filter;
+}
+static uint16_t GetKeventFlags(uint16_t flags)
+{
+    return flags;
+}
+#else
+static size_t GetKeventNchanges(int nchanges)
+{
+    return (size_t)nchanges;
+}
+static int16_t GetKeventFilter(uint32_t filter)
+{
+    return (int16_t)filter;
+}
+static uint16_t GetKeventFlags(uint32_t flags)
+{
+    return (uint16_t)flags;
+}
+#endif
+#endif
+
+#if HAVE_EPOLL
+
+static const size_t HandleEventBufferElementSize = sizeof(struct epoll_event) > sizeof(HandleEvent) ? sizeof(struct epoll_event) : sizeof(HandleEvent);
+
+static int GetHandleEvents(uint32_t events)
+{
+    int asyncEvents = (((events & EPOLLIN) != 0) ? HandleEvents_READ : 0) | (((events & EPOLLOUT) != 0) ? HandleEvents_WRITE : 0) |
+                      (((events & EPOLLRDHUP) != 0) ? HandleEvents_READCLOSE : 0) |
+                      (((events & EPOLLHUP) != 0) ? HandleEvents_CLOSE : 0) | (((events & EPOLLERR) != 0) ? HandleEvents_ERROR : 0);
+
+    return asyncEvents;
+}
+
+static uint32_t GetEPollEvents(HandleEvents events)
+{
+    return (((events & HandleEvents_READ) != 0) ? EPOLLIN : 0) | (((events & HandleEvents_WRITE) != 0) ? EPOLLOUT : 0) |
+           (((events & HandleEvents_READCLOSE) != 0) ? EPOLLRDHUP : 0) | (((events & HandleEvents_CLOSE) != 0) ? EPOLLHUP : 0) |
+           (((events & HandleEvents_ERROR) != 0) ? EPOLLERR : 0);
+}
+
+static int32_t CreateHandleEventPortInner(int32_t* port)
+{
+    assert(port != NULL);
+
+    int epollFd = epoll_create1(EPOLL_CLOEXEC);
+    if (epollFd == -1)
+    {
+        *port = -1;
+        return SystemNative_ConvertErrorPlatformToPal(errno);
+    }
+
+    *port = epollFd;
+    return Error_SUCCESS;
+}
+
+static int32_t CloseHandleEventPortInner(int32_t port)
+{
+    int err = close(port);
+    return err == 0 || (err < 0 && errno == EINTR) ? Error_SUCCESS : SystemNative_ConvertErrorPlatformToPal(errno);
+}
+
+static int32_t TryChangeHandleEventRegistrationInner(
+    int32_t port, int32_t socket, HandleEvents currentEvents, HandleEvents newEvents, uintptr_t data)
+{
+    assert(currentEvents != newEvents);
+
+    int op = EPOLL_CTL_MOD;
+    if (currentEvents == HandleEvents_NONE)
+    {
+        op = EPOLL_CTL_ADD;
+    }
+    else if (newEvents == HandleEvents_NONE)
+    {
+        op = EPOLL_CTL_DEL;
+    }
+
+    struct epoll_event evt;
+    memset(&evt, 0, sizeof(struct epoll_event));
+    evt.events = GetEPollEvents(newEvents) | (unsigned int)EPOLLET;
+    evt.data.ptr = (void*)data;
+    int err = epoll_ctl(port, op, socket, &evt);
+    return err == 0 ? Error_SUCCESS : SystemNative_ConvertErrorPlatformToPal(errno);
+}
+
+static void ConvertEventEPollToHandleEvent(HandleEvent* sae, struct epoll_event* epoll)
+{
+    assert(sae != NULL);
+    assert(epoll != NULL);
+
+    // epoll does not play well with disconnected connection-oriented sockets, frequently
+    // reporting spurious EPOLLHUP events. Fortunately, EPOLLHUP may be handled as an
+    // EPOLLIN | EPOLLOUT event: the usual processing for these events will recognize and
+    // handle the HUP condition.
+    uint32_t events = epoll->events;
+    if ((events & EPOLLHUP) != 0)
+    {
+        events = (events & ((uint32_t)~EPOLLHUP)) | EPOLLIN | EPOLLOUT;
+    }
+
+    memset(sae, 0, sizeof(HandleEvent));
+    sae->Data = (uintptr_t)epoll->data.ptr;
+    sae->Events = GetHandleEvents(events);
+}
+
+static int32_t WaitForHandleEventsInner(int32_t port, HandleEvent* buffer, int32_t* count)
+{
+    assert(buffer != NULL);
+    assert(count != NULL);
+    assert(*count >= 0);
+
+    struct epoll_event* events = (struct epoll_event*)buffer;
+    int numEvents;
+    while ((numEvents = epoll_wait(port, events, *count, -1)) < 0 && errno == EINTR);
+    if (numEvents == -1)
+    {
+        *count = 0;
+        return SystemNative_ConvertErrorPlatformToPal(errno);
+    }
+
+    // We should never see 0 events. Given an infinite timeout, epoll_wait will never return
+    // 0 events even if there are no file descriptors registered with the epoll fd. In
+    // that case, the wait will block until a file descriptor is added and an event occurs
+    // on the added file descriptor.
+    assert(numEvents != 0);
+    assert(numEvents <= *count);
+
+    if (sizeof(struct epoll_event) < sizeof(HandleEvent))
+    {
+        // Copy backwards to avoid overwriting earlier data.
+        for (int i = numEvents - 1; i >= 0; i--)
+        {
+            // This copy is made deliberately to avoid overwriting data.
+            struct epoll_event evt = events[i];
+            ConvertEventEPollToHandleEvent(&buffer[i], &evt);
+        }
+    }
+    else
+    {
+        // Copy forwards for better cache behavior
+        for (int i = 0; i < numEvents; i++)
+        {
+            // This copy is made deliberately to avoid overwriting data.
+            struct epoll_event evt = events[i];
+            ConvertEventEPollToHandleEvent(&buffer[i], &evt);
+        }
+    }
+
+    *count = numEvents;
+    return Error_SUCCESS;
+}
+
+#elif HAVE_KQUEUE
+
+c_static_assert(sizeof(HandleEvent) <= sizeof(struct kevent));
+static const size_t HandleEventBufferElementSize = sizeof(struct kevent);
+
+static HandleEvents GetHandleEvents(int16_t filter, uint16_t flags)
+{
+    int32_t events;
+    switch (filter)
+    {
+        case EVFILT_READ:
+            events = HandleEvents_READ;
+            if ((flags & EV_EOF) != 0)
+            {
+                events |= HandleEvents_READCLOSE;
+            }
+            break;
+
+        case EVFILT_WRITE:
+            events = HandleEvents_WRITE;
+
+            // kqueue does not play well with disconnected connection-oriented sockets, frequently
+            // reporting spurious EOF events. Fortunately, EOF may be handled as an EVFILT_READ |
+            // EVFILT_WRITE event: the usual processing for these events will recognize and
+            // handle the EOF condition.
+            if ((flags & EV_EOF) != 0)
+            {
+                events |= HandleEvents_READ;
+            }
+            break;
+
+        default:
+            assert_msg(0, "unexpected kqueue filter type", (int)filter);
+            return HandleEvents_NONE;
+    }
+
+    if ((flags & EV_ERROR) != 0)
+    {
+        events |= HandleEvents_ERROR;
+    }
+
+    return (HandleEvents)events;
+}
+
+static int32_t CreateHandleEventPortInner(int32_t* port)
+{
+    assert(port != NULL);
+
+    int kqueueFd = kqueue();
+    if (kqueueFd == -1)
+    {
+        *port = -1;
+        return SystemNative_ConvertErrorPlatformToPal(errno);
+    }
+
+    *port = kqueueFd;
+    return Error_SUCCESS;
+}
+
+static int32_t CloseHandleEventPortInner(int32_t port)
+{
+    int err = close(port);
+    return err == 0 || (err < 0 && errno == EINTR) ? Error_SUCCESS : SystemNative_ConvertErrorPlatformToPal(errno);
+}
+
+static int32_t TryChangeHandleEventRegistrationInner(
+    int32_t port, int32_t socket, HandleEvents currentEvents, HandleEvents newEvents, uintptr_t data)
+{
+    const uint16_t AddFlags = EV_ADD | EV_CLEAR;
+    const uint16_t RemoveFlags = EV_DELETE;
+
+    assert(currentEvents != newEvents);
+
+    int32_t changes = currentEvents ^ newEvents;
+    int8_t readChanged = (changes & HandleEvents_READ) != 0;
+    int8_t writeChanged = (changes & HandleEvents_WRITE) != 0;
+
+    struct kevent events[2];
+    int err;
+
+    int i = 0;
+    if (readChanged)
+    {
+        EV_SET(&events[i++],
+               (uint64_t)socket,
+               EVFILT_READ,
+               (newEvents & HandleEvents_READ) == 0 ? RemoveFlags : AddFlags,
+               0,
+               0,
+               GetKeventUdata(data));
+    }
+
+    if (writeChanged)
+    {
+        EV_SET(&events[i++],
+               (uint64_t)socket,
+               EVFILT_WRITE,
+               (newEvents & HandleEvents_WRITE) == 0 ? RemoveFlags : AddFlags,
+               0,
+               0,
+               GetKeventUdata(data));
+    }
+
+    while ((err = kevent(port, events, GetKeventNchanges(i), NULL, 0, NULL)) < 0 && errno == EINTR);
+    return err == 0 ? Error_SUCCESS : SystemNative_ConvertErrorPlatformToPal(errno);
+}
+
+static int32_t WaitForHandleEventsInner(int32_t port, HandleEvent* buffer, int32_t* count)
+{
+    assert(buffer != NULL);
+    assert(count != NULL);
+    assert(*count >= 0);
+
+    struct kevent* events = (struct kevent*)buffer;
+    int numEvents;
+    while ((numEvents = kevent(port, NULL, 0, events, GetKeventNchanges(*count), NULL)) < 0 && errno == EINTR);
+    if (numEvents == -1)
+    {
+        *count = -1;
+        return SystemNative_ConvertErrorPlatformToPal(errno);
+    }
+
+    // We should never see 0 events. Given an infinite timeout, kevent will never return
+    // 0 events even if there are no file descriptors registered with the kqueue fd. In
+    // that case, the wait will block until a file descriptor is added and an event occurs
+    // on the added file descriptor.
+    assert(numEvents != 0);
+    assert(numEvents <= *count);
+
+    for (int i = 0; i < numEvents; i++)
+    {
+        // This copy is made deliberately to avoid overwriting data.
+        struct kevent evt = events[i];
+        memset(&buffer[i], 0, sizeof(HandleEvent));
+        buffer[i].Data = GetHandleEventData(evt.udata);
+        buffer[i].Events = GetHandleEvents(GetKeventFilter(evt.filter), GetKeventFlags(evt.flags));
+    }
+
+    *count = numEvents;
+    return Error_SUCCESS;
+}
+
+#else // !HAVE_KQUEUE !HAVE_EPOLL
+
+static const size_t HandleEventBufferElementSize = 0;
+
+static int32_t CloseHandleEventPortInner(int32_t port)
+{
+    return Error_ENOSYS;
+}
+static int32_t CreateHandleEventPortInner(int32_t* port)
+{
+    return Error_ENOSYS;
+}
+static int32_t TryChangeHandleEventRegistrationInner(
+    int32_t port, int32_t socket, HandleEvents currentEvents, HandleEvents newEvents,
+uintptr_t data)
+{
+    return Error_ENOSYS;
+}
+static int32_t WaitForHandleEventsInner(int32_t port, HandleEvent* buffer, int32_t* count)
+{
+    return Error_ENOSYS;
+}
+#endif  // !HAVE_KQUEUE !HAVE_EPOLL
+
+int32_t SystemNative_CreateHandleEventPort(intptr_t* port)
+{
+    if (port == NULL)
+    {
+        return Error_EFAULT;
+    }
+
+    int fd;
+    int32_t error = CreateHandleEventPortInner(&fd);
+    *port = fd;
+    return error;
+}
+
+int32_t SystemNative_CloseHandleEventPort(intptr_t port)
+{
+    return CloseHandleEventPortInner(ToFileDescriptor(port));
+}
+
+int32_t SystemNative_CreateHandleEventBuffer(int32_t count, HandleEvent** buffer)
+{
+    if (buffer == NULL || count < 0)
+    {
+        return Error_EFAULT;
+    }
+
+    size_t bufferSize;
+    if (!multiply_s(HandleEventBufferElementSize, (size_t)count, &bufferSize) ||
+        (*buffer = (HandleEvent*)malloc(bufferSize)) == NULL)
+    {
+        return Error_ENOMEM;
+    }
+
+    return Error_SUCCESS;
+}
+
+int32_t SystemNative_FreeHandleEventBuffer(HandleEvent* buffer)
+{
+    free(buffer);
+    return Error_SUCCESS;
+}
+
+int32_t
+SystemNative_TryChangeHandleEventRegistration(intptr_t port, intptr_t socket, int32_t currentEvents, int32_t newEvents, uintptr_t data)
+{
+    int portFd = ToFileDescriptor(port);
+    int socketFd = ToFileDescriptor(socket);
+
+    const int32_t SupportedEvents = HandleEvents_READ | HandleEvents_WRITE | HandleEvents_READCLOSE | HandleEvents_CLOSE | HandleEvents_ERROR;
+
+    if ((currentEvents & ~SupportedEvents) != 0 || (newEvents & ~SupportedEvents) != 0)
+    {
+        return Error_EINVAL;
+    }
+
+    if (currentEvents == newEvents)
+    {
+        return Error_SUCCESS;
+    }
+
+    return TryChangeHandleEventRegistrationInner(
+        portFd, socketFd, (HandleEvents)currentEvents, (HandleEvents)newEvents, data);
+}
+
+int32_t SystemNative_WaitForHandleEvents(intptr_t port, HandleEvent* buffer, int32_t* count)
+{
+    if (buffer == NULL || count == NULL || *count < 0)
+    {
+        return Error_EFAULT;
+    }
+
+    int fd = ToFileDescriptor(port);
+
+    return WaitForHandleEventsInner(fd, buffer, count);
 }

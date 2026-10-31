@@ -5,27 +5,31 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Security;
 using System.Threading;
 
 namespace System
 {
     public static partial class Environment
     {
-        public static extern int CurrentManagedThreadId
+        public static int CurrentManagedThreadId
         {
-            [MethodImpl(MethodImplOptions.InternalCall)]
-            get;
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => Threading.ManagedThreadId.Current;
         }
 
         // Terminates this process with the given exit code.
-        [DllImport(RuntimeHelpers.QCall, EntryPoint = "Environment_Exit")]
+        /// <safety>QCall that passes the integer exit code to the runtime to terminate the process; it accesses no caller-supplied memory.</safety>
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "Environment_Exit")]
         [DoesNotReturn]
-        private static extern void _Exit(int exitCode);
+        private static safe partial void _Exit(int exitCode);
 
         [DoesNotReturn]
         public static void Exit(int exitCode) => _Exit(exitCode);
 
-        public static extern int ExitCode
+        /// <safety>Runtime FCall get/set of the process-wide exit code (an int); it accesses no caller-supplied memory.</safety>
+        public static extern safe int ExitCode
         {
             [MethodImpl(MethodImplOptions.InternalCall)]
             get;
@@ -33,12 +37,15 @@ namespace System
             set;
         }
 
-        // Note: The CLR's Watson bucketization code looks at the caller of the FCALL method
-        // to assign blame for crashes.  Don't mess with this, such as by making it call
-        // another managed helper method, unless you consult with some CLR Watson experts.
         [DoesNotReturn]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern void FailFast(string? message);
+        [DynamicSecurityMethod] // Methods containing StackCrawlMark local var has to be marked DynamicSecurityMethod
+        public static void FailFast(string? message)
+        {
+            // Note: The CLR's Watson bucketization code looks at the our caller
+            // to assign blame for crashes.
+            StackCrawlMark mark = StackCrawlMark.LookForMyCaller;
+            FailFast(ref mark, message, exception: null, errorMessage: null);
+        }
 
         // This overload of FailFast will allow you to specify the exception object
         // whose bucket details *could* be used when undergoing the failfast process.
@@ -54,56 +61,134 @@ namespace System
         //    IP for bucketing. If the exception object is not preallocated, it will use the bucket
         //    details contained in the object (if any).
         [DoesNotReturn]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern void FailFast(string? message, Exception? exception);
+        [DynamicSecurityMethod] // Methods containing StackCrawlMark local var has to be marked DynamicSecurityMethod
+        public static void FailFast(string? message, Exception? exception)
+        {
+            // Note: The CLR's Watson bucketization code looks at the our caller
+            // to assign blame for crashes.
+            StackCrawlMark mark = StackCrawlMark.LookForMyCaller;
+            FailFast(ref mark, message, exception, errorMessage: null);
+        }
 
         [DoesNotReturn]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern void FailFast(string? message, Exception? exception, string? errorMessage);
-
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern string[] GetCommandLineArgsNative();
-
-        public static string[] GetCommandLineArgs()
+        [DynamicSecurityMethod] // Methods containing StackCrawlMark local var has to be marked DynamicSecurityMethod
+        internal static void FailFast(string? message, Exception? exception, string? errorMessage)
         {
-            // There are multiple entry points to a hosted app. The host could
-            // use ::ExecuteAssembly() or ::CreateDelegate option:
-            //
-            // ::ExecuteAssembly() -> In this particular case, the runtime invokes the main
-            // method based on the arguments set by the host, and we return those arguments
-            //
-            // ::CreateDelegate() -> In this particular case, the host is asked to create a
-            // delegate based on the appDomain, assembly and methodDesc passed to it.
-            // which the caller uses to invoke the method. In this particular case we do not have
-            // any information on what arguments would be passed to the delegate.
-            // So our best bet is to simply use the commandLine that was used to invoke the process.
-            // in case it is present.
-
-            return s_commandLineArgs != null ?
-                (string[])s_commandLineArgs.Clone() :
-                GetCommandLineArgsNative();
+            // Note: The CLR's Watson bucketization code looks at the our caller
+            // to assign blame for crashes.
+            StackCrawlMark mark = StackCrawlMark.LookForMyCaller;
+            FailFast(ref mark, message, exception, errorMessage);
         }
 
-        [DllImport(RuntimeHelpers.QCall, EntryPoint = "Environment_GetProcessorCount")]
-        private static extern int GetProcessorCount();
-
-        // Used by VM
-        internal static string? GetResourceStringLocal(string key) => SR.GetResourceString(key);
-
-        /// <summary>Gets the number of milliseconds elapsed since the system started.</summary>
-        /// <value>A 32-bit signed integer containing the amount of time in milliseconds that has passed since the last time the computer was started.</value>
-        public static extern int TickCount
+        [DoesNotReturn]
+        private static void FailFast(ref StackCrawlMark mark, string? message, Exception? exception, string? errorMessage)
         {
-            [MethodImpl(MethodImplOptions.InternalCall)]
-            get;
+            FailFast(new StackCrawlMarkHandle(ref mark), message, ObjectHandleOnStack.Create(ref exception), errorMessage);
         }
 
-        /// <summary>Gets the number of milliseconds elapsed since the system started.</summary>
-        /// <value>A 64-bit signed integer containing the amount of time in milliseconds that has passed since the last time the computer was started.</value>
-        public static extern long TickCount64
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "Environment_FailFast", StringMarshalling = StringMarshalling.Utf16)]
+        [DoesNotReturn]
+        private static partial void FailFast(StackCrawlMarkHandle mark, string? message, ObjectHandleOnStack exception, string? errorMessage);
+
+        private static unsafe string[] InitializeCommandLineArgs(char* exePath, int argc, char** argv) // invoked from VM
         {
-            [MethodImpl(MethodImplOptions.InternalCall)]
-            get;
+            string[] commandLineArgs = new string[argc + 1];
+            string[] mainMethodArgs = new string[argc];
+
+            commandLineArgs[0] = new string(exePath);
+
+            for (int i = 0; i < mainMethodArgs.Length; i++)
+            {
+                commandLineArgs[i + 1] = mainMethodArgs[i] = new string(argv[i]);
+            }
+
+            s_commandLineArgs = commandLineArgs;
+            return mainMethodArgs;
+        }
+
+        [UnmanagedCallersOnly]
+        private static unsafe void InitializeCommandLineArgs(char* exePath, int argc, char** argv, string[]* pResult, Exception* pException)
+        {
+            try
+            {
+                *pResult = InitializeCommandLineArgs(exePath, argc, argv);
+            }
+            catch (Exception ex)
+            {
+                *pException = ex;
+            }
+        }
+
+        /// <safety>QCall that returns the available processor count as an int; it accesses no caller-supplied memory.</safety>
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "Environment_GetProcessorCount")]
+        internal static safe partial int GetProcessorCount();
+
+        [UnmanagedCallersOnly]
+        private static unsafe void GetResourceString(char* pKey, string* pResult, Exception* pException)
+        {
+            try
+            {
+                *pResult = SR.GetResourceString(new string(pKey));
+            }
+            catch (Exception ex)
+            {
+                *pException = ex;
+            }
+        }
+
+        [UnmanagedCallersOnly]
+        [StackTraceHidden]
+        [DebuggerHidden]
+        internal static unsafe void CallEntryPoint(IntPtr entryPoint, string[]* pArgument, int* pReturnValue, bool captureException, Exception* pException)
+        {
+            try
+            {
+                if (pArgument is not null)
+                {
+                    string[]? argument = *pArgument;
+
+                    if (pReturnValue is not null)
+                    {
+                        *pReturnValue = ((delegate*<string[]?, int>)entryPoint)(argument);
+                    }
+                    else
+                    {
+                        ((delegate*<string[]?, void>)entryPoint)(argument);
+                    }
+                }
+                else
+                {
+                    if (pReturnValue is not null)
+                    {
+                        *pReturnValue = ((delegate*<int>)entryPoint)();
+                    }
+                    else
+                    {
+                        ((delegate*<void>)entryPoint)();
+                    }
+                }
+            }
+            catch (Exception ex) when (captureException)
+            {
+                *pException = ex;
+            }
+        }
+
+        [UnmanagedCallersOnly]
+        [StackTraceHidden]
+        internal static unsafe int ExecuteInDefaultAppDomain(IntPtr entryPoint, char* pArgument, Exception* pException)
+        {
+            try
+            {
+                return ((delegate*<string?, int>)entryPoint)(pArgument is not null ? new string(pArgument) : null);
+            }
+            catch (Exception ex)
+            {
+                *pException = ex;
+                return default;
+            }
         }
     }
 }

@@ -2,43 +2,45 @@ cmake_minimum_required(VERSION 3.10)
 
 project(monodroid)
 
-enable_language(C ASM)
+enable_language(C CXX ASM)
 
-if(NOT USE_LLVM)
-    # the assembler code we generate is GNU which isn't understood by llvm
-    add_compile_options(-no-integrated-as)
+if(ANDROID_NDK_MAJOR VERSION_LESS "23")
+    message(FATAL_ERROR "Error: need at least Android NDK 23, got ${ANDROID_NDK_REVISION}!")
 endif()
 
-# Prevent the warning: shared library text segment is not shareable which is treated as an error
-if (NOT ANDROID_ABI STREQUAL "arm64-v8a")
-    add_link_options(-Wl,--no-warn-shared-textrel)
-endif()
+add_compile_options(-Wall)
+
+# These warnings describe C function declarations and can be rejected by C++ compilers.
+add_compile_options($<$<COMPILE_LANGUAGE:C>:-Werror=missing-prototypes>)
+add_compile_options($<$<COMPILE_LANGUAGE:C>:-Werror=missing-declarations>)
+add_compile_options($<$<COMPILE_LANGUAGE:C>:-std=c99>)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# ANDROID_STL=none does not provide the C++ ABI support needed by RTTI or exceptions.
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>)
 
 add_library(
     monodroid
     SHARED
-    monodroid.c
+    %MONODROID_SOURCE%
     %AotModulesSource%
+    %ExtraSources%
 )
 
 %AotSources%
 
 %Defines%
 
-include_directories("%MonoInclude%")
+include_directories(%RuntimeInclude%)
 
 target_link_libraries(
     monodroid
-    %NativeLibrariesToLink%
+    PRIVATE
     libz.so
     log
-    "-u GlobalizationNative_LoadICU"
-    "-u GlobalizationNative_GetLatestJapaneseEra"
-    "-u GlobalizationNative_ChangeCase"
-    "-u GlobalizationNative_CloseSortHandle"
-    "-u GlobalizationNative_GetLocales"
-    "-u GlobalizationNative_GetLocaleInfoInt"
-    "-u GlobalizationNative_GetLocaleTimeFormat"
-    "-u GlobalizationNative_ToUnicode"
-    "-u GlobalizationNative_NormalizeString"
-    "-u GlobalizationNative_GetTimeZoneDisplayName")
+    %NativeLibrariesToLink%
+    %APP_LINKER_ARGS%
+)

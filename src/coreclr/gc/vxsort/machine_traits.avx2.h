@@ -13,6 +13,7 @@
 #include <immintrin.h>
 #include <assert.h>
 #include <inttypes.h>
+#include <type_traits>
 #include "defs.h"
 #include "machine_traits.h"
 
@@ -24,8 +25,20 @@
 #define d2s _mm256_castpd_ps
 
 namespace vxsort {
-extern const int8_t perm_table_64[128];
-extern const int8_t perm_table_32[2048];
+
+// We might read the last 8 bytes into a 128-bit vector for the purpose of permutation
+// Most compilers actually fuse the pair of instructions: _mm256_cvtepi8_epiNN + _mm_loadu_si128
+// into a single instruction that will not read more that 4/8 bytes..
+// vpmovsxb[dq] ymm0, dword [...], eliminating the 128-bit load completely and effectively
+// reading exactly 4/8 (depending if the instruction is vpmovsxbd or vpmovsxbq)
+// without generating an out of bounds read at all.
+// But, life is harsh, and we can't trust the compiler to do the right thing if it is not
+// contractual
+const int T64_SIZE = 128 + 8;
+const int T32_SIZE = 2048 + 8;
+
+extern const uint8_t perm_table_64[T64_SIZE];
+extern const uint8_t perm_table_32[T32_SIZE];
 
 static void not_supported()
 {
@@ -47,6 +60,12 @@ class vxsort_machine_traits<int32_t, AVX2> {
     typedef int32_t TPACK;
     typedef typename std::make_unsigned<T>::type TU;
 
+    static const int N = sizeof(TV) / sizeof(T);
+    static const int32_t MAX_BITONIC_SORT_VECTORS = 16;
+    static const int32_t SMALL_SORT_THRESHOLD_ELEMENTS = MAX_BITONIC_SORT_VECTORS * N;
+    static const int32_t MaxInnerUnroll = (MAX_BITONIC_SORT_VECTORS - 3) / 2;
+    static const vector_machine SMALL_SORT_TYPE = vector_machine::AVX2;
+
     static constexpr bool supports_compress_writes() { return false; }
 
     static constexpr bool supports_packing() { return false; }
@@ -60,7 +79,7 @@ class vxsort_machine_traits<int32_t, AVX2> {
 
     static void store_compress_vec(TV* ptr, TV v, TMASK mask) { not_supported(); }
 
-    static INLINE TV partition_vector(TV v, int mask) {
+    static INLINE TV partition_vector(TV v, TMASK mask) {
         assert(mask >= 0);
         assert(mask <= 255);
         return s2i(_mm256_permutevar8x32_ps(i2s(v), _mm256_cvtepi8_epi32(_mm_loadu_si128((__m128i*)(perm_table_32 + mask * 8)))));
@@ -94,6 +113,8 @@ class vxsort_machine_traits<int32_t, AVX2> {
             add = (T) (((TU) add) << Shift);
         return add;
     }
+
+    static INLINE T mask_popcount(TMASK mask) { return _mm_popcnt_u32(mask); }
 };
 
 template <>
@@ -105,14 +126,19 @@ class vxsort_machine_traits<int64_t, AVX2> {
     typedef int32_t TPACK;
     typedef typename std::make_unsigned<T>::type TU;
 
+    static const int N = sizeof(TV) / sizeof(T);
+    static const int32_t MAX_BITONIC_SORT_VECTORS = 16;
+    static const int32_t SMALL_SORT_THRESHOLD_ELEMENTS = MAX_BITONIC_SORT_VECTORS * N;
+    static const int32_t MaxInnerUnroll = (MAX_BITONIC_SORT_VECTORS - 3) / 2;
+    static const vector_machine SMALL_SORT_TYPE = vector_machine::AVX2;
+
     static constexpr bool supports_compress_writes() { return false; }
 
     static constexpr bool supports_packing() { return true; }
 
     template <int Shift>
     static constexpr bool can_pack(T span) {
-        const auto PACK_LIMIT = (((TU) std::numeric_limits<uint32_t>::Max() + 1)) << Shift;
-        return ((TU) span) < PACK_LIMIT;
+        return ((TU) span) < ((((TU) std::numeric_limits<uint32_t>::max() + 1)) << Shift);
     }
 
     static INLINE TV load_vec(TV* p) { return _mm256_lddqu_si256(p); }
@@ -121,7 +147,7 @@ class vxsort_machine_traits<int64_t, AVX2> {
 
     static void store_compress_vec(TV* ptr, TV v, TMASK mask) { not_supported(); }
 
-    static INLINE TV partition_vector(TV v, int mask) {
+    static INLINE TV partition_vector(TV v, TMASK mask) {
         assert(mask >= 0);
         assert(mask <= 15);
         return s2i(_mm256_permutevar8x32_ps(i2s(v), _mm256_cvtepu8_epi32(_mm_loadu_si128((__m128i*)(perm_table_64 + mask * 8)))));
@@ -170,6 +196,8 @@ class vxsort_machine_traits<int64_t, AVX2> {
             add = (T) (((TU) add) << Shift);
         return add;
     }
+
+    static INLINE T mask_popcount(TMASK mask) { return _mm_popcnt_u64(mask); }
 };
 
 

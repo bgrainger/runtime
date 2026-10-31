@@ -20,23 +20,6 @@ class BitSetSupport
 public:
     static const unsigned BitsInByte = 8;
 
-    // This maps 4-bit ("nibble") values into the number of 1 bits they contain.
-    static unsigned BitCountTable[16];
-
-    // Returns the number of 1 bits in the binary representation of "u".
-    template <typename T>
-    static unsigned CountBitsInIntegral(T u)
-    {
-        unsigned res = 0;
-        // We process "u" in 4-bit nibbles, hence the "*2" below.
-        for (unsigned int i = 0; i < sizeof(T) * 2; i++)
-        {
-            res += BitCountTable[u & 0xf];
-            u >>= 4;
-        }
-        return res;
-    }
-
 #ifdef DEBUG
     // This runs the "TestSuite" method for a few important instantiations of BitSet.
     static void TestSuite(CompAllocator env);
@@ -59,7 +42,10 @@ public:
         FILE*       OpOutputFile;
 
     public:
-        BitSetOpCounter(const char* fileName) : TotalOps(0), m_fileName(fileName), OpOutputFile(nullptr)
+        BitSetOpCounter(const char* fileName)
+            : TotalOps(0)
+            , m_fileName(fileName)
+            , OpOutputFile(nullptr)
         {
             for (unsigned i = 0; i < BSOP_NUMOPS; i++)
             {
@@ -70,19 +56,6 @@ public:
         void RecordOp(Operation op);
     };
 };
-
-template <>
-FORCEINLINE unsigned BitSetSupport::CountBitsInIntegral<unsigned>(unsigned c)
-{
-    // Make sure we're 32 bit.
-    assert(sizeof(unsigned) == 4);
-    c = (c & 0x55555555) + ((c >> 1) & 0x55555555);
-    c = (c & 0x33333333) + ((c >> 2) & 0x33333333);
-    c = (c & 0x0f0f0f0f) + ((c >> 4) & 0x0f0f0f0f);
-    c = (c & 0x00ff00ff) + ((c >> 8) & 0x00ff00ff);
-    c = (c & 0x0000ffff) + ((c >> 16) & 0x0000ffff);
-    return c;
-}
 
 // A "BitSet" represents a set of integers from a "universe" [0..N-1].  This implementation assumes that "N"
 // (the "Size") is provided by the "Env" template argument type discussed below, and accessed from the Env
@@ -102,7 +75,7 @@ FORCEINLINE unsigned BitSetSupport::CountBitsInIntegral<unsigned>(unsigned c)
 // initialization.  We often want to reason about BitSets as immutable values, and just copying
 // the representation would introduce sharing in the indirect case, which is usually not what's
 // desired.  On the other hand, there are many cases in which the RHS value has just been
-// created functionally, and the intialization/assignment is obviously its last use.  In these
+// created functionally, and the initialization/assignment is obviously its last use.  In these
 // cases, allocating a new indirect representation for the lhs (if it does not already have one)
 // would be unnecessary and wasteful.  Thus, for assignment, we have a "normal" assignment
 // function, which makes a copy of the referent data structure in the indirect case, and an
@@ -133,11 +106,7 @@ FORCEINLINE unsigned BitSetSupport::CountBitsInIntegral<unsigned>(unsigned c)
 //      An "adapter" class that provides methods that retrieves things from the Env:
 //        static void* Alloc(Env, size_t byteSize): Allocates memory the BitSet implementation can use.
 //        static unsigned    GetSize(Env):          the current size (= # of bits) of this bitset type.
-//        static unsigned    GetArrSize(Env, unsigned elemSize):  The number of "elemSize" chunks sufficient to hold
-//                                                                "GetSize". A given BitSet implementation must call
-//                                                                this with only one constant value. Thus, and "Env"
-//                                                                may compute this result when GetSize changes.
-//
+//        static unsigned    GetArrSize(Env):       The number of size_t chunks sufficient to hold "GetSize".
 //        static unsigned    GetEpoch(Env):         the current epoch.
 //
 // (For many instantiations, BitSetValueArgType and BitSetValueRetType will be the same as BitSetType; in cases where
@@ -176,11 +145,11 @@ class BitSetOps
     // Returns "true" iff "bs" may be the uninit value.
     static bool MayBeUninit(BitSetValueArgType bs);
 
-    // Returns the a new BitSet that is empty.  Uses the Allocator of "env" to allocate memory for
+    // Returns a new BitSet that is empty.  Uses the Allocator of "env" to allocate memory for
     // the representation, if necessary.
     static BitSetValueRetType MakeEmpty(Env env);
 
-    // Returns the a new BitSet that is "full" -- represents all the integers in the current range.
+    // Returns a new BitSet that is "full" -- represents all the integers in the current range.
     // Uses the Allocator of "env" to allocate memory for the representation, if necessary.
     static BitSetValueRetType MakeFull(Env env);
 
@@ -232,6 +201,8 @@ class BitSetOps
 
     // Destructively modify "bs1" to be the union of "bs1" and "bs2".
     static void UnionD(Env env, BitSetType& bs1, BitSetValueArgType bs2);
+    // Destructively modify "bs1" to be the union of "bs1" and "bs2"; return `true` if `bs1` changed.
+    static bool UnionDChanged(Env env, BitSetType& bs1, BitSetValueArgType bs2);
     // Returns a new BitSet that is the union of "bs1" and "bs2".
     static BitSetValueRetType Union(Env env, BitSetValueArgType bs1, BitSetValueArgType bs2);
 
@@ -378,6 +349,11 @@ public:
         BitSetTraits::GetOpCounter(env)->RecordOp(BitSetSupport::BSOP_UnionD);
         BSO::UnionD(env, bs1, bs2);
     }
+    static bool UnionDChanged(Env env, BitSetType& bs1, BitSetValueArgType bs2)
+    {
+        BitSetTraits::GetOpCounter(env)->RecordOp(BitSetSupport::BSOP_UnionDChanged);
+        return BSO::UnionDChanged(env, bs1, bs2);
+    }
     static BitSetValueRetType Union(Env env, BitSetValueArgType bs1, BitSetValueArgType bs2)
     {
         BitSetTraits::GetOpCounter(env)->RecordOp(BitSetSupport::BSOP_Union);
@@ -432,7 +408,9 @@ public:
         Env      m_env;
 
     public:
-        Iter(Env env, BitSetValueArgType bs) : m_iter(env, bs), m_env(env)
+        Iter(Env env, BitSetValueArgType bs)
+            : m_iter(env, bs)
+            , m_env(env)
         {
         }
 
@@ -446,8 +424,8 @@ public:
 
 // We define symbolic names for the various bitset implementations available, to allow choices between them.
 
-#define BSUInt64 0
-#define BSShortLong 1
+#define BSUInt64      0
+#define BSShortLong   1
 #define BSUInt64Class 2
 
 /*****************************************************************************/

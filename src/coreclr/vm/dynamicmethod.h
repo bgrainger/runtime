@@ -13,20 +13,16 @@
 #include <daccess.h>
 
 //---------------------------------------------------------------------------------------
-//
 // This links together a set of news and release in one object.
 // The idea is to have a predefined size allocated up front and used by different calls to new.
-// All the allocation will be released at the same time releaseing an instance of this class
+// All the allocation will be released at the same time releasing an instance of this class
 // Here is how the object is laid out
 // | ptr_to_next_chunk | size_left_in_chunk | data | ... | data
 // This is not a particularly efficient allocator but it works well for a small number of allocation
 // needed while jitting a method
 //
-class ChunkAllocator
+class ChunkAllocator final
 {
-private:
-    #define CHUNK_SIZE 64
-
     BYTE *m_pData;
 
 public:
@@ -37,13 +33,22 @@ public:
     void Delete();
 };
 
+struct ResolvedToken final
+{
+    class TypeHandle TypeHandle;
+    SigPointer TypeSignature;
+    SigPointer MethodSignature;
+    MethodDesc* Method;
+    FieldDesc* Field;
+};
+
 //---------------------------------------------------------------------------------------
 //
 class DynamicResolver
 {
 public:
     // Keep in sync with dynamicIlGenerator.cs
-    enum SecurityControlFlags
+    enum SecurityControlFlags : int32_t
     {
         Default = 0,
         SkipVisibilityChecks = 0x1,
@@ -52,12 +57,24 @@ public:
         CanSkipCSEvaluation = 0x8,
     };
 
+    virtual ~DynamicResolver() { }
 
     // set up and clean up for jitting
     virtual void FreeCompileTimeState() = 0;
     virtual void GetJitContext(SecurityControlFlags * securityControlFlags,
                                TypeHandle *typeOwner) = 0;
     virtual ChunkAllocator* GetJitMetaHeap() = 0;
+
+    // API to check if visibility checks are needed.
+    // If the API requires checks, the callers should use
+    // the potentially expensive GetJitContext() API.
+    // If it returns "false", there is no need for any
+    // further visibility checks.
+    virtual bool RequiresAccessCheck() = 0;
+
+    // Return the flags that should be used in JIT compilation
+    // of the associated method.
+    virtual CORJIT_FLAGS GetJitFlags() = 0;
 
     //
     // code info data
@@ -75,10 +92,10 @@ public:
 
     //
     // jit interface api
-    virtual OBJECTHANDLE ConstructStringLiteral(mdToken metaTok) = 0;
+    virtual STRINGREF* ConstructStringLiteral(mdToken metaTok) = 0;
     virtual BOOL IsValidStringRef(mdToken metaTok) = 0;
-    virtual int GetStringLiteralLength(mdToken metaTok) = 0;
-    virtual void ResolveToken(mdToken token, TypeHandle * pTH, MethodDesc ** ppMD, FieldDesc ** ppFD) = 0;
+    virtual STRINGREF GetStringLiteral(mdToken metaTok) = 0;
+    virtual void ResolveToken(mdToken token, ResolvedToken* resolvedToken) = 0;
     virtual SigPointer ResolveSignature(mdToken token) = 0;
     virtual SigPointer ResolveSignatureForVarArg(mdToken token) = 0;
     virtual void GetEHInfo(unsigned EHnumber, CORINFO_EH_CLAUSE* clause) = 0;
@@ -86,16 +103,19 @@ public:
     virtual MethodDesc * GetDynamicMethod() = 0;
 };  // class DynamicResolver
 
-//---------------------------------------------------------------------------------------
-//
+// Forward declaration
 class StringLiteralEntry;
 
-//---------------------------------------------------------------------------------------
-//
-struct DynamicStringLiteral
+struct DynamicStringLiteral final
 {
-    DynamicStringLiteral *  m_pNext;
-    StringLiteralEntry *    m_pEntry;
+    DynamicStringLiteral*  m_pNext;
+    StringLiteralEntry*    m_pEntry;
+};
+
+struct DynamicCodePointer final
+{
+    DynamicCodePointer*  m_pNext;
+    void*                m_pEntry;
 };
 
 //---------------------------------------------------------------------------------------
@@ -104,31 +124,43 @@ struct DynamicStringLiteral
 //
 //  a jit resolver for managed dynamic methods
 //
-class LCGMethodResolver : public DynamicResolver
+class LCGMethodResolver final : public DynamicResolver
 {
     friend class DynamicMethodDesc;
     friend class DynamicMethodTable;
-    // review this to see whether the EEJitManageris the only thing to worry about
     friend class ExecutionManager;
+    friend class EECodeGenManager;
     friend class EEJitManager;
+    friend class InterpreterJitManager;
     friend class HostCodeHeap;
-    friend struct ExecutionManager::JumpStubCache;
+
+    // We clean-up in stages due to how locks are structured.
+    bool TryDestroyCodeHeapMemory();
+    void DestroyResolver();
 
 public:
-    void Destroy();
+    LCGMethodResolver(DynamicMethodDesc* pDynamicMethod, DynamicMethodTable* pDynamicMethodTable)
+        : m_pDynamicMethod{ pDynamicMethod }
+        , m_pDynamicMethodTable{ pDynamicMethodTable }
+        , m_initialCodePointer{}
+        , m_DynamicCodePointers{ &m_initialCodePointer }
+    {
+        LIMITED_METHOD_CONTRACT;
+    }
 
     void FreeCompileTimeState();
     void GetJitContext(SecurityControlFlags * securityControlFlags,
                        TypeHandle * typeOwner);
     ChunkAllocator* GetJitMetaHeap();
+    bool RequiresAccessCheck();
+    CORJIT_FLAGS GetJitFlags();
 
     BYTE* GetCodeInfo(unsigned *pCodeSize, unsigned *pStackSize, CorInfoOptions *pOptions, unsigned* pEHSize);
     SigPointer GetLocalSig();
 
-    OBJECTHANDLE ConstructStringLiteral(mdToken metaTok);
+    STRINGREF* ConstructStringLiteral(mdToken metaTok);
     BOOL IsValidStringRef(mdToken metaTok);
-    int GetStringLiteralLength(mdToken metaTok);
-    void ResolveToken(mdToken token, TypeHandle * pTH, MethodDesc ** ppMD, FieldDesc ** ppFD);
+    void ResolveToken(mdToken token, ResolvedToken* resolvedToken);
     SigPointer ResolveSignature(mdToken token);
     SigPointer ResolveSignatureForVarArg(mdToken token);
     void GetEHInfo(unsigned EHnumber, CORINFO_EH_CLAUSE* clause);
@@ -136,9 +168,33 @@ public:
     MethodDesc* GetDynamicMethod() { LIMITED_METHOD_CONTRACT; return m_pDynamicMethod; }
     OBJECTREF GetManagedResolver();
     void SetManagedResolver(OBJECTHANDLE obj) { LIMITED_METHOD_CONTRACT; m_managedResolver = obj; }
-    void * GetRecordCodePointer()  { LIMITED_METHOD_CONTRACT; return m_recordCodePointer; }
+    void** AllocateRecordCodePointer();
 
-    STRINGREF GetStringLiteral(mdToken token);
+private:
+    DynamicMethodDesc* GetNextFreeDynamicMethodDesc() { LIMITED_METHOD_CONTRACT; return m_next; }
+    void SetNextFreeDynamicMethod(DynamicMethodDesc* next)
+    {
+        LIMITED_METHOD_CONTRACT;
+        // In this path, we permit the case where next is NULL or m_next is not NULL.
+        // This is because this method is used to set the next pointer when we are
+        // working with the free list of DynamicMethodDescs and the field may have been
+        // used to hold the next DynamicMethodDesc for delay clean-up.
+        m_next = next;
+    }
+
+public:
+    DynamicMethodDesc* GetNextDynamicMethodForDelayCleanup() { LIMITED_METHOD_CONTRACT; return m_next; }
+    void SetNextDynamicMethodForDelayCleanup(DynamicMethodDesc* next)
+    {
+        LIMITED_METHOD_CONTRACT;
+        _ASSERTE(next != NULL && m_next == NULL);
+
+        // We shouldn't be overriding an existing next pointer.
+        // See declaration of the field for its uses.
+        m_next = next;
+    }
+
+    STRINGREF GetStringLiteral(mdToken metaTok);
     STRINGREF * GetOrInternString(STRINGREF *pString);
     void AddToUsedIndCellList(BYTE * indcell);
 #ifdef FEATURE_PGO
@@ -152,26 +208,35 @@ private:
 
     struct IndCellList
     {
-        BYTE * indcell;
-        IndCellList * pNext;
+        BYTE* indcell;
+        IndCellList* pNext;
     };
 
     DynamicMethodDesc* m_pDynamicMethod;
+    DynamicMethodTable* m_pDynamicMethodTable;
     OBJECTHANDLE m_managedResolver;
-    BYTE *m_Code;
+    BYTE* m_Code;
     DWORD m_CodeSize;
     SigPointer m_LocalSig;
     unsigned short m_StackSize;
     CorInfoOptions m_Options;
     unsigned m_EHSize;
-    DynamicMethodTable *m_DynamicMethodTable;
-    DynamicMethodDesc *m_next;
-    void *m_recordCodePointer;
+
+    // The next field is currently used for clean-up purposes.
+    // It holds the next free DynamicMethodDesc that is available for reuse
+    // or it holds the next DynamicMethodDesc that is scheduled for delayed
+    // destruction.
+    DynamicMethodDesc* m_next;
     ChunkAllocator m_jitMetaHeap;
     ChunkAllocator m_jitTempData;
+    // m_DynamicCodePointers has its entries allocated in chunks (via m_jitTempData).
+    // Having a field for the initial code pointer avoids the chunk allocation in the common
+    // case of a single code pointer. We want to avoid allocations while taking m_CodeHeapLock to reduce contention.
+    DynamicCodePointer m_initialCodePointer;
+    DynamicCodePointer* m_DynamicCodePointers;
     DynamicStringLiteral* m_DynamicStringLiterals;
-    IndCellList * m_UsedIndCellList;    // list to keep track of all the indirection cells used by the jitted code
-    ExecutionManager::JumpStubCache * m_pJumpStubCache;
+    IndCellList* m_UsedIndCellList;    // list to keep track of all the indirection cells used by the jitted code
+    ExecutionManager::JumpStubCache* m_pJumpStubCache;
 
 #ifdef FEATURE_PGO
     Volatile<PgoManager*> m_pgoManager;
@@ -218,9 +283,9 @@ private:
 public:
     void Destroy();
     DynamicMethodDesc* GetDynamicMethod(BYTE *psig, DWORD sigSize, PTR_CUTF8 name);
-    void LinkMethod(DynamicMethodDesc *pMethod);
+    void AddToFreeList(DynamicMethodDesc *pMethod);
 
-#endif
+#endif // !DACCESS_COMPILE
 
 #ifdef _DEBUG
 public:
@@ -241,20 +306,24 @@ public:
 // for reclamation of generated code
 // (Check the base class - CodeHeap in codeman.h - for comments on the functions)
 //
-class HostCodeHeap : CodeHeap
+class HostCodeHeap final : public CodeHeap
 {
 #ifdef DACCESS_COMPILE
     friend class ClrDataAccess;
 #else
+    friend class EECodeGenManager;
     friend class EEJitManager;
+    friend class InterpreterJitManager;
 #endif
 
     VPTR_VTABLE_CLASS(HostCodeHeap, CodeHeap)
 
+    friend struct ::cdac_data<HostCodeHeap>;
+
 private:
     // pointer back to jit manager info
     PTR_HeapList m_pHeapList;
-    PTR_EEJitManager m_pJitManager;
+    PTR_EECodeGenManager m_pJitManager;
     // basic allocation data
     PTR_BYTE m_pBaseAddr;
     PTR_BYTE m_pLastAvailableCommittedAddr;
@@ -262,10 +331,11 @@ private:
     size_t m_ApproximateLargestBlock;
     // Heap ref count
     DWORD m_AllocationCount;
+    bool m_isExecutable;
 
     // data to track free list and pointers into this heap
     // - on an used block this struct has got a pointer back to the CodeHeap, size and start of aligned allocation
-    // - on an unused block (free block) this tracks the size of the block and the pointer to the next non contiguos free block
+    // - on an unused block (free block) this tracks the size of the block and the pointer to the next non contiguous free block
     struct TrackAllocation {
         union {
             HostCodeHeap *pHeap;
@@ -280,15 +350,16 @@ private:
     LoaderAllocator*m_pAllocator;
 
 public:
-    static HeapList* CreateCodeHeap(CodeHeapRequestInfo *pInfo, EEJitManager *pJitManager);
+    static HeapList* CreateCodeHeap(CodeHeapRequestInfo *pInfo, EECodeGenManager *pJitManager);
 
 private:
-    HostCodeHeap(EEJitManager *pJitManager);
+    HostCodeHeap(EECodeGenManager *pJitManager, bool isExecutable);
     HeapList* InitializeHeapList(CodeHeapRequestInfo *pInfo);
     TrackAllocation* AllocFromFreeList(size_t header, size_t size, DWORD alignment, size_t reserveForJumpStubs);
     void AddToFreeList(TrackAllocation *pBlockToInsert, TrackAllocation *pBlockToInsertRW);
 
     TrackAllocation* AllocMemory_NoThrow(size_t header, size_t size, DWORD alignment, size_t reserveForJumpStubs);
+    void FreeMemForCode(void* codeStart);
 
 public:
     // Space for header is reserved immediately before. It is not included in size.
@@ -307,18 +378,15 @@ public:
 
     void DestroyCodeHeap();
 
-protected:
-    friend class DynamicMethodDesc;
-    friend class LCGMethodResolver;
-
-    void FreeMemForCode(void * codeStart);
-
-#if defined(FEATURE_JIT_PITCHING)
-public:
-    PTR_EEJitManager GetJitManager() { return m_pJitManager; }
-#endif
-
+    PTR_EECodeGenManager GetJitManager() { return m_pJitManager; }
 }; // class HostCodeHeap
+
+template<>
+struct cdac_data<HostCodeHeap>
+{
+    static constexpr size_t BaseAddress    = offsetof(HostCodeHeap, m_pBaseAddr);
+    static constexpr size_t CurrentAddress = offsetof(HostCodeHeap, m_pLastAvailableCommittedAddr);
+};
 
 //---------------------------------------------------------------------------------------
 //
@@ -332,18 +400,21 @@ inline MethodDesc* GetMethod(CORINFO_METHOD_HANDLE methodHandle)
 
 #ifndef DACCESS_COMPILE
 
-#define CORINFO_MODULE_HANDLE_TYPE_MASK 1
-
 enum CORINFO_MODULE_HANDLE_TYPES
 {
-    CORINFO_NORMAL_MODULE  = 0,
-    CORINFO_DYNAMIC_MODULE,
+    // The module handle is a Module
+    CORINFO_NORMAL_MODULE   = 0,
+
+    // The module handle is a DynamicResolver
+    CORINFO_DYNAMIC_MODULE  = 1,
 };
+
+#define CORINFO_MODULE_HANDLE_TYPE_MASK (CORINFO_NORMAL_MODULE | CORINFO_DYNAMIC_MODULE)
 
 inline bool IsDynamicScope(CORINFO_MODULE_HANDLE module)
 {
     LIMITED_METHOD_CONTRACT;
-    return (CORINFO_DYNAMIC_MODULE == (((size_t)module) & CORINFO_MODULE_HANDLE_TYPE_MASK));
+    return !!(CORINFO_DYNAMIC_MODULE & (((size_t)module) & CORINFO_MODULE_HANDLE_TYPE_MASK));
 }
 
 inline CORINFO_MODULE_HANDLE MakeDynamicScope(DynamicResolver* pResolver)
@@ -358,6 +429,17 @@ inline DynamicResolver* GetDynamicResolver(CORINFO_MODULE_HANDLE module)
     LIMITED_METHOD_CONTRACT;
     CONSISTENCY_CHECK(IsDynamicScope(module));
     return (DynamicResolver*)(((size_t)module) & ~((size_t)CORINFO_MODULE_HANDLE_TYPE_MASK));
+}
+
+inline bool RequiresAccessCheck(CORINFO_MODULE_HANDLE module)
+{
+    LIMITED_METHOD_CONTRACT;
+
+    // Non-dynamic scopes always require access checks.
+    if (!IsDynamicScope(module))
+        return true;
+
+    return GetDynamicResolver(module)->RequiresAccessCheck();
 }
 
 inline Module* GetModule(CORINFO_MODULE_HANDLE scope)

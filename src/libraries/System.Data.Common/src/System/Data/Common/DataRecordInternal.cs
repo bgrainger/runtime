@@ -104,7 +104,7 @@ namespace System.Data.Common
 
         public override long GetBytes(int i, long dataIndex, byte[]? buffer, int bufferIndex, int length)
         {
-            int cbytes = 0;
+            int cbytes;
             int ndataIndex;
 
             byte[] data = (byte[])_values[i];
@@ -112,9 +112,9 @@ namespace System.Data.Common
             cbytes = data.Length;
 
             // since arrays can't handle 64 bit values and this interface doesn't
-            // allow chunked access to data, a dataIndex outside the rang of Int32
+            // allow chunked access to data, a dataIndex outside the range of Int32
             // is invalid
-            if (dataIndex > int.MaxValue)
+            if ((ulong)dataIndex > int.MaxValue)
             {
                 throw ADP.InvalidSourceBufferIndex(cbytes, dataIndex, nameof(dataIndex));
             }
@@ -131,7 +131,7 @@ namespace System.Data.Common
                 {
                     // help the user out in the case where there's less data than requested
                     if ((ndataIndex + length) > cbytes)
-                        cbytes = cbytes - ndataIndex;
+                        cbytes -= ndataIndex;
                     else
                         cbytes = length;
                 }
@@ -182,9 +182,9 @@ namespace System.Data.Common
             int cchars = data.Length;
 
             // since arrays can't handle 64 bit values and this interface doesn't
-            // allow chunked access to data, a dataIndex outside the rang of Int32
+            // allow chunked access to data, a dataIndex outside the range of Int32
             // is invalid
-            if (dataIndex > int.MaxValue)
+            if ((ulong)dataIndex > int.MaxValue)
             {
                 throw ADP.InvalidSourceBufferIndex(cchars, dataIndex, nameof(dataIndex));
             }
@@ -205,7 +205,7 @@ namespace System.Data.Common
                     // help the user out in the case where there's less data than requested
                     if ((ndataIndex + length) > cchars)
                     {
-                        cchars = cchars - ndataIndex;
+                        cchars -= ndataIndex;
                     }
                     else
                     {
@@ -318,9 +318,9 @@ namespace System.Data.Common
         }
 
         [RequiresUnreferencedCode("Generic TypeConverters may require the generic types to be annotated. For example, NullableConverter requires the underlying type to be DynamicallyAccessedMembers All.")]
-        TypeConverter ICustomTypeDescriptor.GetConverter()
+        TypeConverter? ICustomTypeDescriptor.GetConverter()
         {
-            return null!;
+            return null;
         }
 
         [RequiresUnreferencedCode("The built-in EventDescriptor implementation uses Reflection which requires unreferenced code.")]
@@ -335,7 +335,7 @@ namespace System.Data.Common
             return null;
         }
 
-        [RequiresUnreferencedCode("Editors registered in TypeDescriptor.AddEditorTable may be trimmed.")]
+        [RequiresUnreferencedCode("Design-time attributes are not preserved when trimming. Types referenced by attributes like EditorAttribute and DesignerAttribute may not be available after trimming.")]
         object? ICustomTypeDescriptor.GetEditor(Type editorBaseType)
         {
             return null;
@@ -359,14 +359,8 @@ namespace System.Data.Common
         }
 
         [RequiresUnreferencedCode("PropertyDescriptor's PropertyType cannot be statically discovered. The public parameterless constructor or the 'Default' static field may be trimmed from the Attribute's Type.")]
-        PropertyDescriptorCollection ICustomTypeDescriptor.GetProperties(Attribute[]? attributes)
-        {
-            if (_propertyDescriptors == null)
-            {
-                _propertyDescriptors = new PropertyDescriptorCollection(null);
-            }
-            return _propertyDescriptors;
-        }
+        PropertyDescriptorCollection ICustomTypeDescriptor.GetProperties(Attribute[]? attributes) =>
+            _propertyDescriptors ??= new PropertyDescriptorCollection(null);
 
         object ICustomTypeDescriptor.GetPropertyOwner(PropertyDescriptor? pd)
         {

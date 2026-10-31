@@ -33,7 +33,7 @@ internal static partial class Interop
                 if (rv >= 0)
                 {
                     // success
-                    return groups.Slice(0, rv).IndexOf(gid) >= 0;
+                    return groups.Slice(0, rv).Contains(gid);
                 }
                 else if (rv == -1 && Interop.Sys.GetLastError() == Interop.Error.EINVAL)
                 {
@@ -49,10 +49,10 @@ internal static partial class Interop
             while (true);
         }
 
-        [GeneratedDllImport(Libraries.SystemNative, EntryPoint = "SystemNative_GetEGid")]
+        [LibraryImport(Libraries.SystemNative, EntryPoint = "SystemNative_GetEGid")]
         private static partial uint GetEGid();
 
-        [GeneratedDllImport(Libraries.SystemNative, EntryPoint = "SystemNative_GetGroups", SetLastError = true)]
+        [LibraryImport(Libraries.SystemNative, EntryPoint = "SystemNative_GetGroups", SetLastError = true)]
         private static unsafe partial int GetGroups(int ngroups, uint* groups);
     }
 }

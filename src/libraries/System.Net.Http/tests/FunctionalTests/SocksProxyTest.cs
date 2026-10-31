@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Test.Common;
 using System.Threading.Tasks;
+using Microsoft.DotNet.XUnitExtensions;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -14,18 +15,18 @@ namespace System.Net.Http.Functional.Tests
     {
         public SocksProxyTest(ITestOutputHelper helper) : base(helper) { }
 
-        private static string[] Hosts(string socksScheme) => socksScheme == "socks5"
+        private static string[] Hosts(string socksScheme) => socksScheme == "socks5" || socksScheme == "socks5h"
             ? new[] { "localhost", "127.0.0.1", "::1" }
             : new[] { "localhost", "127.0.0.1" };
 
         public static IEnumerable<object[]> TestLoopbackAsync_MemberData() =>
-            from scheme in new[] { "socks4", "socks4a", "socks5" }
+            from scheme in new[] { "socks4", "socks4a", "socks5", "socks5h" }
             from useSsl in BoolValues
             from useAuth in BoolValues
             from host in Hosts(scheme)
             select new object[] { scheme, useSsl, useAuth, host };
 
-        [Theory]
+        [ConditionalTheory]
         [MemberData(nameof(TestLoopbackAsync_MemberData))]
         public async Task TestLoopbackAsync(string scheme, bool useSsl, bool useAuth, string host)
         {
@@ -38,11 +39,10 @@ namespace System.Net.Http.Functional.Tests
                 async uri =>
                 {
                     await using var proxy = useAuth ? new LoopbackSocksServer("DOTNET", "424242") : new LoopbackSocksServer();
-                    using HttpClientHandler handler = CreateHttpClientHandler();
+                    using HttpClientHandler handler = CreateHttpClientHandler(allowAllCertificates: true);
                     using HttpClient client = CreateHttpClient(handler);
 
                     handler.Proxy = new WebProxy($"{scheme}://127.0.0.1:{proxy.Port}");
-                    handler.ServerCertificateCustomValidationCallback = TestHelper.AllowAllCertificates;
 
                     if (useAuth)
                     {
@@ -77,7 +77,7 @@ namespace System.Net.Http.Functional.Tests
 
             yield return new object[] { "socks4", new string('a', 256), false, null, "Failed to resolve the destination host to an IPv4 address." };
 
-            foreach (string scheme in new[] { "socks4a", "socks5" })
+            foreach (string scheme in new[] { "socks4a", "socks5", "socks5h" })
             {
                 yield return new object[] { scheme, new string('a', 256), false, null, "Encoding the host took more than the maximum of 255 bytes." };
             }
@@ -86,6 +86,10 @@ namespace System.Net.Http.Functional.Tests
             yield return new object[] { "socks5", "localhost", true, new NetworkCredential("bad_username", "bad_password"), "Failed to authenticate with the SOCKS server." };
             yield return new object[] { "socks5", "localhost", true, new NetworkCredential(new string('a', 256), "foo"), "Encoding the UserName took more than the maximum of 255 bytes." };
             yield return new object[] { "socks5", "localhost", true, new NetworkCredential("foo", new string('a', 256)), "Encoding the Password took more than the maximum of 255 bytes." };
+            yield return new object[] { "socks5h", "localhost", true, null, "SOCKS server did not return a suitable authentication method." };
+            yield return new object[] { "socks5h", "localhost", true, new NetworkCredential("bad_username", "bad_password"), "Failed to authenticate with the SOCKS server." };
+            yield return new object[] { "socks5h", "localhost", true, new NetworkCredential(new string('a', 256), "foo"), "Encoding the UserName took more than the maximum of 255 bytes." };
+            yield return new object[] { "socks5h", "localhost", true, new NetworkCredential("foo", new string('a', 256)), "Encoding the Password took more than the maximum of 255 bytes." };
         }
 
         [Theory]
@@ -104,21 +108,18 @@ namespace System.Net.Http.Functional.Tests
             HttpRequestMessage request = CreateRequest(HttpMethod.Get, new Uri($"http://{host}/"), UseVersion, exactVersion: true);
 
             // SocksException is not public
-            var ex = await Assert.ThrowsAnyAsync<HttpRequestException>(() => client.SendAsync(TestAsync, request));
-            var innerException = ex.InnerException;
+            var exception = await Assert.ThrowsAnyAsync<HttpRequestException>(() => client.SendAsync(TestAsync, request));
+            var innerException = exception.InnerException;
             Assert.Equal(exceptionMessage, innerException.Message);
             Assert.Equal("SocksException", innerException.GetType().Name);
 
-            try
-            {
-                await proxy.DisposeAsync();
-            }
-            catch { }
+            await IgnoreExceptions(proxy.DisposeAsync().AsTask());
         }
     }
 
 
     [SkipOnPlatform(TestPlatforms.Browser, "UseProxy not supported on Browser")]
+    [SkipOnPlatform(TestPlatforms.Wasi, "UseProxy not supported on Wasi")]
     public sealed class SocksProxyTest_Http1_Async : SocksProxyTest
     {
         public SocksProxyTest_Http1_Async(ITestOutputHelper helper) : base(helper) { }
@@ -126,6 +127,8 @@ namespace System.Net.Http.Functional.Tests
     }
 
     [SkipOnPlatform(TestPlatforms.Browser, "UseProxy not supported on Browser")]
+    [SkipOnPlatform(TestPlatforms.Wasi, "UseProxy not supported on Wasi")]
+    [SkipOnPlatform(TestPlatforms.Android, "The sync Send method is not supported on mobile platforms")]
     public sealed class SocksProxyTest_Http1_Sync : SocksProxyTest
     {
         public SocksProxyTest_Http1_Sync(ITestOutputHelper helper) : base(helper) { }
@@ -134,6 +137,7 @@ namespace System.Net.Http.Functional.Tests
     }
 
     [SkipOnPlatform(TestPlatforms.Browser, "UseProxy not supported on Browser")]
+    [SkipOnPlatform(TestPlatforms.Wasi, "UseProxy not supported on Wasi")]
     public sealed class SocksProxyTest_Http2 : SocksProxyTest
     {
         public SocksProxyTest_Http2(ITestOutputHelper helper) : base(helper) { }

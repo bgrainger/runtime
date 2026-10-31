@@ -14,7 +14,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
     // A "derived" type representing Nullable<T>. The base type T is the parent.
     //
     // ----------------------------------------------------------------------------
-
+    [RequiresDynamicCode(Binder.DynamicCodeWarning)]
     internal sealed class NullableType : CType
     {
         private AggregateType _ats;
@@ -27,7 +27,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]
         public override AggregateType GetAts() =>
-            _ats ?? (_ats = TypeManager.GetAggregate(TypeManager.GetNullable(), TypeArray.Allocate(UnderlyingType)));
+            _ats ??= TypeManager.GetAggregate(TypeManager.GetNullable(), TypeArray.Allocate(UnderlyingType));
 
         public override CType StripNubs() => UnderlyingType;
 

@@ -11,9 +11,7 @@ namespace System.Reflection.Metadata
     public class ApplyUpdateUtil {
         internal const string DotNetModifiableAssembliesSwitch = "DOTNET_MODIFIABLE_ASSEMBLIES";
         internal const string DotNetModifiableAssembliesValue = "debug";
-
-        [CollectionDefinition("NoParallelTests", DisableParallelization = true)]
-        public class NoParallelTests { }
+        internal const string DotNetModifiableAssembliesDisabledValue = "none";
 
         /// Whether ApplyUpdate is supported by the environment, test configuration, and runtime.
         ///
@@ -24,7 +22,10 @@ namespace System.Reflection.Metadata
         public static bool IsSupported => (IsModifiableAssembliesSet || IsRemoteExecutorSupported) &&
             (!IsMonoRuntime || IsSupportedMonoConfiguration);
 
-        /// true if the current runtime was not launched with the apropriate settings for applying
+        /// true if RemoteExecutor is available and the runtime supports metadata updates.
+        public static bool IsRemoteExecutorSupportedAndFeatureCapable => IsSupported && IsRemoteExecutorSupported;
+
+        /// true if the current runtime was not launched with the appropriate settings for applying
         /// updates (DOTNET_MODIFIABLE_ASSEMBLIES unset), but we can use the remote executor to
         /// launch a child process that has the right setting.
         public static bool TestUsingRemoteExecutor => IsRemoteExecutorSupported && !IsModifiableAssembliesSet;
@@ -41,6 +42,8 @@ namespace System.Reflection.Metadata
 
         public static bool IsMonoRuntime => PlatformDetection.IsMonoRuntime;
 
+        public static bool IsNotMonoRuntime => !PlatformDetection.IsMonoRuntime;
+
         private static readonly Lazy<bool> s_isSupportedMonoConfiguration = new Lazy<bool>(CheckSupportedMonoConfiguration);
 
         public static bool IsSupportedMonoConfiguration => s_isSupportedMonoConfiguration.Value;
@@ -50,7 +53,7 @@ namespace System.Reflection.Metadata
         {
             // check that interpreter is enabled, and the build has hot reload capabilities enabled.
             var isInterp = RuntimeFeature.IsDynamicCodeSupported && !RuntimeFeature.IsDynamicCodeCompiled;
-            return isInterp && HasApplyUpdateCapabilities();
+            return isInterp && !PlatformDetection.IsMonoAOT && HasApplyUpdateCapabilities();
         }
 
         internal static bool HasApplyUpdateCapabilities()
@@ -69,7 +72,7 @@ namespace System.Reflection.Metadata
 
         private static System.Collections.Generic.Dictionary<Assembly, int> assembly_count = new();
 
-        internal static void ApplyUpdate (System.Reflection.Assembly assm)
+        internal static void ApplyUpdate (System.Reflection.Assembly assm, bool usePDB = true)
         {
             int count;
             if (!assembly_count.TryGetValue(assm, out count))
@@ -86,9 +89,13 @@ namespace System.Reflection.Metadata
 
             string dmeta_name = $"{basename}.{count}.dmeta";
             string dil_name = $"{basename}.{count}.dil";
+            string dpdb_name = $"{basename}.{count}.dpdb";
             byte[] dmeta_data = System.IO.File.ReadAllBytes(dmeta_name);
             byte[] dil_data = System.IO.File.ReadAllBytes(dil_name);
-            byte[] dpdb_data = null; // TODO also use the dpdb data
+            byte[] dpdb_data = null;
+
+            if (usePDB)
+                dpdb_data = System.IO.File.ReadAllBytes(dpdb_name);
 
             MetadataUpdater.ApplyUpdate(assm, dmeta_data, dil_data, dpdb_data);
         }
@@ -97,6 +104,20 @@ namespace System.Reflection.Metadata
         {
             options = options ?? new RemoteInvokeOptions();
             options.StartInfo.EnvironmentVariables.Add(DotNetModifiableAssembliesSwitch, DotNetModifiableAssembliesValue);
+            /* Ask mono to use .dpdb data to generate sequence points even without a debugger attached */
+            if (IsMonoRuntime)
+                AppendEnvironmentVariable(options.StartInfo.EnvironmentVariables, "MONO_DEBUG", "gen-seq-points");
+        }
+
+        private static void AppendEnvironmentVariable(System.Collections.Specialized.StringDictionary env, string key, string addedValue)
+        {
+            if (!env.ContainsKey(key))
+                env.Add(key, addedValue);
+            else
+            {
+                string oldValue = env[key];
+                env[key] = oldValue + "," + addedValue;
+            }
         }
 
         /// Run the given test case, which applies updates to the given assembly.
@@ -158,6 +179,6 @@ namespace System.Reflection.Metadata
             Assert.NotNull(clearCache);
             return clearCache.CreateDelegate<Action<Type[]>>();
         }
-        
+
     }
 }

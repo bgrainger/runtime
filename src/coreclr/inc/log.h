@@ -12,6 +12,8 @@
 #ifndef __LOG_H__
 #define __LOG_H__
 
+#include <minipal/types.h>
+
 
 #define DEFINE_LOG_FACILITY(logname, value)  logname = value,
 
@@ -21,17 +23,18 @@ enum {
     LF_ALL           = 0xFFFFFFFF, // Used only to mask bits. Never use as LOG((LF_ALL, ...))
 
     // LogFacility2: all 32-bit of LogFacility are used, need a 2nd DWORD for more facilities
-    LF2_MULTICOREJIT = 0x00000001  // Multicore JIT
+    LF2_MULTICOREJIT = 0x00000001, // Multicore JIT
+    LF2_INTERPRETER  = 0x00000002, // Interpreter
 };
 
 
 #define LL_EVERYTHING  10
-#define LL_INFO1000000  9       // can be expected to generate 1,000,000 logs per small but not trival run
-#define LL_INFO100000   8       // can be expected to generate 100,000 logs per small but not trival run
-#define LL_INFO10000    7       // can be expected to generate 10,000 logs per small but not trival run
-#define LL_INFO1000     6       // can be expected to generate 1,000 logs per small but not trival run
-#define LL_INFO100      5       // can be expected to generate 100 logs per small but not trival run
-#define LL_INFO10       4       // can be expected to generate 10 logs per small but not trival run
+#define LL_INFO1000000  9       // can be expected to generate 1,000,000 logs per small but not trivial run
+#define LL_INFO100000   8       // can be expected to generate 100,000 logs per small but not trivial run
+#define LL_INFO10000    7       // can be expected to generate 10,000 logs per small but not trivial run
+#define LL_INFO1000     6       // can be expected to generate 1,000 logs per small but not trivial run
+#define LL_INFO100      5       // can be expected to generate 100 logs per small but not trivial run
+#define LL_INFO10       4       // can be expected to generate 10 logs per small but not trivial run
 #define LL_WARNING      3
 #define LL_ERROR        2
 #define LL_FATALERROR   1
@@ -46,6 +49,10 @@ enum {
 #define WARNING     0
 #define ERROR       0
 #define FATALERROR  0
+
+#ifdef _DEBUG
+#define _LOGALLOC
+#endif
 
 #ifndef LOGGING
 
@@ -69,14 +76,14 @@ extern VOID InitLogging();
 extern VOID ShutdownLogging();
 extern VOID FlushLogging();
 
-extern VOID LogSpew(DWORD facility, DWORD level, const char *fmt, ... );
+extern VOID LogSpew(DWORD facility, DWORD level, const char *fmt, ... ) MINIPAL_ATTR_FORMAT_PRINTF(3, 4);
 extern VOID LogSpewValist(DWORD facility, DWORD level, const char *fmt, va_list args);
 
-extern VOID LogSpew2(DWORD facility2, DWORD level, const char *fmt, ... );
+extern VOID LogSpew2(DWORD facility2, DWORD level, const char *fmt, ... ) MINIPAL_ATTR_FORMAT_PRINTF(3, 4);
 extern VOID LogSpew2Valist(DWORD facility2, DWORD level, const char *fmt, va_list args);
 
 extern VOID LogSpewAlwaysValist(const char *fmt, va_list args);
-extern VOID LogSpewAlways (const char *fmt, ... );
+extern VOID LogSpewAlways (const char *fmt, ... ) MINIPAL_ATTR_FORMAT_PRINTF(1, 2);
 extern VOID EnterLogLock();
 extern VOID LeaveLogLock();
 
@@ -86,11 +93,36 @@ bool LoggingEnabled();
 bool LoggingOn(DWORD facility, DWORD level);
 bool Logging2On(DWORD facility, DWORD level);
 
-#define LOG(x)      do { if (LoggingEnabled()) { LogSpew x; } } while (0)
+#ifdef DACCESS_COMPILE
 
-#define LOG2(x)     do { if (LoggingEnabled()) { LogSpew2 x; } } while (0)
+/*
+ *
+ * Logging for the DAC is an incomplete feature, see more in
+ * https://github.com/dotnet/runtime/issues/77922
+ *
+ * As of now, logging need to be opt-in. Any logging done through
+ * DAC_LOG (or it variants) will be available in the log for both the runtime and the DAC build
+ * And the normal LOG macro will be available only for the runtime.
+ *
+ */
 
-#define LOGALWAYS(x)   LogSpewAlways x
+#define LOG(x)           do {  } while (0)
+#define LOG2(x)          do {  } while (0)
+#define LOGALWAYS(x)     do {  } while (0)
+#define DAC_LOG(x)       do { if (LoggingEnabled()) { LogSpew x; } } while (0)
+#define DAC_LOG2(x)      do { if (LoggingEnabled()) { LogSpew2 x; } } while (0)
+#define DAC_LOGALWAYS(x) LogSpewAlways x
+
+#else 
+
+#define LOG(x)           do { if (LoggingEnabled()) { LogSpew x; } } while (0)
+#define LOG2(x)          do { if (LoggingEnabled()) { LogSpew2 x; } } while (0)
+#define LOGALWAYS(x)     LogSpewAlways x
+#define DAC_LOG(x)       LOG(x)
+#define DAC_LOG2(x)      LOG2(x)
+#define DAC_LOGALWAYS(x) LOGALWAYS(x)
+
+#endif
 
 #endif
 

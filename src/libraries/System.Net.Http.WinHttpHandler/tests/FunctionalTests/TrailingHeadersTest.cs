@@ -28,7 +28,7 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
 
         protected override Version UseVersion => new Version(2, 0);
 
-        protected static byte[] DataBytes = Encoding.ASCII.GetBytes("data");
+        protected static byte[] DataBytes = "data"u8.ToArray();
 
         protected static readonly IList<HttpHeaderData> TrailingHeaders = new HttpHeaderData[] {
             new HttpHeaderData("MyCoolTrailerHeader", "amazingtrailer"),
@@ -39,7 +39,7 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
         protected static Frame MakeDataFrame(int streamId, byte[] data, bool endStream = false) =>
             new DataFrame(data, (endStream ? FrameFlags.EndStream : FrameFlags.None), 0, streamId);
 
-        [ConditionalFact(nameof(TestsEnabled))]
+        [ConditionalFact(typeof(TrailingHeadersTest), nameof(TestsEnabled))]
         public async Task Http2GetAsync_NoTrailingHeaders_EmptyCollection()
         {
             using (Http2LoopbackServer server = Http2LoopbackServer.CreateServer())
@@ -67,8 +67,10 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
             }
         }
 
-        [ConditionalFact(nameof(TestsEnabled))]
-        public async Task Http2GetAsync_MissingTrailer_TrailingHeadersAccepted()
+        [InlineData(false)]
+        [InlineData(true)]
+        [ConditionalTheory(typeof(TrailingHeadersTest), nameof(TestsEnabled))]
+        public async Task Http2GetAsync_MissingTrailer_TrailingHeadersAccepted(bool responseHasContentLength)
         {
             using (Http2LoopbackServer server = Http2LoopbackServer.CreateServer())
             using (HttpClient client = CreateHttpClient())
@@ -80,7 +82,14 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
                 int streamId = await connection.ReadRequestHeaderAsync();
 
                 // Response header.
-                await connection.SendDefaultResponseHeadersAsync(streamId);
+                if (responseHasContentLength)
+                {
+                    await connection.SendResponseHeadersAsync(streamId, endStream: false, headers: new[] { new HttpHeaderData("Content-Length", DataBytes.Length.ToString()) });
+                }
+                else
+                {
+                    await connection.SendDefaultResponseHeadersAsync(streamId);
+                }
 
                 // Response data, missing Trailers.
                 await connection.WriteFrameAsync(MakeDataFrame(streamId, DataBytes));
@@ -98,8 +107,10 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
             }
         }
 
-        [ConditionalFact(nameof(TestsEnabled))]
-        public async Task Http2GetAsyncResponseHeadersReadOption_TrailingHeaders_Available()
+        [InlineData(false)]
+        [InlineData(true)]
+        [ConditionalTheory(typeof(TrailingHeadersTest), nameof(TestsEnabled))]
+        public async Task Http2GetAsyncResponseHeadersReadOption_TrailingHeaders_Available(bool responseHasContentLength)
         {
             using (Http2LoopbackServer server = Http2LoopbackServer.CreateServer())
             using (HttpClient client = CreateHttpClient())
@@ -111,7 +122,14 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
                 int streamId = await connection.ReadRequestHeaderAsync();
 
                 // Response header.
-                await connection.SendDefaultResponseHeadersAsync(streamId);
+                if (responseHasContentLength)
+                {
+                    await connection.SendResponseHeadersAsync(streamId, endStream: false, headers: new[] { new HttpHeaderData("Content-Length", DataBytes.Length.ToString()) });
+                }
+                else
+                {
+                    await connection.SendDefaultResponseHeadersAsync(streamId);
+                }
 
                 // Response data, missing Trailers.
                 await connection.WriteFrameAsync(MakeDataFrame(streamId, DataBytes));
@@ -151,7 +169,7 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
             }
         }
 
-        [ConditionalFact(nameof(TestsEnabled))]
+        [ConditionalFact(typeof(TrailingHeadersTest), nameof(TestsEnabled))]
         public async Task Http2GetAsync_TrailerHeaders_TrailingHeaderNoBody()
         {
             using (Http2LoopbackServer server = Http2LoopbackServer.CreateServer())
@@ -177,7 +195,7 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
             }
         }
 
-        [ConditionalFact(nameof(TestsEnabled))]
+        [ConditionalFact(typeof(TrailingHeadersTest), nameof(TestsEnabled))]
         public async Task Http2GetAsync_TrailingHeaders_NoData_EmptyResponseObserved()
         {
             using (Http2LoopbackServer server = Http2LoopbackServer.CreateServer())
@@ -199,7 +217,8 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
 
                 HttpResponseMessage response = await sendTask;
                 Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-                Assert.Equal<byte>(Array.Empty<byte>(), await response.Content.ReadAsByteArrayAsync());
+                byte[] responseBody = await response.Content.ReadAsByteArrayAsync();
+                Assert.Equal(Array.Empty<byte>(), responseBody);
 
                 var trailingHeaders = GetTrailingHeaders(response);
                 Assert.Contains("amazingtrailer", trailingHeaders.GetValues("MyCoolTrailerHeader"));
@@ -209,7 +228,7 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
 
         private HttpHeaders GetTrailingHeaders(HttpResponseMessage responseMessage)
         {
-#if !NET48
+#if !NETFRAMEWORK
             return responseMessage.TrailingHeaders;
 #else
 #pragma warning disable CS0618 // Type or member is obsolete

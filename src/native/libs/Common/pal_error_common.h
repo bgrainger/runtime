@@ -219,8 +219,10 @@ inline static int32_t ConvertErrorPlatformToPal(int32_t platformErrno)
             return Error_EMLINK;
         case EMSGSIZE:
             return Error_EMSGSIZE;
+#ifdef EMULTIHOP // not available in OpenBSD
         case EMULTIHOP:
             return Error_EMULTIHOP;
+#endif
         case ENAMETOOLONG:
             return Error_ENAMETOOLONG;
         case ENETDOWN:
@@ -241,8 +243,10 @@ inline static int32_t ConvertErrorPlatformToPal(int32_t platformErrno)
             return Error_ENOEXEC;
         case ENOLCK:
             return Error_ENOLCK;
+#ifdef ENOLINK // not available in OpenBSD
         case ENOLINK:
             return Error_ENOLINK;
+#endif
         case ENOMEM:
             return Error_ENOMEM;
         case ENOMSG:
@@ -309,12 +313,18 @@ inline static int32_t ConvertErrorPlatformToPal(int32_t platformErrno)
         case ESOCKTNOSUPPORT:
             return Error_ESOCKTNOSUPPORT;
 #endif
+#ifdef EPFNOSUPPORT // not available in WASI
         case EPFNOSUPPORT:
             return Error_EPFNOSUPPORT;
+#endif
+#ifdef ESHUTDOWN // not available in WASI
         case ESHUTDOWN:
             return Error_ESHUTDOWN;
+#endif
+#ifdef EHOSTDOWN // not available in WASI
         case EHOSTDOWN:
             return Error_EHOSTDOWN;
+#endif
 #ifdef ENODATA // not available in FreeBSD
         case ENODATA:
             return Error_ENODATA;
@@ -330,6 +340,8 @@ inline static int32_t ConvertErrorPlatformToPal(int32_t platformErrno)
         case EWOULDBLOCK:
             return Error_EWOULDBLOCK;
 #endif
+        default:
+            break; // fall through to error
     }
 
     return Error_ENONSTANDARD;
@@ -411,8 +423,10 @@ inline static int32_t ConvertErrorPalToPlatform(int32_t error)
             return EMLINK;
         case Error_EMSGSIZE:
             return EMSGSIZE;
+#ifdef EMULTIHOP // not available in OpenBSD
         case Error_EMULTIHOP:
             return EMULTIHOP;
+#endif
         case Error_ENAMETOOLONG:
             return ENAMETOOLONG;
         case Error_ENETDOWN:
@@ -433,8 +447,10 @@ inline static int32_t ConvertErrorPalToPlatform(int32_t error)
             return ENOEXEC;
         case Error_ENOLCK:
             return ENOLCK;
+#ifdef ENOLINK // not available in OpenBSD
         case Error_ENOLINK:
             return ENOLINK;
+#endif
         case Error_ENOMEM:
             return ENOMEM;
         case Error_ENOMSG:
@@ -495,16 +511,22 @@ inline static int32_t ConvertErrorPalToPlatform(int32_t error)
             return ETXTBSY;
         case Error_EXDEV:
             return EXDEV;
+#ifdef EPFNOSUPPORT // not available in WASI
         case Error_EPFNOSUPPORT:
             return EPFNOSUPPORT;
+#endif
 #ifdef ESOCKTNOSUPPORT
         case Error_ESOCKTNOSUPPORT:
             return ESOCKTNOSUPPORT;
 #endif
+#ifdef ESHUTDOWN // not available in WASI
         case Error_ESHUTDOWN:
             return ESHUTDOWN;
+#endif
+#ifdef EHOSTDOWN // not available in WASI
         case Error_EHOSTDOWN:
             return EHOSTDOWN;
+#endif
 #ifdef ENODATA // not available in FreeBSD
         case Error_ENODATA:
             return ENODATA;
@@ -515,6 +537,8 @@ inline static int32_t ConvertErrorPalToPlatform(int32_t error)
             return ESOCKETERROR;
 
         case Error_ENONSTANDARD:
+            break; // fall through to assert
+        default:
             break; // fall through to assert
     }
 
@@ -537,9 +561,11 @@ static bool TryConvertErrorToGai(int32_t error, int32_t* gaiError)
 
     switch (error)
     {
+#ifdef EAI_NONAME // not available in WASI
         case EHOSTNOTFOUND:
             *gaiError = EAI_NONAME;
             return true;
+#endif
         default:
             *gaiError = error;
             return false;

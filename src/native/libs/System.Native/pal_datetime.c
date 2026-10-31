@@ -3,6 +3,8 @@
 
 #include "pal_config.h"
 #include "pal_datetime.h"
+#include "pal_utilities.h"
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,7 +25,7 @@ static const int64_t TICKS_PER_MICROSECOND = 10; /* 1000 / 100 */
 // SystemNative_GetSystemTimeAsTicks return the system time as ticks (100 nanoseconds) 
 // since 00:00 01 January 1970 UTC (Unix epoch) 
 //
-int64_t SystemNative_GetSystemTimeAsTicks()
+int64_t SystemNative_GetSystemTimeAsTicks(void)
 {
 #if HAVE_CLOCK_REALTIME
     struct timespec time;
@@ -43,7 +45,7 @@ int64_t SystemNative_GetSystemTimeAsTicks()
 }
 
 #if defined(TARGET_ANDROID)
-char* SystemNative_GetDefaultTimeZone()
+char* SystemNative_GetDefaultTimeZone(void)
 {
     char defaulttimezone[PROP_VALUE_MAX];
     if (__system_property_get("persist.sys.timezone", defaulttimezone))
@@ -54,5 +56,21 @@ char* SystemNative_GetDefaultTimeZone()
     {
         return NULL;
     }
+}
+#elif !defined(__APPLE__)
+char* SystemNative_GetDefaultTimeZone(void)
+{
+    assert_err(false, "This function is not supported on this platform.", EINVAL);
+    return NULL;
+}
+#endif
+
+#if !defined(TARGET_WASM)
+const char* SystemNative_GetTimeZoneData(const char* name, int* length)
+{
+    assert_msg(false, "Not supported on this platform", 0);
+    (void)name;
+    (void)length;
+    return NULL;
 }
 #endif

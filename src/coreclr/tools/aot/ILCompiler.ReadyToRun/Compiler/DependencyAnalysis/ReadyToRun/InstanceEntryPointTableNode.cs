@@ -7,7 +7,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection.Metadata.Ecma335;
-
+using ILCompiler.ReadyToRun.TypeSystem;
+using Internal;
 using Internal.JitInterface;
 using Internal.NativeFormat;
 using Internal.Runtime;
@@ -23,7 +24,6 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         private bool _materializedSignature;
 
         public InstanceEntryPointTableNode(NodeFactory factory)
-            : base(factory.Target)
         {
             _factory = factory;
             _factory.ManifestMetadataTable.RegisterEmitter(this);
@@ -37,6 +37,9 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                 {
                     foreach (MethodWithGCInfo method in _factory.EnumerateCompiledMethods(null, CompiledMethodCategory.Instantiated))
                     {
+                        if (method.Method is AsyncResumptionStub)
+                            continue;
+
                         BuildSignatureForMethod(method, _factory);
                     }
                 }
@@ -48,25 +51,44 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         public override void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
         {
             sb.Append(nameMangler.CompilationUnitPrefix);
-            sb.Append("__ReadyToRunInstanceEntryPointTable");
+            sb.Append("__ReadyToRunInstanceEntryPointTable"u8);
         }
 
-        private ArraySignatureBuilder BuildSignatureForMethod(MethodWithGCInfo method, NodeFactory factory)
+        public static byte[] BuildSignatureForMethodDefinedInModule(MethodDesc method, NodeFactory factory)
         {
-            // In composite R2R format, always enforce owning type to let us share generic instantiations among modules
+            EcmaMethod typicalMethod = (EcmaMethod)method.GetPrimaryMethodDesc().GetTypicalMethodDefinition();
 
-            EcmaMethod typicalMethod = (EcmaMethod)method.Method.GetTypicalMethodDefinition();
-            ModuleToken moduleToken = new ModuleToken(typicalMethod.Module, typicalMethod.Handle);
+            ModuleToken moduleToken;
+            if (factory.CompilationModuleGroup.VersionsWithMethodBody(typicalMethod))
+            {
+                moduleToken = new ModuleToken(typicalMethod.Module, typicalMethod.Handle);
+            }
+            else
+            {
+                MutableModule manifestMetadata = factory.ManifestMetadataTable._mutableModule;
+                var handle = manifestMetadata.TryGetExistingEntityHandle(typicalMethod);
+                Debug.Assert(handle.HasValue);
+                moduleToken = new ModuleToken(factory.ManifestMetadataTable._mutableModule, handle.Value);
+            }
+
+            CompilerTypeSystemContext context = (CompilerTypeSystemContext)method.Context;
+            bool isUnboxStub = context.IsUnboxingThunk(method);
+            MethodDesc signatureMethod = isUnboxStub ? context.GetTargetOfUnboxingThunk(method) : method;
 
             ArraySignatureBuilder signatureBuilder = new ArraySignatureBuilder();
             signatureBuilder.EmitMethodSignature(
-                new MethodWithToken(method.Method, moduleToken, constrainedType: null, unboxing: false, context: null),
+                new MethodWithToken(signatureMethod, moduleToken, constrainedType: null, unboxing: isUnboxStub, genericContextObject: null),
                 enforceDefEncoding: true,
-                enforceOwningType: _factory.CompilationModuleGroup.EnforceOwningType(moduleToken.Module),
+                enforceOwningType: moduleToken.Module is EcmaModule ? factory.CompilationModuleGroup.EnforceOwningType((EcmaModule)moduleToken.Module) : true,
                 factory.SignatureContext,
                 isInstantiatingStub: false);
 
-            return signatureBuilder;
+            return signatureBuilder.ToArray();
+        }
+
+        private byte[] BuildSignatureForMethod(MethodWithGCInfo method, NodeFactory factory)
+        {
+            return BuildSignatureForMethodDefinedInModule(method.Method, factory);
         }
 
         public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)
@@ -87,12 +109,20 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
             foreach (MethodWithGCInfo method in factory.EnumerateCompiledMethods(null, CompiledMethodCategory.Instantiated))
             {
-                Debug.Assert(method.Method.HasInstantiation || method.Method.OwningType.HasInstantiation);
+                // Resumption stubs are discovered via READYTORUN_FIXUP_ResumptionStubEntryPoint fixups
+                // on their parent async variant methods, so they do not need entries in the InstanceEntryPointTable.
+                if (method.Method is AsyncResumptionStub)
+                    continue;
+
+                CompilerTypeSystemContext context = (CompilerTypeSystemContext)method.Method.Context;
+                bool isUnboxingThunk = context.IsUnboxingThunk(method.Method);
+
+                Debug.Assert(method.Method.HasInstantiation || method.Method.OwningType.HasInstantiation || method.Method.IsAsyncVariant() ||
+                    isUnboxingThunk);
 
                 int methodIndex = factory.RuntimeFunctionsTable.GetIndex(method);
 
-                ArraySignatureBuilder signatureBuilder = BuildSignatureForMethod(method, factory);
-                byte[] signature = signatureBuilder.ToArray();
+                byte[] signature = BuildSignatureForMethod(method, factory);
                 BlobVertex signatureBlob;
                 if (!uniqueSignatures.TryGetValue(signature, out signatureBlob))
                 {
@@ -110,7 +140,12 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
                 EntryPointVertex entryPointVertex = new EntryPointWithBlobVertex((uint)methodIndex, fixupBlob, signatureBlob);
                 hashtableSection.Place(entryPointVertex);
-                vertexHashtable.Append(unchecked((uint)ReadyToRunHashCode.MethodHashCode(method.Method)), entryPointVertex);
+                // The runtime probes this table using GetVersionResilientMethodHashCode of the method it is
+                // looking for. It has no notion of the synthetic boxed type a thunk lives on, so key unboxing
+                // thunks by their target. The resulting collision with the regular entry is resolved by
+                // SigMatchesMethodDesc, since the signature records whether the entry is an unboxing one.
+                MethodDesc hashtableKeyMethod = isUnboxingThunk ? context.GetTargetOfUnboxingThunk(method.Method) : method.Method;
+                vertexHashtable.Append(unchecked((uint)hashtableKeyMethod.GetHashCode()), entryPointVertex);
             }
 
             MemoryStream hashtableContent = new MemoryStream();

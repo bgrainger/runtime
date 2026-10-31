@@ -12,7 +12,21 @@ This is a list of additions and edits to be made in ECMA-335 specifications. It 
 - [Default Interface Methods](#default-interface-methods)
 - [Static Interface Methods](#static-interface-methods)
 - [Covariant Return Types](#covariant-return-types)
+- [Function Pointer Type Identity](#function-pointer-type-identity)
 - [Unsigned data conversion with overflow detection](#unsigned-data-conversion-with-overflow-detection)
+- [Ref fields support](#ref-fields)
+- [ByRefLike types in generics](#byreflike-generics)
+- [Rules for IL rewriters](#rules-for-il-rewriters)
+- [Checked user-defined operators](#checked-user-defined-operators)
+- [Atomic reads and writes](#atomic-reads-and-writes)
+- [Backward branch constraints](#backward-branch-constraints)
+- [Transient pointers](#transient-pointers)
+- [Creating arrays using newobj](#creating-arrays-using-newobj)
+- [API documentation](#api-documentation)
+- [Debug Interchange Format](#debug-interchange-format)
+- [Extended layout](#extended-layout)
+- [Implicit argument coercion rules](#implicit-argument-coercion-rules)
+- [Init-only static fields](#init-only-static-fields)
 
 ## Signatures
 
@@ -133,33 +147,21 @@ TypeSpecBlob ::=
 
 3. PEVerify, the CLR runtime and C# compiler prior to VS 2015 report an error when encountering an encoded TypeSpec in the positions described above.
 
-### 2. `(CMOD_OPT | CMOD_REQ) <TypeSpec>` is permitted in practice
+### 2. `(CMOD_OPT | CMOD_REQ) <TypeSpec>` is invalid
 
 In II.23.2.7, it is noted that CMOD_OPT or CMOD_REQD is followed
-by a TypeRef or TypeDef metadata token, but TypeSpec tokens are
-also allowed by ilasm, csc, peverify, and the CLR.
+by a TypeRef or TypeDef metadata token. TypeSpec tokens in this
+position should be treated as invalid metadata.
 
-Note, in particular, that TypeSpecs are used there by C++/CLI to
-represent strongly-typed boxing in C++/CLI. e.g. `Nullable<int>^`
-in C++/CLI becomes
-``[mscorlib]System.ValueType modopt([mscorlib]System.Nullable`1<int>) modopt([mscorlib]System.Runtime.CompilerServices.IsBoxed)``
-in IL.
-
-This tolerance adds a loophole to the rule above whereby cyclical
-signatures are in fact possible, e.g.:
-
-* `TypeSpec #1: PTR CMOD_OPT <TypeSpec #1> I4`
-
-Such signatures can currently cause crashes in the runtime and various
-tools, so if the spec is amended to permit TypeSpecs as modifiers,
-then there should be a clarification that cycles are nonetheless not
-permitted, and ideally readers would detect such cycles and handle the
-error with a suitable message rather than a stack overflow.
+Allowing TypeSpec custom modifier types creates a path for
+recursive TypeSpec encodings that are complicated to detect.
+Such metadata should be rejected rather than cycle-detected.
 
 Related issues:
 
 * https://github.com/dotnet/roslyn/issues/7971
 * https://github.com/dotnet/runtime/issues/4945
+* https://github.com/dotnet/runtime/pull/123819#discussion_r2810397721
 
 #### Proposed specification change
 
@@ -172,9 +174,9 @@ for details
 with
 
 > The CMOD_OPT or CMOD_REQD is followed by a metadata token that indexes a row in the TypeDef
-table, TypeRef table, or TypeSpec table. However, these tokens are encoded and compressed –
-see §II.23.2.8 for details. Furthermore, if a row in the TypeSpec table is indicated,
-it must not create cycle.
+table or TypeRef table. However, these tokens are encoded and compressed –
+see §II.23.2.8 for details. TypeSpec tokens are not valid in this position; this
+restriction prevents custom modifiers from forming recursive TypeSpec encodings.
 
 ### 3. Custom modifiers can go in more places than specified
 
@@ -310,17 +312,6 @@ sense in `TypeSpec` are `(CLASS | VALUETYPE) TypeDefOrRef` since
 `TypeDefOrRef` tokens can be used directly and the indirection through
 a `TypeSpec` would serve no purpose.
 
-In the same way as `constrained.`, (assuming #2 is a spec bug and not
-an ilasm/peverify/CLR quirk), custom modifiers can beget `TypeSpec`s
-beyond what is allowed by II.23.2.14, e.g. `modopt(int32)` creates a
-typespec with signature I4.
-
-Even more obscurely, this gives us a way to use `VOID`, `TYPEDBYREF`,
-`CMOD_OPT`, and `CMOD_REQ` at the root of a `TypeSpec`, which are not even
-specified as valid at the root of a `Type`: `modopt(int32 modopt(int32))`,
-`modopt(void)`, and `modopt(typedref)` all work in
-practice. `CMOD_OPT` and `CMOD_REQ` at the root can also be obtained by putting
-a modifier on the type used with `constrained.`.
 
 ## Heap sizes
 
@@ -370,6 +361,12 @@ The requirement to sort InterfaceImpl table using the Interface column as a seco
 The text should be deleted:
 
 > Furthermore, ~~the InterfaceImpl table is sorted using the Interface column as a secondary key, and~~ the GenericParam table is sorted using the Number column as a secondary key.
+
+In addition to the TypeDef table having a special ordering constraint, the ExportedTypes table ALSO has the same constraint.
+
+This line should be changed.
+
+> Finally, this TypeDef _and ExportedType_ ~~table has~~ _tables have_ a special ordering constraint: the definition of an enclosing class shall precede the definition of all classes it encloses.
 
 ## Module Initializer
 
@@ -452,7 +449,7 @@ https://www.ecma-international.org/publications-and-standards/standards/ecma-335
 
 (Add second paragraph)
 
-Static interface methods may be marked as virtual. Valid object types implementing such interfaces shall provide implementations
+Static interface methods may be marked as virtual. Valid object types implementing such interfaces may provide implementations
 for these methods by means of Method Implementations (II.15.1.4). Polymorphic behavior of calls to these methods is facilitated
 by the constrained. call IL instruction where the constrained. prefix specifies the type to use for lookup of the static interface
 method.
@@ -530,7 +527,6 @@ or static method actually implemented directly on the type.
 (Add to the end of the 1st paragraph)
 
 Interfaces may define static virtual methods that get resolved at runtime based on actual types involved.
-These static virtual methods must be marked as abstract in the defining interfaces.
 
 ### II.12.2 Implementing virtual methods on interfaces
 
@@ -719,7 +715,7 @@ operations.
 T Exponential<T, TFloat>(T exponent) where
     T : IArithmetic<T>,
     T : IMultiplicationBy<T, TFloat>
-        
+
 {
     T result = T.One();
     T powerOfValue = exponent;
@@ -753,7 +749,7 @@ the call itself doesn't involve any instance or `this` pointer.
 (Edit bulleted section "This contains informative text only" starting at the bottom of page
 233):
 
-Edit section *7.b*: Static | Virtual | !Abstract
+Remove section *7.b*: ~~Static | Virtual~~
 
 (Add new section 41 after the last section 40:)
 
@@ -795,7 +791,7 @@ to allow `callvirt` instructions to be made in a uniform way independent of whet
 When followed by the `call` instruction or the `ldftn` instruction,
 the method must refer to a virtual static method defined on an interface. The behavior of the
 `constrained.` prefix is to change the method that the `call` or `ldftn`
-instruction refers to to be the method on `implementorType` which implements the
+instruction refers to be the method on `implementorType` which implements the
 virtual static method (paragraph *II.10.3*).
 
 (Edit the paragraph "Correctness:" second from the bottom of page 316:)
@@ -835,7 +831,7 @@ compile calls to “methods on `base`” (i.e., the statically known parent clas
 
 Covariant return methods is a runtime feature designed to support the [covariant return types](https://github.com/dotnet/csharplang/blob/master/proposals/csharp-9.0/covariant-returns.md) and [records](https://github.com/dotnet/csharplang/blob/master/proposals/csharp-9.0/records.md) C# language features implemented in C# 9.0.
 
-This feature allows an overriding method to have a return type that is different than the one on the method it overrides, but compatible with it. The type compability rules are defined in ECMA I.8.7.1.
+This feature allows an overriding method to have a return type that is different than the one on the method it overrides, but compatible with it. The type compatibility rules are defined in ECMA I.8.7.1.
 
 Example:
 ```
@@ -846,7 +842,7 @@ class Base
 
 class Derived : Base
 {
-  // Note that the VirtualMethod here overrides the VirtualMethod defined on Base even though the 
+  // Note that the VirtualMethod here overrides the VirtualMethod defined on Base even though the
   // return types are not the same. However, the return types are compatible in a covariant fashion.
   public override string VirtualMethod() { return null;}
 }
@@ -875,7 +871,7 @@ Edit the first paragraph "The .override directive specifies that a virtual metho
 
 ### II.10.3.4 Impact of overrides on derived classes
 Add a third bullet
-"- If a virtual method is overridden via an .override directive or if a derived class provides an implentation and that virtual method in parent class was overriden with an .override directive where the method body of that second .override directive is decorated with `System.Runtime.CompilerServices.PreserveBaseOverridesAttribute` then the implementation of the virtual method shall be the implementation of the method body of the second .override directive as well. If this results in the implementor of the virtual method in the parent class not having a signature which is *covariant-return-compatible-with* the virtual method in the parent class, the program is not valid.
+"- If a virtual method is overridden via an .override directive or if a derived class provides an implementation and that virtual method in parent class was overridden with an .override directive where the method body of that second .override directive is decorated with `System.Runtime.CompilerServices.PreserveBaseOverridesAttribute` then the implementation of the virtual method shall be the implementation of the method body of the second .override directive as well. If this results in the implementor of the virtual method in the parent class not having a signature which is *covariant-return-compatible-with* the virtual method in the parent class, the program is not valid.
 
 
 ```
@@ -884,8 +880,8 @@ Add a third bullet
 }
 .class B extends A {
   .method virtual DerivedRetType VirtualFunction() {
-    .custom instance void [System.Runtime]System.Runtime.CompilerServices.PreserveBaseOverridesAttribute::.ctor() = ( 01 00 00 00 ) 
-    .override A.VirtualFuncion 
+    .custom instance void [System.Runtime]System.Runtime.CompilerServices.PreserveBaseOverridesAttribute::.ctor() = ( 01 00 00 00 )
+    .override A.VirtualFunction
     ...
   }
 }
@@ -899,8 +895,8 @@ Add a third bullet
 .class D extends C
 {
   .method virtual DerivedRetTypeNotDerivedFromMoreDerivedRetType VirtualFunction() {
-    .custom instance void [System.Runtime]System.Runtime.CompilerServices.PreserveBaseOverridesAttribute::.ctor() = ( 01 00 00 00 ) 
-    .override A.VirtualFuncion 
+    .custom instance void [System.Runtime]System.Runtime.CompilerServices.PreserveBaseOverridesAttribute::.ctor() = ( 01 00 00 00 )
+    .override A.VirtualFunction
     ...
   }
 }
@@ -918,6 +914,16 @@ For this example, the behavior of calls on objects of various types is presented
 "
 ### II.22.27
 Edit rule 12 to specify that "The method signature defined by *MethodBody* shall match those defined by *MethodDeclaration* exactly if *MethodDeclaration* defines a method on an interface or be *covariant-return-compatible-with* (§I.8.7.1) if *MethodDeclaration* represents a method on a class."
+
+## Function Pointer Type Identity
+
+The unmanaged calling convention of the function pointer type no longer contributes to the type identity. For the purposes of type identity, the only important bit is whether the calling convention is managed or unmanaged.
+
+### I.8.7 Assignment compatibility
+
+For the purpose of type compatibility when determining a type from a signature:
+
+iv) ~~Any calling convention~~ _Whether the calling convention is managed or unmanaged_ is considered part of the type.
 
 ## Unsigned data conversion with overflow detection
 
@@ -948,3 +954,244 @@ Conversions from floating-point numbers to integral values truncate the number t
 on the top of the stack is reinterpreted as an unsigned value before the conversion.
 Note that integer values of less than 4 bytes are extended to int32 (not native int) on the
 evaluation stack.
+
+## Ref Fields
+To improve the usefulness of ref structs, support for fields which are defined as ByRefs is needed. See [ref fields](https://github.com/dotnet/csharplang/blob/main/proposals/csharp-11.0/low-level-struct-improvements.md#provide-ref-fields-and-scoped) for C# language counterpart. With this set of changes, it becomes possible to have ByRef fields of T, but support for pointers to ByRef fields or ByRefs to ByRefs is not added to the ECMA specification.
+
+ByRef fields can enable converting TypedReference, ArgIterator, and RuntimeArgumentHandle to follow the normal rules of C# ref structs in the future. See [sunset restricted types](https://github.com/dotnet/csharplang/blob/main/proposals/expand-ref.md#sunset-restricted-types) and [dotnet/roslyn#64811](https://github.com/dotnet/roslyn/issues/64811).
+
+Changes to the spec. These changes are relative to the 6th edition (June 2012) of the ECMA-335 specification published by ECMA available at:
+
+https://www.ecma-international.org/publications-and-standards/standards/ecma-335/
+
+### I.8.2.1.1 Managed pointers and related types
+- First paragraph. Replace “Managed pointer types are only allowed for local variable (§I.8.6.1.3) and parameter signatures (§I.8.6.1.4); they cannot be used for field signatures (§I.8.6.1.2), as the element type of an array (§I.8.9.1), and boxing a value of managed pointer type is disallowed (§I.8.2.4).” with “Managed pointer types are only allowed for local variable (§I.8.6.1.3), parameter signatures (§I.8.6.1.4), and instance fields of byref-like types; they cannot be used for field signatures(§I.8.6.1.2) of static fields, or of instance fields of types which are not byref-like, as the element type of an array (§I.8.9.1), and boxing a value of managed pointer type is disallowed (§I.8.2.4).”
+- Add a new paragraph before the paragraph on the three special types. “Byref-like types are value types which may contain managed pointers, or pointers onto the VES stack. Byref-like types have the same restrictions as byrefs. Value types which are marked with the System.Runtime.CompilerServices.IsByRefLikeAttribute attribute are considered to be byref-like types.”
+- Replace “Typed references have the same restrictions as byrefs.” With “Typed references are byref-like types and have the same restrictions as normal byref-like types.”
+- Replace “They can be used for local variable and parameter signatures. The use of these types for fields, method return types, the element type of an array, or in boxing is not verifiable (§I.8.8). These two types are referred to as byref-like types.” With “If a function uses these types only for local variable and parameter signatures, then the use of those types is verifiable. Otherwise these types have the same restrictions as normal byref-like types.”
+
+### I.8.6.1.1
+- Add to the first paragraph a modified version of the third paragraph of I.8.6.1.3. "The typed reference ~~local variable signature~~ type signature states that the type is a structure which will contain both a managed pointer to a location and a runtime representation of the type that can be stored at that location. A typed reference signature is similar to a byref constraint(§I.8.6.1.2), but while the byref specifies the type as part of the byref constraint (and hence statically as part of the type description), a typed reference provides the type information dynamically."
+- Add a second paragraph which is a slight modification of the former fourth paragraph in section I.8.6.1.3. "The typed reference signature is actually represented as a built-in value type, like the integer and floating-point types. In the Base Class Library (see Partition IV Library) the type is known as System.TypedReference and in the assembly language used in Partition II it is designated by the keyword typedref. This type shall only be used for parameters, the type of a field, return values and local variables. It shall not be boxed, nor shall it be used as the type of an element of an array.
+- Move CLS Rule 14 to this section.
+
+### I.8.6.1.2
+- Move the contents of the byref constraint paragraph from Section I.8.6.1.3 to a bullet point.
+“- The byref constraint states that the content of the corresponding location is a managed pointer. A managed pointer can point to a local variable, parameter, field of a compound type, or element of an array. However, when a call crosses a remoting boundary (see §I.12.5) a conforming implementation can use a copy-in/copy-out mechanism instead of a managed pointer. Thus programs shall not rely on the aliasing behavior of true pointers. A managed pointer cannot point to another managed pointer, but a managed pointer can point to a byref-like type.”
+
+### I.8.6.1.3
+- Edit the second sentence of the first paragraph. "A local signature specifies the contract on a local variable allocated during the running of a method. A local signature contains a full location signature~~, plus it can specify one additional constraint:~~."
+- Remove the rest of this section. Its contents have been moved into sections I.8.6.1.1 and I.8.6.1.2
+
+### I.8.7
+- In the section about type compatibility when determining a type from a signature: The byref constraint is to be referenced from section I8.6.1.2 instead of I.8.6.1.3
+
+### I.8.9.2
+- Insert at the end of the first paragraph “An unmanaged pointer type cannot point to a managed pointer.”
+
+### II.14.4.2
+- Replace the sentence "Managed pointers (&) can point to an instance of a value type, a field of an object, a field of a value type, an element of an array, or the address where an element just past the end of an array would be stored (for pointer indexes into managed arrays)." with  "Managed pointers (&) can point to a local variable, a method argument, a field of an object or a value type, an element of an array, a static field, the address computed by adding the address of a field and the `sizeof` of the type of that field, or the address where an element just past the end of an array would be stored (for pointer indexes into managed arrays)."
+- Replace the sentence "Managed pointers cannot be null, and they shall be reported to the garbage collector even if they do not point to managed memory." with "Managed pointers shall be reported to the garbage collector. All managed pointers must point to a location explicitly allocated on either the managed or native heap as described above, or to stack allocated memory, or to null. `NullReferenceException` is thrown if a null managed pointer is dereferenced."
+
+Changes to signatures:
+### II.23.2.10
+- Remove special case for TYPEDBYREF
+
+### II.23.2.11
+- Remove special case for TYPEDBYREF
+
+### II.23.2.12
+- Add TYPEDBYREF as a form of Type
+
+### III.1.1.5.2
+- Replace "Managed pointers (&) can point to a local variable, a method argument, a field of an object, a field of a value type, an element of an array, a static field, or the address where an element just past the end of an array would be stored (for pointer indexes into managed arrays)." with "Managed pointers (&) can point to a local variable, a method argument, a field of an object, a field of a value type, an element of an array, a static field, the address computed by adding the address of a field and the `sizeof` of the type of that field, or the address where an element just past the end of an array would be stored (for pointer indexes into managed arrays)."
+- Remove the sentence "Managed pointers cannot be null."
+- Add two bullet points
+  - Managed pointers which point at the address just past the end of an object, or the address where an element just past the end of an array would be stored, are permitted but not dereferenceable.
+  - Null managed pointers are permitted to be dereferenced resulting in a `NullReferenceException`.
+
+### III.1.7.7 Opt-in restrictions
+Add a new section "III.1.7.7 Opt-in restrictions" under section "III.1.7 Restrictions on CIL code sequences":
+
+Applying the custom attribute `System.Runtime.CompilerServices.RefSafetyRulesAttribute` on a module opts the module into further restrictions based on the version value specified in the attribute. These restrictions permit an optimizing compiler to further optimize certain code patterns.
+
+Languages may define more rules based on this attribute, but for the purpose of defining valid IL only the following restrictions must be satisfied.
+
+#### III.1.7.7.1 (Version 11 and above) Escaping `this` from value type instance methods
+A pointer value is said to escape when it becomes accessible outside the given scope. A pointer escapes if the pointer itself, or a pointer value derived from it (for example, by applying a field offset), is stored, returned, or otherwise propagated such that code executing outside the given scope can access it.
+
+Valid IL shall ensure that the `this` argument of an instance method on a value type does not escape the method unless at least one of the following conditions holds:
+- The method and any method it overrides are annotated with `System.Diagnostics.CodeAnalysis.UnscopedRefAttribute`.
+- The value type instance resides in unmanaged memory, stack-allocated storage, or pinned GC heap storage.
+
+This restriction permits an optimizing compiler to eliminate boxing of value types when it is safe to do so.
+
+## <a name="byreflike-generics"></a> ByRefLike types in generics
+
+ByRefLike types, defined in C# with the `ref struct` syntax, represent types that cannot escape to the managed heap and must remain on the stack. It is possible for these types to be used as generic parameters, but in order to improve utility certain affordances are required. See [ref struct Generic Parameters](https://github.com/dotnet/csharplang/blob/main/proposals/csharp-13.0/ref-struct-interfaces.md#ref-struct-generic-parameters) for C# language counterpart.
+
+### II.10.1.7
+An additional IL keyword, `byreflike`, is introduced to indicate use of ByRefLike types is permitted. This expands the set of permissible types used by this parameters, but limits the potential instructions that can be used on instances of this generic parameter type.
+
+### II.23.1.7
+Update the `SpecialConstraintMask` flag value and description, and add a new flag, `AllowByRefLike`.
+
+| Flag | Value | Description |
+| ---  | ----- | ----------- |
+| `SpecialConstraintMask` | `0x3C` | These 4 bits contain one of the following values: |
+| ... | ... | ... |
+| `AllowByRefLike`        | `0x20` | The generic parameter is allowed to be ByRefLike |
+
+### III.2.1
+The following case is added as the **third** cases in the "if _thisType_" sequence.
+
+> If _thisType_ is ByRefLike and _thisType_ does not implement _method_ then; a `NotSupportedException` is thrown at the callsite.
+
+The following is added to the paragraph starting with "This last case can only occur when _method_ was defined on `System.Object`, `System.ValueType`, or `System.Enum`".
+
+> The third case can only occur when _method_ was defined on `System.Object` or is a Default Interface Method.
+
+## Rules for IL Rewriters
+
+There are apis such as `System.Runtime.CompilerServices.RuntimeHelpers.CreateSpan<T>(...)` which require that the PE file have a particular structure. In particular, that api requires that the associated RVA of a FieldDef which is used to create a span must be naturally aligned over the data type that `CreateSpan` is instantiated over. There are 2 major concerns.
+
+1. That the RVA be aligned when the PE file is constructed. This may be achieved by whatever means is most convenient for the compiler.
+2. That in the presence of IL rewriters that the RVA remains aligned. This section describes metadata which will be processed by IL rewriters in order to maintain the required alignment.
+
+In order to maintain alignment, if the field needs alignment to be preserved, the field must be of a type locally defined within the module which has a Pack (§II.10.7) value of the desired alignment. Unlike other uses of the .pack directive, in this circumstance the .pack specifies a minimum alignment.
+
+## Checked user-defined operators
+
+Section "I.10.3.1 Unary operators" is reworded to include the support for instance form operators:
+```diff
+- Unary operators take one operand, perform some operation on it, and return the result. They are
+- represented as static methods on the class that defines the type of their one operand. Table I.4:
+- Unary Operator Names shows the names that are defined.
++ Unary operators take one operand and perform some operation on it. They are exposed on the class
++ that defines the type of their one operand and are represented as either static methods which
++ return the result or as void returning instance methods which take the first operand as the this
++ pointer and which mutates that operand directly. "Table I.4: Unary Operator Names" shows the names
++ that are defined.
+```
+
+"Table I.4: Unary Operator Names" is expanded to include a third column, "Method Kind", which indicates whether the operator is represented as an instance or a static method. All existing table entries should have this column set to "static". The following additional entries are added to the table:
+> | Name                            | ISO/IEC 14882:20003 C++ Operator Symbol | Method Kind |
+> | ------------------------------- | --------------------------------------- | ----------- |
+> | *op_CheckedIncrement*           | Similar to `++`<sup>1, 3</sup>          | static      |
+> | *op_CheckedDecrement*           | Similar to `--`<sup>1, 3</sup>          | static      |
+> | *op_CheckedUnaryNegation*       | `-` (unary)<sup>3</sup>                 | static      |
+> | *op_DecrementAssignment*        | Similar to `++`<sup>4</sup>             | instance    |
+> | *op_IncrementAssignment*        | Similar to `--`<sup>4</sup>             | instance    |
+> | *op_CheckedDecrementAssignment* | Similar to `++`<sup>3, 4</sup>          | instance    |
+> | *op_CheckedIncrementAssignment* | Similar to `--`<sup>3, 4</sup>          | instance    |
+>
+> <sup>3</sup> A checked operator is expected to throw an exception when the result of an operation is too large to represent in the destination type. What does it mean to be too large actually depends on the nature of the destination type. Typically the exception thrown is `System.OverflowException`.
+>
+> <sup>4</sup> Unlike <sup>1</sup>, these methods increment or decrement their operand directly and so better match the pure C++ point of view.
+
+Section "I.10.3.2 Binary operators" is reworded to include the support for instance form operators:
+```diff
+- Binary operators take two operands, perform some operation on them, and return a value. They
+- are represented as static methods on the class that defines the type of one of their two operands.
+- Table I.5: Binary Operator Names shows the names that are defined.
++ Binary operators take two operands and perform some operation on them. They are exposed on the class
++ that defines the type of one of their two operands and are represented as either static methods which
++ return the result or as void returning instance methods which take the first operand as the `this`
++ pointer and which mutates that operand directly. "Table I.5: Binary Operator Names" shows the names
++ that are defined.
+```
+
+"Table I.5: Binary Operator Names" is expanded to include a third column, "Method Kind", which indicates whether the operator is represented as an instance or a static method. All existing table entries should have this column set to "static". Table entries where the name column ends with "Assignment" should have this column set to "static or instance". The following additional entries are added to the table:
+> | Name                                 | ISO/IEC 14882:20003 C++ Operator Symbol | Method Kind        |
+> | ------------------------------------ | --------------------------------------- | ------------------ |
+> | *op_CheckedAddition*                 | + (binary)<sup>1</sup>                  | static             |
+> | *op_CheckedSubtraction*              | - (binary)<sup>1</sup>                  | static             |
+> | *op_CheckedMultiply*                 | \* (binary)<sup>1</sup>                 | static             |
+> | *op_CheckedDivision*                 | /<sup>1</sup>                           | static             |
+> | *op_CheckedAdditionAssignment*       | +=<sup>1</sup>                          | static or instance |
+> | *op_CheckedSubtractionAssignment*    | -=<sup>1</sup>                          | static or instance |
+> | *op_CheckedMultiplicationAssignment* | \*=<sup>1</sup>                         | static or instance |
+> | *op_CheckedDivisionAssignment*       | /=<sup>1</sup>                          | static or instance |
+>
+> <sup>1</sup> A checked operator is expected to throw an exception when the result of an operation is too large to represent in the destination type. What does it mean to be too large actually depends on the nature of the destination type. Typically the exception thrown is `System.OverflowException`.
+
+Section "I.10.3.3 Conversion operators" of ECMA-335 adds *op_CheckedExplicit* as the name for a method implementing checked explicit conversion operator.
+
+## Atomic reads and writes
+
+Section "I.12.6.6 Atomic reads and writes" adds clarification that the atomicity guarantees apply to built-in primitive value types and pointers only.
+
+A conforming CLI shall guarantee that read and write access of *built-in primitive value types and pointers* to properly aligned memory locations no larger than the native word size (the size of type native int) is atomic (see §I.12.6.2) when all the write accesses to a location are the same size.
+
+## Backward branch constraints
+
+Section "II.1.7.5 Backward branch constraints" is deleted. These constraints were not enforced by any mainstream .NET runtime and they are not respected by .NET compilers. It means that it is not possible to infer the exact state of the evaluation stack at every instruction with a single forward-pass through the CIL instruction stream.
+
+## Transient pointers
+
+The paragraphs mentioning "transient pointers" in section "I.12.3.2.1 The evaluation stack" are deleted. The transient pointers seemed to be a concept in the very early versions of the spec that was deleted in the final version of the spec and this one place was missed.
+
+Instead, note is added to sections "III.3.39 ldarga" and "III.3.44 ldloca": The arguments / local variables are stored in unmanaged memory. The address of argument / local variable can be converted to unmanaged pointer without explicit pinning.
+
+## Creating arrays using newobj
+
+Note about creating zero-based, one-dimensional arrays in section III.4.21 "newobj – create a new object" is replaced with "All zero-based, one-dimensional arrays *should* be created using newarr, not newobj". Rationale: All arrays have runtime provided constructors. It does not make sense to disallow one specific constructor just because there is more efficient alternative.
+
+## API documentation
+
+API documentation included in partition IV: Profiles and Libraries is superseded by the actively maintained API documentation in https://github.com/dotnet/dotnet-api-docs repo. The documentation is  published at https://learn.microsoft.com/dotnet/api/.
+
+The incorrect description of `System.Array.Initialize` API in section "II.13.2 Initializing value types" is replaced with "The Base Class Library provides the method System.Array.Initialize (see Partition IV) to initialize every element of an array of unboxed value types by calling its parameterless instance constructor."
+
+## Debug Interchange Format
+
+The Debug Interchange Format described in partition V is superseded by the [Portable PDB Format](PortablePdb-Metadata.md).
+
+## Extended Layout
+
+In section I.9.5, the following layout rule is added:
+
+- **extendedlayout**: A class marked `extendedlayout` guides the loader to use a set of rules indicated by the first parameter to a custom attribute of type `System.Runtime.InteropServices.ExtendedLayoutAttribute` on the type. Each of these layouts may have restrictions on valid layouts.
+
+In section II.10.1, `extended` is added as a possible value for `ClassAttr`.
+
+In section II.10.1.2, `extended` is added as a type layout attribute, and the following entry is added in the list of layout attributes:
+
+- **extended**: The CLI shal lay out the files based on the rules indicated by the first parameter to a custom attribute of type `System.Runtime.InteropServices.ExtendedLayoutAttribute` on the type.
+
+In section II.10.7, the following clause is appended:
+
+The **.pack** and **.size** directives are not valid on a type marked with `extended`.
+
+In section II.22.8, the following diffs are applied:
+
+```diff
+- The information held in the ClassLayout table depends upon the Flags value for {AutoLayout, SequentialLayout, ExplicitLayout} in the owner class or value type.
+- A type has layout if it is marked SequentialLayout or ExplicitLayout.  If any type within an inheritance chain has layout, then so shall all its base classes, up to the one that descends immediately from System.ValueType (if it exists in the type’s hierarchy); otherwise, from System.Object.
++ The information held in the ClassLayout table depends upon the Flags value for {AutoLayout, SequentialLayout, ExplicitLayout, ExtendedLayout} in the owner class or value type.
++ A type has layout if it is marked SequentialLayout or ExplicitLayout or ExtendedLayout.
++ A type with ExtendedLayout must immediately inherit from System.ValueType.
++ If any type within an inheritance chain has layout, then so shall all its base classes, up to the one that descends immediately from System.ValueType (if it exists in the type’s hierarchy); otherwise, from System.Object.
+```
+
+```diff
+- 3. The Class or ValueType indexed by Parent shall be SequentialLayout or ExplicitLayout (§II.23.1.15). (That is, AutoLayout types shall not own any rows in the ClassLayout table.) [ERROR]
++ 3. The Class or ValueType indexed by Parent shall be SequentialLayout or ExplicitLayout (§II.23.1.15). (That is, AutoLayout and ExtendedLayout types shall not own any rows in the ClassLayout table.) [ERROR]
+```
+
+In section II.22.37, the following clause is removed:
+
+b. can set 0 or 1 of `SequentialLayout` and `ExplicitLayout` (if none set, then defaults to `AutoLayout`) [ERROR]
+
+In section II.23.1.15, the following row is added to the table:
+
+|-----|------|------|
+| `ExtendedLayout` | 0x00000018 | Layout is supplied by a `System.Runtime.InteropServices.ExtendedLayoutAttribute` custom attribute |
+
+## Implict argument coercion rules
+
+Implicit argument coercion as defined in section III.1.6 does not match with existing practice in CLR runtimes. Notably, implicit argument coercion of an `int32` on the IL evaluation stack to a `native unsigned int` is a sign extending operation, not a zero-extending operation.
+
+## Init-only static fields
+
+The notes in sections "III.4.28 stfld" and "III.4.30 stsfld" are replaced with: "Changing the value of a static, init-only field outside the body of the class initializer can compromise memory integrity and type safety." Init-only instance fields are not affected.

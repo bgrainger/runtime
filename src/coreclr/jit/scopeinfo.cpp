@@ -41,7 +41,7 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
  *    This should only be needed if some basic block are deleted/out of order,
  *    etc.
  *  Also,
- *  o At every assignment to a variable, siCheckVarScope() adds an open scope
+ *  o At every store to a variable, siCheckVarScope() adds an open scope
  *    for the variable being assigned to.
  *  o UpdateLifeVar() calls siUpdate() which closes scopes for variables which
  *    are not live anymore.
@@ -56,6 +56,10 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 #include "emit.h"
 #include "codegen.h"
+
+//============================================================================
+//           siVarLoc functions
+//============================================================================
 
 bool CodeGenInterface::siVarLoc::vlIsInReg(regNumber reg) const
 {
@@ -144,8 +148,55 @@ bool CodeGenInterface::siVarLoc::vlIsOnStack() const
 }
 
 //------------------------------------------------------------------------
-// storeVariableInRegisters: Convert the siVarLoc instance in a regsiter
-//  location using the given registers.
+// mapRegNumToDebugRegNum: Map a JIT regNumber to the register number encoding
+// used in debug info.
+//
+// Arguments:
+//    reg - the JIT register to encode.
+//
+// Return Value:
+//    The debug-info register number for reg.
+//
+// static
+ICorDebugInfo::RegNum CodeGenInterface::siVarLoc::mapRegNumToDebugRegNum(regNumber reg)
+{
+#if defined(TARGET_AMD64) || defined(TARGET_ARM64)
+    constexpr unsigned fpRegDebugNumBase = ICorDebugInfo::REGNUM_FP_FIRST;
+#ifdef TARGET_AMD64
+    constexpr unsigned maxEncodableFpRegs = 16; // Only XMM0-XMM15
+#else
+    constexpr unsigned maxEncodableFpRegs = 32; // V0-V31
+#endif
+#else
+    constexpr unsigned fpRegDebugNumBase  = 0;
+    constexpr unsigned maxEncodableFpRegs = 0;
+#endif
+
+    if (genIsValidIntReg(reg))
+    {
+        return static_cast<ICorDebugInfo::RegNum>(reg);
+    }
+
+    if (genIsValidFloatReg(reg))
+    {
+        unsigned fpIndex = reg - REG_FP_FIRST;
+#if defined(TARGET_AMD64) || defined(TARGET_ARM64)
+        if (fpIndex >= maxEncodableFpRegs)
+        {
+            return ICorDebugInfo::REGNUM_COUNT; // sentinel: caller checks for this
+        }
+#endif
+        return static_cast<ICorDebugInfo::RegNum>(fpRegDebugNumBase + fpIndex);
+    }
+
+    // Mask registers (K0-K7) and any other non-int/non-float registers
+    // cannot be represented in the debug info encoding.
+    return ICorDebugInfo::REGNUM_COUNT;
+}
+
+//------------------------------------------------------------------------
+// storeVariableInRegisters: Convert the siVarLoc instance into a register
+// location using the given registers.
 //
 // Arguments:
 //    reg       - the first register where the variable is placed.
@@ -154,18 +205,70 @@ bool CodeGenInterface::siVarLoc::vlIsOnStack() const
 //
 void CodeGenInterface::siVarLoc::storeVariableInRegisters(regNumber reg, regNumber otherReg)
 {
+    // Note: mask registers (K0-K7) and XMM16+ are accepted but will produce
+    // VLT_INVALID since they can't be encoded in debug info.
+
     if (otherReg == REG_NA)
     {
-        // Only one register is used
-        vlType       = VLT_REG;
-        vlReg.vlrReg = reg;
+        if (genIsValidFloatReg(reg))
+        {
+#if defined(TARGET_AMD64) || defined(TARGET_ARM64)
+            // AMD64/ARM64 enumerate the FP registers in the debug RegNum enum
+            // (XMM0-15 / V0-31), so store the mapped RegNum. This keeps the single-FP
+            // encoding identical to getSiVarLoc and lets the DBI decode uniformly via
+            // ConvertRegNumToCorDebugRegister.
+            ICorDebugInfo::RegNum debugReg = mapRegNumToDebugRegNum(reg);
+            if (debugReg == ICorDebugInfo::REGNUM_COUNT)
+            {
+                // The FP register is not representable in the debug RegNum enum.
+                vlType = VLT_INVALID;
+                return;
+            }
+            vlType       = VLT_REG_FP;
+            vlReg.vlrReg = static_cast<regNumber>(debugReg);
+#else
+            // Other targets: store 0-based FP register index (DBI adds platform base)
+            vlType       = VLT_REG_FP;
+            vlReg.vlrReg = static_cast<regNumber>(reg - REG_FP_FIRST);
+#endif
+        }
+        else if (genIsValidIntReg(reg))
+        {
+            vlType       = VLT_REG;
+            vlReg.vlrReg = reg;
+        }
+        else
+        {
+            // Mask registers or other non-encodable register types.
+            vlType = VLT_INVALID;
+            return;
+        }
     }
     else
     {
-        // Two register are used
+#if defined(TARGET_AMD64) || defined(TARGET_ARM64)
+        ICorDebugInfo::RegNum debugReg1 = mapRegNumToDebugRegNum(reg);
+        ICorDebugInfo::RegNum debugReg2 = mapRegNumToDebugRegNum(otherReg);
+        if (debugReg1 == ICorDebugInfo::REGNUM_COUNT || debugReg2 == ICorDebugInfo::REGNUM_COUNT)
+        {
+            vlType = VLT_INVALID;
+            return;
+        }
+        vlType            = VLT_REG_REG;
+        vlRegReg.vlrrReg1 = static_cast<regNumber>(debugReg1);
+        vlRegReg.vlrrReg2 = static_cast<regNumber>(debugReg2);
+#else
+        // Other non-AMD64 targets: VLT_REG_REG only supports int registers. If either
+        // is FP, we cannot encode this — fall back to VLT_INVALID.
+        if (!genIsValidIntReg(reg) || !genIsValidIntReg(otherReg))
+        {
+            vlType = VLT_INVALID;
+            return;
+        }
         vlType            = VLT_REG_REG;
         vlRegReg.vlrrReg1 = reg;
         vlRegReg.vlrrReg2 = otherReg;
+#endif
     }
 }
 
@@ -284,37 +387,33 @@ void CodeGenInterface::siVarLoc::siFillStackVarLoc(
         case TYP_BYREF:
         case TYP_FLOAT:
         case TYP_STRUCT:
-        case TYP_BLK: // Needed because of the TYP_BLK stress mode
 #ifdef FEATURE_SIMD
         case TYP_SIMD8:
         case TYP_SIMD12:
         case TYP_SIMD16:
+#if defined(TARGET_XARCH)
         case TYP_SIMD32:
-#endif
+        case TYP_SIMD64:
+#endif // TARGET_XARCH
+#endif // FEATURE_SIMD
 #ifdef TARGET_64BIT
         case TYP_LONG:
         case TYP_DOUBLE:
 #endif // TARGET_64BIT
-#if defined(TARGET_AMD64) || defined(TARGET_ARM64)
-            // In the AMD64 ABI we are supposed to pass a struct by reference when its
-            // size is not 1, 2, 4 or 8 bytes in size. During fgMorph, the compiler modifies
-            // the IR to comply with the ABI and therefore changes the type of the lclVar
-            // that holds the struct from TYP_STRUCT to TYP_BYREF but it gives us a hint that
-            // this is still a struct by setting the lvIsImplicitByref flag.
-            // The same is true for ARM64 and structs > 16 bytes.
-            //
-            // See lvaSetStruct for further detail.
-            //
-            // Now, the VM expects a special enum for these type of local vars: VLT_STK_BYREF
-            // to accomodate for this situation.
+#if defined(FEATURE_MASKED_HW_INTRINSICS)
+        case TYP_MASK:
+#endif // FEATURE_MASKED_HW_INTRINSICS
+#if FEATURE_IMPLICIT_BYREFS
+            // Implicit byref parameters are retyped by morph from structs to pointers
+            // to the struct storage; describe that indirection to the debugger.
             if (varDsc->lvIsImplicitByRef)
             {
                 assert(varDsc->lvIsParam);
-                assert(varDsc->lvType == TYP_BYREF);
+                assert(varDsc->TypeIs(TYP_I_IMPL, TYP_BYREF));
                 this->vlType = VLT_STK_BYREF;
             }
             else
-#endif // defined(TARGET_AMD64) || defined(TARGET_ARM64)
+#endif // FEATURE_IMPLICIT_BYREFS
             {
                 this->vlType = VLT_STK;
             }
@@ -359,7 +458,7 @@ void CodeGenInterface::siVarLoc::siFillStackVarLoc(
 //
 // Notes:
 //    The "varLoc" argument is filled depending of the "type" argument but as a VLT_REG... variation.
-//    "baseReg" and "offset" are used .for not 64 bit and values that are splitted in two parts.
+//    "baseReg" and "offset" are used .for not 64 bit and values that are split in two parts.
 void CodeGenInterface::siVarLoc::siFillRegisterVarLoc(
     const LclVarDsc* varDsc, var_types type, regNumber baseReg, int offset, bool isFramePointerUsed)
 {
@@ -400,11 +499,18 @@ void CodeGenInterface::siVarLoc::siFillRegisterVarLoc(
 #ifdef TARGET_64BIT
         case TYP_FLOAT:
         case TYP_DOUBLE:
-            // TODO-AMD64-Bug: ndp\clr\src\inc\corinfo.h has a definition of RegNum that only goes up to R15,
-            // so no XMM registers can get debug information.
+        {
+            ICorDebugInfo::RegNum debugReg = mapRegNumToDebugRegNum(varDsc->GetRegNum());
+            if (debugReg == ICorDebugInfo::REGNUM_COUNT)
+            {
+                // XMM16+ cannot be encoded.
+                this->vlType = VLT_INVALID;
+                break;
+            }
             this->vlType       = VLT_REG_FP;
-            this->vlReg.vlrReg = varDsc->GetRegNum();
+            this->vlReg.vlrReg = static_cast<regNumber>(debugReg);
             break;
+        }
 
 #else // !TARGET_64BIT
 
@@ -423,16 +529,25 @@ void CodeGenInterface::siVarLoc::siFillRegisterVarLoc(
         case TYP_SIMD8:
         case TYP_SIMD12:
         case TYP_SIMD16:
+#if defined(TARGET_XARCH)
         case TYP_SIMD32:
-            this->vlType = VLT_REG_FP;
-
-            // TODO-AMD64-Bug: ndp\clr\src\inc\corinfo.h has a definition of RegNum that only goes up to R15,
-            // so no XMM registers can get debug information.
-            //
-            // Note: Need to initialize vlrReg field, otherwise during jit dump hitting an assert
-            // in eeDispVar() --> getRegName() that regNumber is valid.
-            this->vlReg.vlrReg = varDsc->GetRegNum();
+        case TYP_SIMD64:
+#endif // TARGET_XARCH
+#if defined(FEATURE_MASKED_HW_INTRINSICS)
+        case TYP_MASK:
+#endif // FEATURE_MASKED_HW_INTRINSICS
+        {
+            ICorDebugInfo::RegNum debugReg = mapRegNumToDebugRegNum(varDsc->GetRegNum());
+            if (debugReg == ICorDebugInfo::REGNUM_COUNT)
+            {
+                // XMM16+/AVX-512 registers cannot be encoded.
+                this->vlType = VLT_INVALID;
+                break;
+            }
+            this->vlType       = VLT_REG_FP;
+            this->vlReg.vlrReg = static_cast<regNumber>(debugReg);
             break;
+        }
 #endif // FEATURE_SIMD
 
         default:
@@ -454,7 +569,7 @@ CodeGenInterface::siVarLoc::siVarLoc(const LclVarDsc* varDsc, regNumber baseReg,
 {
     if (varDsc->lvIsInReg())
     {
-        var_types regType = varDsc->GetActualRegisterType();
+        var_types regType = genActualType(varDsc->GetRegisterType());
         siFillRegisterVarLoc(varDsc, regType, baseReg, offset, isFramePointerUsed);
     }
     else
@@ -469,6 +584,7 @@ CodeGenInterface::siVarLoc::siVarLoc(const LclVarDsc* varDsc, regNumber baseReg,
 //
 // Arguments:
 //    varDsc       - the variable it is desired to build the "siVarLoc".
+//    offset       - offset into the variable to add
 //    stackLevel   - the current stack level. If the stack pointer changes in
 //                   the function, we must adjust stack pointer-based local
 //                   variable offsets to compensate.
@@ -477,12 +593,12 @@ CodeGenInterface::siVarLoc::siVarLoc(const LclVarDsc* varDsc, regNumber baseReg,
 //    A "siVarLoc" representing the variable location, which could live
 //    in a register, an stack position, or a combination of both.
 //
-CodeGenInterface::siVarLoc CodeGenInterface::getSiVarLoc(const LclVarDsc* varDsc, unsigned int stackLevel) const
+CodeGenInterface::siVarLoc CodeGenInterface::getSiVarLoc(const LclVarDsc* varDsc, int offset, int stackLevel) const
 {
     // For stack vars, find the base register, and offset
 
     regNumber baseReg;
-    signed    offset = varDsc->GetStackOffset();
+    offset += varDsc->GetStackOffset();
 
     if (!varDsc->lvFramePointerBased)
     {
@@ -507,12 +623,23 @@ void CodeGenInterface::dumpSiVarLoc(const siVarLoc* varLoc) const
     {
         case VLT_REG:
         case VLT_REG_BYREF:
-        case VLT_REG_FP:
             printf("%s", getRegName(varLoc->vlReg.vlrReg));
             if (varLoc->vlType == VLT_REG_BYREF)
             {
                 printf(" byref");
             }
+            break;
+
+        case VLT_REG_FP:
+#if defined(TARGET_AMD64) || defined(TARGET_ARM64)
+            // AMD64/ARM64 store the FP register as a debug RegNum (REGNUM_FP_FIRST-based);
+            // map it back to a JIT regNumber for display.
+            printf("%s", getRegName(static_cast<regNumber>(REG_FP_FIRST + varLoc->vlReg.vlrReg -
+                                                           ICorDebugInfo::REGNUM_FP_FIRST)));
+#else
+            // Non-AMD64: vlrReg is a 0-based FP register index; map back to JIT regNumber
+            printf("%s", getRegName(static_cast<regNumber>(REG_FP_FIRST + varLoc->vlReg.vlrReg)));
+#endif
             break;
 
         case VLT_STK:
@@ -525,17 +652,36 @@ void CodeGenInterface::dumpSiVarLoc(const siVarLoc* varLoc) const
             {
                 printf(STR_SPBASE "'[%d] (1 slot)", varLoc->vlStk.vlsOffset);
             }
-            if (varLoc->vlType == VLT_REG_BYREF)
+            if (varLoc->vlType == VLT_STK_BYREF)
             {
                 printf(" byref");
             }
             break;
 
-#ifndef TARGET_AMD64
         case VLT_REG_REG:
-            printf("%s-%s", getRegName(varLoc->vlRegReg.vlrrReg1), getRegName(varLoc->vlRegReg.vlrrReg2));
-            break;
+#if defined(TARGET_AMD64) || defined(TARGET_ARM64)
+        {
+            // Map RegNum values (which may include FP register indices) back to
+            // JIT regNumber for display purposes.
+            auto toJitReg = [](regNumber r) -> regNumber {
+                unsigned val     = static_cast<unsigned>(r);
+                unsigned fpFirst = static_cast<unsigned>(ICorDebugInfo::REGNUM_FP_FIRST);
+                if (val >= fpFirst)
+                {
+                    return static_cast<regNumber>(REG_FP_FIRST + val - fpFirst);
+                }
+                return r;
+            };
 
+            printf("%s-%s", getRegName(toJitReg(varLoc->vlRegReg.vlrrReg1)),
+                   getRegName(toJitReg(varLoc->vlRegReg.vlrrReg2)));
+        }
+#else
+            printf("%s-%s", getRegName(varLoc->vlRegReg.vlrrReg1), getRegName(varLoc->vlRegReg.vlrrReg2));
+#endif
+        break;
+
+#ifndef TARGET_AMD64
         case VLT_REG_STK:
             if ((int)varLoc->vlRegStk.vlrsStk.vlrssBaseReg != (int)ICorDebugInfo::REGNUM_AMBIENT_SP)
             {
@@ -576,269 +722,819 @@ void CodeGenInterface::dumpSiVarLoc(const siVarLoc* varLoc) const
             unreached();
     }
 }
-#endif
-
-#ifdef USING_SCOPE_INFO
-//------------------------------------------------------------------------
-// getSiVarLoc: Returns a "siVarLoc" instance representing the place where the variable
-// is given its description, "baseReg", and "offset" (if needed).
-//
-// Arguments:
-//    varDsc    - a "LclVarDsc *" to the variable it is desired to build the "siVarLoc".
-//    scope   - a "siScope" Scope info of the variable.
-//
-// Return Value:
-//    A "siVarLoc" filled with the correct case struct fields for the variable, which could live
-//    in a register, an stack position, or a combination of both.
-//
-// Notes:
-//    Called for each siScope in siScopeList when "genSetScopeInfo".
-CodeGenInterface::siVarLoc CodeGen::getSiVarLoc(const LclVarDsc* varDsc, const siScope* scope) const
-{
-    // For stack vars, find the base register, and offset
-
-    regNumber baseReg;
-    signed    offset = varDsc->GetStackOffset();
-
-    if (!varDsc->lvFramePointerBased)
-    {
-        baseReg = REG_SPBASE;
-        offset += scope->scStackLevel;
-    }
-    else
-    {
-        baseReg = REG_FPBASE;
-    }
-
-    return CodeGenInterface::siVarLoc(varDsc, baseReg, offset, isFramePointerUsed());
-}
-
-//------------------------------------------------------------------------
-// getSiVarLoc: Creates a "CodegenInterface::siVarLoc" instance from using the properties
-// of the "psiScope" instance.
-//
-// Notes:
-//    Called for every psiScope in "psiScopeList" codegen.h
-CodeGenInterface::siVarLoc CodeGen::psiScope::getSiVarLoc() const
-{
-    CodeGenInterface::siVarLoc varLoc;
-
-    if (scRegister)
-    {
-        varLoc.vlType       = VLT_REG;
-        varLoc.vlReg.vlrReg = (regNumber)u1.scRegNum;
-    }
-    else
-    {
-        varLoc.vlType           = VLT_STK;
-        varLoc.vlStk.vlsBaseReg = (regNumber)u2.scBaseReg;
-        varLoc.vlStk.vlsOffset  = u2.scOffset;
-    }
-
-    return varLoc;
-}
-
-/*============================================================================
- *
- *              Implementation for ScopeInfo
- *
- *
- * Whenever a variable comes into scope, add it to the list.
- * When a varDsc goes dead, end its previous scope entry, and make a new one
- * which is unavailable.
- * When a varDsc goes live, end its previous un-available entry (if any) and
- * set its new entry as available.
- *
- *============================================================================
- */
-
-/*****************************************************************************
- *                      siNewScope
- *
- * Creates a new scope and adds it to the Open scope list.
- */
-
-CodeGen::siScope* CodeGen::siNewScope(unsigned LVnum, unsigned varNum)
-{
-    bool     tracked  = compiler->lvaTable[varNum].lvTracked;
-    unsigned varIndex = compiler->lvaTable[varNum].lvVarIndex;
-
-    if (tracked)
-    {
-        siEndTrackedScope(varIndex);
-    }
-
-    siScope* newScope = compiler->getAllocator(CMK_SiScope).allocate<siScope>(1);
-
-    newScope->scStartLoc.CaptureLocation(GetEmitter());
-    assert(newScope->scStartLoc.Valid());
-
-    newScope->scEndLoc.Init();
-
-    newScope->scLVnum      = LVnum;
-    newScope->scVarNum     = varNum;
-    newScope->scNext       = nullptr;
-    newScope->scStackLevel = genStackLevel; // used only by stack vars
-
-    siOpenScopeLast->scNext = newScope;
-    newScope->scPrev        = siOpenScopeLast;
-    siOpenScopeLast         = newScope;
-
-    if (tracked)
-    {
-        siLatestTrackedScopes[varIndex] = newScope;
-    }
-
-    return newScope;
-}
-
-/*****************************************************************************
- *                          siRemoveFromOpenScopeList
- *
- * Removes a scope from the open-scope list and puts it into the done-scope list
- */
-
-void CodeGen::siRemoveFromOpenScopeList(CodeGen::siScope* scope)
-{
-    assert(scope);
-    assert(scope->scEndLoc.Valid());
-
-    // Remove from open-scope list
-
-    scope->scPrev->scNext = scope->scNext;
-    if (scope->scNext)
-    {
-        scope->scNext->scPrev = scope->scPrev;
-    }
-    else
-    {
-        siOpenScopeLast = scope->scPrev;
-    }
-
-    // Add to the finished scope list. (Try to) filter out scopes of length 0.
-
-    if (scope->scStartLoc != scope->scEndLoc)
-    {
-        siScopeLast->scNext = scope;
-        siScopeLast         = scope;
-        siScopeCnt++;
-    }
-}
-
-/*----------------------------------------------------------------------------
- * These functions end scopes given different types of parameters
- *----------------------------------------------------------------------------
- */
-
-/*****************************************************************************
- * For tracked vars, we don't need to search for the scope in the list as we
- * have a pointer to the open scopes of all tracked variables.
- */
-
-void CodeGen::siEndTrackedScope(unsigned varIndex)
-{
-    siScope* scope = siLatestTrackedScopes[varIndex];
-    if (!scope)
-    {
-        return;
-    }
-
-    scope->scEndLoc.CaptureLocation(GetEmitter());
-    assert(scope->scEndLoc.Valid());
-
-    siRemoveFromOpenScopeList(scope);
-
-    siLatestTrackedScopes[varIndex] = nullptr;
-}
-
-/*****************************************************************************
- * If we don't know that the variable is tracked, this function handles both
- * cases.
- */
-
-void CodeGen::siEndScope(unsigned varNum)
-{
-    for (siScope* scope = siOpenScopeList.scNext; scope; scope = scope->scNext)
-    {
-        if (scope->scVarNum == varNum)
-        {
-            siEndScope(scope);
-            return;
-        }
-    }
-
-    JITDUMP("siEndScope: Failed to end scope for V%02u\n", varNum);
-
-    // At this point, we probably have a bad LocalVarTab
-    if (compiler->opts.compDbgCode)
-    {
-        JITDUMP("...checking var tab validity\n");
-
-        // Note the following assert is saying that we expect
-        // the VM supplied info to be invalid...
-        assert(!siVerifyLocalVarTab());
-
-        compiler->opts.compScopeInfo = false;
-    }
-}
-
-/*****************************************************************************
- * If we have a handle to the siScope structure, we handle ending this scope
- * differently than if we just had a variable number. This saves us searching
- * the open-scope list again.
- */
-
-void CodeGen::siEndScope(siScope* scope)
-{
-    scope->scEndLoc.CaptureLocation(GetEmitter());
-    assert(scope->scEndLoc.Valid());
-
-    siRemoveFromOpenScopeList(scope);
-
-    LclVarDsc& lclVarDsc1 = compiler->lvaTable[scope->scVarNum];
-    if (lclVarDsc1.lvTracked)
-    {
-        siLatestTrackedScopes[lclVarDsc1.lvVarIndex] = nullptr;
-    }
-}
-
-/*****************************************************************************
- *                      siVerifyLocalVarTab
- *
- * Checks the LocalVarTab for consistency. The VM may not have properly
- * verified the LocalVariableTable.
- */
+#endif // DEBUG
 
 #ifdef DEBUG
 
-bool CodeGen::siVerifyLocalVarTab()
+//------------------------------------------------------------------------
+//                      VariableLiveRanges dumpers
+//------------------------------------------------------------------------
+
+// Dump "VariableLiveRange" when code has not been generated and we don't have so the assembly native offset
+// but at least "emitLocation"s and "siVarLoc"
+void CodeGenInterface::VariableLiveKeeper::VariableLiveRange::dumpVariableLiveRange(
+    const CodeGenInterface* codeGen) const
 {
-    // No entries with overlapping lives should have the same slot.
+    codeGen->dumpSiVarLoc(&m_VarLocation);
 
-    for (unsigned i = 0; i < compiler->info.compVarScopesCount; i++)
+    printf(" [");
+    m_StartEmitLocation.Print(codeGen->GetCompiler()->compMethodID);
+    printf(", ");
+    if (m_EndEmitLocation.Valid())
     {
-        for (unsigned j = i + 1; j < compiler->info.compVarScopesCount; j++)
+        m_EndEmitLocation.Print(codeGen->GetCompiler()->compMethodID);
+    }
+    else
+    {
+        printf("...");
+    }
+    printf("]");
+}
+
+// Dump "VariableLiveRange" when code has been generated and we have the assembly native offset of each "emitLocation"
+void CodeGenInterface::VariableLiveKeeper::VariableLiveRange::dumpVariableLiveRange(
+    emitter* emit, const CodeGenInterface* codeGen) const
+{
+    assert(emit != nullptr);
+
+    // "VariableLiveRanges" are created setting its location ("m_VarLocation") and the initial native offset
+    // ("m_StartEmitLocation")
+    codeGen->dumpSiVarLoc(&m_VarLocation);
+
+    // If this is an open "VariableLiveRange", "m_EndEmitLocation" is non-valid and print -1
+    UNATIVE_OFFSET endAssemblyOffset = m_EndEmitLocation.Valid() ? m_EndEmitLocation.CodeOffset(emit) : -1;
+
+    printf(" [%X, %X)", m_StartEmitLocation.CodeOffset(emit), m_EndEmitLocation.CodeOffset(emit));
+}
+
+//------------------------------------------------------------------------
+//                      LiveRangeDumper
+//------------------------------------------------------------------------
+
+//------------------------------------------------------------------------
+// resetDumper: If the "liveRange" has its last "VariableLiveRange" closed, it points
+//  the "LiveRangeDumper" to end of "liveRange" (nullptr). Otherwise,
+//  it points the "LiveRangeDumper" to the last "VariableLiveRange" of
+//  "liveRange", which is opened.
+//
+// Arguments:
+//  liveRanges - the "LiveRangeList" of the "VariableLiveDescriptor" we want to
+//      update its "LiveRangeDumper".
+//
+// Notes:
+//  This method is expected to be called once the code for a BasicBlock has been
+//  generated and all the new "VariableLiveRange"s of the variable during this block
+//  has been dumped.
+//
+void CodeGenInterface::VariableLiveKeeper::LiveRangeDumper::resetDumper(const LiveRangeList* liveRanges)
+{
+    // There must have reported something in order to reset
+    assert(m_hasLiveRangesToDump);
+
+    if (liveRanges->back().m_EndEmitLocation.Valid())
+    {
+        // the last "VariableLiveRange" is closed and the variable
+        // is no longer alive
+        m_hasLiveRangesToDump = false;
+    }
+    else
+    {
+        // the last "VariableLiveRange" remains opened because it is
+        // live at "BasicBlock"s "bbLiveOut".
+        m_startingLiveRange = liveRanges->backPosition();
+    }
+}
+
+//------------------------------------------------------------------------
+// setDumperStartAt: Make "LiveRangeDumper" instance point at the last "VariableLiveRange"
+// added so we can start dumping from there after the "BasicBlock"s code is generated.
+//
+// Arguments:
+//  liveRangeIt - an iterator to a position in "VariableLiveDescriptor::m_VariableLiveRanges"
+//
+void CodeGenInterface::VariableLiveKeeper::LiveRangeDumper::setDumperStartAt(const LiveRangeListIterator liveRangeIt)
+{
+    m_hasLiveRangesToDump = true;
+    m_startingLiveRange   = liveRangeIt;
+}
+
+//------------------------------------------------------------------------
+// getStartForDump: Return an iterator to the first "VariableLiveRange" edited/added
+//  during the current "BasicBlock"
+//
+// Return Value:
+//  A LiveRangeListIterator to the first "VariableLiveRange" in "LiveRangeList" which
+//  was used during last "BasicBlock".
+//
+CodeGenInterface::VariableLiveKeeper::LiveRangeListIterator CodeGenInterface::VariableLiveKeeper::LiveRangeDumper::
+    getStartForDump() const
+{
+    return m_startingLiveRange;
+}
+
+//------------------------------------------------------------------------
+// hasLiveRangesToDump: Return whether at least a "VariableLiveRange" was alive during
+//  the current "BasicBlock"'s code generation
+//
+// Return Value:
+//  A boolean indicating indicating if there is at least a "VariableLiveRange"
+//  that has been used for the variable during last "BasicBlock".
+//
+bool CodeGenInterface::VariableLiveKeeper::LiveRangeDumper::hasLiveRangesToDump() const
+{
+    return m_hasLiveRangesToDump;
+}
+
+#endif // DEBUG
+
+//------------------------------------------------------------------------
+//                      VariableLiveDescriptor
+//------------------------------------------------------------------------
+
+CodeGenInterface::VariableLiveKeeper::VariableLiveDescriptor::VariableLiveDescriptor(
+    CompAllocator allocator DEBUG_ARG(unsigned varNum))
+{
+    // Initialize an empty list
+    m_VariableLiveRanges = new (allocator) LiveRangeList(allocator);
+
+    INDEBUG(m_VariableLifeBarrier = new (allocator) LiveRangeDumper(m_VariableLiveRanges));
+    INDEBUG(m_varNum = varNum);
+}
+
+//------------------------------------------------------------------------
+// hasVariableLiveRangeOpen: Return true if the variable is still alive,
+//  false in other case.
+//
+bool CodeGenInterface::VariableLiveKeeper::VariableLiveDescriptor::hasVariableLiveRangeOpen() const
+{
+    return !m_VariableLiveRanges->empty() && !m_VariableLiveRanges->back().m_EndEmitLocation.Valid();
+}
+
+//------------------------------------------------------------------------
+// getLiveRanges: Return the list of variable locations for this variable.
+//
+// Return Value:
+//  A const LiveRangeList* pointing to the first variable location if it has
+//  any or the end of the list in other case.
+//
+CodeGenInterface::VariableLiveKeeper::LiveRangeList* CodeGenInterface::VariableLiveKeeper::VariableLiveDescriptor::
+    getLiveRanges() const
+{
+    return m_VariableLiveRanges;
+}
+
+//------------------------------------------------------------------------
+// startLiveRangeFromEmitter: Report this variable as being born in "varLocation"
+//  at the instruction where "emit" is located.
+//
+// Arguments:
+//  varLocation  - the home of the variable.
+//  emit - an emitter* instance located at the first instruction where "varLocation" becomes valid.
+//
+// Assumptions:
+//  This variable is being born so it should currently be dead.
+//
+// Notes:
+//  The position of "emit" matters to ensure intervals inclusive of the
+//  beginning and exclusive of the end.
+//
+void CodeGenInterface::VariableLiveKeeper::VariableLiveDescriptor::startLiveRangeFromEmitter(
+    CodeGenInterface::siVarLoc varLocation, emitter* emit) const
+{
+    noway_assert(emit != nullptr);
+
+    // Is the first "VariableLiveRange" or the previous one has been closed so its "m_EndEmitLocation" is valid
+    noway_assert(m_VariableLiveRanges->empty() || m_VariableLiveRanges->back().m_EndEmitLocation.Valid());
+
+    if (!m_VariableLiveRanges->empty() &&
+        siVarLoc::Equals(&varLocation, &(m_VariableLiveRanges->back().m_VarLocation)) &&
+        m_VariableLiveRanges->back().m_EndEmitLocation.IsPreviousInsNum(emit))
+    {
+        JITDUMP("Debug: Extending V%02u debug range...\n", m_varNum);
+
+        // The variable is being born just after the instruction at which it died.
+        // In this case, i.e. an update of the variable's value, we coalesce the live ranges.
+        m_VariableLiveRanges->back().m_EndEmitLocation.Init();
+    }
+    else
+    {
+        JITDUMP("Debug: New V%02u debug range: %s\n", m_varNum,
+                m_VariableLiveRanges->empty()                                                   ? "first"
+                : siVarLoc::Equals(&varLocation, &(m_VariableLiveRanges->back().m_VarLocation)) ? "new var or location"
+                                                                                                : "not adjacent");
+        // Creates new live range with invalid end
+        m_VariableLiveRanges->emplace_back(varLocation, emitLocation(), emitLocation());
+        m_VariableLiveRanges->back().m_StartEmitLocation.CaptureLocation(emit);
+    }
+
+#ifdef DEBUG
+    if (!m_VariableLifeBarrier->hasLiveRangesToDump())
+    {
+        m_VariableLifeBarrier->setDumperStartAt(m_VariableLiveRanges->backPosition());
+    }
+#endif // DEBUG
+
+    // m_startEmitLocation must be Valid. m_EndEmitLocation must not be valid.
+    noway_assert(m_VariableLiveRanges->back().m_StartEmitLocation.Valid());
+    noway_assert(!m_VariableLiveRanges->back().m_EndEmitLocation.Valid());
+}
+
+//------------------------------------------------------------------------
+// endLiveRangeAtEmitter: Report this variable as becoming dead starting at the
+//  instruction where "emit" is located.
+//
+// Arguments:
+//  emit - an emitter* instance located at the first instruction where
+//   this variable becomes dead.
+//
+// Assumptions:
+//  This variable is becoming dead so it should currently be alive.
+//
+// Notes:
+//  The position of "emit" matters to ensure intervals inclusive of the
+//  beginning and exclusive of the end.
+//
+void CodeGenInterface::VariableLiveKeeper::VariableLiveDescriptor::endLiveRangeAtEmitter(emitter* emit) const
+{
+    noway_assert(emit != nullptr);
+    noway_assert(hasVariableLiveRangeOpen());
+
+    // Using [close, open) ranges so as to not compute the size of the last instruction
+    m_VariableLiveRanges->back().m_EndEmitLocation.CaptureLocation(emit);
+
+    JITDUMP("Debug: Closing V%02u debug range.\n", m_varNum);
+
+    // m_EndEmitLocation must be Valid
+    noway_assert(m_VariableLiveRanges->back().m_EndEmitLocation.Valid());
+}
+
+//------------------------------------------------------------------------
+// updateLiveRangeAtEmitter: Report this variable as changing its variable
+//  home to "varLocation" at the instruction where "emit" is located.
+//
+// Arguments:
+//  varLocation  - the new variable location.
+//  emit - an emitter* instance located at the first instruction where "varLocation" becomes valid.
+//
+// Assumptions:
+//  This variable should already be alive.
+//
+// Notes:
+//  The position of "emit" matters to ensure intervals inclusive of the
+//  beginning and exclusive of the end.
+//
+void CodeGenInterface::VariableLiveKeeper::VariableLiveDescriptor::updateLiveRangeAtEmitter(
+    CodeGenInterface::siVarLoc varLocation, emitter* emit) const
+{
+    // This variable is changing home so it has been started before during this block
+    noway_assert(m_VariableLiveRanges != nullptr && !m_VariableLiveRanges->empty());
+
+    // And its last m_EndEmitLocation has to be invalid
+    noway_assert(!m_VariableLiveRanges->back().m_EndEmitLocation.Valid());
+
+    // If we are reporting again the same home, that means we are doing something twice?
+    // noway_assert(! CodeGenInterface::siVarLoc::Equals(&m_VariableLiveRanges->back().m_VarLocation, varLocation));
+
+    // Close previous live range
+    endLiveRangeAtEmitter(emit);
+
+    startLiveRangeFromEmitter(varLocation, emit);
+}
+
+#ifdef DEBUG
+void CodeGenInterface::VariableLiveKeeper::VariableLiveDescriptor::dumpAllRegisterLiveRangesForBlock(
+    emitter* emit, const CodeGenInterface* codeGen) const
+{
+    bool first = true;
+    for (LiveRangeListIterator it = m_VariableLiveRanges->begin(); it != m_VariableLiveRanges->end(); it++)
+    {
+        if (!first)
         {
-            unsigned slot1 = compiler->info.compVarScopes[i].vsdVarNum;
-            unsigned beg1  = compiler->info.compVarScopes[i].vsdLifeBeg;
-            unsigned end1  = compiler->info.compVarScopes[i].vsdLifeEnd;
+            printf("; ");
+        }
+        it->dumpVariableLiveRange(emit, codeGen);
+        first = false;
+    }
+}
 
-            unsigned slot2 = compiler->info.compVarScopes[j].vsdVarNum;
-            unsigned beg2  = compiler->info.compVarScopes[j].vsdLifeBeg;
-            unsigned end2  = compiler->info.compVarScopes[j].vsdLifeEnd;
+void CodeGenInterface::VariableLiveKeeper::VariableLiveDescriptor::dumpRegisterLiveRangesForBlockBeforeCodeGenerated(
+    const CodeGenInterface* codeGen) const
+{
+    bool first = true;
+    for (LiveRangeListIterator it = m_VariableLifeBarrier->getStartForDump(); it != m_VariableLiveRanges->end(); it++)
+    {
+        if (!first)
+        {
+            printf("; ");
+        }
+        it->dumpVariableLiveRange(codeGen);
+        first = false;
+    }
+}
 
-            if (slot1 == slot2 && (end1 > beg2 && beg1 < end2))
+// Returns true if a live range for this variable has been recorded
+bool CodeGenInterface::VariableLiveKeeper::VariableLiveDescriptor::hasVarLiveRangesToDump() const
+{
+    return !m_VariableLiveRanges->empty();
+}
+
+// Returns true if a live range for this variable has been recorded from last call to EndBlock
+bool CodeGenInterface::VariableLiveKeeper::VariableLiveDescriptor::hasVarLiveRangesFromLastBlockToDump() const
+{
+    return m_VariableLifeBarrier->hasLiveRangesToDump();
+}
+
+// Reset the barrier so as to dump only next block changes on next block
+void CodeGenInterface::VariableLiveKeeper::VariableLiveDescriptor::endBlockLiveRanges()
+{
+    // make "m_VariableLifeBarrier->m_startingLiveRange" now points to nullptr for printing purposes
+    m_VariableLifeBarrier->resetDumper(m_VariableLiveRanges);
+}
+#endif // DEBUG
+
+//------------------------------------------------------------------------
+//                      VariableLiveKeeper
+//------------------------------------------------------------------------
+
+// Initialize structures for VariableLiveRanges
+void CodeGenInterface::initializeVariableLiveKeeper()
+{
+    CompAllocator allocator = m_compiler->getAllocator(CMK_VariableLiveRanges);
+
+    int amountTrackedVariables = m_compiler->opts.compDbgInfo ? m_compiler->info.compLocalsCount : 0;
+    int amountTrackedArgs      = m_compiler->opts.compDbgInfo ? m_compiler->info.compArgsCount : 0;
+
+    varLiveKeeper =
+        new (allocator) VariableLiveKeeper(amountTrackedVariables, amountTrackedArgs, m_compiler, allocator);
+}
+
+CodeGenInterface::VariableLiveKeeper* CodeGenInterface::getVariableLiveKeeper() const
+{
+    return varLiveKeeper;
+};
+
+//------------------------------------------------------------------------
+// VariableLiveKeeper: Create an instance of the object in charge of managing
+//  VariableLiveRanges and initialize the array "m_vlrLiveDsc".
+//
+// Arguments:
+//    totalLocalCount   - the count of args, special args and IL Local
+//      variables in the method.
+//    argsCount         - the count of args and special args in the method.
+//    compiler          - a compiler instance
+//
+CodeGenInterface::VariableLiveKeeper::VariableLiveKeeper(unsigned int  totalLocalCount,
+                                                         unsigned int  argsCount,
+                                                         Compiler*     comp,
+                                                         CompAllocator allocator)
+    : m_LiveDscCount(totalLocalCount)
+    , m_LiveArgsCount(argsCount)
+    , m_compiler(comp)
+    , m_LastBasicBlockHasBeenEmitted(false)
+{
+    if (m_LiveDscCount > 0)
+    {
+        // Allocate memory for "m_vlrLiveDsc" and initialize each "VariableLiveDescriptor"
+        m_vlrLiveDsc          = allocator.allocate<VariableLiveDescriptor>(m_LiveDscCount);
+        m_vlrLiveDscForProlog = allocator.allocate<VariableLiveDescriptor>(m_LiveDscCount);
+
+        for (unsigned int varNum = 0; varNum < m_LiveDscCount; varNum++)
+        {
+            new (m_vlrLiveDsc + varNum, jitstd::placement_t()) VariableLiveDescriptor(allocator DEBUG_ARG(varNum));
+            new (m_vlrLiveDscForProlog + varNum, jitstd::placement_t())
+                VariableLiveDescriptor(allocator DEBUG_ARG(varNum));
+        }
+    }
+}
+
+//------------------------------------------------------------------------
+// siStartOrCloseVariableLiveRange: Reports the given variable as being born or becoming dead.
+//
+// Arguments:
+//    varDsc    - the variable for which a location changed will be reported
+//    varNum    - the index of the variable in "lvaTable"
+//    isBorn    - true if the variable is being born where the emitter is located.
+//    isDying   - true if the variable is dying where the emitter is located.
+//
+// Assumptions:
+//    The emitter should be located on the first instruction where
+//    the variable is becoming valid (when isBorn is true) or invalid (when isDying is true).
+//
+// Notes:
+//    This method is being called from treeLifeUpdater when the variable is being born,
+//    becoming dead, or both.
+//
+void CodeGenInterface::VariableLiveKeeper::siStartOrCloseVariableLiveRange(const LclVarDsc* varDsc,
+                                                                           unsigned int     varNum,
+                                                                           bool             isBorn,
+                                                                           bool             isDying)
+{
+    noway_assert(varDsc != nullptr);
+
+    // Only the variables that exists in the IL, "this", and special arguments
+    // are reported.
+    if (m_compiler->opts.compDbgInfo && varNum < m_LiveDscCount)
+    {
+        if (isBorn && !isDying)
+        {
+            // "varDsc" is valid from this point
+            siStartVariableLiveRange(varDsc, varNum);
+        }
+        if (isDying && !isBorn)
+        {
+            // this variable live range is no longer valid from this point
+            siEndVariableLiveRange(varNum);
+        }
+    }
+}
+
+//------------------------------------------------------------------------
+// siStartOrCloseVariableLiveRanges: Iterates the given set of variables
+//  calling "siStartOrCloseVariableLiveRange" with each one.
+//
+// Arguments:
+//    varsIndexSet    - the set of variables to report start/end "VariableLiveRange"
+//    isBorn    - whether the set is being born from where the emitter is located.
+//    isDying   - whether the set is dying from where the emitter is located.
+//
+// Assumptions:
+//    The emitter should be located on the first instruction from where is true that
+//    the variable becoming valid (when isBorn is true) or invalid (when isDying is true).
+//
+// Notes:
+//    This method is being called from treeLifeUpdater when a set of variables
+//    is being born, becoming dead, or both.
+//
+void CodeGenInterface::VariableLiveKeeper::siStartOrCloseVariableLiveRanges(VARSET_VALARG_TP varsIndexSet,
+                                                                            bool             isBorn,
+                                                                            bool             isDying)
+{
+    if (m_compiler->opts.compDbgInfo)
+    {
+        VarSetOps::Iter iter(m_compiler, varsIndexSet);
+        unsigned        varIndex = 0;
+        while (iter.NextElem(&varIndex))
+        {
+            unsigned int     varNum = m_compiler->lvaTrackedIndexToLclNum(varIndex);
+            const LclVarDsc* varDsc = m_compiler->lvaGetDesc(varNum);
+            siStartOrCloseVariableLiveRange(varDsc, varNum, isBorn, isDying);
+        }
+    }
+}
+
+//------------------------------------------------------------------------
+// siStartVariableLiveRange: Reports the given variable as being born.
+//
+// Arguments:
+//    varDsc    - the variable descriptor for which a location change will be reported
+//    varNum    - the variable number
+//
+// Assumptions:
+//    The emitter should be pointing to the first instruction where the VariableLiveRange is
+//    becoming valid.
+//    The given "varDsc" should have its VariableRangeLists initialized.
+//
+// Notes:
+//    This method should be called at every location where a variable is becoming live.
+//
+void CodeGenInterface::VariableLiveKeeper::siStartVariableLiveRange(const LclVarDsc* varDsc, unsigned int varNum)
+{
+    noway_assert(varDsc != nullptr);
+
+    // Only the variables that exists in the IL, "this", and special arguments are reported, as long as they were
+    // allocated.
+    // TODO-SVE: Do we need to support this for scalable vectors?
+    if (m_compiler->opts.compDbgInfo && (varNum < m_LiveDscCount) && (varDsc->lvIsInReg() || varDsc->lvOnFrame) &&
+        varDsc->lvValueSize().IsExact())
+    {
+        // Build siVarLoc for this born "varDsc"
+        CodeGenInterface::siVarLoc varLocation =
+            m_compiler->codeGen->getSiVarLoc(varDsc, 0, (int)m_compiler->codeGen->getCurrentStackLevel());
+
+        VariableLiveDescriptor* varLiveDsc = &m_vlrLiveDsc[varNum];
+        // this variable live range is valid from this point
+        varLiveDsc->startLiveRangeFromEmitter(varLocation, m_compiler->GetEmitter());
+    }
+}
+
+//------------------------------------------------------------------------
+// siEndVariableLiveRange: Reports the variable as becoming dead.
+//
+// Arguments:
+//    varNum    - the index of the variable at m_vlrLiveDsc or lvaTable in that
+//       is becoming dead.
+//
+// Assumptions:
+//    The given variable should be alive.
+//    The emitter should be pointing to the first instruction where the VariableLiveRange is
+//    becoming invalid.
+//
+// Notes:
+//    This method should be called at every location where a variable is becoming dead.
+//
+void CodeGenInterface::VariableLiveKeeper::siEndVariableLiveRange(unsigned int varNum)
+{
+    // Only the variables that exists in the IL, "this", and special arguments
+    // will be reported.
+
+    // This method is being called from genUpdateLife, which is called after
+    // code for BasicBlock has been generated, but the emitter no longer has
+    // a valid IG so we don't report the close of a "VariableLiveRange" after code is
+    // emitted.
+
+    if (m_compiler->opts.compDbgInfo && (varNum < m_LiveDscCount) && !m_LastBasicBlockHasBeenEmitted &&
+        m_vlrLiveDsc[varNum].hasVariableLiveRangeOpen())
+    {
+        // this variable live range is no longer valid from this point
+        m_vlrLiveDsc[varNum].endLiveRangeAtEmitter(m_compiler->GetEmitter());
+    }
+}
+
+//------------------------------------------------------------------------
+// siUpdateVariableLiveRange: Reports the change of variable location for the
+//  given variable.
+//
+// Arguments:
+//    varDsc    - the variable descriptor for which the home has changed.
+//    varNum    - the variable number
+//
+// Assumptions:
+//    The given variable should be alive.
+//    The emitter should be pointing to the first instruction where
+//    the new variable location is becoming valid.
+//
+void CodeGenInterface::VariableLiveKeeper::siUpdateVariableLiveRange(const LclVarDsc* varDsc, unsigned int varNum)
+{
+    noway_assert(varDsc != nullptr);
+
+    // Only the variables that exist in the IL, "this", and special arguments
+    // will be reported. These are locals and arguments, and are counted in
+    // "info.compLocalsCount".
+
+    // This method is being called when the prolog is being generated, and
+    // the emitter no longer has a valid IG so we don't report the close of
+    // a "VariableLiveRange" after code is emitted.
+    if (m_compiler->opts.compDbgInfo && (varNum < m_LiveDscCount) && !m_LastBasicBlockHasBeenEmitted)
+    {
+        // Build the location of the variable
+        CodeGenInterface::siVarLoc siVarLoc =
+            m_compiler->codeGen->getSiVarLoc(varDsc, 0, (int)m_compiler->codeGen->getCurrentStackLevel());
+
+        // Report the home change for this variable
+        VariableLiveDescriptor* varLiveDsc = &m_vlrLiveDsc[varNum];
+        varLiveDsc->updateLiveRangeAtEmitter(siVarLoc, m_compiler->GetEmitter());
+    }
+}
+
+//------------------------------------------------------------------------
+// siEndAllVariableLiveRange: Reports the set of variables as becoming dead.
+//
+// Arguments:
+//    newLife    - the set of variables that are becoming dead.
+//
+// Assumptions:
+//    All the variables in the set are alive.
+//
+// Notes:
+//    This method is called when the last block being generated to killed all
+//    the live variables and set a flag to avoid reporting variable locations for
+//    on next calls to method that update variable liveness.
+//
+void CodeGenInterface::VariableLiveKeeper::siEndAllVariableLiveRange(VARSET_VALARG_TP varsToClose)
+{
+    if (m_compiler->opts.compDbgInfo)
+    {
+        if (m_compiler->lvaTrackedCount > 0 || !m_compiler->opts.OptimizationDisabled())
+        {
+            VarSetOps::Iter iter(m_compiler, varsToClose);
+            unsigned        varIndex = 0;
+            while (iter.NextElem(&varIndex))
             {
-                return false;
+                unsigned int varNum = m_compiler->lvaTrackedIndexToLclNum(varIndex);
+                siEndVariableLiveRange(varNum);
+            }
+        }
+        else
+        {
+            // It seems we are compiling debug code, so we don't have variable
+            //  liveness info
+            siEndAllVariableLiveRange();
+        }
+    }
+
+    m_LastBasicBlockHasBeenEmitted = true;
+}
+
+//------------------------------------------------------------------------
+// siEndAllVariableLiveRange: Reports all live variables as dead.
+//
+// Notes:
+//    This overload exists for the case we are compiling code compiled in
+//    debug mode. When that happen we don't have variable liveness info
+//    as "BasicBlock::bbLiveIn" or "BasicBlock::bbLiveOut" and there is no
+//    tracked variable.
+//
+void CodeGenInterface::VariableLiveKeeper::siEndAllVariableLiveRange()
+{
+    // TODO: we can improve this keeping a set for the variables with
+    // open VariableLiveRanges
+
+    for (unsigned int varNum = 0; varNum < m_LiveDscCount; varNum++)
+    {
+        const VariableLiveDescriptor* varLiveDsc = m_vlrLiveDsc + varNum;
+        if (varLiveDsc->hasVariableLiveRangeOpen())
+        {
+            siEndVariableLiveRange(varNum);
+        }
+    }
+}
+
+//------------------------------------------------------------------------
+// getLiveRangesForVarForBody: Return the "VariableLiveRange" that correspond to
+//  the given "varNum".
+//
+// Arguments:
+//  varNum  - the index of the variable in m_vlrLiveDsc, which is the same as
+//      in lvaTable.
+//
+// Return Value:
+//  A const pointer to the list of variable locations reported for the variable.
+//
+// Assumptions:
+//  This variable should be an argument, a special argument or an IL local
+//  variable.
+CodeGenInterface::VariableLiveKeeper::LiveRangeList* CodeGenInterface::VariableLiveKeeper::getLiveRangesForVarForBody(
+    unsigned int varNum) const
+{
+    // There should be at least one variable for which its liveness is tracked
+    noway_assert(varNum < m_LiveDscCount);
+
+    return m_vlrLiveDsc[varNum].getLiveRanges();
+}
+
+//------------------------------------------------------------------------
+// getLiveRangesForVarForProlog: Return the "VariableLiveRange" that correspond to
+//  the given "varNum".
+//
+// Arguments:
+//  varNum  - the index of the variable in m_vlrLiveDsc, which is the same as
+//      in lvaTable.
+//
+// Return Value:
+//  A const pointer to the list of variable locations reported for the variable.
+//
+// Assumptions:
+//  This variable should be an argument, a special argument or an IL local
+//  variable.
+CodeGenInterface::VariableLiveKeeper::LiveRangeList* CodeGenInterface::VariableLiveKeeper::getLiveRangesForVarForProlog(
+    unsigned int varNum) const
+{
+    // There should be at least one variable for which its liveness is tracked
+    noway_assert(varNum < m_LiveDscCount);
+
+    return m_vlrLiveDscForProlog[varNum].getLiveRanges();
+}
+
+//------------------------------------------------------------------------
+// getLiveRangesCount: Returns the count of variable locations reported for the tracked
+//  variables, which are arguments, special arguments, and local IL variables.
+//
+// Return Value:
+//    size_t - the count of variable locations
+//
+// Notes:
+//    This method is being called from "genSetScopeInfo" to know the count of
+//    "varResultInfo" that should be created on eeSetLVcount.
+//
+size_t CodeGenInterface::VariableLiveKeeper::getLiveRangesCount() const
+{
+    size_t liveRangesCount = 0;
+
+    if (m_compiler->opts.compDbgInfo)
+    {
+        for (unsigned int varNum = 0; varNum < m_LiveDscCount; varNum++)
+        {
+            for (int i = 0; i < 2; i++)
+            {
+                VariableLiveDescriptor* varLiveDsc = (i == 0 ? m_vlrLiveDscForProlog : m_vlrLiveDsc) + varNum;
+
+                if (m_compiler->compMap2ILvarNum(varNum) != (unsigned int)ICorDebugInfo::UNKNOWN_ILNUM)
+                {
+                    liveRangesCount += varLiveDsc->getLiveRanges()->size();
+                }
+            }
+        }
+    }
+    return liveRangesCount;
+}
+
+//------------------------------------------------------------------------
+// psiStartVariableLiveRange: Reports the given variable as being born.
+//
+// Arguments:
+//  varLocation - the variable location
+//  varNum      - the index of the variable in "m_compiler->lvaTable" or
+//      "VariableLiveKeeper->m_vlrLiveDsc"
+//
+// Notes:
+//  This function is expected to be called from "psiBegProlog" during
+//  prolog code generation.
+//
+void CodeGenInterface::VariableLiveKeeper::psiStartVariableLiveRange(CodeGenInterface::siVarLoc varLocation,
+                                                                     unsigned int               varNum)
+{
+    // This descriptor has to correspond to a parameter. The first slots in lvaTable
+    // are arguments and special arguments.
+    noway_assert(varNum < m_LiveArgsCount);
+
+    VariableLiveDescriptor* varLiveDsc = &m_vlrLiveDscForProlog[varNum];
+    varLiveDsc->startLiveRangeFromEmitter(varLocation, m_compiler->GetEmitter());
+}
+
+//------------------------------------------------------------------------
+// psiClosePrologVariableRanges: Report all the parameters as becoming dead.
+//
+// Notes:
+//  This function is expected to be called from "psiEndProlog" after
+//  code for prolog has been generated.
+//
+void CodeGenInterface::VariableLiveKeeper::psiClosePrologVariableRanges()
+{
+    noway_assert(m_LiveArgsCount <= m_LiveDscCount);
+
+    for (unsigned int varNum = 0; varNum < m_LiveArgsCount; varNum++)
+    {
+        VariableLiveDescriptor* varLiveDsc = m_vlrLiveDscForProlog + varNum;
+
+        if (varLiveDsc->hasVariableLiveRangeOpen())
+        {
+            varLiveDsc->endLiveRangeAtEmitter(m_compiler->GetEmitter());
+        }
+    }
+}
+
+#ifdef DEBUG
+void CodeGenInterface::VariableLiveKeeper::dumpBlockVariableLiveRanges(const BasicBlock* block)
+{
+    assert(block != nullptr);
+
+    bool hasDumpedHistory = false;
+
+    printf("\nVariable Live Range History Dump for " FMT_BB "\n", block->bbNum);
+
+    if (m_compiler->opts.compDbgInfo)
+    {
+        for (unsigned int varNum = 0; varNum < m_LiveDscCount; varNum++)
+        {
+            VariableLiveDescriptor* varLiveDsc = m_vlrLiveDsc + varNum;
+
+            if (varLiveDsc->hasVarLiveRangesFromLastBlockToDump())
+            {
+                hasDumpedHistory = true;
+                m_compiler->gtDispLclVar(varNum, false);
+                printf(": ");
+                varLiveDsc->dumpRegisterLiveRangesForBlockBeforeCodeGenerated(m_compiler->codeGen);
+                varLiveDsc->endBlockLiveRanges();
+                printf("\n");
             }
         }
     }
 
-    return true;
+    if (!hasDumpedHistory)
+    {
+        printf("..None..\n");
+    }
 }
 
+void CodeGenInterface::VariableLiveKeeper::dumpLvaVariableLiveRanges() const
+{
+    bool hasDumpedHistory = false;
+
+    printf("VARIABLE LIVE RANGES:\n");
+
+    if (m_compiler->opts.compDbgInfo)
+    {
+        for (unsigned int varNum = 0; varNum < m_LiveDscCount; varNum++)
+        {
+            VariableLiveDescriptor* varLiveDsc = m_vlrLiveDsc + varNum;
+
+            if (varLiveDsc->hasVarLiveRangesToDump())
+            {
+                hasDumpedHistory = true;
+                m_compiler->gtDispLclVar(varNum, false);
+                printf(": ");
+                varLiveDsc->dumpAllRegisterLiveRangesForBlock(m_compiler->GetEmitter(), m_compiler->codeGen);
+                printf("\n");
+            }
+        }
+    }
+
+    if (!hasDumpedHistory)
+    {
+        printf("..None..\n");
+    }
+}
 #endif // DEBUG
-#endif // USING_SCOPE_INFO
 
 /*============================================================================
  *           INTERFACE (public) Functions for ScopeInfo
@@ -846,7 +1542,7 @@ bool CodeGen::siVerifyLocalVarTab()
  */
 
 // Check every CodeGenInterface::siVarLocType and CodeGenInterface::siVarLoc
-// are what ICodeDebugInfo is expetecting.
+// are what ICodeDebugInfo is expecting.
 void CodeGen::checkICodeDebugInfo()
 {
 #ifdef TARGET_X86
@@ -883,45 +1579,16 @@ void CodeGen::siInit()
 {
     checkICodeDebugInfo();
 
-    assert(compiler->opts.compScopeInfo);
+    assert(m_compiler->opts.compScopeInfo);
 
-#if defined(FEATURE_EH_FUNCLETS)
-    if (compiler->info.compVarScopesCount > 0)
+    if (m_compiler->info.compVarScopesCount > 0)
     {
         siInFuncletRegion = false;
     }
-#endif // FEATURE_EH_FUNCLETS
 
     siLastEndOffs = 0;
 
-#ifdef USING_SCOPE_INFO
-    siOpenScopeList.scNext = nullptr;
-    siOpenScopeLast        = &siOpenScopeList;
-    siScopeLast            = &siScopeList;
-
-    siScopeCnt = 0;
-
-    VarSetOps::AssignNoCopy(compiler, siLastLife, VarSetOps::MakeEmpty(compiler));
-
-    if (compiler->info.compVarScopesCount == 0)
-    {
-        siLatestTrackedScopes = nullptr;
-    }
-    else
-    {
-        unsigned scopeCount = compiler->lvaTrackedCount;
-
-        if (scopeCount == 0)
-        {
-            siLatestTrackedScopes = nullptr;
-        }
-        else
-        {
-            siLatestTrackedScopes = new (compiler->getAllocator(CMK_SiScope)) siScope* [scopeCount] {};
-        }
-    }
-#endif // USING_SCOPE_INFO
-    compiler->compResetScopeLists();
+    m_compiler->compResetScopeLists();
 }
 
 /*****************************************************************************
@@ -935,23 +1602,22 @@ void CodeGen::siBeginBlock(BasicBlock* block)
 {
     assert(block != nullptr);
 
-    if (!compiler->opts.compScopeInfo)
+    if (!m_compiler->opts.compScopeInfo)
     {
         return;
     }
 
-    if (compiler->info.compVarScopesCount == 0)
+    if (m_compiler->info.compVarScopesCount == 0)
     {
         return;
     }
 
-#if defined(FEATURE_EH_FUNCLETS)
     if (siInFuncletRegion)
     {
         return;
     }
 
-    if (block->bbFlags & BBF_FUNCLET_BEG)
+    if (block == m_compiler->fgFirstFuncletBB)
     {
         // For now, don't report any scopes in funclets. JIT64 doesn't.
         siInFuncletRegion = true;
@@ -961,7 +1627,6 @@ void CodeGen::siBeginBlock(BasicBlock* block)
 
         return;
     }
-#endif // FEATURE_EH_FUNCLETS
 
 #ifdef DEBUG
     if (verbose)
@@ -984,42 +1649,10 @@ void CodeGen::siBeginBlock(BasicBlock* block)
     //
     // Note: we can improve on this some day -- if there are any tracked
     // locals, untracked locals will fail to be reported.
-    if (compiler->lvaTrackedCount > 0)
-    {
-#ifdef USING_SCOPE_INFO
-        // End scope of variables which are not live for this block
-        siUpdate();
-
-        // Check that vars which are live on entry have an open scope
-        VarSetOps::Iter iter(compiler, block->bbLiveIn);
-        unsigned        varIndex = 0;
-        while (iter.NextElem(&varIndex))
-        {
-            unsigned   varNum = compiler->lvaTrackedIndexToLclNum(varIndex);
-            LclVarDsc* varDsc = compiler->lvaGetDesc(varNum);
-            // lvRefCnt may go down to 0 after liveness-analysis.
-            // So we need to check if this tracked variable is actually used.
-            if (!varDsc->lvIsInReg() && !varDsc->lvOnFrame)
-            {
-                assert(varDsc->lvRefCnt() == 0);
-                continue;
-            }
-
-            siCheckVarScope(varNum, beginOffs);
-        }
-#endif
-    }
-    else
+    if (m_compiler->lvaTrackedCount <= 0)
     {
         siOpenScopesForNonTrackedVars(block, siLastEndOffs);
     }
-
-#if defined(USING_SCOPE_INFO) && defined(DEBUG)
-    if (verbose)
-    {
-        siDispOpenScopes();
-    }
-#endif // defined(USING_SCOPE_INFO) && defined(DEBUG)
 }
 
 //------------------------------------------------------------------------
@@ -1040,6 +1673,15 @@ void CodeGen::siBeginBlock(BasicBlock* block)
 //
 void CodeGen::siOpenScopesForNonTrackedVars(const BasicBlock* block, unsigned int lastBlockILEndOffset)
 {
+#if defined(TARGET_WASM)
+    // TODO-WASM: Wasm structured control flow
+    // requirements are incompatible with debug codegen's
+    // desire to keep blocks in increasing IL offset
+    // order. Figure out the proper scope manipulations.
+    //
+    return;
+#endif // defined(TARGET_WASM)
+
     unsigned int beginOffs = block->bbCodeOffs;
 
     // There aren't any tracked locals.
@@ -1047,12 +1689,10 @@ void CodeGen::siOpenScopesForNonTrackedVars(const BasicBlock* block, unsigned in
     // For debuggable or minopts code, scopes can begin only on block boundaries.
     // For other codegen modes (eg minopts/tier0) we currently won't report any
     // untracked locals.
-    if (compiler->opts.OptimizationDisabled())
+    if (m_compiler->opts.OptimizationDisabled())
     {
         // Check if there are any scopes on the current block's start boundary.
         VarScopeDsc* varScope = nullptr;
-
-#if defined(FEATURE_EH_FUNCLETS)
 
         // If we find a spot where the code offset isn't what we expect, because
         // there is a gap, it might be because we've moved the funclets out of
@@ -1067,61 +1707,35 @@ void CodeGen::siOpenScopesForNonTrackedVars(const BasicBlock* block, unsigned in
             JITDUMP("Scope info: found offset hole. lastOffs=%u, currOffs=%u\n", lastBlockILEndOffset, beginOffs);
 
             // Skip enter scopes
-            while ((varScope = compiler->compGetNextEnterScope(beginOffs - 1, true)) != nullptr)
+            while ((varScope = m_compiler->compGetNextEnterScope(beginOffs - 1, true)) != nullptr)
             {
                 /* do nothing */
                 JITDUMP("Scope info: skipping enter scope, LVnum=%u\n", varScope->vsdLVnum);
             }
 
             // Skip exit scopes
-            while ((varScope = compiler->compGetNextExitScope(beginOffs - 1, true)) != nullptr)
+            while ((varScope = m_compiler->compGetNextExitScope(beginOffs - 1, true)) != nullptr)
             {
                 /* do nothing */
                 JITDUMP("Scope info: skipping exit scope, LVnum=%u\n", varScope->vsdLVnum);
             }
         }
 
-#else // !FEATURE_EH_FUNCLETS
-
-        if (lastBlockILEndOffset != beginOffs)
+        while ((varScope = m_compiler->compGetNextEnterScope(beginOffs)) != nullptr)
         {
-            assert(lastBlockILEndOffset < beginOffs);
-            return;
-        }
-
-#endif // !FEATURE_EH_FUNCLETS
-
-        while ((varScope = compiler->compGetNextEnterScope(beginOffs)) != nullptr)
-        {
-            LclVarDsc* lclVarDsc = compiler->lvaGetDesc(varScope->vsdVarNum);
+            LclVarDsc* lclVarDsc = m_compiler->lvaGetDesc(varScope->vsdVarNum);
 
             // Only report locals that were referenced, if we're not doing debug codegen
-            if (compiler->opts.compDbgCode || (lclVarDsc->lvRefCnt() > 0))
+            if (m_compiler->opts.compDbgCode || (lclVarDsc->lvRefCnt() > 0))
             {
                 // brace-matching editor workaround for following line: (
                 JITDUMP("Scope info: opening scope, LVnum=%u [%03X..%03X)\n", varScope->vsdLVnum, varScope->vsdLifeBeg,
                         varScope->vsdLifeEnd);
 
-#ifdef USING_SCOPE_INFO
-                siNewScope(varScope->vsdLVnum, varScope->vsdVarNum);
-#endif // USING_SCOPE_INFO
-#ifdef USING_VARIABLE_LIVE_RANGE
                 varLiveKeeper->siStartVariableLiveRange(lclVarDsc, varScope->vsdVarNum);
-#endif // USING_VARIABLE_LIVE_RANGE
-
-#if defined(DEBUG) && defined(USING_SCOPE_INFO)
-                if (VERBOSE)
-                {
-                    printf("Scope info: >> new scope, VarNum=%u, tracked? %s, VarIndex=%u, bbLiveIn=%s ",
-                           varScope->vsdVarNum, lclVarDsc->lvTracked ? "yes" : "no", lclVarDsc->lvVarIndex,
-                           VarSetOps::ToString(compiler, block->bbLiveIn));
-                    dumpConvertedVarSet(compiler, block->bbLiveIn);
-                    printf("\n");
-                }
-#endif // defined(DEBUG) && defined(USING_SCOPE_INFO)
 
                 INDEBUG(assert(!lclVarDsc->lvTracked ||
-                               VarSetOps::IsMember(compiler, block->bbLiveIn, lclVarDsc->lvVarIndex)));
+                               VarSetOps::IsMember(m_compiler, block->bbLiveIn, lclVarDsc->lvVarIndex)));
             }
             else
             {
@@ -1141,23 +1755,12 @@ void CodeGen::siOpenScopesForNonTrackedVars(const BasicBlock* block, unsigned in
 
 void CodeGen::siEndBlock(BasicBlock* block)
 {
-    assert(compiler->opts.compScopeInfo && (compiler->info.compVarScopesCount > 0));
+    assert(m_compiler->opts.compScopeInfo && (m_compiler->info.compVarScopesCount > 0));
 
-#if defined(FEATURE_EH_FUNCLETS)
     if (siInFuncletRegion)
     {
         return;
     }
-#endif // FEATURE_EH_FUNCLETS
-
-#if defined(USING_SCOPE_INFO) && defined(DEBUG)
-    if (verbose)
-    {
-        printf("\nScope info: end block " FMT_BB ", IL range ", block->bbNum);
-        block->dspBlockILRange();
-        printf("\n");
-    }
-#endif // defined(USING_SCOPE_INFO) && defined(DEBUG)
 
     unsigned endOffs = block->bbCodeOffsEnd;
 
@@ -1167,303 +1770,8 @@ void CodeGen::siEndBlock(BasicBlock* block)
         return;
     }
 
-#ifdef USING_SCOPE_INFO
-    // If non-debuggable code, find all scopes which end over this block
-    // and close them. For debuggable code, scopes will only end on block
-    // boundaries.
-
-    VarScopeDsc* varScope;
-    while ((varScope = compiler->compGetNextExitScope(endOffs, !compiler->opts.compDbgCode)) != nullptr)
-    {
-        // brace-matching editor workaround for following line: (
-        JITDUMP("Scope info: ending scope, LVnum=%u [%03X..%03X)\n", varScope->vsdLVnum, varScope->vsdLifeBeg,
-                varScope->vsdLifeEnd);
-
-        unsigned         varNum     = varScope->vsdVarNum;
-        const LclVarDsc* lclVarDsc1 = compiler->lvaGetDesc(varNum);
-
-        if (lclVarDsc1->lvTracked)
-        {
-            siEndTrackedScope(lclVarDsc1->lvVarIndex);
-        }
-        else
-        {
-            siEndScope(varNum);
-        }
-    }
-#endif // USING_SCOPE_INFO
-
     siLastEndOffs = endOffs;
-
-#if defined(USING_SCOPE_INFO) && defined(DEBUG)
-    if (verbose)
-    {
-        siDispOpenScopes();
-    }
-#endif // defined(USING_SCOPE_INFO) && defined(DEBUG)
 }
-
-#ifdef USING_SCOPE_INFO
-//------------------------------------------------------------------------
-// siUpdate: Closes the "ScopeInfo" of the tracked variables that has become dead.
-//
-// Notes:
-//    Called at the start of basic blocks, and during code-gen of a block,
-//    for non-debuggable code, whenever the life of any tracked variable changes
-//    and the appropriate code has been generated. For debuggable code, variables are
-//    live over their entire scope, and so they go live or dead only on
-//    block boundaries.
-void CodeGen::siUpdate()
-{
-    if (!compiler->opts.compScopeInfo)
-    {
-        return;
-    }
-
-    if (compiler->opts.compDbgCode)
-    {
-        return;
-    }
-
-    if (compiler->info.compVarScopesCount == 0)
-    {
-        return;
-    }
-
-#if defined(FEATURE_EH_FUNCLETS)
-    if (siInFuncletRegion)
-    {
-        return;
-    }
-#endif // FEATURE_EH_FUNCLETS
-
-    VARSET_TP killed(VarSetOps::Diff(compiler, siLastLife, compiler->compCurLife));
-    assert(VarSetOps::IsSubset(compiler, killed, compiler->lvaTrackedVars));
-
-    VarSetOps::Iter iter(compiler, killed);
-    unsigned        varIndex = 0;
-    while (iter.NextElem(&varIndex))
-    {
-        assert(compiler->lvaGetDescByTrackedIndex(varIndex)->lvTracked);
-        siEndTrackedScope(varIndex);
-    }
-
-    VarSetOps::Assign(compiler, siLastLife, compiler->compCurLife);
-}
-
-/*****************************************************************************
- *                          siCheckVarScope
- *
- * For non-debuggable code, whenever we come across a GenTree which is an
- * assignment to a local variable, this function is called to check if the
- * variable has an open scope. Also, check if it has the correct LVnum.
- */
-
-void CodeGen::siCheckVarScope(unsigned varNum, IL_OFFSET offs)
-{
-    assert(compiler->opts.compScopeInfo && !compiler->opts.compDbgCode && (compiler->info.compVarScopesCount > 0));
-
-#if defined(FEATURE_EH_FUNCLETS)
-    if (siInFuncletRegion)
-    {
-        return;
-    }
-#endif // FEATURE_EH_FUNCLETS
-
-    if (offs == BAD_IL_OFFSET)
-    {
-        return;
-    }
-
-    siScope*   scope;
-    LclVarDsc* lclVarDsc1 = compiler->lvaGetDesc(varNum);
-
-    // If there is an open scope corresponding to varNum, find it
-
-    if (lclVarDsc1->lvTracked)
-    {
-        scope = siLatestTrackedScopes[lclVarDsc1->lvVarIndex];
-    }
-    else
-    {
-        for (scope = siOpenScopeList.scNext; scope; scope = scope->scNext)
-        {
-            if (scope->scVarNum == varNum)
-            {
-                break;
-            }
-        }
-    }
-
-    // Look up the compiler->info.compVarScopes[] to find the local var info for (varNum->lvSlotNum, offs)
-    VarScopeDsc* varScope = compiler->compFindLocalVar(varNum, offs);
-    if (varScope == nullptr)
-    {
-        return;
-    }
-
-    // If the currently open scope does not have the correct LVnum, close it
-    // and create a new scope with this new LVnum
-
-    if (scope)
-    {
-        if (scope->scLVnum != varScope->vsdLVnum)
-        {
-            siEndScope(scope);
-            siNewScope(varScope->vsdLVnum, varScope->vsdVarNum);
-        }
-    }
-    else
-    {
-        siNewScope(varScope->vsdLVnum, varScope->vsdVarNum);
-    }
-}
-
-/*****************************************************************************
- *                          siCloseAllOpenScopes
- *
- * For unreachable code, or optimized code with blocks reordered, there may be
- * scopes left open at the end. Simply close them.
- */
-
-void CodeGen::siCloseAllOpenScopes()
-{
-    assert(siOpenScopeList.scNext);
-
-    while (siOpenScopeList.scNext)
-    {
-        siEndScope(siOpenScopeList.scNext);
-    }
-}
-
-/*****************************************************************************
- *                          siDispOpenScopes
- *
- * Displays all the vars on the open-scope list
- */
-
-#ifdef DEBUG
-
-void CodeGen::siDispOpenScopes()
-{
-    assert(compiler->opts.compScopeInfo && (compiler->info.compVarScopesCount > 0));
-
-    printf("Scope info: open scopes =\n");
-
-    if (siOpenScopeList.scNext == nullptr)
-    {
-        printf("   <none>\n");
-    }
-    else
-    {
-        for (siScope* scope = siOpenScopeList.scNext; scope != nullptr; scope = scope->scNext)
-        {
-            VarScopeDsc* localVars = compiler->info.compVarScopes;
-
-            for (unsigned i = 0; i < compiler->info.compVarScopesCount; i++, localVars++)
-            {
-                if (localVars->vsdLVnum == scope->scLVnum)
-                {
-                    const char* name = compiler->VarNameToStr(localVars->vsdName);
-                    // brace-matching editor workaround for following line: (
-                    printf("   %u (%s) [%03X..%03X)\n", localVars->vsdLVnum, name == nullptr ? "UNKNOWN" : name,
-                           localVars->vsdLifeBeg, localVars->vsdLifeEnd);
-                    break;
-                }
-            }
-        }
-    }
-}
-
-#endif // DEBUG
-
-/*============================================================================
- *
- *              Implementation for PrologScopeInfo
- *
- *============================================================================
- */
-
-/*****************************************************************************
- *                      psiNewPrologScope
- *
- * Creates a new scope and adds it to the Open scope list.
- */
-
-CodeGen::psiScope* CodeGen::psiNewPrologScope(unsigned LVnum, unsigned slotNum)
-{
-    psiScope* newScope = compiler->getAllocator(CMK_SiScope).allocate<psiScope>(1);
-
-    newScope->scStartLoc.CaptureLocation(GetEmitter());
-    assert(newScope->scStartLoc.Valid());
-
-    newScope->scEndLoc.Init();
-
-    newScope->scLVnum   = LVnum;
-    newScope->scSlotNum = slotNum;
-
-    newScope->scNext         = nullptr;
-    psiOpenScopeLast->scNext = newScope;
-    newScope->scPrev         = psiOpenScopeLast;
-    psiOpenScopeLast         = newScope;
-
-    return newScope;
-}
-
-/*****************************************************************************
- *                          psiEndPrologScope
- *
- * Remove the scope from the Open-scope list and add it to the finished-scopes
- * list if its length is non-zero
- */
-
-void CodeGen::psiEndPrologScope(psiScope* scope)
-{
-    scope->scEndLoc.CaptureLocation(GetEmitter());
-    assert(scope->scEndLoc.Valid());
-
-    // Remove from open-scope list
-    scope->scPrev->scNext = scope->scNext;
-    if (scope->scNext)
-    {
-        scope->scNext->scPrev = scope->scPrev;
-    }
-    else
-    {
-        psiOpenScopeLast = scope->scPrev;
-    }
-
-    // Add to the finished scope list.
-    // If the length is zero, it means that the prolog is empty. In that case,
-    // CodeGen::genSetScopeInfo will report the liveness of all arguments
-    // as spanning the first instruction in the method, so that they can
-    // at least be inspected on entry to the method.
-    if (scope->scStartLoc != scope->scEndLoc || scope->scStartLoc.IsOffsetZero())
-    {
-        psiScopeLast->scNext = scope;
-        psiScopeLast         = scope;
-        psiScopeCnt++;
-    }
-}
-
-/*============================================================================
- *           INTERFACE (protected) Functions for PrologScopeInfo
- *============================================================================
- */
-
-//------------------------------------------------------------------------
-// psiSetScopeOffset: Set the offset of the newScope to the offset of the LslVar
-//
-// Arguments:
-//    'newScope'  the new scope object whose offset is to be set to the lclVarDsc offset.
-//    'lclVarDsc' is an op that will now be contained by its parent.
-void CodeGen::psiSetScopeOffset(psiScope* newScope, const LclVarDsc* lclVarDsc) const
-{
-    newScope->scRegister   = false;
-    newScope->u2.scBaseReg = REG_SPBASE;
-    newScope->u2.scOffset  = psiGetVarStackOffset(lclVarDsc);
-}
-#endif // USING_SCOPE_INFO
 
 //------------------------------------------------------------------------
 // psiGetVarStackOffset: Return the offset of the lclVarDsc on the stack.
@@ -1480,7 +1788,7 @@ NATIVE_OFFSET CodeGen::psiGetVarStackOffset(const LclVarDsc* lclVarDsc) const
 #ifdef TARGET_AMD64
     // scOffset = offset from caller SP - REGSIZE_BYTES
     // TODO-Cleanup - scOffset needs to be understood.  For now just matching with the existing definition.
-    stackOffset = compiler->lvaToCallerSPRelativeOffset(lclVarDsc->GetStackOffset(), lclVarDsc->lvFramePointerBased) +
+    stackOffset = m_compiler->lvaToCallerSPRelativeOffset(lclVarDsc->GetStackOffset(), lclVarDsc->lvFramePointerBased) +
                   REGSIZE_BYTES;
 #else  // !TARGET_AMD64
     if (doubleAlignOrFramePointerUsed())
@@ -1498,9 +1806,9 @@ NATIVE_OFFSET CodeGen::psiGetVarStackOffset(const LclVarDsc* lclVarDsc) const
 }
 
 /*============================================================================
-*           INTERFACE (public) Functions for PrologScopeInfo
-*============================================================================
-*/
+ *           INTERFACE (public) Functions for PrologScopeInfo
+ *============================================================================
+ */
 
 //------------------------------------------------------------------------
 // psiBegProlog: Initializes the PrologScopeInfo creating open psiScopes or
@@ -1509,128 +1817,73 @@ NATIVE_OFFSET CodeGen::psiGetVarStackOffset(const LclVarDsc* lclVarDsc) const
 //
 void CodeGen::psiBegProlog()
 {
-    assert(compiler->compGeneratingProlog);
+    assert(GetEmitter()->emitGeneratingPrologOrFuncletProlog());
 
-#ifdef USING_SCOPE_INFO
-    psiOpenScopeList.scNext = nullptr;
-    psiOpenScopeLast        = &psiOpenScopeList;
-    psiScopeLast            = &psiScopeList;
-    psiScopeCnt             = 0;
-#endif // USING_SCOPE_INFO
-
-    compiler->compResetScopeLists();
+    m_compiler->compResetScopeLists();
 
     VarScopeDsc* varScope;
-    while ((varScope = compiler->compGetNextEnterScope(0)) != nullptr)
+    while ((varScope = m_compiler->compGetNextEnterScope(0)) != nullptr)
     {
-        LclVarDsc* lclVarDsc = compiler->lvaGetDesc(varScope->vsdVarNum);
+        LclVarDsc* lclVarDsc = m_compiler->lvaGetDesc(varScope->vsdVarNum);
 
         if (!lclVarDsc->lvIsParam)
         {
             continue;
         }
-#ifdef USING_SCOPE_INFO
-        psiScope* newScope = psiNewPrologScope(varScope->vsdLVnum, varScope->vsdVarNum);
-#endif // USING_SCOPE_INFO
-#ifdef USING_VARIABLE_LIVE_RANGE
         siVarLoc varLocation;
-#endif // USING_VARIABLE_LIVE_RANGE
 
-        if (lclVarDsc->lvIsRegArg)
+        regNumber reg1 = REG_NA;
+        regNumber reg2 = REG_NA;
+
+        const ABIPassingInformation& abiInfo = m_compiler->lvaGetParameterABIInfo(varScope->vsdVarNum);
+        for (const ABIPassingSegment& segment : abiInfo.Segments())
         {
-            bool isStructHandled = false;
-#if defined(UNIX_AMD64_ABI)
-            SYSTEMV_AMD64_CORINFO_STRUCT_REG_PASSING_DESCRIPTOR structDesc;
-            if (varTypeIsStruct(lclVarDsc))
+            if (segment.IsPassedInRegister())
             {
-                CORINFO_CLASS_HANDLE typeHnd = lclVarDsc->GetStructHnd();
-                assert(typeHnd != nullptr);
-                compiler->eeGetSystemVAmd64PassStructInRegisterDescriptor(typeHnd, &structDesc);
-                if (structDesc.passedInRegisters)
+                if (reg1 == REG_NA)
                 {
-                    regNumber regNum      = REG_NA;
-                    regNumber otherRegNum = REG_NA;
-                    for (unsigned nCnt = 0; nCnt < structDesc.eightByteCount; nCnt++)
-                    {
-                        var_types regType = TYP_UNDEF;
-
-                        if (nCnt == 0)
-                        {
-                            regNum = lclVarDsc->GetArgReg();
-                        }
-                        else if (nCnt == 1)
-                        {
-                            otherRegNum = lclVarDsc->GetOtherArgReg();
-                        }
-                        else
-                        {
-                            assert(false && "Invalid eightbyte number.");
-                        }
-
-                        regType = compiler->GetEightByteType(structDesc, nCnt);
-#ifdef DEBUG
-                        regType = compiler->mangleVarArgsType(regType);
-                        assert(genMapRegNumToRegArgNum((nCnt == 0 ? regNum : otherRegNum), regType) != (unsigned)-1);
-#endif // DEBUG
-                    }
-#ifdef USING_SCOPE_INFO
-                    newScope->scRegister    = true;
-                    newScope->u1.scRegNum   = (regNumberSmall)regNum;
-                    newScope->u1.scOtherReg = (regNumberSmall)otherRegNum;
-#endif // USING_SCOPE_INFO
-
-#ifdef USING_VARIABLE_LIVE_RANGE
-                    varLocation.storeVariableInRegisters(regNum, otherRegNum);
-#endif // USING_VARIABLE_LIVE_RANGE
+                    reg1 = segment.GetRegister();
                 }
                 else
                 {
-// Stack passed argument. Get the offset from the  caller's frame.
-#ifdef USING_SCOPE_INFO
-                    psiSetScopeOffset(newScope, lclVarDsc);
-#endif // USING_SCOPE_INFO
-#ifdef USING_VARIABLE_LIVE_RANGE
-                    varLocation.storeVariableOnStack(REG_SPBASE, psiGetVarStackOffset(lclVarDsc));
-#endif // USING_VARIABLE_LIVE_RANGE
+                    reg2 = segment.GetRegister();
+                    break;
                 }
-
-                isStructHandled = true;
             }
-#endif // !defined(UNIX_AMD64_ABI)
-            if (!isStructHandled)
+            else
             {
-#ifdef DEBUG
-                var_types regType = compiler->mangleVarArgsType(lclVarDsc->TypeGet());
-                if (lclVarDsc->lvIsHfaRegArg())
-                {
-                    regType = lclVarDsc->GetHfaType();
-                }
-                assert(genMapRegNumToRegArgNum(lclVarDsc->GetArgReg(), regType) != (unsigned)-1);
-#endif // DEBUG
+                break;
+            }
+        }
 
-#ifdef USING_SCOPE_INFO
-                newScope->scRegister  = true;
-                newScope->u1.scRegNum = (regNumberSmall)lclVarDsc->GetArgReg();
-#endif // USING_SCOPE_INFO
-#ifdef USING_VARIABLE_LIVE_RANGE
-                varLocation.storeVariableInRegisters(lclVarDsc->GetArgReg(), REG_NA);
-#endif // USING_VARIABLE_LIVE_RANGE
+        // We only report multiple registers on SysV ABI. On other ABIs we
+        // report only the first register.
+#ifndef UNIX_AMD64_ABI
+        reg2 = REG_NA;
+#endif
+
+        if (reg1 != REG_NA)
+        {
+            // storeVariableInRegisters handles int and FP registers on all
+            // platforms (FP → VLT_REG_FP, mixed multi-reg → VLT_INVALID on
+            // non-AMD64). Only fall back to stack if the register is truly
+            // not representable (neither int nor FP).
+            if (genIsValidIntReg(reg1) || genIsValidFloatReg(reg1))
+            {
+                varLocation.storeVariableInRegisters(reg1, reg2);
+            }
+            else
+            {
+                varLocation.storeVariableOnStack(REG_SPBASE, psiGetVarStackOffset(lclVarDsc));
             }
         }
         else
         {
-#ifdef USING_SCOPE_INFO
-            psiSetScopeOffset(newScope, lclVarDsc);
-#endif // USING_SCOPE_INFO
-#ifdef USING_VARIABLE_LIVE_RANGE
             varLocation.storeVariableOnStack(REG_SPBASE, psiGetVarStackOffset(lclVarDsc));
-#endif // USING_VARIABLE_LIVE_RANGE
         }
 
-#ifdef USING_VARIABLE_LIVE_RANGE
         // Start a VariableLiveRange for this LclVarDsc on the built location
         varLiveKeeper->psiStartVariableLiveRange(varLocation, varScope->vsdVarNum);
-#endif // USING_VARIABLE_LIVE_RANGE
     }
 }
 
@@ -1643,234 +1896,336 @@ void CodeGen::psiBegProlog()
 //
 void CodeGen::psiEndProlog()
 {
-    assert(compiler->compGeneratingProlog);
-#ifdef USING_SCOPE_INFO
-    for (psiScope* scope = psiOpenScopeList.scNext; scope; scope = psiOpenScopeList.scNext)
-    {
-        psiEndPrologScope(scope);
-    }
-#endif
-
-#ifdef USING_VARIABLE_LIVE_RANGE
+    assert(GetEmitter()->emitGeneratingPrologOrFuncletProlog());
     varLiveKeeper->psiClosePrologVariableRanges();
-#endif // USING_VARIABLE_LIVE_RANGE
 }
 
-#ifdef USING_SCOPE_INFO
-
 /*****************************************************************************
- Enable this macro to get accurate prolog information for every instruction
- in the prolog. However, this is overkill as nobody steps through the
- disassembly of the prolog. Even if they do they will not expect rich debug info.
-
- We still report all the arguments at the very start of the method so that
- the user can see the arguments at the very start of the method (offset=0).
-
- Disabling this decreased the debug maps in CoreLib by 10% (01/2003)
+ *                          genSetScopeInfo
+ *
+ * This function should be called only after the sizes of the emitter blocks
+ * have been finalized.
  */
 
-#if 0
-#define ACCURATE_PROLOG_DEBUG_INFO
+void CodeGen::genSetScopeInfo()
+{
+    if (!m_compiler->opts.compScopeInfo)
+    {
+        return;
+    }
+
+#ifdef DEBUG
+    if (verbose)
+    {
+        printf("*************** In genSetScopeInfo()\n");
+    }
 #endif
 
-/*****************************************************************************
- *                          psiAdjustStackLevel
- *
- * When ESP changes, all scopes relative to ESP have to be updated.
- */
+    unsigned varsLocationsCount = (unsigned int)(varLiveKeeper->getLiveRangesCount() + emittedCallReturnInfo->size());
 
-void CodeGen::psiAdjustStackLevel(unsigned size)
-{
-    if (!compiler->opts.compScopeInfo || (compiler->info.compVarScopesCount == 0))
+    if (varsLocationsCount == 0)
     {
+        // No variable home to report
+        m_compiler->eeAllocateLVs(0);
+        m_compiler->eeSetLVdone();
         return;
     }
 
-    assert(compiler->compGeneratingProlog);
+    noway_assert((m_compiler->opts.compScopeInfo && (m_compiler->info.compVarScopesCount > 0)) ||
+                 (varLiveKeeper->getLiveRangesCount() == 0));
 
-#ifdef ACCURATE_PROLOG_DEBUG_INFO
+    // Initialize the table where the reported variables' home will be placed.
+    m_compiler->eeAllocateLVs(varsLocationsCount);
 
-    psiScope* scope;
-
-    // walk the list backwards
-    // Works as psiEndPrologScope does not change scPrev
-    for (scope = psiOpenScopeLast; scope != &psiOpenScopeList; scope = scope->scPrev)
+#ifdef DEBUG
+    genTrnslLocalVarCount = varsLocationsCount;
+    if (varsLocationsCount)
     {
-        if (scope->scRegister)
+        genTrnslLocalVarInfo = new (m_compiler, CMK_DebugOnly) TrnslLocalVarInfo[varsLocationsCount]();
+    }
+#endif
+
+    if (varLiveKeeper->getLiveRangesCount() > 0)
+    {
+        genSetScopeInfoUsingVariableRanges();
+    }
+
+    for (const EmittedCallReturnInfo& callReturnInfo : *emittedCallReturnInfo)
+    {
+        // Skip entries where the return value location couldn't be encoded
+        // (e.g., mask registers, XMM16+ on AVX-512).
+        if (callReturnInfo.returnValueLoc.vlType == VLT_INVALID)
         {
-            assert(compiler->lvaTable[scope->scSlotNum].lvIsRegArg);
             continue;
         }
-        assert(scope->u2.scBaseReg == REG_SPBASE);
 
-        psiScope* newScope     = psiNewPrologScope(scope->scLVnum, scope->scSlotNum);
-        newScope->scRegister   = false;
-        newScope->u2.scBaseReg = REG_SPBASE;
-        newScope->u2.scOffset  = scope->u2.scOffset + size;
+        UNATIVE_OFFSET retOffset = callReturnInfo.returnLocation.CodeOffset(GetEmitter());
 
-        psiEndPrologScope(scope);
+        m_compiler->eeSetLVinfo(m_compiler->eeVarsCount++, retOffset, retOffset + 1, callReturnInfo.callILOffset,
+                                ICorDebugInfo::CALL_RETURN_ILNUM, callReturnInfo.returnValueLoc);
     }
 
-#endif // ACCURATE_PROLOG_DEBUG_INFO
+    m_compiler->eeSetLVdone();
 }
 
-/*****************************************************************************
- *                          psiMoveESPtoEBP
- *
- * For EBP-frames, the parameters are accessed via ESP on entry to the function,
- * but via EBP right after a "mov ebp,esp" instruction
- */
-
-void CodeGen::psiMoveESPtoEBP()
+//------------------------------------------------------------------------
+// genSetScopeInfoUsingVariableRanges: Call "genSetScopeInfo" with the
+//  "VariableLiveRanges" created for the arguments, special arguments and
+//  IL local variables.
+//
+// Notes:
+//  This function is called from "genSetScopeInfo" once the code is generated
+//  and we want to send debug info to the debugger.
+//
+void CodeGen::genSetScopeInfoUsingVariableRanges()
 {
-    if (!compiler->opts.compScopeInfo || (compiler->info.compVarScopesCount == 0))
+    unsigned int liveRangeIndex = 0;
+
+    for (unsigned int varNum = 0; varNum < m_compiler->info.compLocalsCount; varNum++)
     {
-        return;
-    }
+        LclVarDsc* varDsc = m_compiler->lvaGetDesc(varNum);
 
-    assert(compiler->compGeneratingProlog);
-    assert(doubleAlignOrFramePointerUsed());
-
-#ifdef ACCURATE_PROLOG_DEBUG_INFO
-
-    psiScope* scope;
-
-    // walk the list backwards
-    // Works as psiEndPrologScope does not change scPrev
-    for (scope = psiOpenScopeLast; scope != &psiOpenScopeList; scope = scope->scPrev)
-    {
-        if (scope->scRegister)
+        if (m_compiler->compMap2ILvarNum(varNum) == (unsigned int)ICorDebugInfo::UNKNOWN_ILNUM)
         {
-            assert(compiler->lvaTable[scope->scSlotNum].lvIsRegArg);
             continue;
         }
-        assert(scope->u2.scBaseReg == REG_SPBASE);
 
-        psiScope* newScope     = psiNewPrologScope(scope->scLVnum, scope->scSlotNum);
-        newScope->scRegister   = false;
-        newScope->u2.scBaseReg = REG_FPBASE;
-        newScope->u2.scOffset  = scope->u2.scOffset;
+        auto reportRange = [this, varDsc, varNum, &liveRangeIndex](siVarLoc* loc, UNATIVE_OFFSET start,
+                                                                   UNATIVE_OFFSET end) {
+            // Skip entries that couldn't be encoded (e.g., mask registers, XMM16+).
+            if (loc->vlType == VLT_INVALID)
+            {
+                return;
+            }
 
-        psiEndPrologScope(scope);
+            if (varDsc->lvIsParam && (start == end))
+            {
+                // If the length is zero, it means that the prolog is empty. In that case,
+                // CodeGen::genSetScopeInfo will report the liveness of all arguments
+                // as spanning the first instruction in the method, so that they can
+                // at least be inspected on entry to the method.
+                end++;
+            }
+
+            if (start < end)
+            {
+                genSetScopeInfo(liveRangeIndex, start, end - start, varNum, varNum, true, loc);
+                liveRangeIndex++;
+            }
+        };
+
+        siVarLoc*      curLoc   = nullptr;
+        UNATIVE_OFFSET curStart = 0;
+        UNATIVE_OFFSET curEnd   = 0;
+
+        for (int rangeIndex = 0; rangeIndex < 2; rangeIndex++)
+        {
+            VariableLiveKeeper::LiveRangeList* liveRanges;
+            if (rangeIndex == 0)
+            {
+                liveRanges = varLiveKeeper->getLiveRangesForVarForProlog(varNum);
+            }
+            else
+            {
+                liveRanges = varLiveKeeper->getLiveRangesForVarForBody(varNum);
+            }
+
+            for (VariableLiveKeeper::VariableLiveRange& liveRange : *liveRanges)
+            {
+                UNATIVE_OFFSET startOffs = liveRange.m_StartEmitLocation.CodeOffset(GetEmitter());
+                UNATIVE_OFFSET endOffs   = liveRange.m_EndEmitLocation.CodeOffset(GetEmitter());
+
+                assert(startOffs <= endOffs);
+                assert(startOffs >= curEnd);
+                if ((curLoc != nullptr) && (startOffs == curEnd) && siVarLoc::Equals(curLoc, &liveRange.m_VarLocation))
+                {
+                    // Extend current range.
+                    curEnd = endOffs;
+                    continue;
+                }
+
+                // Report old range if any.
+                if (curLoc != nullptr)
+                {
+                    reportRange(curLoc, curStart, curEnd);
+                }
+
+                // Start a new range.
+                curLoc   = &liveRange.m_VarLocation;
+                curStart = startOffs;
+                curEnd   = endOffs;
+            }
+        }
+
+        // Report last range
+        if (curLoc != nullptr)
+        {
+            reportRange(curLoc, curStart, curEnd);
+        }
     }
 
-#endif // ACCURATE_PROLOG_DEBUG_INFO
+    m_compiler->eeVarsCount = liveRangeIndex;
+}
+
+//------------------------------------------------------------------------
+// genSetScopeInfo: Record scope information for debug info
+//
+// Arguments:
+//    which
+//    startOffs - the starting offset for this scope
+//    length    - the length of this scope
+//    varNum    - the lclVar for this scope info
+//    LVnum
+//    avail     - a bool indicating if it has a home
+//    varLoc    - the position (reg or stack) of the variable
+//
+// Notes:
+//    Called for every scope info piece to record by the main genSetScopeInfo()
+
+void CodeGen::genSetScopeInfo(unsigned       which,
+                              UNATIVE_OFFSET startOffs,
+                              UNATIVE_OFFSET length,
+                              unsigned       varNum,
+                              unsigned       LVnum,
+                              bool           avail,
+                              siVarLoc*      varLoc)
+{
+    // We need to do some mapping while reporting back these variables.
+
+    unsigned ilVarNum = m_compiler->compMap2ILvarNum(varNum);
+    noway_assert((int)ilVarNum != ICorDebugInfo::UNKNOWN_ILNUM);
+
+#ifdef TARGET_X86
+    // Non-x86 platforms are allowed to access all arguments directly
+    // so we don't need this code.
+
+    // Is this a varargs function?
+    if (m_compiler->info.compIsVarArgs && varNum != m_compiler->lvaVarargsHandleArg &&
+        varNum < m_compiler->info.compArgsCount && !m_compiler->lvaGetDesc(varNum)->lvIsRegArg)
+    {
+        noway_assert(varLoc->vlType == VLT_STK || varLoc->vlType == VLT_STK2);
+
+        // All stack arguments (except the varargs handle) have to be
+        // accessed via the varargs cookie. Discard generated info,
+        // and just find its position relative to the varargs handle
+
+        assert(m_compiler->lvaVarargsHandleArg < m_compiler->info.compArgsCount);
+        if (!m_compiler->lvaGetDesc(m_compiler->lvaVarargsHandleArg)->lvOnFrame)
+        {
+            noway_assert(!m_compiler->opts.compDbgCode);
+            return;
+        }
+
+        // Can't check m_compiler->lvaTable[varNum].lvOnFrame as we don't set it for
+        // arguments of vararg functions to avoid reporting them to GC.
+        noway_assert(!m_compiler->lvaGetDesc(varNum)->lvRegister);
+        unsigned cookieOffset = m_compiler->lvaGetDesc(m_compiler->lvaVarargsHandleArg)->GetStackOffset();
+        unsigned varOffset    = m_compiler->lvaGetDesc(varNum)->GetStackOffset();
+
+        noway_assert(cookieOffset < varOffset);
+        unsigned offset     = varOffset - cookieOffset;
+        unsigned stkArgSize = m_compiler->lvaParameterStackSize;
+        noway_assert(offset < stkArgSize);
+        offset = stkArgSize - offset;
+
+        varLoc->vlType                   = VLT_FIXED_VA;
+        varLoc->vlFixedVarArg.vlfvOffset = offset;
+    }
+
+#endif // TARGET_X86
+
+    VarName name = nullptr;
+
+#ifdef DEBUG
+
+    for (unsigned scopeNum = 0; scopeNum < m_compiler->info.compVarScopesCount; scopeNum++)
+    {
+        if (LVnum == m_compiler->info.compVarScopes[scopeNum].vsdLVnum)
+        {
+            name = m_compiler->info.compVarScopes[scopeNum].vsdName;
+        }
+    }
+
+    // Hang on to this m_compiler->info.
+
+    TrnslLocalVarInfo& tlvi = genTrnslLocalVarInfo[which];
+
+    tlvi.tlviVarNum    = ilVarNum;
+    tlvi.tlviLVnum     = LVnum;
+    tlvi.tlviName      = name;
+    tlvi.tlviStartPC   = startOffs;
+    tlvi.tlviLength    = length;
+    tlvi.tlviAvailable = avail;
+    tlvi.tlviVarLoc    = *varLoc;
+
+#endif // DEBUG
+
+    m_compiler->eeSetLVinfo(which, startOffs, startOffs + length, 0, ilVarNum, *varLoc);
+}
+
+/*****************************************************************************/
+#ifdef LATE_DISASM
+#if defined(DEBUG)
+/*****************************************************************************
+ *                          CompilerRegName
+ *
+ * Can be called only after lviSetLocalVarInfo() has been called
+ */
+
+/* virtual */
+const char* CodeGen::siRegVarName(size_t offs, size_t size, unsigned reg)
+{
+    if (!m_compiler->opts.compScopeInfo)
+        return nullptr;
+
+    if (m_compiler->info.compVarScopesCount == 0)
+        return nullptr;
+
+    noway_assert(genTrnslLocalVarCount == 0 || genTrnslLocalVarInfo);
+
+    for (unsigned i = 0; i < genTrnslLocalVarCount; i++)
+    {
+        if ((genTrnslLocalVarInfo[i].tlviVarLoc.vlIsInReg((regNumber)reg)) &&
+            (genTrnslLocalVarInfo[i].tlviAvailable == true) && (genTrnslLocalVarInfo[i].tlviStartPC <= offs + size) &&
+            (genTrnslLocalVarInfo[i].tlviStartPC + genTrnslLocalVarInfo[i].tlviLength > offs))
+        {
+            return genTrnslLocalVarInfo[i].tlviName ? m_compiler->VarNameToStr(genTrnslLocalVarInfo[i].tlviName) : NULL;
+        }
+    }
+
+    return NULL;
 }
 
 /*****************************************************************************
- *                          psiMoveToReg
+ *                          CompilerStkName
  *
- * Called when a parameter is loaded into its assigned register from the stack,
- * or when parameters are moved around due to circular dependancy.
- * If reg != REG_NA, then the parameter is being moved into its assigned
- * register, else it may be being moved to a temp register.
+ * Can be called only after lviSetLocalVarInfo() has been called
  */
 
-void CodeGen::psiMoveToReg(unsigned varNum, regNumber reg, regNumber otherReg)
+/* virtual */
+const char* CodeGen::siStackVarName(size_t offs, size_t size, unsigned reg, unsigned stkOffs)
 {
-    assert(compiler->compGeneratingProlog);
+    if (!m_compiler->opts.compScopeInfo)
+        return nullptr;
 
-    if (!compiler->opts.compScopeInfo)
+    if (m_compiler->info.compVarScopesCount == 0)
+        return nullptr;
+
+    noway_assert(genTrnslLocalVarCount == 0 || genTrnslLocalVarInfo);
+
+    for (unsigned i = 0; i < genTrnslLocalVarCount; i++)
     {
-        return;
+        if ((genTrnslLocalVarInfo[i].tlviVarLoc.vlIsOnStack((regNumber)reg, stkOffs)) &&
+            (genTrnslLocalVarInfo[i].tlviAvailable == true) && (genTrnslLocalVarInfo[i].tlviStartPC <= offs + size) &&
+            (genTrnslLocalVarInfo[i].tlviStartPC + genTrnslLocalVarInfo[i].tlviLength > offs))
+        {
+            return genTrnslLocalVarInfo[i].tlviName ? m_compiler->VarNameToStr(genTrnslLocalVarInfo[i].tlviName) : NULL;
+        }
     }
 
-    if (compiler->info.compVarScopesCount == 0)
-    {
-        return;
-    }
-
-    assert((int)varNum >= 0); // It's not a spill temp number.
-    assert(compiler->lvaTable[varNum].lvIsInReg());
-
-#ifdef ACCURATE_PROLOG_DEBUG_INFO
-
-    /* If reg!=REG_NA, the parameter is part of a cirular dependancy, and is
-     * being moved through temp register "reg".
-     * If reg==REG_NA, it is being moved to its assigned register.
-     */
-    if (reg == REG_NA)
-    {
-        // Grab the assigned registers.
-
-        reg      = compiler->lvaTable[varNum].GetRegNum();
-        otherReg = compiler->lvaTable[varNum].GetOtherReg();
-    }
-
-    psiScope* scope;
-
-    // walk the list backwards
-    // Works as psiEndPrologScope does not change scPrev
-    for (scope = psiOpenScopeLast; scope != &psiOpenScopeList; scope = scope->scPrev)
-    {
-        if (scope->scSlotNum != compiler->lvaTable[varNum].lvSlotNum)
-            continue;
-
-        psiScope* newScope      = psiNewPrologScope(scope->scLVnum, scope->scSlotNum);
-        newScope->scRegister    = true;
-        newScope->u1.scRegNum   = reg;
-        newScope->u1.scOtherReg = otherReg;
-
-        psiEndPrologScope(scope);
-        return;
-    }
-
-    // May happen if a parameter does not have an entry in the LocalVarTab
-    // But assert() just in case it is because of something else.
-    assert(varNum == compiler->info.compRetBuffArg ||
-           !"Parameter scope not found (Assert doesnt always indicate error)");
-
-#endif // ACCURATE_PROLOG_DEBUG_INFO
+    return NULL;
 }
 
-/*****************************************************************************
- *                      CodeGen::psiMoveToStack
- *
- * A incoming register-argument is being moved to its final home on the stack
- * (ie. all adjustments to {F/S}PBASE have been made
- */
-
-void CodeGen::psiMoveToStack(unsigned varNum)
-{
-    if (!compiler->opts.compScopeInfo || (compiler->info.compVarScopesCount == 0))
-    {
-        return;
-    }
-
-    assert(compiler->compGeneratingProlog);
-    assert(compiler->lvaTable[varNum].lvIsRegArg);
-    assert(!compiler->lvaTable[varNum].lvRegister);
-
-#ifdef ACCURATE_PROLOG_DEBUG_INFO
-
-    psiScope* scope;
-
-    // walk the list backwards
-    // Works as psiEndPrologScope does not change scPrev
-    for (scope = psiOpenScopeLast; scope != &psiOpenScopeList; scope = scope->scPrev)
-    {
-        if (scope->scSlotNum != compiler->lvaTable[varNum].lvSlotNum)
-            continue;
-
-        /* The param must be currently sitting in the register in which it
-           was passed in */
-        assert(scope->scRegister);
-        assert(scope->u1.scRegNum == compiler->lvaTable[varNum].GetArgReg());
-
-        psiScope* newScope     = psiNewPrologScope(scope->scLVnum, scope->scSlotNum);
-        newScope->scRegister   = false;
-        newScope->u2.scBaseReg = (compiler->lvaTable[varNum].lvFramePointerBased) ? REG_FPBASE : REG_SPBASE;
-        newScope->u2.scOffset  = compiler->lvaTable[varNum].GetStackOffset();
-
-        psiEndPrologScope(scope);
-        return;
-    }
-
-    // May happen if a parameter does not have an entry in the LocalVarTab
-    // But assert() just in case it is because of something else.
-    assert(varNum == compiler->info.compRetBuffArg ||
-           !"Parameter scope not found (Assert doesnt always indicate error)");
-
-#endif // ACCURATE_PROLOG_DEBUG_INFO
-}
-#endif // USING_SCOPE_INFO
+/*****************************************************************************/
+#endif // defined(DEBUG)
+#endif // LATE_DISASM

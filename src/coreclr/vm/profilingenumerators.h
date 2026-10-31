@@ -443,8 +443,9 @@ ProfilerEnum< EnumInterface, IID_EnumInterface, Element >::Clone(EnumInterface**
     {
         *pInterface = NULL;
         hr = E_OUTOFMEMORY;
+        RethrowTerminalExceptions();
     }
-    EX_END_CATCH(RethrowTerminalExceptions)
+    EX_END_CATCH
 
     return hr;
 }
@@ -453,7 +454,7 @@ ProfilerEnum< EnumInterface, IID_EnumInterface, Element >::Clone(EnumInterface**
 // Enumerators have their base class defined here, as an instantiation of ProfilerEnum
 // ---------------------------------------------------------------------------------------
 
-typedef ProfilerEnum< ICorProfilerObjectEnum, IID_ICorProfilerObjectEnum, ObjectID > ProfilerObjectEnum;
+typedef ProfilerEnum< ICorProfilerObjectEnum, IID_ICorProfilerObjectEnum, ObjectID > ProfilerObjectEnumBase;
 typedef ProfilerEnum< ICorProfilerFunctionEnum, IID_ICorProfilerFunctionEnum, COR_PRF_FUNCTION > ProfilerFunctionEnumBase;
 typedef ProfilerEnum< ICorProfilerModuleEnum, IID_ICorProfilerModuleEnum, ModuleID > ProfilerModuleEnumBase;
 typedef ProfilerEnum< ICorProfilerThreadEnum, IID_ICorProfilerThreadEnum, ThreadID > ProfilerThreadEnumBase;
@@ -467,6 +468,17 @@ class ProfilerFunctionEnum : public ProfilerFunctionEnumBase
 {
 public:
     BOOL Init(BOOL fWithReJITIDs = FALSE);
+};
+
+
+// ---------------------------------------------------------------------------------------
+// This class derives from the template enumerator instantiation, and provides specific
+// code to populate the enumerator with the function list
+
+class ProfilerObjectEnum : public ProfilerObjectEnumBase
+{
+public:
+    BOOL Init();
 };
 
 

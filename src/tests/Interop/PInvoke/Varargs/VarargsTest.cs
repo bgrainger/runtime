@@ -6,11 +6,12 @@ using System.Security;
 using System.Collections.Generic;
 using System.Text;
 using System.Runtime.InteropServices;
+using TestLibrary;
 using Xunit;
 
 namespace PInvokeTests
 {
-    class VarargsTest
+    public class VarargsTest
     {
         [DllImport("VarargsNative", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
         private static extern void TestVarArgs(StringBuilder builder, IntPtr bufferSize, string formatString, __arglist);
@@ -33,7 +34,9 @@ namespace PInvokeTests
             return true;
         }
 
-        public static int Main()
+        [ConditionalFact(typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.IsVarArgSupported))]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/91388", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+        public static int TestEntryPoint()
         {
             var passed = true;
             int arg1 = 10;

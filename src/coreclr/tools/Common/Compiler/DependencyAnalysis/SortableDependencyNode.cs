@@ -7,13 +7,15 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
 using ILCompiler.DependencyAnalysisFramework;
-using Internal.TypeSystem;
 
 namespace ILCompiler.DependencyAnalysis
 {
     public abstract partial class SortableDependencyNode : DependencyNodeCore<NodeFactory>, ISortableNode
     {
 #if !SUPPORT_JIT
+        // Custom sort order. Used to override the default sorting mechanics.
+        public int CustomSort = int.MaxValue;
+
         /// <summary>
         /// Allows grouping of <see cref="ObjectNode"/> instances such that all nodes in a lower phase
         /// will be ordered before nodes in a later phase.
@@ -36,20 +38,21 @@ namespace ILCompiler.DependencyAnalysis
             throw new NotImplementedException("Multiple nodes of this type are not supported");
         }
 
-        protected enum ObjectNodePhase
+        protected internal enum ObjectNodePhase
         {
             /// <summary>
             /// Nodes should only be placed in this phase if they have strict output ordering requirements that
             /// affect compiler correctness. Today that includes native layout tables.
             /// </summary>
             Ordered,
-            Unordered
+            Unordered,
+            Late,
         }
 
-        protected enum ObjectNodeOrder
+        protected internal enum ObjectNodeOrder
         {
             //
-            // The ordering of this sequence of nodes is deliberate and currently required for 
+            // The ordering of this sequence of nodes is deliberate and currently required for
             // compiler correctness.
             //
 
@@ -58,26 +61,30 @@ namespace ILCompiler.DependencyAnalysis
             //
             Win32ResourcesNode,
             CorHeaderNode,
-            ReadyToRunHeaderNode,
+            GlobalHeaderNode,
             ReadyToRunAssemblyHeaderNode,
             ImportSectionsTableNode,
             ImportSectionNode,
             MethodEntrypointTableNode,
-
+            DebugDirectoryNode,
+            RuntimeFunctionsGCInfoNode,
+            RuntimeFunctionsTableNode,
 
             //
-            // CoreRT Nodes
+            // NativeAOT Nodes
             //
             MetadataNode,
             ResourceDataNode,
             ResourceIndexNode,
             TypeMetadataMapNode,
             ClassConstructorContextMap,
-            DynamicInvokeTemplateDataNode,
             ReflectionInvokeMapNode,
             DelegateMarshallingStubMapNode,
             StructMarshallingStubMapNode,
             ArrayMapNode,
+            PointerMapNode,
+            ByRefMapNode,
+            FunctionPointerMapNode,
             ReflectionFieldMapNode,
             NativeLayoutInfoNode,
             ExactMethodInstantiationsNode,
@@ -87,15 +94,26 @@ namespace ILCompiler.DependencyAnalysis
             InterfaceGenericVirtualMethodTableNode,
             GenericMethodsTemplateMap,
             GenericTypesTemplateMap,
-            BlockReflectionTypeMapNode,
             StaticsInfoHashtableNode,
             ReflectionVirtualInvokeMapNode,
             ArrayOfEmbeddedPointersNode,
-            DefaultConstructorMapNode,
-            ExternalReferencesTableNode,
+            ExternalTypeMapObjectNode,
+            ProxyTypeMapObjectNode,
+            StackTraceLineNumbersNode,
+            StackTraceDocumentsNode,
             StackTraceEmbeddedMetadataNode,
             StackTraceMethodMappingNode,
             ArrayOfEmbeddedDataNode,
+            InterfaceDispatchCellInfoSection,
+            InterfaceDispatchCellSection,
+            GvmDispatchCellInfoSection,
+            GvmDispatchCellSection,
+            ExternalReferencesTableNode,
+
+            //
+            // Wasm type signatures (need to be emitted some time before the unordered phase)
+            //
+            WasmTypeNode,
         }
 
         public class EmbeddedObjectNodeComparer : IComparer<EmbeddedObjectNode>
@@ -148,8 +166,6 @@ namespace ILCompiler.DependencyAnalysis
             }
         }
 
-        static partial void ApplyCustomSort(SortableDependencyNode x, SortableDependencyNode y, ref int result);
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int CompareImpl(SortableDependencyNode x, SortableDependencyNode y, CompilerComparer comparer)
         {
@@ -158,8 +174,7 @@ namespace ILCompiler.DependencyAnalysis
 
             if (phaseX == phaseY)
             {
-                int customSort = 0;
-                ApplyCustomSort(x, y, ref customSort);
+                int customSort = x.CustomSort.CompareTo(y.CustomSort);
                 if (customSort != 0)
                     return customSort;
 

@@ -5,6 +5,7 @@
 
 // Runtime headers
 #include "common.h"
+#include "conditionalweaktable.h"
 
 // Interop library header
 #include <interoplibimports.h>
@@ -26,7 +27,9 @@ namespace
 extern "C" BOOL QCALLTYPE ObjCMarshal_TryInitializeReferenceTracker(
     _In_ ObjCMarshalNative::BeginEndCallback beginEndCallback,
     _In_ ObjCMarshalNative::IsReferencedCallback isReferencedCallback,
-    _In_ ObjCMarshalNative::EnteredFinalizationCallback trackedObjectEnteredFinalization)
+    _In_ ObjCMarshalNative::EnteredFinalizationCallback trackedObjectEnteredFinalization,
+    _In_ QCall::ObjectHandleOnStack objectTrackingInfoTable,
+    QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
     _ASSERTE(beginEndCallback != NULL
@@ -38,15 +41,16 @@ extern "C" BOOL QCALLTYPE ObjCMarshal_TryInitializeReferenceTracker(
     BEGIN_QCALL;
 
     // Switch to Cooperative mode since we are setting callbacks that
-    // will be used during a GC and we want to ensure a GC isn't occuring
+    // will be used during a GC and we want to ensure a GC isn't occurring
     // while they are being set.
     {
         GCX_COOP();
-        if (FastInterlockCompareExchange((LONG*)&g_ReferenceTrackerInitialized, TRUE, FALSE) == FALSE)
+        if (InterlockedCompareExchange((LONG*)&g_ReferenceTrackerInitialized, TRUE, FALSE) == FALSE)
         {
             g_BeginEndCallback = beginEndCallback;
             g_IsReferencedCallback = isReferencedCallback;
             g_TrackedObjectEnteredFinalizationCallback = trackedObjectEnteredFinalization;
+            g_ObjectiveCTrackingInfoTable = GetAppDomain()->CreateHandle(objectTrackingInfoTable.Get());
 
             success = TRUE;
         }
@@ -57,58 +61,21 @@ extern "C" BOOL QCALLTYPE ObjCMarshal_TryInitializeReferenceTracker(
     return success;
 }
 
-extern "C" void* QCALLTYPE ObjCMarshal_CreateReferenceTrackingHandle(
-        _In_ QCall::ObjectHandleOnStack obj,
-        _Out_ int* memInSizeT,
-        _Outptr_ void** mem)
+extern "C" void* QCALLTYPE ObjCMarshal_AllocateReferenceTrackingHandle(_In_ QCall::ObjectHandleOnStack obj, QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
-    _ASSERTE(memInSizeT != NULL);
-    _ASSERTE(mem != NULL);
 
     OBJECTHANDLE instHandle;
-    size_t memInSizeTLocal;
-    void* taggedMemoryLocal;
 
     BEGIN_QCALL;
 
-    // The reference tracking system must be initialized.
-    if (!g_ReferenceTrackerInitialized)
-        COMPlusThrow(kInvalidOperationException, W("InvalidOperation_ObjectiveCMarshalNotInitialized"));
-
     // Switch to Cooperative mode since object references
     // are being manipulated.
-    {
-        GCX_COOP();
-
-        struct
-        {
-            OBJECTREF objRef;
-        } gc;
-        ::ZeroMemory(&gc, sizeof(gc));
-        GCPROTECT_BEGIN(gc);
-
-        gc.objRef = obj.Get();
-
-        // The object's type must be marked appropriately and with a finalizer.
-        if (!gc.objRef->GetMethodTable()->IsTrackedReferenceWithFinalizer())
-            COMPlusThrow(kInvalidOperationException, W("InvalidOperation_ObjectiveCTypeNoFinalizer"));
-
-        // Initialize the syncblock for this instance.
-        SyncBlock* syncBlock = gc.objRef->GetSyncBlock();
-        InteropSyncBlockInfo* interopInfo = syncBlock->GetInteropInfo();
-        taggedMemoryLocal = interopInfo->AllocTaggedMemory(&memInSizeTLocal);
-        _ASSERTE(taggedMemoryLocal != NULL);
-
-        instHandle = GetAppDomain()->CreateTypedHandle(gc.objRef, HNDTYPE_REFCOUNTED);
-
-        GCPROTECT_END();
-    }
+    GCX_COOP();
+    instHandle = GetAppDomain()->CreateTypedHandle(obj.Get(), HNDTYPE_REFCOUNTED);
 
     END_QCALL;
 
-    *memInSizeT = (int)memInSizeTLocal;
-    *mem = taggedMemoryLocal;
     return (void*)instHandle;
 }
 
@@ -155,7 +122,8 @@ namespace
 
 extern "C" BOOL QCALLTYPE ObjCMarshal_TrySetGlobalMessageSendCallback(
     _In_ ObjCMarshalNative::MessageSendFunction msgSendFunction,
-    _In_ void* fptr)
+    _In_ void* fptr,
+    QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
 
@@ -164,10 +132,10 @@ extern "C" BOOL QCALLTYPE ObjCMarshal_TrySetGlobalMessageSendCallback(
     BEGIN_QCALL;
 
     _ASSERTE(msgSendFunction >= 0 && msgSendFunction < ARRAY_SIZE(s_msgSendOverrides));
-    success = FastInterlockCompareExchangePointer(&s_msgSendOverrides[msgSendFunction], fptr, NULL) == NULL;
+    success = InterlockedCompareExchangeT(&s_msgSendOverrides[msgSendFunction], fptr, NULL) == NULL;
 
     // Set P/Invoke override callback if we haven't already
-    if (success && FALSE == FastInterlockCompareExchange((LONG*)&s_msgSendOverridden, TRUE, FALSE))
+    if (success && FALSE == InterlockedCompareExchange((LONG*)&s_msgSendOverridden, TRUE, FALSE))
         PInvokeOverride::SetPInvokeOverride(&MessageSendPInvokeOverride, PInvokeOverride::Source::ObjectiveCInterop);
 
     END_QCALL;
@@ -187,17 +155,19 @@ namespace
         }
         CONTRACTL_END;
 
-        SyncBlock* syncBlock = object->PassiveGetSyncBlock();
-        if (syncBlock == NULL)
+        if (g_ObjectiveCTrackingInfoTable == NULL)
             return false;
 
-        InteropSyncBlockInfo* interopInfo = syncBlock->GetInteropInfoNoCreate();
-        if (interopInfo == NULL)
+        CONDITIONAL_WEAK_TABLE_REF trackingTable = (CONDITIONAL_WEAK_TABLE_REF)ObjectFromHandle(g_ObjectiveCTrackingInfoTable);
+        if (trackingTable == NULL)
             return false;
 
-        // If no tagged memory is allocated, then the instance is not
-        // being tracked.
-        void* taggedLocal = interopInfo->GetTaggedMemory();
+        OBJECTREF trackingInfoObj = NULL;
+        if (!trackingTable->TryGetValue(object, &trackingInfoObj))
+            return false;
+
+        OBJC_TRACKING_INFO_REF trackingInfo = (OBJC_TRACKING_INFO_REF)trackingInfoObj;
+        void* taggedLocal = (void*)trackingInfo->_memory;
         if (taggedLocal == NULL)
             return false;
 
@@ -247,22 +217,9 @@ bool ObjCMarshalNative::IsRuntimeMessageSendFunction(
 
 namespace
 {
-    bool CallAvailableUnhandledExceptionPropagation()
-    {
-        CONTRACTL
-        {
-            THROWS;
-            MODE_COOPERATIVE;
-        }
-        CONTRACTL_END;
-
-        MethodDescCallSite dispatch(METHOD__OBJCMARSHAL__AVAILABLEUNHANDLEDEXCEPTIONPROPAGATION);
-        return dispatch.Call_RetBool(NULL);
-    }
-
     void* CallInvokeUnhandledExceptionPropagation(
         _In_ OBJECTREF* exceptionPROTECTED,
-        _In_ REFLECTMETHODREF* methodRefPROTECTED,
+        _In_ MethodDesc* method,
         _Outptr_ void** callbackContext)
     {
         CONTRACTL
@@ -270,39 +227,32 @@ namespace
             THROWS;
             MODE_COOPERATIVE;
             PRECONDITION(exceptionPROTECTED != NULL);
-            PRECONDITION(methodRefPROTECTED != NULL);
+            PRECONDITION(method != NULL);
             PRECONDITION(callbackContext != NULL);
         }
         CONTRACTL_END;
 
-        void* callback = NULL;
         *callbackContext = NULL;
 
-        PREPARE_NONVIRTUAL_CALLSITE(METHOD__OBJCMARSHAL__INVOKEUNHANDLEDEXCEPTIONPROPAGATION);
-        DECLARE_ARGHOLDER_ARRAY(args, 3);
-        args[ARGNUM_0] = OBJECTREF_TO_ARGHOLDER(*exceptionPROTECTED);
-        args[ARGNUM_1] = OBJECTREF_TO_ARGHOLDER(*methodRefPROTECTED);
-        args[ARGNUM_2] = PTR_TO_ARGHOLDER(callbackContext);
-        CALL_MANAGED_METHOD(callback, void*, args);
-
-        return callback;
+        UnmanagedCallersOnlyCaller dispatch(METHOD__OBJCMARSHAL__INVOKEUNHANDLEDEXCEPTIONPROPAGATION);
+        return dispatch.InvokeThrowing_Ret<void*>(exceptionPROTECTED, method, callbackContext);
     }
 }
 
 void* ObjCMarshalNative::GetPropagatingExceptionCallback(
     _In_ EECodeInfo* codeInfo,
-    _In_ OBJECTHANDLE throwable,
+    _In_ OBJECTREF throwableRef,
     _Outptr_ void** context)
 {
-    CONTRACT(void*)
+    CONTRACTL
     {
         THROWS;
-        MODE_PREEMPTIVE;
+        MODE_COOPERATIVE;
         PRECONDITION(codeInfo != NULL);
-        PRECONDITION(throwable != NULL);
+        PRECONDITION(throwableRef != NULL);
         PRECONDITION(context != NULL);
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     void* callback = NULL;
     void* callbackContext = NULL;
@@ -321,33 +271,18 @@ void* ObjCMarshalNative::GetPropagatingExceptionCallback(
     }
 
     {
-        GCX_COOP();
-        struct
-        {
-            OBJECTREF throwableRef;
-            REFLECTMETHODREF methodRef;
-        } gc;
-        ::ZeroMemory(&gc, sizeof(gc));
-        GCPROTECT_BEGIN(gc);
+        GCPROTECT_BEGIN(throwableRef);
 
-        // Creating the StubMethodInfo isn't cheap, so check
-        // if there are any handlers prior to dispatching.
-        if (CallAvailableUnhandledExceptionPropagation())
-        {
-            gc.throwableRef = ObjectFromHandle(throwable);
-            gc.methodRef = method->GetStubMethodInfo();
-
-            callback = CallInvokeUnhandledExceptionPropagation(
-                &gc.throwableRef,
-                &gc.methodRef,
-                &callbackContext);
-        }
+        callback = CallInvokeUnhandledExceptionPropagation(
+            &throwableRef,
+            method,
+            &callbackContext);
 
         GCPROTECT_END();
     }
 
     *context = callbackContext;
-    RETURN callback;
+    return callback;
 }
 
 void ObjCMarshalNative::BeforeRefCountedHandleCallbacks()

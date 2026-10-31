@@ -8,7 +8,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Sources;
 using Internal;
-using Internal.Runtime.CompilerServices;
 
 namespace System.Runtime.CompilerServices
 {
@@ -94,7 +93,7 @@ namespace System.Runtime.CompilerServices
                 // "work" but in a degraded mode, as we don't know the TStateMachine type here, and thus we use a box around
                 // the interface instead.
 
-                PoolingAsyncValueTaskMethodBuilder<TResult>.StateMachineBox? box = m_task ??= CreateWeaklyTypedStateMachineBox();
+                StateMachineBox? box = m_task ??= CreateWeaklyTypedStateMachineBox();
                 return new ValueTask<TResult>(box, box.Version);
             }
         }
@@ -116,11 +115,20 @@ namespace System.Runtime.CompilerServices
         {
             try
             {
-                awaiter.OnCompleted(GetStateMachineBox(ref stateMachine, ref box).MoveNextAction);
+                IAsyncStateMachineBox ibox = GetStateMachineBox(ref stateMachine, ref box);
+                if (AsyncInstrumentation.IsActive && AsyncInstrumentation.LoadFlags(out AsyncInstrumentation.Flags flags))
+                {
+                    if (AsyncInstrumentation.IsEnabled.AsyncProfiler(flags))
+                    {
+                        ibox = AsyncStateMachineDispatcherInfo.CreateDispatcher(ibox, flags);
+                    }
+                }
+
+                awaiter.OnCompleted(ibox.MoveNextAction);
             }
             catch (Exception e)
             {
-                System.Threading.Tasks.Task.ThrowAsync(e, targetContext: null);
+                Threading.Tasks.Task.ThrowAsync(e, targetContext: null);
             }
         }
 
@@ -155,7 +163,7 @@ namespace System.Runtime.CompilerServices
             [NotNull] ref StateMachineBox? boxFieldRef)
             where TStateMachine : IAsyncStateMachine
         {
-            ExecutionContext? currentContext = ExecutionContext.Capture();
+            ExecutionContext? currentContext = ExecutionContext.CaptureForSuspension(Thread.CurrentThread);
 
             // Check first for the most common case: not the first yield in an async method.
             // In this case, the first yield will have already "boxed" the state machine in
@@ -205,7 +213,7 @@ namespace System.Runtime.CompilerServices
 
             // At this point, m_task should really be null, in which case we want to create the box.
             // However, in a variety of debugger-related (erroneous) situations, it might be non-null,
-            // e.g. if the Task property is examined in a Watch window, forcing it to be lazily-intialized
+            // e.g. if the Task property is examined in a Watch window, forcing it to be lazily-initialized
             // as a Task<TResult> rather than as an ValueTaskStateMachineBox.  The worst that happens in such
             // cases is we lose the ability to properly step in the debugger, as the debugger uses that
             // object's identity to track this specific builder/state machine.  As such, we proceed to
@@ -246,13 +254,33 @@ namespace System.Runtime.CompilerServices
 
             /// <summary>Completes the box with a result.</summary>
             /// <param name="result">The result.</param>
-            public void SetResult(TResult result) =>
+            public void SetResult(TResult result)
+            {
+                if (AsyncInstrumentation.IsActive && AsyncInstrumentation.LoadFlags(out AsyncInstrumentation.Flags flags))
+                {
+                    if (AsyncInstrumentation.IsEnabled.AsyncProfiler(flags))
+                    {
+                        AsyncStateMachineDispatcherInfo.CompleteAsyncMethod(this, flags);
+                    }
+                }
+
                 _valueTaskSource.SetResult(result);
+            }
 
             /// <summary>Completes the box with an error.</summary>
             /// <param name="error">The exception.</param>
-            public void SetException(Exception error) =>
+            public void SetException(Exception error)
+            {
+                if (AsyncInstrumentation.IsActive && AsyncInstrumentation.LoadFlags(out AsyncInstrumentation.Flags flags))
+                {
+                    if (AsyncInstrumentation.IsEnabled.AsyncProfiler(flags))
+                    {
+                        AsyncStateMachineDispatcherInfo.UnwindAsyncFrame(this, flags);
+                    }
+                }
+
                 _valueTaskSource.SetException(error);
+            }
 
             /// <summary>Gets the status of the box.</summary>
             public ValueTaskSourceStatus GetStatus(short token) => _valueTaskSource.GetStatus(token);
@@ -402,9 +430,17 @@ namespace System.Runtime.CompilerServices
             /// <summary>Calls MoveNext on <see cref="StateMachine"/></summary>
             public void MoveNext()
             {
+                if (AsyncInstrumentation.IsActive && AsyncInstrumentation.LoadFlags(out AsyncInstrumentation.Flags flags))
+                {
+                    if (AsyncInstrumentation.IsEnabled.AsyncProfiler(flags))
+                    {
+                        AsyncStateMachineDispatcherInfo.ResumeAsyncMethod(this, flags);
+                    }
+                }
+
                 ExecutionContext? context = Context;
 
-                if (context is null)
+                if (context == ExecutionContext.DefaultFlowSuppressed)
                 {
                     Debug.Assert(StateMachine is not null, $"Null {nameof(StateMachine)}");
                     StateMachine.MoveNext();
@@ -441,8 +477,33 @@ namespace System.Runtime.CompilerServices
                 }
             }
 
-            /// <summary>Gets the state machine as a boxed object.  This should only be used for debugging purposes.</summary>
+            /// <summary>Gets the state machine as a boxed object. This should only be used for debugging purposes.</summary>
             IAsyncStateMachine IAsyncStateMachineBox.GetStateMachineObject() => StateMachine!; // likely boxes, only use for debugging
+
+            bool IAsyncStateMachineBox.GetDiagnosticData(out ulong methodId, out int state, out object? nextContinuation)
+            {
+                if (AsyncStateMachineDispatcherInfo.IsSupported)
+                {
+                    methodId = AsyncStateMachineDiagnostics<TStateMachine>.MethodId;
+                    state = AsyncStateMachineDiagnostics<TStateMachine>.GetState(ref StateMachine);
+                    nextContinuation = ContinuationForDiagnostics;
+                    return true;
+                }
+
+                methodId = 0;
+                state = -1;
+                nextContinuation = null;
+                return false;
+            }
+
+            private object? ContinuationForDiagnostics
+            {
+                get
+                {
+                    object? continuation = _valueTaskSource.ContinuationForDiagnostics;
+                    return ReferenceEquals(continuation, this) ? null : continuation;
+                }
+            }
         }
     }
 }

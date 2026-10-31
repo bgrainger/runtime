@@ -1,9 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Internal.Cryptography;
 using System.Formats.Asn1;
 using System.Security.Cryptography.Asn1;
+using Internal.Cryptography;
 
 namespace System.Security.Cryptography
 {
@@ -17,6 +17,12 @@ namespace System.Security.Cryptography
         {
             Oids.EcPublicKey,
             // ECDH and ECMQV are not valid in this context.
+        };
+
+        private protected static readonly KeySizes[] s_defaultKeySizes =
+        {
+            new KeySizes(minSize: 256, maxSize: 384, skipSize: 128),
+            new KeySizes(minSize: 521, maxSize: 521, skipSize: 0),
         };
 
         /// <summary>
@@ -125,8 +131,7 @@ namespace System.Security.Cryptography
             Span<byte> destination,
             out int bytesWritten)
         {
-            if (pbeParameters is null)
-                throw new ArgumentNullException(nameof(pbeParameters));
+            ArgumentNullException.ThrowIfNull(pbeParameters);
 
             PasswordBasedEncryption.ValidatePbeParameters(
                 pbeParameters,
@@ -198,8 +203,7 @@ namespace System.Security.Cryptography
             Span<byte> destination,
             out int bytesWritten)
         {
-            if (pbeParameters == null)
-                throw new ArgumentNullException(nameof(pbeParameters));
+            ArgumentNullException.ThrowIfNull(pbeParameters);
 
             PasswordBasedEncryption.ValidatePbeParameters(
                 pbeParameters,
@@ -700,24 +704,14 @@ namespace System.Security.Cryptography
         /// </remarks>
         public override void ImportFromPem(ReadOnlySpan<char> input)
         {
-            PemKeyHelpers.ImportPem(input, label => {
-                if (label.SequenceEqual(PemLabels.Pkcs8PrivateKey))
+            PemKeyHelpers.ImportPem(input, label =>
+                label switch
                 {
-                    return ImportPkcs8PrivateKey;
-                }
-                else if (label.SequenceEqual(PemLabels.SpkiPublicKey))
-                {
-                    return ImportSubjectPublicKeyInfo;
-                }
-                else if (label.SequenceEqual(PemLabels.EcPrivateKey))
-                {
-                    return ImportECPrivateKey;
-                }
-                else
-                {
-                    return null;
-                }
-            });
+                    PemLabels.Pkcs8PrivateKey => ImportPkcs8PrivateKey,
+                    PemLabels.SpkiPublicKey => ImportSubjectPublicKeyInfo,
+                    PemLabels.EcPrivateKey => ImportECPrivateKey,
+                    _ => null,
+                });
         }
 
         /// <summary>
@@ -861,6 +855,88 @@ namespace System.Security.Cryptography
             // Implementation has been pushed down to AsymmetricAlgorithm. The
             // override remains for compatibility.
             base.ImportFromEncryptedPem(input, passwordBytes);
+        }
+
+        /// <summary>
+        /// Exports the current key in the ECPrivateKey format, PEM encoded.
+        /// </summary>
+        /// <returns>A string containing the PEM-encoded ECPrivateKey.</returns>
+        /// <exception cref="CryptographicException">
+        /// The key could not be exported.
+        /// </exception>
+        /// <remarks>
+        /// <p>
+        ///   A PEM-encoded ECPrivateKey will begin with <c>-----BEGIN EC PRIVATE KEY-----</c>
+        ///   and end with <c>-----END EC PRIVATE KEY-----</c>, with the base64 encoded DER
+        ///   contents of the key between the PEM boundaries.
+        /// </p>
+        /// <p>
+        ///   The PEM is encoded according to the IETF RFC 7468 &quot;strict&quot;
+        ///   encoding rules.
+        /// </p>
+        /// </remarks>
+        public unsafe string ExportECPrivateKeyPem()
+        {
+            byte[] exported = ExportECPrivateKey();
+
+            // Fixed to prevent GC moves.
+            fixed (byte* pExported = exported)
+            {
+                try
+                {
+                    return PemEncoding.WriteString(PemLabels.EcPrivateKey, exported);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(exported);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Attempts to export the current key in the PEM-encoded
+        /// ECPrivateKey format into a provided buffer.
+        /// </summary>
+        /// <param name="destination">
+        /// The character span to receive the PEM-encoded ECPrivateKey data.
+        /// </param>
+        /// <param name="charsWritten">
+        /// When this method returns, contains a value that indicates the number
+        /// of characters written to <paramref name="destination" />. This
+        /// parameter is treated as uninitialized.
+        /// </param>
+        /// <returns>
+        /// <see langword="true" /> if <paramref name="destination" /> is big enough
+        /// to receive the output; otherwise, <see langword="false" />.
+        /// </returns>
+        /// <exception cref="CryptographicException">
+        /// The key could not be exported.
+        /// </exception>
+        /// <remarks>
+        /// <p>
+        ///   A PEM-encoded ECPrivateKey will begin with
+        ///   <c>-----BEGIN EC PRIVATE KEY-----</c> and end with
+        ///   <c>-----END EC PRIVATE KEY-----</c>, with the base64 encoded DER
+        ///   contents of the key between the PEM boundaries.
+        /// </p>
+        /// <p>
+        ///   The PEM is encoded according to the IETF RFC 7468 &quot;strict&quot;
+        ///   encoding rules.
+        /// </p>
+        /// </remarks>
+        public bool TryExportECPrivateKeyPem(Span<char> destination, out int charsWritten)
+        {
+            static bool Export(ECAlgorithm alg, Span<byte> destination, out int bytesWritten)
+            {
+                return alg.TryExportECPrivateKey(destination, out bytesWritten);
+            }
+
+            return PemKeyHelpers.TryExportToPem(
+                this,
+                PemLabels.EcPrivateKey,
+                Export,
+                destination,
+                out charsWritten);
         }
     }
 }

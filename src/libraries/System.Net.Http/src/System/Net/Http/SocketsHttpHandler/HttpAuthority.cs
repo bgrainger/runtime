@@ -3,16 +3,17 @@
 
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Text;
 
 namespace System.Net.Http
 {
-
     internal sealed class HttpAuthority : IEquatable<HttpAuthority>
     {
         // ALPN Protocol Name should also be part of an authority, but we are special-casing for HTTP/3, so this can be assumed to be "H3".
         // public string AlpnProtocolName { get; }
 
         public string IdnHost { get; }
+        public string HostValue { get; }
         public int Port { get; }
 
         public HttpAuthority(string host, int port)
@@ -23,10 +24,28 @@ namespace System.Net.Http
             var builder = new UriBuilder(Uri.UriSchemeHttp, host, port);
             Uri uri = builder.Uri;
 
-            // TODO https://github.com/dotnet/runtime/issues/25782:
-            // Uri.IdnHost is missing '[', ']' characters around IPv6 address.
-            // So, we need to add them manually for now.
-            IdnHost = uri.HostNameType == UriHostNameType.IPv6 ? "[" + uri.IdnHost + "]" : uri.IdnHost;
+            if (uri.HostNameType == UriHostNameType.IPv6)
+            {
+                // This includes brackets for IPv6 and ScopeId for IPv6 LLA so Connect works.
+                IdnHost = $"[{uri.IdnHost}]";
+                // This is bracket enclosed IPv6 without ScopeID for LLA
+                HostValue = uri.Host;
+            }
+            else
+            {
+                // IPv4 address, dns or puny encoded name
+                HostValue = IdnHost = uri.IdnHost;
+            }
+
+            if (!Ascii.IsValid(HostValue))
+            {
+                Debug.Assert(uri.HostNameType == UriHostNameType.Basic);
+
+                // This is not a DNS host and it contains non-ASCII characters.
+                // Uri failed to Punycode encode it, likely because one of the labels was too long for DNS.
+                throw new HttpRequestException(SR.net_http_request_invalid_host_punycode);
+            }
+
             Port = port;
         }
 
@@ -50,5 +69,12 @@ namespace System.Net.Http
         {
             return IdnHost != null ? $"{IdnHost}:{Port}" : "<empty>";
         }
+
+        public static bool operator ==(HttpAuthority? left, HttpAuthority? right)
+        {
+            return left is null ? right is null : left.Equals(right);
+        }
+        public static bool operator !=(HttpAuthority? left, HttpAuthority? right)
+            => !(left == right);
     }
 }

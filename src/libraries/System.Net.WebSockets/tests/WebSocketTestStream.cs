@@ -74,6 +74,24 @@ namespace System.Net.WebSockets.Tests
         /// </summary>
         public TimeSpan DelayForNextSend { get; set; }
 
+        /// <summary>
+        /// If set, would cause the next read operation to be delayed
+        /// and complete asynchronously. Can be used to test cancellation tokens
+        /// and async code branches.
+        /// </summary>
+        public TimeSpan DelayForNextRead { get; set; }
+
+        /// <summary>
+        /// When set, ignores the cancellation token passed to ReadAsync and WriteAsync.
+        /// </summary>
+        public bool IgnoreCancellationToken { get; set; }
+
+        /// <summary>
+        /// If set, causes FlushAsync to return a synchronously-faulted Task with this exception.
+        /// Used to exercise sync-completion-faulted code paths in the WebSocket send flow.
+        /// </summary>
+        public Exception? FlushException { get; set; }
+
         public override bool CanRead => true;
 
         public override bool CanSeek => false;
@@ -100,10 +118,16 @@ namespace System.Net.WebSockets.Tests
 
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken)
         {
+            if (DelayForNextRead > TimeSpan.Zero)
+            {
+                await Task.Delay(DelayForNextRead);
+                DelayForNextRead = TimeSpan.Zero;
+            }
+
             using CancellationTokenSource cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposed.Token);
             try
             {
-                await _inputLock.WaitAsync(cancellation.Token).ConfigureAwait(false);
+                await _inputLock.WaitAsync(IgnoreCancellationToken ? default : cancellation.Token).ConfigureAwait(false);
             }
             catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -199,14 +223,23 @@ namespace System.Net.WebSockets.Tests
         {
             if (DelayForNextSend > TimeSpan.Zero)
             {
-                await Task.Delay(DelayForNextSend, cancellationToken);
+                await Task.Delay(DelayForNextSend, IgnoreCancellationToken ? default : cancellationToken);
                 DelayForNextSend = TimeSpan.Zero;
             }
 
             Write(buffer.Span);
         }
 
-        public override void Flush() => throw new NotSupportedException();
+        public override void Flush() { }
+
+        public override Task FlushAsync(CancellationToken cancellationToken)
+        {
+            if (FlushException is not null)
+            {
+                return Task.FromException(FlushException);
+            }
+            return base.FlushAsync(cancellationToken);
+        }
 
         public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 

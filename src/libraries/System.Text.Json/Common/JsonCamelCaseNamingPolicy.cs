@@ -12,21 +12,11 @@ namespace System.Text.Json
                 return name;
             }
 
-#if BUILDING_INBOX_LIBRARY
             return string.Create(name.Length, name, (chars, name) =>
             {
-                name
-#if !NET6_0_OR_GREATER
-                .AsSpan()
-#endif
-                .CopyTo(chars);
+                name.AsSpan().CopyTo(chars);
                 FixCasing(chars);
             });
-#else
-            char[] chars = name.ToCharArray();
-            FixCasing(chars);
-            return new string(chars);
-#endif
         }
 
         private static void FixCasing(Span<char> chars)

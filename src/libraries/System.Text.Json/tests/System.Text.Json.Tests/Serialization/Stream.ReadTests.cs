@@ -3,6 +3,8 @@
 
 using System.Collections.Generic;
 using System.IO;
+using System.Text.Encodings.Web;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -32,6 +34,91 @@ namespace System.Text.Json.Serialization.Tests
                 SimpleTestClass obj = await Serializer.DeserializeWrapper<SimpleTestClass>(stream, options);
                 obj.Verify();
             }
+        }
+
+        [Theory]
+        [MemberData(nameof(NullableStructWithNullMemberTestData))]
+        public async Task ReadNullableStructWithNullMember(Type type, bool useSourceGeneration, string expectedJson)
+        {
+            string json = expectedJson.Replace("}", ",\"Ignored\":null}");
+            foreach (int bufferSize in new[] { 1, 16, 32, 64, 128, 16 * 1024 })
+            {
+                JsonSerializerOptions options = CreateNullableStructOptions(useSourceGeneration, bufferSize);
+                for (int offset = 0; offset < json.Length; offset++)
+                {
+                    int padding = Math.Max(0, bufferSize - json.Length) + offset;
+                    using Utf8MemoryStream stream = new(new string(' ', padding) + json);
+                    object result = await Serializer.DeserializeWrapper(stream, type, options);
+                    Assert.Equal(expectedJson, JsonSerializer.Serialize(result, type, options));
+                }
+            }
+        }
+
+        public static IEnumerable<object[]> NullableStructWithNullMemberTestData()
+        {
+            (Type Type, string Json)[] cases =
+            [
+                (typeof((int, int?)?[]), """[null,{"Item1":1,"Item2":null},{"Item1":2,"Item2":3},null]"""),
+                (typeof(KeyValuePair<int, int?>?[]), """[null,{"Key":1,"Value":null},{"Key":2,"Value":3},null]"""),
+                (typeof(Memory<int?>?[]), "[null,[1,null],[2,3],null]"),
+                (typeof(ReadOnlyMemory<int?>?[]), "[null,[1,null],[2,3],null]"),
+            ];
+
+            foreach ((Type type, string json) in cases)
+            {
+                yield return new object[] { type, false, json };
+                yield return new object[] { type, true, json };
+            }
+        }
+
+        [Theory]
+        [InlineData(1, 1, false)]
+        [InlineData(1, 1, true)]
+        [InlineData(16, 3, false)]
+        [InlineData(16, 3, true)]
+        [InlineData(64, 7, false)]
+        [InlineData(64, 7, true)]
+        [InlineData(16 * 1024, 257, false)]
+        [InlineData(16 * 1024, 257, true)]
+        public async Task ReadNullableStructWithBufferGrowth(int bufferSize, int readSize, bool useSourceGeneration)
+        {
+            JsonSerializerOptions options = CreateNullableStructOptions(useSourceGeneration, bufferSize);
+            options.Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
+            string key = new string('k', Math.Max(512, 2 * bufferSize + 1)) + "\u20AC\\\"\n";
+            KeyValuePair<string, string?>?[] expected =
+            [
+                null,
+                new(key, null),
+                new("key", "value"),
+                new(key, null),
+                null,
+            ];
+
+            byte[] data = JsonSerializer.SerializeToUtf8Bytes(expected, options);
+            using ChunkedReaderStream stream = new(new[] { data }, maxReadSize: readSize);
+            KeyValuePair<string, string?>?[] result = await Serializer.DeserializeWrapper<KeyValuePair<string, string?>?[]>(stream, options);
+
+            Assert.Equal(expected, result);
+            Assert.Equal(data.Length, stream.Position);
+            Assert.True(stream.ReadCount > data.Length / readSize);
+        }
+
+        internal static JsonSerializerOptions CreateNullableStructOptions(bool useSourceGeneration, int bufferSize = 64)
+            => new()
+            {
+                DefaultBufferSize = bufferSize,
+                IncludeFields = true,
+                TypeInfoResolver = useSourceGeneration ? NullableStructContext.Default : new DefaultJsonTypeInfoResolver(),
+            };
+
+        [JsonSourceGenerationOptions(GenerationMode = JsonSourceGenerationMode.Metadata, IncludeFields = true)]
+        [JsonSerializable(typeof((int, int?)?[]))]
+        [JsonSerializable(typeof(KeyValuePair<int, int?>?[]))]
+        [JsonSerializable(typeof(KeyValuePair<string, string?>?[]))]
+        [JsonSerializable(typeof(Memory<int?>?[]))]
+        [JsonSerializable(typeof(ReadOnlyMemory<int?>?[]))]
+        private partial class NullableStructContext : JsonSerializerContext
+        {
         }
 
         [Fact]
@@ -69,7 +156,7 @@ namespace System.Text.Json.Serialization.Tests
         [Fact]
         public async Task ReadPrimitivesWithTrailingTriviaAsync()
         {
-            using (MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes(" 1\t// Comment\r\n/* Multi\r\nLine */")))
+            using (MemoryStream stream = new MemoryStream(" 1\t// Comment\r\n/* Multi\r\nLine */"u8.ToArray()))
             {
                 JsonSerializerOptions options = new JsonSerializerOptions
                 {
@@ -85,7 +172,7 @@ namespace System.Text.Json.Serialization.Tests
         [Fact]
         public async Task ReadReferenceTypeCollectionPassingNullValueAsync()
         {
-            using (MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes("null")))
+            using (MemoryStream stream = new MemoryStream("null"u8.ToArray()))
             {
                 IList<object> referenceTypeCollection = await Serializer.DeserializeWrapper<IList<object>>(stream);
                 Assert.Null(referenceTypeCollection);
@@ -95,7 +182,7 @@ namespace System.Text.Json.Serialization.Tests
         [Fact]
         public async Task ReadValueTypeCollectionPassingNullValueAsync()
         {
-            using (MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes("null")))
+            using (MemoryStream stream = new MemoryStream("null"u8.ToArray()))
             {
                 IList<int> valueTypeCollection = await Serializer.DeserializeWrapper<IList<int>>(stream);
                 Assert.Null(valueTypeCollection);
@@ -164,8 +251,7 @@ namespace System.Text.Json.Serialization.Tests
 
                 static Stream CreateStream(int count)
                 {
-                    byte[] objBytes = Encoding.UTF8.GetBytes(
-                        @"{""Test"":{},""Test2"":[],""Test3"":{""Value"":{}},""PersonType"":0,""Id"":2}");
+                    byte[] objBytes = """{"Test":{},"Test2":[],"Test3":{"Value":{}},"PersonType":0,"Id":2}"""u8.ToArray();
 
                     byte[] utf8Bom = Encoding.UTF8.GetPreamble();
 
@@ -221,11 +307,14 @@ namespace System.Text.Json.Serialization.Tests
             void VerifyElement(int index)
             {
                 Assert.Equal(JsonValueKind.Object, value[index].GetProperty("Test").ValueKind);
+                Assert.Equal(0, value[index].GetProperty("Test").GetPropertyCount());
                 Assert.False(value[index].GetProperty("Test").EnumerateObject().MoveNext());
                 Assert.Equal(JsonValueKind.Array, value[index].GetProperty("Test2").ValueKind);
                 Assert.Equal(0, value[index].GetProperty("Test2").GetArrayLength());
                 Assert.Equal(JsonValueKind.Object, value[index].GetProperty("Test3").ValueKind);
                 Assert.Equal(JsonValueKind.Object, value[index].GetProperty("Test3").GetProperty("Value").ValueKind);
+                Assert.Equal(1, value[index].GetProperty("Test3").GetPropertyCount());
+                Assert.Equal(0, value[index].GetProperty("Test3").GetProperty("Value").GetPropertyCount());
                 Assert.False(value[index].GetProperty("Test3").GetProperty("Value").EnumerateObject().MoveNext());
                 Assert.Equal(0, value[index].GetProperty("PersonType").GetInt32());
                 Assert.Equal(2, value[index].GetProperty("Id").GetInt32());
@@ -286,7 +375,7 @@ namespace System.Text.Json.Serialization.Tests
                 Assert.Equal(16387, stream.Position);
 
                 // We should get an exception like: '!' is invalid after a single JSON value.
-                Assert.Contains("!", ex.ToString());
+                Assert.Contains("!", ex.Message);
             }
         }
 
@@ -307,8 +396,117 @@ namespace System.Text.Json.Serialization.Tests
                 Assert.Equal(16387, stream.Position);
 
                 // We should get an exception like: '!' is invalid after a single JSON value.
-                Assert.Contains("!", ex.ToString());
+                Assert.Contains("!", ex.Message);
             }
+        }
+
+        [Theory]
+        [InlineData(typeof(ClassDeserializedFromLargeJson))]
+        [InlineData(typeof(StructDeserializedFromLargeJson))]
+        [InlineData(typeof(ClassWithSmallConstructorDeserializedFromLargeJson))]
+        [InlineData(typeof(ClassWithLargeConstructorDeserializedFromLargeJson))]
+        public async Task ReadTypeFromJsonWithLargeIgnoredProperties(Type type)
+        {
+            const int MinLength = 1024 * 1024; // 1 MiB
+            await ReadTypeFromJsonWithLargeIgnoredPropertiesCore(type, MinLength);
+        }
+
+        [Theory]
+        [OuterLoop]
+        // Streams 5 GiB of JSON; the single-threaded wasm interpreter takes roughly an hour per
+        // case, so the suite exceeds the test timeout on CoreCLR browser. Still covered on Mono and other platforms.
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/129973", typeof(PlatformDetection), nameof(PlatformDetection.IsWasm), nameof(PlatformDetection.IsCoreCLR))]
+        [InlineData(typeof(ClassDeserializedFromLargeJson))]
+        [InlineData(typeof(StructDeserializedFromLargeJson))]
+        [InlineData(typeof(ClassWithSmallConstructorDeserializedFromLargeJson))]
+        [InlineData(typeof(ClassWithLargeConstructorDeserializedFromLargeJson))]
+        public async Task ReadTypeFromJsonWithLargeIgnoredProperties_OuterLoop(Type type)
+        {
+            const long MinLength = 5L * 1024 * 1024 * 1024; // 5 GiB
+
+            if (Serializer.ForceSmallBufferInOptions)
+            {
+                // Using tiny serialization buffers would take too long to process a file that large (~2 minutes).
+                return;
+            }
+
+            await ReadTypeFromJsonWithLargeIgnoredPropertiesCore(type, MinLength);
+        }
+
+        private async Task ReadTypeFromJsonWithLargeIgnoredPropertiesCore(Type type, long minLength)
+        {
+            using var stream = new ChunkedReaderStream(GenerateLargeJsonObjectAsFragments(minLength));
+            var result = (ITypeDeserializedFromLargeJson)await Serializer.DeserializeWrapper(stream, type);
+            Assert.Equal(42, result.FirstValue);
+            Assert.Equal(42, result.LastValue);
+
+            static IEnumerable<byte[]> GenerateLargeJsonObjectAsFragments(long minLength)
+            {
+                long length = 0;
+
+                byte[] documentStart = """{ "FirstValue" : 42, "LargeIgnoredProperty" : { """u8.ToArray();
+                yield return documentStart;
+                length += documentStart.Length;
+
+                byte[] nestedPropertyValue = "\"Property\" : \"This is a rather large property value that should help contribute to the bulk of the ignored payload.\""u8.ToArray();
+                byte[] commaSeparator = ", "u8.ToArray();
+                while (true)
+                {
+                    yield return nestedPropertyValue;
+                    length += nestedPropertyValue.Length;
+
+                    if (length < minLength)
+                    {
+                        yield return commaSeparator;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+
+                yield return """ }, "LastValue" : 42 }"""u8.ToArray();
+            }
+        }
+
+        public interface ITypeDeserializedFromLargeJson
+        {
+            int FirstValue { get; }
+            int LastValue { get; } 
+        }
+
+        public class ClassDeserializedFromLargeJson : ITypeDeserializedFromLargeJson
+        {
+            public int FirstValue { get; set; }
+            public int LastValue { get; set; }
+        }
+
+        public struct StructDeserializedFromLargeJson : ITypeDeserializedFromLargeJson
+        {
+            public int FirstValue { get; set; }
+            public int LastValue { get; set; }
+        }
+
+        public class ClassWithSmallConstructorDeserializedFromLargeJson(int firstValue, int lastValue) : ITypeDeserializedFromLargeJson
+        {
+            public int FirstValue { get; } = firstValue;
+            public int LastValue { get; } = lastValue;
+        }
+
+        public class ClassWithLargeConstructorDeserializedFromLargeJson(
+                int firstValue, int lastValue, int unusedParam2, int unusedParam3, int unusedParam4,
+                int unusedParam5, int unusedParam6, int unusedParam7, int unusedParam8, int unusedParam9) : ITypeDeserializedFromLargeJson
+        {
+            public int FirstValue { get; } = firstValue;
+            public int LastValue { get; } = lastValue;
+            public int UnusedParam2 { get; } = unusedParam2;
+            public int UnusedParam3 { get; } = unusedParam3;
+            public int UnusedParam4 { get; } = unusedParam4;
+            public int UnusedParam5 { get; } = unusedParam5;
+            public int UnusedParam6 { get; } = unusedParam6;
+            public int UnusedParam7 { get; } = unusedParam7;
+            public int UnusedParam8 { get; } = unusedParam8;
+            public int UnusedParam9 { get; } = unusedParam9;
         }
     }
 }

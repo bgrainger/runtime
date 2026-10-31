@@ -11,7 +11,7 @@ namespace System.Xml.Xsl
     /// Cardinality of part of XmlQueryType
     /// struct is being used because enum doesn't allow members
     /// </summary>
-    internal struct XmlQueryCardinality
+    internal readonly struct XmlQueryCardinality : IEquatable<XmlQueryCardinality>
     {
         private readonly int _value;
 
@@ -183,7 +183,7 @@ namespace System.Xml.Xsl
 
         /// <summary>
         /// Returns true is right is subset of left.
-        /// /// </summary>
+        /// </summary>
         public static bool operator >=(XmlQueryCardinality left, XmlQueryCardinality right)
         {
             return (right._value & ~left._value) == 0;

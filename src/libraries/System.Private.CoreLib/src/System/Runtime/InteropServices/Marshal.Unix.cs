@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
 namespace System.Runtime.InteropServices
@@ -36,13 +37,7 @@ namespace System.Runtime.InteropServices
         {
             Debug.Assert(bufferLength >= (s.Length + 1) * SystemMaxDBCSCharSize, "Insufficient buffer length passed to StringToAnsiString");
 
-            int convertedBytes;
-
-            fixed (char* pChar = s)
-            {
-                convertedBytes = Encoding.UTF8.GetBytes(pChar, s.Length, buffer, bufferLength);
-            }
-
+            int convertedBytes = Encoding.UTF8.GetBytes(s, new Span<byte>(buffer, bufferLength));
             buffer[convertedBytes] = 0;
 
             return convertedBytes;
@@ -62,9 +57,9 @@ namespace System.Runtime.InteropServices
             bytes[actualByteLength] = 0;
         }
 
-        public static unsafe IntPtr AllocHGlobal(IntPtr cb)
+        public static unsafe IntPtr AllocHGlobal(nint cb)
         {
-            return (nint)NativeMemory.Alloc((nuint)(nint)cb);
+            return (nint)NativeMemory.Alloc((nuint)cb);
         }
 
         public static unsafe void FreeHGlobal(IntPtr hglobal)
@@ -72,9 +67,9 @@ namespace System.Runtime.InteropServices
             NativeMemory.Free((void*)(nint)hglobal);
         }
 
-        public static unsafe IntPtr ReAllocHGlobal(IntPtr pv, IntPtr cb)
+        public static unsafe IntPtr ReAllocHGlobal(IntPtr pv, nint cb)
         {
-            return (nint)NativeMemory.Realloc((void*)(nint)pv, (nuint)(nint)cb);
+            return (nint)NativeMemory.Realloc((void*)(nint)pv, (nuint)cb);
         }
 
         public static IntPtr AllocCoTaskMem(int cb) => AllocHGlobal((nint)(uint)cb);
@@ -160,23 +155,24 @@ namespace System.Runtime.InteropServices
             }
         }
 
+#pragma warning disable IDE0060
         internal static Type? GetTypeFromProgID(string progID, string? server, bool throwOnError)
         {
-            if (progID == null)
-                throw new ArgumentNullException(nameof(progID));
+            ArgumentNullException.ThrowIfNull(progID);
 
             if (throwOnError)
                 throw new PlatformNotSupportedException(SR.PlatformNotSupported_ComInterop);
 
             return null;
         }
+#pragma warning restore IDE0060
 
         /// <summary>
-        /// Get the last system error on the current thread
+        /// Gets the last system error on the current thread.
         /// </summary>
-        /// <returns>The last system error</returns>
+        /// <returns>The last system error.</returns>
         /// <remarks>
-        /// The error is that for the current operating system (e.g. errno on Unix, GetLastError on Windows)
+        /// The error is that for the current operating system (for example, errno on Unix, GetLastError on Windows).
         /// </remarks>
         public static int GetLastSystemError()
         {
@@ -184,15 +180,25 @@ namespace System.Runtime.InteropServices
         }
 
         /// <summary>
-        /// Set the last system error on the current thread
+        /// Sets the last system error on the current thread.
         /// </summary>
-        /// <param name="error">Error to set</param>
+        /// <param name="error">The error to set.</param>
         /// <remarks>
-        /// The error is that for the current operating system (e.g. errno on Unix, SetLastError on Windows)
+        /// The error is that for the current operating system (for example, errno on Unix, SetLastError on Windows).
         /// </remarks>
         public static void SetLastSystemError(int error)
         {
             Interop.Sys.SetErrNo(error);
+        }
+
+        /// <summary>
+        /// Gets the system error message for the supplied error code.
+        /// </summary>
+        /// <param name="error">The error code.</param>
+        /// <returns>The error message associated with <paramref name="error"/>.</returns>
+        public static string GetPInvokeErrorMessage(int error)
+        {
+            return Interop.Sys.StrError(error);
         }
     }
 }

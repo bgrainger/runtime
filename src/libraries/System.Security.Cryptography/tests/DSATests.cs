@@ -4,24 +4,15 @@
 using System.IO;
 using System.Reflection;
 using System.Security.Cryptography.Dsa.Tests;
+using Test.Cryptography;
 using Xunit;
 
 namespace System.Security.Cryptography.Tests
 {
-    [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst, "Not supported on Browser/iOS/tvOS/MacCatalyst")]
+    [ConditionalClass(typeof(PlatformSupport), nameof(PlatformSupport.IsDSASupported))]
     public class DSATests
     {
-        public static bool SupportsKeyGeneration => DSAFactory.SupportsKeyGeneration;
-
         [Fact]
-        public void BaseVirtualsNotImplementedException()
-        {
-            var dsa = new EmptyDSA();
-            Assert.Throws<NotImplementedException>(() => dsa.HashData(null, HashAlgorithmName.SHA1));
-            Assert.Throws<NotImplementedException>(() => dsa.HashData(null, 0, 0, HashAlgorithmName.SHA1));
-        }
-
-        [ConditionalFact(nameof(SupportsKeyGeneration))]
         public void TryCreateSignature_UsesCreateSignature()
         {
             var input = new byte[1024];
@@ -55,14 +46,14 @@ namespace System.Security.Cryptography.Tests
                 AssertExtensions.Throws<ArgumentOutOfRangeException>("offset", () => wrapperDsa.SignData(new byte[1], 2, 0, HashAlgorithmName.SHA1));
                 AssertExtensions.Throws<ArgumentOutOfRangeException>("count", () => wrapperDsa.SignData(new byte[1], 0, -1, HashAlgorithmName.SHA1));
                 AssertExtensions.Throws<ArgumentOutOfRangeException>("count", () => wrapperDsa.SignData(new byte[1], 0, 2, HashAlgorithmName.SHA1));
-                AssertExtensions.Throws<ArgumentException>("hashAlgorithm", () => wrapperDsa.SignData(new byte[1], new HashAlgorithmName(null)));
+                AssertExtensions.Throws<ArgumentNullException>("hashAlgorithm", () => wrapperDsa.SignData(new byte[1], new HashAlgorithmName(null)));
                 AssertExtensions.Throws<ArgumentException>("hashAlgorithm", () => wrapperDsa.SignData(new byte[1], new HashAlgorithmName("")));
-                AssertExtensions.Throws<ArgumentException>("hashAlgorithm", () => wrapperDsa.SignData(new MemoryStream(new byte[1]), new HashAlgorithmName(null)));
+                AssertExtensions.Throws<ArgumentNullException>("hashAlgorithm", () => wrapperDsa.SignData(new MemoryStream(new byte[1]), new HashAlgorithmName(null)));
                 AssertExtensions.Throws<ArgumentException>("hashAlgorithm", () => wrapperDsa.SignData(new MemoryStream(new byte[1]), new HashAlgorithmName("")));
             }
         }
 
-        [ConditionalFact(nameof(SupportsKeyGeneration))]
+        [Fact]
         public void TrySignData_UsesTryHashDataAndTryCreateSignature()
         {
             var input = new byte[1024];
@@ -74,7 +65,7 @@ namespace System.Security.Cryptography.Tests
                 byte[] initialSig = wrapperDsa.SignData(input, HashAlgorithmName.SHA1);
                 byte[] actualSig = new byte[initialSig.Length];
 
-                AssertExtensions.Throws<ArgumentException>("hashAlgorithm", () => wrapperDsa.TrySignData(new byte[1], new byte[1], new HashAlgorithmName(null), out int _));
+                AssertExtensions.Throws<ArgumentNullException>("hashAlgorithm", () => wrapperDsa.TrySignData(new byte[1], new byte[1], new HashAlgorithmName(null), out int _));
                 AssertExtensions.Throws<ArgumentException>("hashAlgorithm", () => wrapperDsa.TrySignData(new byte[1], new byte[1], new HashAlgorithmName(""), out int _));
 
                 Assert.False(wrapperDsa.TrySignData(input, new Span<byte>(actualSig, 0, 1), HashAlgorithmName.SHA1, out bytesWritten));
@@ -87,7 +78,7 @@ namespace System.Security.Cryptography.Tests
             }
         }
 
-        [ConditionalFact(nameof(SupportsKeyGeneration))]
+        [Fact]
         public void VerifyData_Array_UsesHashDataAndVerifySignature()
         {
             var input = new byte[1024];
@@ -102,7 +93,7 @@ namespace System.Security.Cryptography.Tests
                 AssertExtensions.Throws<ArgumentOutOfRangeException>("count", () => wrapperDsa.VerifyData(new byte[1], 0, -1, null, HashAlgorithmName.SHA1));
                 AssertExtensions.Throws<ArgumentOutOfRangeException>("count", () => wrapperDsa.VerifyData(new byte[1], 0, 2, null, HashAlgorithmName.SHA1));
                 AssertExtensions.Throws<ArgumentNullException>("signature", () => wrapperDsa.VerifyData(new byte[1], 0, 1, null, HashAlgorithmName.SHA1));
-                AssertExtensions.Throws<ArgumentException>("hashAlgorithm", () => wrapperDsa.VerifyData(new byte[1], new byte[1], new HashAlgorithmName(null)));
+                AssertExtensions.Throws<ArgumentNullException>("hashAlgorithm", () => wrapperDsa.VerifyData(new byte[1], new byte[1], new HashAlgorithmName(null)));
                 AssertExtensions.Throws<ArgumentException>("hashAlgorithm", () => wrapperDsa.VerifyData(new byte[1], new byte[1], new HashAlgorithmName("")));
 
                 byte[] signature = wrapperDsa.SignData(input, HashAlgorithmName.SHA1);
@@ -111,7 +102,7 @@ namespace System.Security.Cryptography.Tests
             }
         }
 
-        [ConditionalFact(nameof(SupportsKeyGeneration))]
+        [Fact]
         public void VerifyData_Stream_UsesHashDataAndVerifySignature()
         {
             var input = new byte[1024];
@@ -121,7 +112,7 @@ namespace System.Security.Cryptography.Tests
             {
                 AssertExtensions.Throws<ArgumentNullException>("data", () => wrapperDsa.VerifyData((Stream)null, null, HashAlgorithmName.SHA1));
                 AssertExtensions.Throws<ArgumentNullException>("signature", () => wrapperDsa.VerifyData(new MemoryStream(new byte[1]), null, HashAlgorithmName.SHA1));
-                AssertExtensions.Throws<ArgumentException>("hashAlgorithm", () => wrapperDsa.VerifyData(new MemoryStream(new byte[1]), new byte[1], new HashAlgorithmName(null)));
+                AssertExtensions.Throws<ArgumentNullException>("hashAlgorithm", () => wrapperDsa.VerifyData(new MemoryStream(new byte[1]), new byte[1], new HashAlgorithmName(null)));
                 AssertExtensions.Throws<ArgumentException>("hashAlgorithm", () => wrapperDsa.VerifyData(new MemoryStream(new byte[1]), new byte[1], new HashAlgorithmName("")));
 
                 byte[] signature = wrapperDsa.SignData(new MemoryStream(input), HashAlgorithmName.SHA1);
@@ -130,7 +121,7 @@ namespace System.Security.Cryptography.Tests
             }
         }
 
-        [ConditionalFact(nameof(SupportsKeyGeneration))]
+        [Fact]
         public void VerifyData_Span_UsesTryHashDataAndVerifySignature()
         {
             var input = new byte[1024];
@@ -138,7 +129,7 @@ namespace System.Security.Cryptography.Tests
 
             using (var wrapperDsa = new OverrideAbstractDSA(DSA.Create(1024)))
             {
-                AssertExtensions.Throws<ArgumentException>("hashAlgorithm", () => wrapperDsa.VerifyData((Span<byte>)new byte[1], new byte[1], new HashAlgorithmName(null)));
+                AssertExtensions.Throws<ArgumentNullException>("hashAlgorithm", () => wrapperDsa.VerifyData((Span<byte>)new byte[1], new byte[1], new HashAlgorithmName(null)));
                 AssertExtensions.Throws<ArgumentException>("hashAlgorithm", () => wrapperDsa.VerifyData((Span<byte>)new byte[1], new byte[1], new HashAlgorithmName("")));
 
                 byte[] signature = wrapperDsa.SignData(input, HashAlgorithmName.SHA1);
@@ -167,14 +158,19 @@ namespace System.Security.Cryptography.Tests
             private readonly DSA _dsa;
 
             public OverrideAbstractDSA(DSA dsa) => _dsa = dsa;
-            protected override void Dispose(bool disposing) => _dsa.Dispose();
+
+            protected override void Dispose(bool disposing)
+            {
+                _dsa.Dispose();
+                base.Dispose(disposing);
+            }
 
             public override byte[] CreateSignature(byte[] rgbHash) => _dsa.CreateSignature(rgbHash);
             public override DSAParameters ExportParameters(bool includePrivateParameters) => _dsa.ExportParameters(includePrivateParameters);
             public override void ImportParameters(DSAParameters parameters) => _dsa.ImportParameters(parameters);
             public override bool VerifySignature(byte[] rgbHash, byte[] rgbSignature) => _dsa.VerifySignature(rgbHash, rgbSignature);
             protected override byte[] HashData(Stream data, HashAlgorithmName hashAlgorithm) =>
-                (byte[])_dsa.GetType().GetMethod(
+                (byte[])typeof(DSA).GetMethod(
                     nameof(HashData),
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
                     null,
@@ -182,7 +178,7 @@ namespace System.Security.Cryptography.Tests
                     null)
                 .Invoke(_dsa, new object[] { data, hashAlgorithm });
             protected override byte[] HashData(byte[] data, int offset, int count, HashAlgorithmName hashAlgorithm) =>
-                (byte[])_dsa.GetType().GetMethod(
+                (byte[])typeof(DSA).GetMethod(
                     nameof(HashData),
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
                     null,

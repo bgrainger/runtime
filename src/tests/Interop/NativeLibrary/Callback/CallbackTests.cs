@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 
 using Xunit;
+using TestLibrary;
 
 [assembly: DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
 public class CallbackTests
@@ -14,7 +15,11 @@ public class CallbackTests
     private static readonly int seed = 123;
     private static readonly Random rand = new Random(seed);
 
-    public static int Main()
+    [ActiveIssue("Needs coreclr build", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoFULLAOT))]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/64127", typeof(PlatformDetection), nameof(PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+    [ActiveIssue("needs triage", TestPlatforms.Android)]
+    [Fact]
+    public static int TestEntryPoint()
     {
         try
         {
@@ -99,7 +104,7 @@ public class CallbackTests
             if (string.Equals(libraryName, NativeLibraryToLoad.InvalidName))
             {
                 Assert.Equal(DllImportSearchPath.System32, dllImportSearchPath);
-                return NativeLibrary.Load(NativeLibraryToLoad.Name, asm, null);
+                return NativeLibrary.Load(NativeLibraryToLoad.GetFullPath(), asm, null);
             }
 
             return IntPtr.Zero;

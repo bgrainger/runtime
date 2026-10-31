@@ -7,7 +7,9 @@
 #include "pal_digest.h"
 #include "pal_ecc.h"
 #include "pal_hmac.h"
+#include "pal_keyagree.h"
 #include "pal_keychain_macos.h"
+#include "pal_keyderivation.h"
 #include "pal_random.h"
 #include "pal_rsa.h"
 #include "pal_sec.h"
@@ -15,34 +17,47 @@
 #include "pal_seckey_macos.h"
 #include "pal_signverify.h"
 #include "pal_ssl.h"
+#include "pal_swiftbindings.h"
 #include "pal_symmetric.h"
 #include "pal_trust_macos.h"
 #include "pal_x509.h"
 #include "pal_x509_macos.h"
 #include "pal_x509chain.h"
-#include "pal_keyderivation_macos.h"
-#include "pal_keyagree.h"
+#include "pal_networkframework.h"
 
 static const Entry s_cryptoAppleNative[] =
 {
-    DllImportEntry(AppleCryptoNative_DigestFree)
+    DllImportEntry(AppleCryptoNative_AesGcmEncrypt)
+    DllImportEntry(AppleCryptoNative_AesGcmDecrypt)
+    DllImportEntry(AppleCryptoNative_AesKeyWrapEncrypt)
+    DllImportEntry(AppleCryptoNative_AesKeyWrapDecrypt)
+    DllImportEntry(AppleCryptoNative_ChaCha20Poly1305Encrypt)
+    DllImportEntry(AppleCryptoNative_ChaCha20Poly1305Decrypt)
+    DllImportEntry(AppleCryptoNative_DigestClone)
     DllImportEntry(AppleCryptoNative_DigestCreate)
-    DllImportEntry(AppleCryptoNative_DigestUpdate)
-    DllImportEntry(AppleCryptoNative_DigestFinal)
     DllImportEntry(AppleCryptoNative_DigestCurrent)
+    DllImportEntry(AppleCryptoNative_DigestFinal)
+    DllImportEntry(AppleCryptoNative_DigestFree)
     DllImportEntry(AppleCryptoNative_DigestOneShot)
     DllImportEntry(AppleCryptoNative_DigestReset)
+    DllImportEntry(AppleCryptoNative_DigestUpdate)
+    DllImportEntry(AppleCryptoNative_EccExportPublicKeyFromPrivateKey)
     DllImportEntry(AppleCryptoNative_EccGenerateKey)
     DllImportEntry(AppleCryptoNative_EccGetKeySizeInBits)
     DllImportEntry(AppleCryptoNative_EcdhKeyAgree)
     DllImportEntry(AppleCryptoNative_GetRandomBytes)
-    DllImportEntry(AppleCryptoNative_HmacFree)
+    DllImportEntry(AppleCryptoNative_HKDFDeriveKey)
+    DllImportEntry(AppleCryptoNative_HKDFExpand)
+    DllImportEntry(AppleCryptoNative_HKDFExtract)
+    DllImportEntry(AppleCryptoNative_HmacClone)
     DllImportEntry(AppleCryptoNative_HmacCreate)
-    DllImportEntry(AppleCryptoNative_HmacInit)
-    DllImportEntry(AppleCryptoNative_HmacUpdate)
-    DllImportEntry(AppleCryptoNative_HmacFinal)
     DllImportEntry(AppleCryptoNative_HmacCurrent)
+    DllImportEntry(AppleCryptoNative_HmacFinal)
+    DllImportEntry(AppleCryptoNative_HmacFree)
+    DllImportEntry(AppleCryptoNative_HmacInit)
     DllImportEntry(AppleCryptoNative_HmacOneShot)
+    DllImportEntry(AppleCryptoNative_HmacUpdate)
+    DllImportEntry(AppleCryptoNative_IsAuthenticationFailure)
     DllImportEntry(AppleCryptoNative_SecKeychainItemCopyKeychain)
     DllImportEntry(AppleCryptoNative_SecKeychainCopyDefault)
     DllImportEntry(AppleCryptoNative_SecKeychainCreate)
@@ -54,15 +69,17 @@ static const Entry s_cryptoAppleNative[] =
     DllImportEntry(AppleCryptoNative_SetKeychainNeverLock)
     DllImportEntry(AppleCryptoNative_SslCopyCADistinguishedNames)
     DllImportEntry(AppleCryptoNative_SslCopyCertChain)
-    DllImportEntry(AppleCryptoNative_SslIsHostnameMatch)
     DllImportEntry(AppleCryptoNative_SslRead)
+    DllImportEntry(AppleCryptoNative_SslSetBreakOnCertRequested)
     DllImportEntry(AppleCryptoNative_SslSetBreakOnClientAuth)
+    DllImportEntry(AppleCryptoNative_SslSetBreakOnClientHello)
     DllImportEntry(AppleCryptoNative_SslSetBreakOnServerAuth)
     DllImportEntry(AppleCryptoNative_SslSetIoCallbacks)
     DllImportEntry(AppleCryptoNative_SslWrite)
     DllImportEntry(AppleCryptoNative_RsaGenerateKey)
     DllImportEntry(AppleCryptoNative_RsaDecryptOaep)
     DllImportEntry(AppleCryptoNative_RsaDecryptPkcs)
+    DllImportEntry(AppleCryptoNative_RsaDecryptRaw)
     DllImportEntry(AppleCryptoNative_RsaEncryptOaep)
     DllImportEntry(AppleCryptoNative_RsaEncryptPkcs)
     DllImportEntry(AppleCryptoNative_RsaSignaturePrimitive)
@@ -83,10 +100,13 @@ static const Entry s_cryptoAppleNative[] =
     DllImportEntry(AppleCryptoNative_SslSetMinProtocolVersion)
     DllImportEntry(AppleCryptoNative_SslSetMaxProtocolVersion)
     DllImportEntry(AppleCryptoNative_SslSetCertificate)
+    DllImportEntry(AppleCryptoNative_SslSetCertificateAuthorities)
     DllImportEntry(AppleCryptoNative_SslSetTargetName)
+    DllImportEntry(AppleCryptoNative_SSLSetALPNProtocol)
     DllImportEntry(AppleCryptoNative_SSLSetALPNProtocols)
     DllImportEntry(AppleCryptoNative_SslGetAlpnSelected)
     DllImportEntry(AppleCryptoNative_SslHandshake)
+    DllImportEntry(AppleCryptoNative_SslSetError)
     DllImportEntry(AppleCryptoNative_SslShutdown)
     DllImportEntry(AppleCryptoNative_SslGetProtocolVersion)
     DllImportEntry(AppleCryptoNative_SslGetCipherSuite)
@@ -94,12 +114,19 @@ static const Entry s_cryptoAppleNative[] =
     DllImportEntry(AppleCryptoNative_CryptorFree)
     DllImportEntry(AppleCryptoNative_CryptorCreate)
     DllImportEntry(AppleCryptoNative_CryptorUpdate)
-    DllImportEntry(AppleCryptoNative_CryptorFinal)
     DllImportEntry(AppleCryptoNative_CryptorReset)
     DllImportEntry(AppleCryptoNative_StoreEnumerateUserRoot)
     DllImportEntry(AppleCryptoNative_StoreEnumerateMachineRoot)
     DllImportEntry(AppleCryptoNative_StoreEnumerateUserDisallowed)
     DllImportEntry(AppleCryptoNative_StoreEnumerateMachineDisallowed)
+    DllImportEntry(AppleCryptoNative_X25519DeriveRawSecretAgreement)
+    DllImportEntry(AppleCryptoNative_X25519DeriveRawSecretAgreementWithBytes)
+    DllImportEntry(AppleCryptoNative_X25519ExportPrivateKey)
+    DllImportEntry(AppleCryptoNative_X25519ExportPublicKey)
+    DllImportEntry(AppleCryptoNative_X25519ImportPrivateKey)
+    DllImportEntry(AppleCryptoNative_X25519ImportPublicKey)
+    DllImportEntry(AppleCryptoNative_X25519FreeKey)
+    DllImportEntry(AppleCryptoNative_X25519GenerateKey)
     DllImportEntry(AppleCryptoNative_X509ChainCreate)
     DllImportEntry(AppleCryptoNative_X509DemuxAndRetainHandle)
     DllImportEntry(AppleCryptoNative_X509GetContentType)
@@ -125,6 +152,14 @@ static const Entry s_cryptoAppleNative[] =
     DllImportEntry(AppleCryptoNative_X509StoreRemoveCertificate)
     DllImportEntry(AppleCryptoNative_Pbkdf2)
     DllImportEntry(AppleCryptoNative_X509GetSubjectSummary)
+    DllImportEntry(AppleCryptoNative_Init)
+    DllImportEntry(AppleCryptoNative_NwConnectionCreate)
+    DllImportEntry(AppleCryptoNative_NwConnectionStart)
+    DllImportEntry(AppleCryptoNative_NwFramerDeliverInput)
+    DllImportEntry(AppleCryptoNative_NwConnectionSend)
+    DllImportEntry(AppleCryptoNative_NwConnectionReceive)
+    DllImportEntry(AppleCryptoNative_NwConnectionCancel)
+    DllImportEntry(AppleCryptoNative_GetConnectionInfo)
 };
 
 EXTERN_C const void* CryptoAppleResolveDllImport(const char* name);

@@ -10,26 +10,31 @@
 #include "gcrefmap.h"
 #include "threads.h"
 
+#if defined(TARGET_ARM64)
+extern "C" void* PacStripPtr(void* ptr);
+#endif // TARGET_ARM64
 
-FCIMPL2(void*, TailCallHelp::AllocTailCallArgBuffer, INT32 size, void* gcDesc)
+FCIMPL0(void*, TailCallHelp::GetTailCallArgBuffer)
 {
-    CONTRACTL
-    {
-        FCALL_CHECK;
-        INJECT_FAULT(FCThrow(kOutOfMemoryException););
-    }
-    CONTRACTL_END
-
-    _ASSERTE(size >= 0);
-
-    void* result = GetThread()->GetTailCallTls()->AllocArgBuffer(size, gcDesc);
-
-    if (result == NULL)
-        FCThrow(kOutOfMemoryException);
-
-    return result;
+    FCALL_CONTRACT;
+    return GetThread()->GetTailCallTls()->GetArgBuffer();
 }
 FCIMPLEND
+
+extern "C" void* QCALLTYPE TailCallHelp_AllocTailCallArgBufferInternal(int size, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+
+    void* retVal = NULL;
+
+    BEGIN_QCALL;
+
+    retVal = GetThread()->GetTailCallTls()->AllocArgBuffer(size);
+
+    END_QCALL;
+
+    return retVal;
+}
 
 FCIMPL2(void*, TailCallHelp::GetTailCallInfo, void** retAddrSlot, void** retAddr)
 {
@@ -37,11 +42,18 @@ FCIMPL2(void*, TailCallHelp::GetTailCallInfo, void** retAddrSlot, void** retAddr
 
     Thread* thread = GetThread();
 
-    *retAddr = thread->GetReturnAddress(retAddrSlot);
+    void* retAddrFromSlot = thread->GetReturnAddress(retAddrSlot);
+
+#if defined(TARGET_ARM64)
+    // We strip the return address here as it's only used for comparison and
+    // not being used to branch execution to.
+    retAddrFromSlot = PacStripPtr(retAddrFromSlot);
+#endif // TARGET_ARM64
+    *retAddr = retAddrFromSlot;
+
     return thread->GetTailCallTls();
 }
 FCIMPLEND
-
 
 struct ArgBufferValue
 {
@@ -81,7 +93,7 @@ struct TailCallInfo
     TypeHandle RetTyHnd;
     ArgBufferLayout ArgBufLayout;
     bool HasGCDescriptor;
-    GCRefMapBuilder GCRefMapBuilder;
+    class GCRefMapBuilder GCRefMapBuilder;
 
     TailCallInfo(
         MethodDesc* pCallerMD, MethodDesc* pCalleeMD,
@@ -106,7 +118,7 @@ MethodDesc* TailCallHelp::GetOrLoadTailCallDispatcherMD()
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(ThrowOutOfMemory());
+        MODE_ANY;
     }
     CONTRACTL_END;
 
@@ -136,7 +148,11 @@ void TailCallHelp::CreateTailCallHelperStubs(
     LOG((LF_STUBS, LL_INFO1000, "TAILCALLHELP: Incoming sig %s\n", incSig.GetCString()));
 #endif
 
-    *storeArgsNeedsTarget = pCalleeMD == NULL || pCalleeMD->IsSharedByGenericInstantiations();
+    // GVMs are not strictly "needs target" for the unshared case, but the JIT
+    // is going to resolve the target anyway so we may as well take it in the
+    // stub to avoid computing it in both places.
+    *storeArgsNeedsTarget = pCalleeMD == NULL || pCalleeMD->IsSharedByGenericInstantiations() ||
+        (pCalleeMD->IsVirtual() && !pCalleeMD->IsStatic() && pCalleeMD->HasMethodInstantiation());
 
     // The tailcall helper stubs are always allocated together with the caller.
     // If we ever wish to share these stubs they should be allocated with the
@@ -175,8 +191,7 @@ void TailCallHelp::LayOutArgBuffer(
         bool thisParamByRef = (calleeMD != NULL) ? calleeMD->GetMethodTable()->IsValueType() : thisArgByRef;
         if (thisParamByRef)
         {
-            thisHnd = TypeHandle(CoreLibBinder::GetElementType(ELEMENT_TYPE_U1))
-                      .MakeByRef();
+            thisHnd = TypeHandle(CoreLibBinder::GetElementType(ELEMENT_TYPE_U1)).MakeByRef();
         }
         else
         {
@@ -278,7 +293,8 @@ bool TailCallHelp::GenerateGCDescriptor(
         TypeHandle tyHnd = val.TyHnd;
         if (tyHnd.IsValueType())
         {
-            if (!tyHnd.GetMethodTable()->ContainsPointers())
+            // Byref-like structs (e.g. Span<T>) have no GC series but can contain byref fields.
+            if (!tyHnd.GetMethodTable()->ContainsGCPointers() && !tyHnd.GetMethodTable()->IsByRefLike())
             {
 #ifndef TARGET_X86
                 // The generic instantiation arg is right after this pointer
@@ -463,7 +479,7 @@ MethodDesc* TailCallHelp::CreateCallTargetStub(const TailCallInfo& info)
 
     ILCodeStream* pCode = sl.NewCodeStream(ILStubLinker::kDispatch);
 
-    // void CallTarget(void* argBuffer, void* retVal, PortableTailCallFrame* pFrame)
+    // void CallTarget(void* argBuffer, ref byte retVal, PortableTailCallFrame* pFrame)
     const int ARG_ARG_BUFFER = 0;
     const int ARG_RET_VAL = 1;
     const int ARG_PTR_FRAME = 2;
@@ -495,14 +511,17 @@ MethodDesc* TailCallHelp::CreateCallTargetStub(const TailCallInfo& info)
         EmitLoadTyHnd(pCode, arg.TyHnd);
     }
 
-    // All arguments are loaded on the stack, it is safe to disable the GC reporting of ArgBuffer now.
-    // This is optimization to avoid extending argument lifetime unnecessarily.
-    // We still need to report the inst argument of shared generic code to prevent it from being unloaded. The inst
-    // argument is just a regular IntPtr on the stack. It is safe to stop reporting it only after the target method
-    // takes over.
-    pCode->EmitLDARG(ARG_ARG_BUFFER);
-    pCode->EmitLDC(info.ArgBufLayout.HasInstArg ? TAILCALLARGBUFFER_INSTARG_ONLY : TAILCALLARGBUFFER_ABANDONED);
-    pCode->EmitSTIND_I();
+    if (info.HasGCDescriptor)
+    {
+        // All arguments are loaded on the stack, it is safe to disable the GC reporting of ArgBuffer now.
+        // This is optimization to avoid extending argument lifetime unnecessarily.
+        // We still need to report the inst argument of shared generic code to prevent it from being unloaded. The inst
+        // argument is just a regular IntPtr on the stack. It is safe to stop reporting it only after the target method
+        // takes over.
+        pCode->EmitLDARG(ARG_ARG_BUFFER);
+        pCode->EmitLDC(info.ArgBufLayout.HasInstArg ? TAILCALLARGBUFFER_INSTARG_ONLY : TAILCALLARGBUFFER_INACTIVE);
+        pCode->EmitSTIND_I4();
+    }
 
     int numRetVals = info.CallSiteSig->IsReturnTypeVoid() ? 0 : 1;
     // Normally there will not be any target and we just emit a normal
@@ -615,7 +634,8 @@ void TailCallHelp::CreateCallTargetStubSig(const TailCallInfo& info, SigBuilder*
     sig->AppendElementType(ELEMENT_TYPE_I);
 
     // Return value
-    sig->AppendElementType(ELEMENT_TYPE_I);
+    sig->AppendElementType(ELEMENT_TYPE_BYREF);
+    sig->AppendElementType(ELEMENT_TYPE_U1);
 
     // Pointer to tail call frame
     sig->AppendElementType(ELEMENT_TYPE_I);
@@ -630,49 +650,28 @@ void TailCallHelp::CreateCallTargetStubSig(const TailCallInfo& info, SigBuilder*
 #endif // _DEBUG
 }
 
-// Get TypeHandle for ByReference<System.Byte>
-static TypeHandle GetByReferenceOfByteType()
+static TypeHandle GetByReferenceType()
 {
-    TypeHandle byteTH(CoreLibBinder::GetElementType(ELEMENT_TYPE_U1));
-    Instantiation byteInst(&byteTH, 1);
-    TypeHandle th = TypeHandle(CoreLibBinder::GetClass(CLASS__BYREFERENCE)).Instantiate(byteInst);
+    TypeHandle th = TypeHandle(CoreLibBinder::GetClass(CLASS__BYREFERENCE));
     return th;
 }
 
-// Get MethodDesc* for ByReference<System.Byte>::get_Value
-static MethodDesc* GetByReferenceOfByteValueGetter()
+static FieldDesc* GetByReferenceValueField()
 {
-    MethodDesc* getter = CoreLibBinder::GetMethod(METHOD__BYREFERENCE__GET_VALUE);
-    getter =
-        MethodDesc::FindOrCreateAssociatedMethodDesc(
-                getter,
-                GetByReferenceOfByteType().GetMethodTable(),
-                false,
-                Instantiation(),
-                TRUE);
-
-    return getter;
+    FieldDesc* pFD = CoreLibBinder::GetField(FIELD__BYREFERENCE__VALUE);
+    return pFD;
 }
 
-// Get MethodDesc* for ByReference<System.Byte>::.ctor
-static MethodDesc* GetByReferenceOfByteCtor()
+static MethodDesc* GetByReferenceOfCtor()
 {
-    MethodDesc* ctor = CoreLibBinder::GetMethod(METHOD__BYREFERENCE__CTOR);
-    ctor =
-        MethodDesc::FindOrCreateAssociatedMethodDesc(
-                ctor,
-                GetByReferenceOfByteType().GetMethodTable(),
-                false,
-                Instantiation(),
-                TRUE);
-
-    return ctor;
+    MethodDesc* pMD = CoreLibBinder::GetMethod(METHOD__BYREFERENCE__CTOR);
+    return pMD;
 }
 
 void TailCallHelp::EmitLoadTyHnd(ILCodeStream* stream, TypeHandle tyHnd)
 {
     if (tyHnd.IsByRef())
-        stream->EmitCALL(stream->GetToken(GetByReferenceOfByteValueGetter()), 1, 1);
+        stream->EmitLDFLD(stream->GetToken(GetByReferenceValueField()));
     else
         stream->EmitLDOBJ(stream->GetToken(tyHnd));
 }
@@ -681,8 +680,8 @@ void TailCallHelp::EmitStoreTyHnd(ILCodeStream* stream, TypeHandle tyHnd)
 {
     if (tyHnd.IsByRef())
     {
-        stream->EmitNEWOBJ(stream->GetToken(GetByReferenceOfByteCtor()), 1);
-        stream->EmitSTOBJ(stream->GetToken(GetByReferenceOfByteType()));
+        stream->EmitNEWOBJ(stream->GetToken(GetByReferenceOfCtor()), 1);
+        stream->EmitSTOBJ(stream->GetToken(GetByReferenceType()));
     }
     else
     {

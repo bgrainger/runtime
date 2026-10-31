@@ -94,8 +94,7 @@ namespace System.Runtime.Serialization.Formatters.Binary
             InvokeSerializationBinder(binder);
             objectWriter.ObjectManager.RegisterObject(obj);
 
-            ISurrogateSelector surrogateSelectorTemp;
-            if (surrogateSelector != null && (_serializationSurrogate = surrogateSelector.GetSurrogate(_objectType, context, out surrogateSelectorTemp)) != null)
+            if (surrogateSelector != null && (_serializationSurrogate = surrogateSelector.GetSurrogate(_objectType, context, out _)) != null)
             {
                 _si = new SerializationInfo(_objectType, converter);
                 if (!_objectType.IsPrimitive)
@@ -158,7 +157,7 @@ namespace System.Runtime.Serialization.Formatters.Binary
 
             if (surrogateSelector != null)
             {
-                _serializationSurrogate = surrogateSelector.GetSurrogate(objectType, context, out ISurrogateSelector surrogateSelectorTemp);
+                _serializationSurrogate = surrogateSelector.GetSurrogate(objectType, context, out _);
             }
 
             if (_serializationSurrogate != null)
@@ -168,7 +167,7 @@ namespace System.Runtime.Serialization.Formatters.Binary
                 _cache = new SerObjectInfoCache(objectType);
                 _isSi = true;
             }
-            else if (!ReferenceEquals(objectType, Converter.s_typeofObject) && Converter.s_typeofISerializable.IsAssignableFrom(objectType))
+            else if (!ReferenceEquals(objectType, typeof(object)) && typeof(ISerializable).IsAssignableFrom(objectType))
             {
                 _si = new SerializationInfo(objectType, converter);
                 _cache = new SerObjectInfoCache(objectType);
@@ -185,11 +184,10 @@ namespace System.Runtime.Serialization.Formatters.Binary
 
         private void InitSiWrite()
         {
-            SerializationInfoEnumerator? siEnum = null;
+            SerializationInfoEnumerator? siEnum;
             _isSi = true;
             Debug.Assert(_si != null);
-            siEnum = _si.GetEnumerator();
-            int infoLength = 0;
+            int infoLength;
 
             infoLength = _si.MemberCount;
 
@@ -211,10 +209,7 @@ namespace System.Runtime.Serialization.Formatters.Binary
 
             if (!_si.IsAssemblyNameSetExplicit)
             {
-                if (typeInformation == null)
-                {
-                    typeInformation = BinaryFormatter.GetTypeInformation(_si.ObjectType);
-                }
+                typeInformation ??= BinaryFormatter.GetTypeInformation(_si.ObjectType);
                 assemblyString = typeInformation.AssemblyString;
                 hasTypeForwardedFrom = typeInformation.HasTypeForwardedFrom;
             }
@@ -452,17 +447,16 @@ namespace System.Runtime.Serialization.Formatters.Binary
                 return;
             }
 
-            ISurrogateSelector? surrogateSelectorTemp = null;
             if (surrogateSelector != null)
             {
-                _serializationSurrogate = surrogateSelector.GetSurrogate(objectType, context, out surrogateSelectorTemp);
+                _serializationSurrogate = surrogateSelector.GetSurrogate(objectType, context, out _);
             }
 
             if (_serializationSurrogate != null)
             {
                 _isSi = true;
             }
-            else if (!ReferenceEquals(objectType, Converter.s_typeofObject) && Converter.s_typeofISerializable.IsAssignableFrom(objectType))
+            else if (!ReferenceEquals(objectType, typeof(object)) && typeof(ISerializable).IsAssignableFrom(objectType))
             {
                 _isSi = true;
             }
@@ -690,7 +684,7 @@ namespace System.Runtime.Serialization.Formatters.Binary
             }
 
             Type[] outMemberTypes = new Type[_cache._memberInfos.Length];
-            bool isFound = false;
+            bool isFound;
             for (int i = 0; i < _cache._memberInfos.Length; i++)
             {
                 if (!memberMissing && inMemberNames[i].Equals(_cache._memberInfos[i].Name))
@@ -715,7 +709,7 @@ namespace System.Runtime.Serialization.Formatters.Binary
                         // A field on the type isn't found. See if the field has OptionalFieldAttribute.  We only throw
                         // when the assembly format is set appropriately.
                         if (!_isSimpleAssembly &&
-                            _cache._memberInfos[i].GetCustomAttribute(typeof(OptionalFieldAttribute), inherit: false) == null)
+                            _cache._memberInfos[i].GetCustomAttribute<OptionalFieldAttribute>(inherit: false) == null)
                         {
                             Debug.Assert(_cache._memberNames != null);
                             throw new SerializationException(SR.Format(SR.Serialization_MissingMember, _cache._memberNames[i], objectType, typeof(OptionalFieldAttribute).FullName));

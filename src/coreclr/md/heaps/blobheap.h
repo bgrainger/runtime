@@ -65,7 +65,7 @@ public:
     __checkReturn
     inline HRESULT GetBlob(
               UINT32    nIndex,
-        __out DataBlob *pData)
+        _Out_ DataBlob *pData)
     {
         return m_BlobPool.GetBlob(nIndex, pData);
     }
@@ -176,7 +176,7 @@ public:
     __checkReturn
     inline HRESULT GetBlob(
               UINT32    nIndex,
-        __out DataBlob *pData)
+        _Out_ DataBlob *pData)
     {
         return m_BlobPool.GetBlob(nIndex, pData);
     }
@@ -190,7 +190,7 @@ public:
     __checkReturn
     inline HRESULT GetBlobWithSizePrefix(
               UINT32    nIndex,
-        __out DataBlob *pData)
+        _Out_ DataBlob *pData)
     {
         return m_BlobPool.GetBlobWithSizePrefix(nIndex, pData);
     }
@@ -204,9 +204,19 @@ public:
     // Fills *pcbSize with 0 on error.
     __checkReturn
     inline HRESULT GetAlignedSize(
-        __out UINT32 *pcbSize) const
+        _Out_ UINT32 *pcbSize) const
     {
-        return m_BlobPool.GetSaveSize(pcbSize);
+        S_UINT32 size = S_UINT32(m_BlobPool.GetRawSize());
+        size.AlignUp(4);
+        if (size.IsOverflow())
+        {
+            *pcbSize = 0;
+            Debug_ReportInternalError("Aligned size of blob heap overflows - we should prevent creating such heaps.");
+            return CLDB_E_INTERNALERROR;
+        }
+
+        *pcbSize = size.Value();
+        return S_OK;
     }
     // Returns TRUE if the blob heap is empty (even if it contains only default empty blob).
     inline BOOL IsEmpty() const
@@ -221,10 +231,11 @@ public:
         return const_cast<StgBlobPool &>(m_BlobPool).IsValidCookie(nIndex);
     }
 
+#ifdef FEATURE_METADATA_PERSISTENCE
     __checkReturn
     HRESULT SaveToStream_Aligned(
              UINT32   nStartIndex,
-        __in IStream *pStream) const
+        _In_ IStream *pStream) const
     {
         if (nStartIndex == 0)
         {
@@ -240,6 +251,7 @@ public:
         _ASSERTE(nStartIndex == m_BlobPool.GetOffsetOfEdit());
         return const_cast<StgBlobPool &>(m_BlobPool).PersistPartialToStream(pStream, nStartIndex);
     }
+#endif
 
 public:
     //
@@ -249,7 +261,7 @@ public:
     __checkReturn
     inline HRESULT AddBlob(
               DataBlob data,
-        __out UINT32  *pnIndex)
+        _Out_ UINT32  *pnIndex)
     {
         return m_BlobPool.AddBlob(&data, pnIndex);
     }
@@ -295,10 +307,11 @@ public:
     {
         m_BlobPool.ResetOffsetOfEdit();
     }
+#ifdef FEATURE_METADATA_PERSISTENCE
     // Gets size (in bytes) aligned to 4-bytes of adds made from the beginning of the last EnC session.
     __checkReturn
     inline HRESULT GetEnCSessionAddedHeapSize_Aligned(
-        __out UINT32 *pcbSize) const
+        _Out_ UINT32 *pcbSize) const
     {
         if (m_BlobPool.HaveEdits())
         {
@@ -308,6 +321,7 @@ public:
         *pcbSize = 0;
         return S_OK;
     }
+#endif
 
 };  // class BlobHeapRW
 

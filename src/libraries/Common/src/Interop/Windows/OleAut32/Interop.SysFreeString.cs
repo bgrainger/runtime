@@ -8,7 +8,8 @@ internal static partial class Interop
 {
     internal static partial class OleAut32
     {
-        [GeneratedDllImport(Libraries.OleAut32)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.OleAut32)]
         internal static partial void SysFreeString(IntPtr bstr);
     }
 }

@@ -126,132 +126,6 @@ LEAF_ENTRY RestoreFPUContext, _TEXT
     ret     4
 LEAF_END RestoreFPUContext, _TEXT
 
-
-LEAF_ENTRY GetSpecificCpuTypeAsm, _TEXT
-    push    ebx         // ebx is trashed by the cpuid calls
-
-    // See if the chip supports CPUID
-    pushfd
-    pop     ecx           // Get the EFLAGS
-    mov     eax, ecx      // Save for later testing
-    xor     ecx, 0x200000 // Invert the ID bit
-    push    ecx
-    popfd                 // Save the updated flags
-    pushfd
-    pop     ecx           // Retrieve the updated flags
-    xor     ecx, eax      // Test if it actually changed (bit set means yes)
-    push    eax
-    popfd                 // Restore the flags
-
-    test    ecx, 0x200000
-    jz      LOCAL_LABEL(Assume486)
-
-    xor     eax, eax
-    cpuid
-
-    test    eax, eax
-    jz      LOCAL_LABEL(Assume486)     // brif CPUID1 not allowed
-
-    mov     eax, 1
-    cpuid
-
-    // filter out everything except family and model
-    // Note that some multi-procs have different stepping number for each proc
-    and     eax, 0x0ff0
-
-    jmp     LOCAL_LABEL(CpuTypeDone)
-
-LOCAL_LABEL(Assume486):
-    mov     eax, 0x0400  // report 486
-
-LOCAL_LABEL(CpuTypeDone):
-    pop     ebx
-    ret
-LEAF_END GetSpecificCpuTypeAsm, _TEXT
-
-// uint32_t __stdcall GetSpecificCpuFeaturesAsm(uint32_t *pInfo);
-LEAF_ENTRY GetSpecificCpuFeaturesAsm, _TEXT
-    push    ebx         // ebx is trashed by the cpuid calls
-
-    // See if the chip supports CPUID
-    pushfd
-    pop     ecx          // Get the EFLAGS
-    mov     eax, ecx     // Save for later testing
-    xor     ecx, 0x200000// Invert the ID bit.
-    push    ecx
-    popfd                // Save the updated flags.
-    pushfd
-    pop     ecx          // Retrieve the updated flags
-    xor     ecx, eax     // Test if it actually changed (bit set means yes)
-    push    eax
-    popfd                // Restore the flags
-
-    test    ecx, 0x200000
-    jz      LOCAL_LABEL(CpuFeaturesFail)
-
-    xor     eax, eax
-    cpuid
-
-    test    eax, eax
-    jz      LOCAL_LABEL(CpuFeaturesDone) // br if CPUID1 not allowed
-
-    mov     eax, 1
-    cpuid
-    mov     eax, edx        // return all feature flags
-    mov     edx, [esp + 8]
-    test    edx, edx
-    jz      LOCAL_LABEL(CpuFeaturesDone)
-    mov     [edx],ebx       // return additional useful information
-    jmp     LOCAL_LABEL(CpuFeaturesDone)
-
-LOCAL_LABEL(CpuFeaturesFail):
-    xor     eax, eax    // Nothing to report
-
-LOCAL_LABEL(CpuFeaturesDone):
-    pop     ebx
-    ret     4
-LEAF_END GetSpecificCpuFeaturesAsm, _TEXT
-
-
-// -----------------------------------------------------------------------
-//  The out-of-line portion of the code to enable preemptive GC.
-//  After the work is done, the code jumps back to the "pRejoinPoint"
-//  which should be emitted right after the inline part is generated.
-//
-//  Assumptions:
-//       ebx = Thread
-//  Preserves
-//       all registers except ecx.
-//
-// -----------------------------------------------------------------------
-NESTED_ENTRY StubRareEnable, _TEXT, NoHandler
-    push    eax
-    push    edx
-
-    push    ebx
-
-    CHECK_STACK_ALIGNMENT
-    call    C_FUNC(StubRareEnableWorker)
-
-    pop     edx
-    pop     eax
-    ret
-NESTED_END StubRareEnable, _TEXT
-
-NESTED_ENTRY StubRareDisableTHROW, _TEXT, NoHandler
-    push    eax
-    push    edx
-
-    push    ebx     // Thread
-
-    CHECK_STACK_ALIGNMENT
-    call    C_FUNC(StubRareDisableTHROWWorker)
-
-    pop     edx
-    pop     eax
-    ret
-NESTED_END StubRareDisableTHROW, _TEXT
-
 // ------------------------------------------------------------------------------
 //  This helper routine enregisters the appropriate arguments and makes the
 //  actual call.
@@ -301,10 +175,12 @@ LOCAL_LABEL(donestack):
 
     CHECK_STACK_ALIGNMENT
     call    [ebx + CallDescrData__pTarget]
+LOCAL_LABEL(CallDescrWorkerInternalReturnAddress):
+
 #ifdef _DEBUG
-    nop     // This is a tag that we use in an assert.  Fcalls expect to
-            // be called from Jitted code or from certain blessed call sites like
-            // this one.  (See HelperMethodFrame::InsureInit)
+    nop     // Debug-only tag used in asserts.
+            // FCalls expect to be called from Jitted code or specific approved call sites,
+            // like this one.
 #endif
 
     // Save FP return value if necessary
@@ -339,84 +215,11 @@ LOCAL_LABEL(ReturnsFloat):
 LOCAL_LABEL(ReturnsDouble):
     fstp    QWORD PTR [ebx + CallDescrData__returnValue]  // Spill the Double return value
     jmp     LOCAL_LABEL(Epilog)
+
+PATCH_LABEL CallDescrWorkerInternalReturnAddressOffset
+    .word LOCAL_LABEL(CallDescrWorkerInternalReturnAddress) - C_FUNC(CallDescrWorkerInternal)
+
 NESTED_END CallDescrWorkerInternal, _TEXT
-
-#ifdef _DEBUG
-// int __fastcall HelperMethodFrameRestoreState(HelperMethodFrame*, struct MachState *)
-LEAF_ENTRY HelperMethodFrameRestoreState, _TEXT
-    mov         eax, edx        // eax = MachState*
-#else // _DEBUG
-// int __fastcall HelperMethodFrameRestoreState(struct MachState *)
-LEAF_ENTRY HelperMethodFrameRestoreState, _TEXT
-    mov         eax, ecx        // eax = MachState*
-#endif // _DEBUG
-    // restore the registers from the m_MachState stucture.  Note that
-    // we only do this for register that where not saved on the stack
-    // at the time the machine state snapshot was taken.
-
-    cmp         dword ptr [eax+MachState__pRetAddr], 0
-
-#ifdef _DEBUG
-    jnz         LOCAL_LABEL(noConfirm)
-
-    mov         eax, ebp
-
-    // Create a minimal EBP-frame (for clean stack trace under debugger)
-    PROLOG_BEG
-    PROLOG_END
-
-    // Call HelperMethodFrameConfirmState (with stack alignment padding)
-    #define STACK_ALIGN_PADDING 4
-    sub         esp, STACK_ALIGN_PADDING
-    push        eax     // eax = ebp
-    push        ebx
-    push        edi
-    push        esi
-    push        ecx     // HelperFrame*
-    CHECK_STACK_ALIGNMENT
-    call        C_FUNC(HelperMethodFrameConfirmState)
-    add         esp, STACK_ALIGN_PADDING
-    #undef STACK_ALIGN_PADDING
-
-    // Restore EBP
-    EPILOG_BEG
-    EPILOG_END
-
-    // on return, eax = MachState*
-    cmp         DWORD PTR [eax + MachState__pRetAddr], 0
-LOCAL_LABEL(noConfirm):
-#endif // _DEBUG
-
-    jz          LOCAL_LABEL(doRet)
-
-    lea         edx, [eax + MachState__esi]     // Did we have to spill ESI
-    cmp         [eax + MachState__pEsi], edx
-    jnz         LOCAL_LABEL(SkipESI)
-    mov         esi, [edx]                      // Then restore it
-
-LOCAL_LABEL(SkipESI):
-    lea         edx, [eax + MachState__edi]     // Did we have to spill EDI
-    cmp         [eax + MachState__pEdi], edx
-    jnz         LOCAL_LABEL(SkipEDI)
-    mov         edi, [edx]                      // Then restore it
-
-LOCAL_LABEL(SkipEDI):
-    lea         edx, [eax + MachState__ebx]     // Did we have to spill EBX
-    cmp         [eax + MachState__pEbx], edx
-    jnz         LOCAL_LABEL(SkipEBX)
-    mov         ebx, [edx]                      // Then restore it
-
-LOCAL_LABEL(SkipEBX):
-    lea         edx, [eax + MachState__ebp]     // Did we have to spill EBP
-    cmp         [eax + MachState__pEbp], edx
-    jnz         LOCAL_LABEL(SkipEBP)
-    mov         ebp, [edx]                      // Then restore it
-
-LOCAL_LABEL(SkipEBP):
-LOCAL_LABEL(doRet):
-    xor         eax, eax
-    ret
-LEAF_END HelperMethodFrameRestoreState, _TEXT
 
 #ifdef FEATURE_HIJACK
 
@@ -496,8 +299,8 @@ NESTED_END OnHijackFPTripThread, _TEXT
 
 // ==========================================================================
 //  This function is reached only via the embedded ImportThunkGlue code inside
-//  an NDirectMethodDesc. It's purpose is to load the DLL associated with an
-//  N/Direct method, then backpatch the DLL target into the methoddesc.
+//  an PInvokeMethodDesc. It's purpose is to load the DLL associated with an
+//  PInvoke method, then backpatch the DLL target into the methoddesc.
 //
 //  Initial state:
 //
@@ -515,44 +318,24 @@ NESTED_END OnHijackFPTripThread, _TEXT
 //
 //
 // ==========================================================================
-LEAF_ENTRY NDirectImportThunk, _TEXT
+LEAF_ENTRY PInvokeImportThunk, _TEXT
     // Preserve argument registers
     push    ecx
     push    edx
 
     // Invoke the function that does the real work.
     push    eax
-    call    C_FUNC(NDirectImportWorker)
+    call    C_FUNC(PInvokeImportWorker)
 
     // Restore argument registers
     pop     edx
     pop     ecx
 
-    // If we got back from NDirectImportWorker, the MD has been successfully
+    // If we got back from PInvokeImportWorker, the MD has been successfully
     // linked and "eax" contains the DLL target. Proceed to execute the
     // original DLL call.
     jmp     eax     // Jump to DLL target
-LEAF_END NDirectImportThunk, _TEXT
-
-// ==========================================================================
-// The call in fixup precode initally points to this function.
-// The pupose of this function is to load the MethodDesc and forward the call the prestub.
-LEAF_ENTRY PrecodeFixupThunk, _TEXT
-    // Pop the return address. It points right after the call instruction in the precode.
-    pop     eax
-    push    esi
-    push    edi
-
-    // Inline computation done by FixupPrecode::GetMethodDesc()
-    movzx   esi, BYTE PTR [eax + 2]    // m_PrecodeChunkIndex
-    movzx   edi, BYTE PTR [eax + 1]    // m_MethodDescChunkIndex
-    mov     eax, DWORD PTR [eax + esi*8 +3]
-    lea     eax, [eax + edi*4]
-
-    pop     edi
-    pop     esi
-    jmp     C_FUNC(ThePreStub)
-LEAF_END PrecodeFixupThunk, _TEXT
+LEAF_END PInvokeImportThunk, _TEXT
 
 //
 // Used to get the current instruction pointer value
@@ -563,146 +346,12 @@ LEAF_ENTRY GetCurrentIP, _TEXT
     ret
 LEAF_END GetCurrentIP, _TEXT
 
-// LPVOID __stdcall GetCurrentSP(void);
+// void* GetCurrentSP(void);
 LEAF_ENTRY GetCurrentSP, _TEXT
     mov     eax, esp
     add     eax, 4
     ret
 LEAF_END GetCurrentSP, _TEXT
-
-// ==========================================================================
-// Invoked for vararg forward P/Invoke calls as a stub.
-// Except for secret return buffer, arguments come on the stack so EDX is available as scratch.
-// EAX       - the NDirectMethodDesc
-// ECX       - may be return buffer address
-// [ESP + 4] - the VASigCookie
-//
-NESTED_ENTRY VarargPInvokeStub, _TEXT, NoHandler
-    // EDX <- VASigCookie
-    mov     edx, [esp + 4]           // skip retaddr
-
-    mov     edx, [edx + VASigCookie__StubOffset]
-    test    edx, edx
-
-    jz      LOCAL_LABEL(GoCallVarargWorker)
-    // ---------------------------------------
-
-    // EAX contains MD ptr for the IL stub
-    jmp     edx
-
-LOCAL_LABEL(GoCallVarargWorker):
-    //
-    // MD ptr in EAX, VASigCookie ptr at [esp+4]
-    //
-    STUB_PROLOG
-
-    mov         esi, esp
-
-    // save pMD
-    push        eax
-
-    push        eax                     // pMD
-    push        dword ptr [esi + 4*7]   // pVaSigCookie
-    push        esi                     // pTransitionBlock
-
-    call        C_FUNC(VarargPInvokeStubWorker)
-
-    // restore pMD
-    pop     eax
-
-    STUB_EPILOG
-
-    // jump back to the helper - this time it won't come back here as the stub already exists
-    jmp C_FUNC(VarargPInvokeStub)
-NESTED_END VarargPInvokeStub, _TEXT
-
-// ==========================================================================
-// Invoked for marshaling-required unmanaged CALLI calls as a stub.
-// EAX       - the unmanaged target
-// ECX, EDX  - arguments
-// EBX       - the VASigCookie
-//
-LEAF_ENTRY GenericPInvokeCalliHelper, _TEXT
-
-    cmp     dword ptr [ebx + VASigCookie__StubOffset], 0
-    jz      LOCAL_LABEL(GoCallCalliWorker)
-
-    // Stub is already prepared, just jump to it
-    jmp     dword ptr [ebx + VASigCookie__StubOffset]
-
-LOCAL_LABEL(GoCallCalliWorker):
-    //
-    // call the stub generating worker
-    // target ptr in EAX, VASigCookie ptr in EBX
-    //
-
-    STUB_PROLOG
-
-    mov         esi, esp
-
-    // save target
-    push        eax
-
-    #define STACK_ALIGN_PADDING 4
-    sub         esp, STACK_ALIGN_PADDING    // pass stack aligned to 0x10
-    push        eax                         // unmanaged target
-    push        ebx                         // pVaSigCookie (first stack argument)
-    push        esi                         // pTransitionBlock
-
-    CHECK_STACK_ALIGNMENT
-    call        C_FUNC(GenericPInvokeCalliStubWorker)
-    add         esp, STACK_ALIGN_PADDING    // restore alignment, callee pop args
-    #undef STACK_ALIGN_PADDING
-
-    // restore target
-    pop     eax
-
-    STUB_EPILOG
-
-    // jump back to the helper - this time it won't come back here as the stub already exists
-    jmp C_FUNC(GenericPInvokeCalliHelper)
-LEAF_END GenericPInvokeCalliHelper, _TEXT
-
-// ==========================================================================
-NESTED_ENTRY ExternalMethodFixupStub, _TEXT_ NoHandler
-    // pop off the return address to the stub
-    // leaving the actual caller's return address on top of the stack
-    pop     eax
-
-    STUB_PROLOG
-
-    mov         esi, esp
-
-    // EAX is return address into CORCOMPILE_EXTERNAL_METHOD_THUNK. Subtract 5 to get start address.
-    sub         eax, 5
-
-.att_syntax
-    pushl       $0
-    pushl       $0
-.intel_syntax noprefix
-
-    push        eax
-
-    // pTransitionBlock
-    push        esi
-
-    call        C_FUNC(ExternalMethodFixupWorker)
-
-    // eax now contains replacement stub. PreStubWorker will never return
-    // NULL (it throws an exception if stub creation fails.)
-
-    // From here on, mustn't trash eax
-
-    STUB_EPILOG
-
-PATCH_LABEL ExternalMethodFixupPatchLabel
-    // Tailcall target
-    jmp eax
-
-    // This will never be executed. It is just to help out stack-walking logic
-    // which disassembles the epilog to unwind the stack.
-    ret
-NESTED_END ExternalMethodFixupStub, _TEXT
 
 #ifdef FEATURE_READYTORUN
 NESTED_ENTRY DynamicHelperArgsStub, _TEXT, NoHandler
@@ -739,8 +388,8 @@ NESTED_ENTRY DelayLoad_MethodCall, _TEXT, NoHandler
 
     STUB_EPILOG
 
-    // Share the patch label
-    jmp C_FUNC(ExternalMethodFixupPatchLabel)
+    // Tailcall target
+    jmp eax
 
     // This will never be executed. It is just to help out stack-walking logic
     // which disassembles the epilog to unwind the stack.
@@ -844,7 +493,7 @@ DYNAMICHELPER (DynamicHelperFrameFlags_ObjectArg | DynamicHelperFrameFlags_Objec
 //    siteAddrForRegisterIndirect (used only if this is a RegisterIndirect dispatch call)
 //    return address of caller to stub
 //
-// Please see vm/i386/virtualcallstubcpu.hpp for details
+// Please see asmhelpers.asm for details
 //
 NESTED_ENTRY ResolveWorkerAsmStub, _TEXT, NoHandler
     //
@@ -902,27 +551,6 @@ NESTED_ENTRY ResolveWorkerAsmStub, _TEXT, NoHandler
     // Now jump to the target
     jmp         eax // continue on into the method
 NESTED_END ResolveWorkerAsmStub, _TEXT
-
-#ifdef FEATURE_STUBS_AS_IL
-// ==========================================================================
-// void SinglecastDelegateInvokeStub();
-//
-LEAF_ENTRY SinglecastDelegateInvokeStub, _TEXT
-
-    test        ecx, ecx
-    jz          LOCAL_LABEL(NullObject)
-
-    mov         eax, [ecx + DelegateObject___methodPtr]
-    mov         ecx, [ecx + DelegateObject___target]    // replace "this" pointer
-    jmp         eax
-
-LOCAL_LABEL(NullObject):
-
-    mov         ecx, CORINFO_NullReferenceException_ASM
-    jmp         C_FUNC(JIT_InternalThrow)
-
-LEAF_END SinglecastDelegateInvokeStub, _TEXT
-#endif // FEATURE_STUBS_AS_IL
 
 // =======================================================================================
 // void ResolveWorkerChainLookupAsmStub();
@@ -995,8 +623,7 @@ LOCAL_LABEL(main_loop):
     mov     ecx, eax
 
     CHECK_STACK_ALIGNMENT
-    // call C_FUNC(VirtualCallStubManager::PromoteChainEntry)
-    call    C_FUNC(_ZN22VirtualCallStubManager17PromoteChainEntryEP16ResolveCacheElem)
+    call    C_FUNC(VSD_PromoteChainEntry)
 
     add     esp, STACK_ALIGN_PADDING
     #undef  STACK_ALIGN_PADDING
@@ -1056,6 +683,8 @@ NESTED_ENTRY BackPatchWorkerAsmStub, _TEXT, NoHandler
     EPILOG_END
     ret
 NESTED_END BackPatchWorkerAsmStub, _TEXT
+
+#ifdef PROFILING_SUPPORTED
 
 NESTED_ENTRY ProfileEnterNaked, _TEXT, NoHandler
     push    esi
@@ -1255,15 +884,11 @@ NESTED_ENTRY JIT_ProfilerEnterLeaveTailcallStub, _TEXT, NoHandler
     ret
 NESTED_END JIT_ProfilerEnterLeaveTailcallStub, _TEXT
 
+#endif // PROFILING_SUPPORTED
+
 #ifdef FEATURE_TIERED_COMPILATION
 
-LEAF_ENTRY OnCallCountThresholdReachedStub, _TEXT
-    // Pop the return address (the stub-identifying token) into a non-argument volatile register that can be trashed
-    pop     eax
-    jmp     C_FUNC(OnCallCountThresholdReachedStub2)
-LEAF_END OnCallCountThresholdReachedStub, _TEXT
-
-NESTED_ENTRY OnCallCountThresholdReachedStub2, _TEXT, NoHandler
+NESTED_ENTRY OnCallCountThresholdReachedStub, _TEXT, NoHandler
     STUB_PROLOG
 
     mov     esi, esp
@@ -1286,6 +911,92 @@ NESTED_ENTRY OnCallCountThresholdReachedStub2, _TEXT, NoHandler
     // This will never be executed. It is just to help out stack-walking logic
     // which disassembles the epilog to unwind the stack.
     ret
-NESTED_END OnCallCountThresholdReachedStub2, _TEXT
+NESTED_END OnCallCountThresholdReachedStub, _TEXT
 
 #endif // FEATURE_TIERED_COMPILATION
+
+//edi -This pointer
+//esi -ReturnBuffer
+LEAF_ENTRY ThisPtrRetBufPrecodeWorker, _TEXT
+    mov  eax, [eax + ThisPtrRetBufPrecodeData__Target]
+    // Use XOR swap technique to set avoid the need to spill to the stack
+    xor edi, esi
+    xor esi, edi
+    xor edi, esi
+    jmp eax
+LEAF_END ThisPtrRetBufPrecodeWorker, _TEXT
+
+//==========================================================================
+// Capture a transition block with register values and call the IL_Throw
+// implementation written in C.
+//
+// Input state:
+//   ECX = Pointer to exception object
+//==========================================================================
+LEAF_ENTRY IL_Throw, _TEXT
+    STUB_PROLOG
+
+    mov     edx, esp
+
+    #define STACK_ALIGN_PADDING 4
+    sub     esp, STACK_ALIGN_PADDING
+
+    CHECK_STACK_ALIGNMENT
+
+    call    C_FUNC(IL_Throw_Impl)
+
+    add     esp, STACK_ALIGN_PADDING
+    #undef STACK_ALIGN_PADDING
+
+    STUB_EPILOG
+    ret     4
+LEAF_END IL_Throw, _TEXT
+
+//==========================================================================
+// Capture a transition block with register values and call the IL_ThrowExact
+// implementation written in C.
+//
+// Input state:
+//   ECX = Pointer to exception object
+//==========================================================================
+LEAF_ENTRY IL_ThrowExact, _TEXT
+    STUB_PROLOG
+
+    mov     edx, esp
+
+    #define STACK_ALIGN_PADDING 4
+    sub     esp, STACK_ALIGN_PADDING
+
+    CHECK_STACK_ALIGNMENT
+
+    call    C_FUNC(IL_ThrowExact_Impl)
+
+    add     esp, STACK_ALIGN_PADDING
+    #undef STACK_ALIGN_PADDING
+
+    STUB_EPILOG
+    ret     4
+LEAF_END IL_ThrowExact, _TEXT
+
+//==========================================================================
+// Capture a transition block with register values and call the IL_Rethrow
+// implementation written in C.
+//==========================================================================
+LEAF_ENTRY IL_Rethrow, _TEXT
+    STUB_PROLOG
+
+    mov     ecx, esp
+
+    #define STACK_ALIGN_PADDING 4
+    sub     esp, STACK_ALIGN_PADDING
+
+    CHECK_STACK_ALIGNMENT
+
+    call    C_FUNC(IL_Rethrow_Impl)
+
+    add     esp, STACK_ALIGN_PADDING
+    #undef STACK_ALIGN_PADDING
+
+    STUB_EPILOG
+    ret     4
+LEAF_END IL_Rethrow

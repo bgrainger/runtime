@@ -16,15 +16,13 @@ namespace System.Net.Http
 {
     internal sealed class WinHttpRequestStream : Stream
     {
-        private static readonly byte[] s_crLfTerminator = new byte[] { 0x0d, 0x0a }; // "\r\n"
-        private static readonly byte[] s_endChunk = new byte[] { 0x30, 0x0d, 0x0a, 0x0d, 0x0a }; // "0\r\n\r\n"
+        private static readonly byte[] s_crLfTerminator = "\r\n"u8.ToArray();
+        private static readonly byte[] s_endChunk = "0\r\n\r\n"u8.ToArray();
 
         private volatile bool _disposed;
         private readonly WinHttpRequestState _state;
         private readonly SafeWinHttpHandle _requestHandle;
         private readonly WinHttpChunkMode _chunkedMode;
-
-        private GCHandle _cachedSendPinnedBuffer;
 
         internal WinHttpRequestStream(WinHttpRequestState state, WinHttpChunkMode chunkedMode)
         {
@@ -99,10 +97,7 @@ namespace System.Net.Http
 
         public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken token)
         {
-            if (buffer == null)
-            {
-                throw new ArgumentNullException(nameof(buffer));
-            }
+            ArgumentNullException.ThrowIfNull(buffer);
 
             if (offset < 0)
             {
@@ -134,7 +129,7 @@ namespace System.Net.Http
                 throw new InvalidOperationException(SR.net_http_no_concurrent_io_allowed);
             }
 
-            return InternalWriteAsync(buffer, offset, count, token);
+            return InternalWriteAsync(buffer, offset, count);
         }
 
         public override void Write(byte[] buffer, int offset, int count)
@@ -143,10 +138,10 @@ namespace System.Net.Http
         }
 
         public override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback? asyncCallback, object? asyncState) =>
-            TaskToApm.Begin(WriteAsync(buffer, offset, count, CancellationToken.None), asyncCallback, asyncState);
+            TaskToAsyncResult.Begin(WriteAsync(buffer, offset, count, CancellationToken.None), asyncCallback, asyncState);
 
         public override void EndWrite(IAsyncResult asyncResult) =>
-            TaskToApm.End(asyncResult);
+            TaskToAsyncResult.End(asyncResult);
 
         public override long Seek(long offset, SeekOrigin origin)
         {
@@ -166,31 +161,23 @@ namespace System.Net.Http
             throw new NotSupportedException();
         }
 
-        internal async Task EndUploadAsync(CancellationToken token)
+        internal async Task EndUploadAsync()
         {
             switch (_chunkedMode)
             {
                 case WinHttpChunkMode.Manual:
-                    await InternalWriteDataAsync(s_endChunk, 0, s_endChunk.Length, token).ConfigureAwait(false);
+                    await InternalWriteDataAsync(s_endChunk, 0, s_endChunk.Length).ConfigureAwait(false);
                     break;
                 case WinHttpChunkMode.Automatic:
                     // Send empty DATA frame with END_STREAM flag.
-                    await InternalWriteEndDataAsync(token).ConfigureAwait(false);
+                    await InternalWriteEndDataAsync().ConfigureAwait(false);
                     break;
             }
         }
 
         protected override void Dispose(bool disposing)
         {
-            if (!_disposed)
-            {
-                _disposed = true;
-                if (_cachedSendPinnedBuffer.IsAllocated)
-                {
-                    _cachedSendPinnedBuffer.Free();
-                }
-            }
-
+            _disposed = true;
             base.Dispose(disposing);
         }
 
@@ -202,7 +189,7 @@ namespace System.Net.Http
             }
         }
 
-        private Task InternalWriteAsync(byte[] buffer, int offset, int count, CancellationToken token)
+        private Task InternalWriteAsync(byte[] buffer, int offset, int count)
         {
             if (count == 0)
             {
@@ -210,11 +197,11 @@ namespace System.Net.Http
             }
 
             return _chunkedMode == WinHttpChunkMode.Manual ?
-                InternalWriteChunkedModeAsync(buffer, offset, count, token) :
-                InternalWriteDataAsync(buffer, offset, count, token);
+                InternalWriteChunkedModeAsync(buffer, offset, count) :
+                InternalWriteDataAsync(buffer, offset, count);
         }
 
-        private async Task InternalWriteChunkedModeAsync(byte[] buffer, int offset, int count, CancellationToken token)
+        private async Task InternalWriteChunkedModeAsync(byte[] buffer, int offset, int count)
         {
             // WinHTTP does not fully support chunked uploads. It simply allows one to omit the 'Content-Length' header
             // and instead use the 'Transfer-Encoding: chunked' header. The caller is still required to encode the
@@ -224,26 +211,17 @@ namespace System.Net.Http
 
             byte[] chunkSize = Encoding.UTF8.GetBytes($"{count:x}\r\n");
 
-            await InternalWriteDataAsync(chunkSize, 0, chunkSize.Length, token).ConfigureAwait(false);
+            await InternalWriteDataAsync(chunkSize, 0, chunkSize.Length).ConfigureAwait(false);
 
-            await InternalWriteDataAsync(buffer, offset, count, token).ConfigureAwait(false);
-            await InternalWriteDataAsync(s_crLfTerminator, 0, s_crLfTerminator.Length, token).ConfigureAwait(false);
+            await InternalWriteDataAsync(buffer, offset, count).ConfigureAwait(false);
+            await InternalWriteDataAsync(s_crLfTerminator, 0, s_crLfTerminator.Length).ConfigureAwait(false);
         }
 
-        private Task<bool> InternalWriteDataAsync(byte[] buffer, int offset, int count, CancellationToken token)
+        private Task<bool> InternalWriteDataAsync(byte[] buffer, int offset, int count)
         {
             Debug.Assert(count > 0);
 
-            if (!_cachedSendPinnedBuffer.IsAllocated || _cachedSendPinnedBuffer.Target != buffer)
-            {
-                if (_cachedSendPinnedBuffer.IsAllocated)
-                {
-                    _cachedSendPinnedBuffer.Free();
-                }
-
-                _cachedSendPinnedBuffer = GCHandle.Alloc(buffer, GCHandleType.Pinned);
-            }
-
+            _state.PinSendBuffer(buffer);
             _state.TcsInternalWriteDataToRequestStream =
                 new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -263,7 +241,7 @@ namespace System.Net.Http
             return _state.TcsInternalWriteDataToRequestStream.Task;
         }
 
-        private Task<bool> InternalWriteEndDataAsync(CancellationToken token)
+        private Task<bool> InternalWriteEndDataAsync()
         {
             _state.TcsInternalWriteDataToRequestStream =
                 new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);

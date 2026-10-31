@@ -10,14 +10,14 @@ namespace System.DirectoryServices.Protocols
         internal bool _needDispose;
 
         public ConnectionHandle()
-            :base(true)
+            : base(true)
         {
             Interop.Ldap.ldap_initialize(out handle, null);
             _needDispose = true;
         }
 
         internal ConnectionHandle(string uri)
-            :base(true)
+            : base(true)
         {
             Interop.Ldap.ldap_initialize(out handle, uri);
             _needDispose = true;
@@ -60,12 +60,12 @@ namespace System.DirectoryServices.Protocols
             }
         }
 
-        internal SafeBerHandle(berval value) : base(true)
+        internal SafeBerHandle(BerVal value) : base(true)
         {
             // In Linux if bv_val is null ber_init will segFault instead of returning IntPtr.Zero.
             // In Linux if bv_len is 0 ber_init returns a valid pointer which will then fail when trying to use it,
             // so we fail early by throwing exception if this is the case.
-            if (value.bv_val == IntPtr.Zero || value.bv_len == 0)
+            if (value.bv_val == IntPtr.Zero || value.bv_len.Value == 0)
             {
                 throw new BerConversionException();
             }

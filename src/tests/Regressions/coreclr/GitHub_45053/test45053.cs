@@ -3,6 +3,8 @@
 
 using System;
 using System.Collections.Generic;
+using Xunit;
+using TestLibrary;
 
 public abstract class T<TR>
 {
@@ -19,7 +21,7 @@ public abstract class TA : T<A> { }
 //    public override A GetA() => new ();
 // }
 
-    // Overriden here, in the grandson
+    // Overridden here, in the grandson
 public class TB : TA
 {
     public override B GetA() => new ();
@@ -28,12 +30,12 @@ public class A { }
 
 public class B : A { }
 
-class Program
+public class Program
 {
-    static int Main()
+    [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+    [Fact]
+    public static void TestEntryPoint()
     {
         System.Console.WriteLine((new TB() as T<A>).GetA().GetType().FullName);
-
-        return 100;
     }
 }

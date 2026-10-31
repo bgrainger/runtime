@@ -12,7 +12,7 @@ using Microsoft.Win32.SafeHandles;
 namespace System.Speech.Internal.ObjectTokens
 {
     [DebuggerDisplay("{Name}")]
-    internal class RegistryDataKey : ISpDataKey, IEnumerable<RegistryDataKey>, IDisposable
+    internal class RegistryDataKey : ISpDataKey, IEnumerable<RegistryDataKey?>, IDisposable
     {
         #region Constructors
 
@@ -55,7 +55,7 @@ namespace System.Speech.Internal.ObjectTokens
         {
         }
 
-        internal static RegistryDataKey Open(string registryPath, bool fCreateIfNotExist)
+        internal static RegistryDataKey? Open(string registryPath, bool fCreateIfNotExist)
         {
             // Sanity check
             if (string.IsNullOrEmpty(registryPath))
@@ -64,16 +64,17 @@ namespace System.Speech.Internal.ObjectTokens
             }
 
             // If the last character is a '\', get rid of it
-            registryPath = registryPath.Trim(new char[] { '\\' });
+            registryPath = registryPath.Trim('\\');
 
             string rootPath = GetFirstKeyAndParseRemainder(ref registryPath);
 
             // Get the native registry handle and subkey path
-            SafeRegistryHandle regHandle = RootHKEYFromRegPath(rootPath);
+            SafeRegistryHandle? regHandle = RootHKEYFromRegPath(rootPath);
 
             // If there's no root, we can't do anything.
             if (regHandle == null || regHandle.IsInvalid)
             {
+                regHandle?.Dispose();
                 return null;
             }
 
@@ -87,7 +88,7 @@ namespace System.Speech.Internal.ObjectTokens
             }
             else
             {
-                RegistryDataKey subKey = OpenSubKey(rootKey, registryPath, fCreateIfNotExist);
+                RegistryDataKey? subKey = OpenSubKey(rootKey, registryPath, fCreateIfNotExist);
                 return subKey;
             }
         }
@@ -97,7 +98,7 @@ namespace System.Speech.Internal.ObjectTokens
             return new RegistryDataKey(keyId, hkey);
         }
 
-        private static RegistryDataKey OpenSubKey(RegistryDataKey baseKey, string registryPath, bool createIfNotExist)
+        private static RegistryDataKey? OpenSubKey(RegistryDataKey? baseKey, string? registryPath, bool createIfNotExist)
         {
             if (string.IsNullOrEmpty(registryPath) || null == baseKey)
             {
@@ -106,7 +107,7 @@ namespace System.Speech.Internal.ObjectTokens
 
             string nextKeyPath = GetFirstKeyAndParseRemainder(ref registryPath);
 
-            RegistryDataKey nextKey = createIfNotExist ? baseKey.CreateKey(nextKeyPath) : baseKey.OpenKey(nextKeyPath);
+            RegistryDataKey? nextKey = createIfNotExist ? baseKey.CreateKey(nextKeyPath) : baseKey.OpenKey(nextKeyPath);
 
             if (string.IsNullOrEmpty(registryPath))
             {
@@ -114,7 +115,7 @@ namespace System.Speech.Internal.ObjectTokens
             }
             else
             {
-                RegistryDataKey recursiveKey = OpenSubKey(nextKey, registryPath, createIfNotExist);
+                RegistryDataKey? recursiveKey = OpenSubKey(nextKey, registryPath, createIfNotExist);
                 return recursiveKey;
             }
         }
@@ -122,12 +123,13 @@ namespace System.Speech.Internal.ObjectTokens
         private static string GetTokenIdFromToken(ISpObjectToken sapiToken)
         {
             IntPtr sapiTokenId = IntPtr.Zero;
-            string tokenId;
+            string? tokenId;
 
             try
             {
                 sapiToken.GetId(out sapiTokenId);
                 tokenId = Marshal.PtrToStringUni(sapiTokenId);
+                System.Diagnostics.Debug.Assert(tokenId is not null, "sapiToken is missing an ID");
             }
             finally
             {
@@ -309,7 +311,7 @@ namespace System.Speech.Internal.ObjectTokens
         /// Reads the specified string value to the registry. If valueName is
         /// NULL then the default value of the registry key is read.
         /// </summary>
-        internal bool TryGetString(string valueName, out string value)
+        internal bool TryGetString(string? valueName, out string value)
         {
             if (null == valueName)
             {
@@ -338,7 +340,7 @@ namespace System.Speech.Internal.ObjectTokens
         /// <summary>
         /// Reads the specified DWORD from the registry.
         /// </summary>
-        internal bool TryGetDWORD(string valueName, ref uint value)
+        internal bool TryGetDWORD(string? valueName, ref uint value)
         {
             if (string.IsNullOrEmpty(valueName))
             {
@@ -352,7 +354,7 @@ namespace System.Speech.Internal.ObjectTokens
         /// Opens a sub-key and returns a new object which supports SpDataKey
         /// for the specified sub-key.
         /// </summary>
-        internal RegistryDataKey OpenKey(string keyName)
+        internal RegistryDataKey? OpenKey(string keyName)
         {
             Helpers.ThrowIfEmptyOrNull(keyName, nameof(keyName));
 
@@ -371,7 +373,7 @@ namespace System.Speech.Internal.ObjectTokens
         /// Creates a sub-key and returns a new object which supports SpDataKey
         /// for the specified sub-key.
         /// </summary>
-        internal RegistryDataKey CreateKey(string keyName)
+        internal RegistryDataKey? CreateKey(string keyName)
         {
             Helpers.ThrowIfEmptyOrNull(keyName, nameof(keyName));
 
@@ -406,7 +408,7 @@ namespace System.Speech.Internal.ObjectTokens
 
         #region IEnumerable implementation
 
-        IEnumerator<RegistryDataKey> IEnumerable<RegistryDataKey>.GetEnumerator()
+        IEnumerator<RegistryDataKey?> IEnumerable<RegistryDataKey?>.GetEnumerator()
         {
             string childKeyName = string.Empty;
 
@@ -418,7 +420,7 @@ namespace System.Speech.Internal.ObjectTokens
 
         IEnumerator IEnumerable.GetEnumerator()
         {
-            return ((IEnumerable<RegistryDataKey>)this).GetEnumerator();
+            return ((IEnumerable<RegistryDataKey?>)this).GetEnumerator();
         }
 
         #endregion
@@ -431,7 +433,7 @@ namespace System.Speech.Internal.ObjectTokens
             if (disposing && _sapiRegKey != null && _disposeSapiKey)
             {
                 Marshal.ReleaseComObject(_sapiRegKey);
-                _sapiRegKey = null;
+                _sapiRegKey = null!;
             }
         }
 
@@ -449,9 +451,9 @@ namespace System.Speech.Internal.ObjectTokens
 
         #region Private Methods
 
-        private static SafeRegistryHandle RootHKEYFromRegPath(string rootPath)
+        private static SafeRegistryHandle? RootHKEYFromRegPath(string rootPath)
         {
-            RegistryKey rootKey = RegKeyFromRootPath(rootPath);
+            RegistryKey? rootKey = RegKeyFromRootPath(rootPath);
 
             if (null == rootKey)
             {
@@ -470,7 +472,7 @@ namespace System.Speech.Internal.ObjectTokens
             if (index >= 0)
             {
                 firstKey = registryPath.Substring(0, index);
-                registryPath = registryPath.Substring(index + 1, registryPath.Length - index - 1);
+                registryPath = registryPath.Substring(index + 1);
             }
             else
             {
@@ -481,14 +483,15 @@ namespace System.Speech.Internal.ObjectTokens
             return firstKey;
         }
 
-        private static RegistryKey RegKeyFromRootPath(string rootPath)
+        private static RegistryKey? RegKeyFromRootPath(string rootPath)
         {
-            RegistryKey[] roots = new RegistryKey[] {
+            ReadOnlySpan<RegistryKey> roots =
+            [
                 Registry.ClassesRoot,
                 Registry.LocalMachine,
                 Registry.CurrentUser,
                 Registry.CurrentConfig
-            };
+            ];
 
             foreach (RegistryKey key in roots)
             {

@@ -15,10 +15,17 @@ namespace Internal.TypeSystem
         Windows,
         Linux,
         OSX,
+        MacCatalyst,
+        iOS,
+        iOSSimulator,
+        tvOS,
+        tvOSSimulator,
         FreeBSD,
         NetBSD,
+        OpenBSD,
         SunOS,
-        WebAssembly,
+        Browser,
+        Wasi
     }
 
     public enum TargetAbi
@@ -27,19 +34,11 @@ namespace Internal.TypeSystem
         /// <summary>
         /// Cross-platform console model
         /// </summary>
-        CoreRT,
+        NativeAot,
         /// <summary>
         /// model for armel execution model
         /// </summary>
-        CoreRTArmel,
-        /// <summary>
-        /// Jit runtime ABI
-        /// </summary>
-        Jit,
-        /// <summary>
-        /// Cross-platform portable C++ codegen
-        /// </summary>
-        CppCodegen,
+        NativeAotArmel,
     }
 
     /// <summary>
@@ -80,6 +79,8 @@ namespace Internal.TypeSystem
                 {
                     case TargetArchitecture.ARM64:
                     case TargetArchitecture.X64:
+                    case TargetArchitecture.LoongArch64:
+                    case TargetArchitecture.RiscV64:
                         return 8;
                     case TargetArchitecture.ARM:
                     case TargetArchitecture.X86:
@@ -95,7 +96,7 @@ namespace Internal.TypeSystem
         {
             get
             {
-                return (Abi != TargetAbi.CppCodegen) && (Architecture != TargetArchitecture.Wasm32);
+                return Architecture != TargetArchitecture.Wasm32;
             }
         }
 
@@ -108,17 +109,25 @@ namespace Internal.TypeSystem
             {
                 if (Architecture == TargetArchitecture.ARM)
                 {
-                    // Corresponds to alignment required for __m128 (there's no __m256)
+                    // Corresponds to alignment required for __m128 (there's no __m256/__m512)
                     return 8;
                 }
                 else if (Architecture == TargetArchitecture.ARM64)
                 {
-                    // Corresponds to alignmet required for __m256
+                    // Corresponds to alignmet required for __m128 (there's no __m256/__m512)
+                    return 16;
+                }
+                else if (Architecture == TargetArchitecture.LoongArch64)
+                {
+                    return 16;
+                }
+                else if (Architecture == TargetArchitecture.RiscV64)
+                {
                     return 16;
                 }
 
-                // 256-bit vector is the type with the higest alignment we support
-                return 32;
+                // 512-bit vector is the type with the highest alignment we support
+                return 64;
             }
         }
 
@@ -131,8 +140,8 @@ namespace Internal.TypeSystem
         {
             get
             {
-                // We use default packing size of 32 irrespective of the platform.
-                return 32;
+                // We use default packing size of 64 irrespective of the platform.
+                return 64;
             }
         }
 
@@ -170,8 +179,10 @@ namespace Internal.TypeSystem
                 switch (Architecture)
                 {
                     case TargetArchitecture.ARM:
+                    case TargetArchitecture.RiscV64:
                         return 2;
                     case TargetArchitecture.ARM64:
+                    case TargetArchitecture.LoongArch64:
                         return 4;
                     default:
                         return 1;
@@ -276,11 +287,24 @@ namespace Internal.TypeSystem
                         return new LayoutInt(8);
                 case TargetArchitecture.X64:
                 case TargetArchitecture.ARM64:
+                case TargetArchitecture.LoongArch64:
+                case TargetArchitecture.RiscV64:
                     return new LayoutInt(8);
                 case TargetArchitecture.X86:
                     return new LayoutInt(4);
                 default:
                     throw new NotSupportedException();
+            }
+        }
+
+        /// <summary>
+        /// Returns True if compiling for WebAssembly (Wasm32 or Wasm64)
+        /// </summary>
+        public bool IsWasm
+        {
+            get
+            {
+                return Architecture == TargetArchitecture.Wasm32;
             }
         }
 
@@ -296,13 +320,19 @@ namespace Internal.TypeSystem
         }
 
         /// <summary>
-        /// Returns True if compiling for OSX
+        /// Returns True if compiling for Apple family of operating systems.
+        /// Currently including OSX, MacCatalyst, iOS, iOSSimulator, tvOS and tvOSSimulator
         /// </summary>
-        public bool IsOSX
+        public bool IsApplePlatform
         {
             get
             {
-                return OperatingSystem == TargetOS.OSX;
+                return OperatingSystem == TargetOS.OSX ||
+                    OperatingSystem == TargetOS.MacCatalyst ||
+                    OperatingSystem == TargetOS.iOS ||
+                    OperatingSystem == TargetOS.iOSSimulator ||
+                    OperatingSystem == TargetOS.tvOS ||
+                    OperatingSystem == TargetOS.tvOSSimulator;
             }
         }
 
@@ -318,6 +348,8 @@ namespace Internal.TypeSystem
                 // and Procedure Call Standard for the Arm 64-bit Architecture.
                 Debug.Assert(Architecture == TargetArchitecture.ARM ||
                     Architecture == TargetArchitecture.ARM64 ||
+                    Architecture == TargetArchitecture.LoongArch64 ||
+                    Architecture == TargetArchitecture.RiscV64 ||
                     Architecture == TargetArchitecture.X64 ||
                     Architecture == TargetArchitecture.X86);
 
@@ -325,18 +357,20 @@ namespace Internal.TypeSystem
             }
         }
 
-        public int MaximumAutoLayoutPackingSize
+        /// <summary>
+        /// CodeDelta - encapsulate the fact that ARM requires a thumb bit
+        /// </summary>
+        public int CodeDelta { get => (Architecture == TargetArchitecture.ARM) ? 1 : 0; }
+
+        /// <summary>
+        /// Encapsulates the fact that some architectures require 8-byte (larger than pointer
+        /// size) alignment on some value types and arrays.
+        /// </summary>
+        public bool SupportsAlign8
         {
             get
             {
-                if (Abi == TargetAbi.CoreRT)
-                {
-                    if (Architecture == TargetArchitecture.X86)
-                    {
-                        return PointerSize;
-                    }
-                }
-                return MaximumAlignment;
+                return Architecture is TargetArchitecture.ARM or TargetArchitecture.Wasm32;
             }
         }
     }

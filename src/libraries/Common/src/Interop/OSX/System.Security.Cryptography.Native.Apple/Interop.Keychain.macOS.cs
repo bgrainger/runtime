@@ -15,68 +15,68 @@ internal static partial class Interop
 {
     internal static partial class AppleCrypto
     {
-        [GeneratedDllImport(Libraries.AppleCryptoNative)]
+        [LibraryImport(Libraries.AppleCryptoNative)]
         private static partial int AppleCryptoNative_SecKeychainItemCopyKeychain(
             IntPtr item,
             out SafeKeychainHandle keychain);
 
-        [GeneratedDllImport(Libraries.AppleCryptoNative, EntryPoint = "AppleCryptoNative_SecKeychainCreate", CharSet = CharSet.Ansi)]
+        [LibraryImport(Libraries.AppleCryptoNative, EntryPoint = "AppleCryptoNative_SecKeychainCreate", StringMarshalling = StringMarshalling.Utf8)]
         private static unsafe partial int AppleCryptoNative_SecKeychainCreateTemporary(
             string path,
             int utf8PassphraseLength,
             byte* utf8Passphrase,
             out SafeTemporaryKeychainHandle keychain);
 
-        [GeneratedDllImport(Libraries.AppleCryptoNative, CharSet = CharSet.Ansi)]
+        [LibraryImport(Libraries.AppleCryptoNative, StringMarshalling = StringMarshalling.Utf8)]
         private static partial int AppleCryptoNative_SecKeychainCreate(
             string path,
             int utf8PassphraseLength,
             byte[] utf8Passphrase,
             out SafeKeychainHandle keychain);
 
-        [GeneratedDllImport(Libraries.AppleCryptoNative)]
+        [LibraryImport(Libraries.AppleCryptoNative)]
         private static partial int AppleCryptoNative_SecKeychainDelete(IntPtr keychain);
 
-        [GeneratedDllImport(Libraries.AppleCryptoNative)]
+        [LibraryImport(Libraries.AppleCryptoNative)]
         private static partial int AppleCryptoNative_SecKeychainCopyDefault(out SafeKeychainHandle keychain);
 
-        [GeneratedDllImport(Libraries.AppleCryptoNative, CharSet = CharSet.Ansi)]
+        [LibraryImport(Libraries.AppleCryptoNative, StringMarshalling = StringMarshalling.Utf8)]
         private static partial int AppleCryptoNative_SecKeychainOpen(
             string keychainPath,
             out SafeKeychainHandle keychain);
 
-        [GeneratedDllImport(Libraries.AppleCryptoNative)]
+        [LibraryImport(Libraries.AppleCryptoNative)]
         private static partial int AppleCryptoNative_SecKeychainUnlock(
             SafeKeychainHandle keychain,
             int utf8PassphraseLength,
             byte[] utf8Passphrase);
 
-        [GeneratedDllImport(Libraries.AppleCryptoNative)]
+        [LibraryImport(Libraries.AppleCryptoNative)]
         private static partial int AppleCryptoNative_SetKeychainNeverLock(SafeKeychainHandle keychain);
 
-        [GeneratedDllImport(Libraries.AppleCryptoNative)]
+        [LibraryImport(Libraries.AppleCryptoNative)]
         private static partial int AppleCryptoNative_SecKeychainEnumerateCerts(
             SafeKeychainHandle keychain,
             out SafeCFArrayHandle matches,
             out int pOSStatus);
 
-        [GeneratedDllImport(Libraries.AppleCryptoNative)]
+        [LibraryImport(Libraries.AppleCryptoNative)]
         private static partial int AppleCryptoNative_SecKeychainEnumerateIdentities(
             SafeKeychainHandle keychain,
             out SafeCFArrayHandle matches,
             out int pOSStatus);
 
-        [GeneratedDllImport(Libraries.AppleCryptoNative)]
+        [LibraryImport(Libraries.AppleCryptoNative)]
         private static partial int AppleCryptoNative_X509StoreAddCertificate(
             SafeKeychainItemHandle cert,
             SafeKeychainHandle keychain,
             out int pOSStatus);
 
-        [GeneratedDllImport(Libraries.AppleCryptoNative)]
+        [LibraryImport(Libraries.AppleCryptoNative)]
         private static partial int AppleCryptoNative_X509StoreRemoveCertificate(
             SafeKeychainItemHandle cert,
             SafeKeychainHandle keychain,
-            bool isReadOnlyMode,
+            [MarshalAs(UnmanagedType.Bool)] bool isReadOnlyMode,
             out int pOSStatus);
 
         private static SafeKeychainHandle SecKeychainItemCopyKeychain(SafeHandle item)
@@ -240,30 +240,22 @@ internal static partial class Interop
 
         internal static unsafe SafeTemporaryKeychainHandle CreateTemporaryKeychain()
         {
-            const int randomSize = 256;
-            string tmpKeychainPath = Path.Combine(
-                Path.GetTempPath(),
-                Guid.NewGuid().ToString("N") + ".keychain");
+            // Because we use the RNG to choose from 64 items, we only get 6 bits per byte of random.
+            // 128 * 6 is 768 bits of random, which undoubtedly vastly exceeds the space of the key
+            // it turns into, so it's plenty.
+            const int RandomSize = 128;
+            ReadOnlySpan<byte> choices = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@"u8;
+            Debug.Assert(int.IsPow2(choices.Length), $"Choice-set length {choices.Length} should be a power of 2 for perf");
+
+            string tempPath = Path.GetTempPath();
+            string tmpKeychainPath = Path.EndsInDirectorySeparator(tempPath) ?
+                $"{tempPath}{Guid.NewGuid():N}.keychain" :
+                $"{tempPath}{Path.DirectorySeparatorChar}{Guid.NewGuid():N}.keychain";
 
             // Use a random password so that if a keychain is abandoned it isn't recoverable.
-            // We use stack to minimize lingering
-            Span<byte> random = stackalloc byte[randomSize];
-            RandomNumberGenerator.Fill(random);
-
-            // Create hex-like UTF8 string.
-            Span<byte> utf8Passphrase =  stackalloc byte[randomSize * 2 +1];
-            utf8Passphrase[randomSize * 2] = 0; // null termination for C string.
-
-            for (int i = 0; i < random.Length; i++)
-            {
-                // Instead of true hexadecimal, we simply take lower and upper 4 bits and we offset them from ASCII 'A'
-                // to get printable form. We dont use managed string to avoid lingering copies.
-                utf8Passphrase[i*2] = (byte)((random[i] & 0x0F) + 65);
-                utf8Passphrase[i*2 + 1] = (byte)((random[i] >> 4) & 0x0F + 65);
-            }
-
-            // clear the binary bits.
-            CryptographicOperations.ZeroMemory(random);
+            Span<byte> utf8Passphrase = stackalloc byte[RandomSize + 1];
+            utf8Passphrase[RandomSize] = 0; // null termination for C string.
+            RandomNumberGenerator.GetItems(choices, utf8Passphrase.Slice(0, RandomSize));
 
             SafeTemporaryKeychainHandle keychain;
             int osStatus;
@@ -294,7 +286,7 @@ internal static partial class Interop
             return keychain;
         }
 
-        internal static void SecKeychainDelete(IntPtr handle, bool throwOnError=true)
+        internal static void SecKeychainDelete(IntPtr handle, bool throwOnError = true)
         {
             int osStatus = AppleCryptoNative_SecKeychainDelete(handle);
 

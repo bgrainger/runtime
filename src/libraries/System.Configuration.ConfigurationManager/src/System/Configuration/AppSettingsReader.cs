@@ -13,7 +13,6 @@ namespace System.Configuration
     public class AppSettingsReader
     {
         private readonly NameValueCollection _map;
-        private static readonly Type s_stringType = typeof(string);
         private const string NullString = "None";
 
         public AppSettingsReader()
@@ -30,14 +29,14 @@ namespace System.Configuration
         /// </summary>
         public object GetValue(string key, Type type)
         {
-            if (key == null) throw new ArgumentNullException(nameof(key));
-            if (type == null) throw new ArgumentNullException(nameof(type));
+            ArgumentNullException.ThrowIfNull(key);
+            ArgumentNullException.ThrowIfNull(type);
 
             string val = _map[key];
 
             if (val == null) throw new InvalidOperationException(SR.Format(SR.AppSettingsReaderNoKey, key));
 
-            if (type == s_stringType)
+            if (type == typeof(string))
             {
                 // It's a string, so we can ALMOST just return the value.  The only
                 // tricky point is that if it's the string "(None)", then we want to
@@ -74,7 +73,7 @@ namespace System.Configuration
             }
         }
 
-        private int GetNoneNesting(string val)
+        private static int GetNoneNesting(string val)
         {
             int count = 0;
             int len = val.Length;
@@ -84,7 +83,7 @@ namespace System.Configuration
                 {
                     count++;
                 }
-                if (count > 0 && string.Compare(NullString, 0, val, count, len - 2 * count, StringComparison.Ordinal) != 0)
+                if (count > 0 && !val.AsSpan(count, len - 2 * count).Equals(NullString, StringComparison.Ordinal))
                 {
                     // the stuff between the parens is not "None"
                     count = 0;

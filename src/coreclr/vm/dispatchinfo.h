@@ -1,14 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-//
-// File: DispatchInfo.h
-//
 
+// File: DispatchInfo.h
 //
 // Definition of helpers used to expose IDispatch
 // and IDispatchEx to COM.
-//
-
 
 #ifndef _DISPATCHINFO_H
 #define _DISPATCHINFO_H
@@ -52,23 +48,52 @@ enum CultureAwareStates
 };
 
 // This structure represents a dispatch member.
-struct DispatchMemberInfo
+class DispatchMemberInfo
 {
-    DispatchMemberInfo(DispatchInfo *pDispInfo, DISPID DispID, SString& strName, OBJECTREF MemberInfoObj);
+private: // static
+    static MethodTable*     s_pMemberTypes[NUM_MEMBER_TYPES];
+    static EnumMemberTypes  s_memberTypes[NUM_MEMBER_TYPES];
+    static int              s_iNumMemberTypesKnown;
+
+public:
+    DispatchMemberInfo(DispatchInfo* pDispInfo, DISPID DispID, SString& strName);
     ~DispatchMemberInfo();
 
     // Helper method to ensure the entry is initialized.
     void EnsureInitialized();
 
+    DISPID GetDISPID()
+    {
+        LIMITED_METHOD_CONTRACT;
+        return m_DispID;
+    }
+
+    DispatchMemberInfo* GetNext()
+    {
+        LIMITED_METHOD_CONTRACT;
+        return m_pNext;
+    }
+
+    DispatchMemberInfo** GetNextPtr()
+    {
+        LIMITED_METHOD_CONTRACT;
+        return &m_pNext;
+    }
+
+    SString& GetName()
+    {
+        LIMITED_METHOD_CONTRACT;
+        return m_strName;
+    }
+
     BOOL IsNeutered()
     {
         LIMITED_METHOD_CONTRACT;
-
         return (m_bNeutered) ? TRUE : FALSE;
     }
 
     // This method retrieves the ID's of the specified names.
-    HRESULT GetIDsOfParameters(__in_ecount(NumNames) WCHAR **astrNames, int NumNames, DISPID *aDispIds, BOOL bCaseSensitive);
+    HRESULT GetIDsOfParameters(_In_reads_(NumNames) WCHAR **astrNames, int NumNames, DISPID *aDispIds, BOOL bCaseSensitive);
 
     // Accessors.
     PTRARRAYREF GetParameters();
@@ -91,44 +116,44 @@ struct DispatchMemberInfo
     // Inline accessors.
     BOOL IsCultureAware()
     {
-        CONTRACT (BOOL)
+        CONTRACTL
         {
             NOTHROW;
             GC_NOTRIGGER;
             MODE_ANY;
             PRECONDITION(Unknown != m_CultureAwareState);
         }
-        CONTRACT_END;
+        CONTRACTL_END;
 
-        RETURN (Aware == m_CultureAwareState);
+        return Aware == m_CultureAwareState;
     }
 
     EnumMemberTypes GetMemberType()
     {
-        CONTRACT (EnumMemberTypes)
+        CONTRACTL
         {
             NOTHROW;
             GC_NOTRIGGER;
             MODE_ANY;
             PRECONDITION(Uninitted != m_enumType);
         }
-        CONTRACT_END;
+        CONTRACTL_END;
 
-        RETURN m_enumType;
+        return m_enumType;
     }
 
     int GetNumParameters()
     {
-        CONTRACT (int)
+        CONTRACTL
         {
             NOTHROW;
             GC_NOTRIGGER;
             MODE_ANY;
             PRECONDITION(m_iNumParams != -1);
         }
-        CONTRACT_END;
+        CONTRACTL_END;
 
-        RETURN m_iNumParams;
+        return m_iNumParams;
     }
 
     BOOL IsLastParamOleVarArg()
@@ -148,10 +173,7 @@ struct DispatchMemberInfo
         return m_bRequiresManagedCleanup;
     }
 
-#ifndef DACCESS_COMPILE
     OBJECTREF GetMemberInfoObject();
-    void ClearMemberInfoObject();
-#endif // DACCESS_COMPILE
 
     // Parameter marshaling methods.
     void MarshalParamNativeToManaged(int iParam, VARIANT *pSrcVar, OBJECTREF *pDestObj);
@@ -175,7 +197,7 @@ private:
     void SetUpMethodMarshalerInfo(MethodDesc *pMeth, BOOL bReturnValueOnly);
     void SetUpDispParamMarshalerForMarshalInfo(int iParam, MarshalInfo *pInfo);
     void SetUpDispParamAttributes(int iParam, MarshalInfo* Info);
-public:
+
     DISPID                  m_DispID;
     LOADERHANDLE            m_hndMemberInfo;
     DispParamMarshaler**    m_apParamMarshaler;
@@ -190,13 +212,7 @@ public:
     BOOL                    m_bNeutered;
     DispatchInfo*           m_pDispInfo;
     BOOL                    m_bLastParamOleVarArg;
-
-private:
-    static MethodTable*     s_pMemberTypes[NUM_MEMBER_TYPES];
-    static EnumMemberTypes  s_memberTypes[NUM_MEMBER_TYPES];
-    static int              s_iNumMemberTypesKnown;
 };
-
 
 struct InvokeObjects
 {
@@ -242,25 +258,6 @@ public:
     // Helper method that invokes the member with the specified DISPID.
     HRESULT                 InvokeMember(SimpleComCallWrapper *pSimpleWrap, DISPID id, LCID lcid, WORD wFlags, DISPPARAMS *pdp, VARIANT *pVarRes, EXCEPINFO *pei, IServiceProvider *pspCaller, unsigned int *puArgErr);
 
-    void                    InvokeMemberDebuggerWrapper(DispatchMemberInfo*   pDispMemberInfo,
-                                               InvokeObjects*        pObjs,
-                                               int                   NumParams,
-                                               int                   NumArgs,
-                                               int                   NumNamedArgs,
-                                               int&                  NumByrefArgs,
-                                               int&                  iSrcArg,
-                                               DISPID                id,
-                                               DISPPARAMS*           pdp,
-                                               VARIANT*              pVarRes,
-                                               WORD                  wFlags,
-                                               LCID                  lcid,
-                                               DISPID*               pSrcArgNames,
-                                               VARIANT*              pSrcArgs,
-                                               OBJECTHANDLE*         aByrefStaticArrayBackupObjHandle,
-                                               int*                  pManagedMethodParamIndexMap,
-                                               VARIANT**             aByrefArgOleVariant,
-                                               Frame *               pFrame);
-
     void                    InvokeMemberWorker(DispatchMemberInfo*   pDispMemberInfo,
                                                InvokeObjects*        pObjs,
                                                int                   NumParams,
@@ -279,12 +276,6 @@ public:
                                                int*                  pManagedMethodParamIndexMap,
                                                VARIANT**             aByrefArgOleVariant);
 
-    // Methods to retrieve the cached MD's
-    static MethodDesc*      GetFieldInfoMD(BinderMethodID Method, TypeHandle hndFieldInfoType);
-    static MethodDesc*      GetPropertyInfoMD(BinderMethodID Method, TypeHandle hndPropInfoType);
-    static MethodDesc*      GetMethodInfoMD(BinderMethodID Method, TypeHandle hndMethodInfoType);
-    static MethodDesc*      GetCustomAttrProviderMD(TypeHandle hndCustomAttrProvider);
-
     // This method synchronizes the DispatchInfo's members with the ones in managed world.
     // The return value will be set to TRUE if the object was out of synch and members where
     // added and it will be set to FALSE otherwise.
@@ -296,10 +287,10 @@ public:
     // Returns TRUE if the argument is "Missing"
     static BOOL             VariantIsMissing(VARIANT *pOle);
 
-    LoaderAllocator*        GetLoaderAllocator()
-    {
-        return m_pMT->GetLoaderAllocator();
-    }
+    // Functions for loader handle manipulation.
+    LOADERHANDLE AllocateHandle(OBJECTREF objRef);
+    void FreeHandle(LOADERHANDLE handle);
+    OBJECTREF GetHandleValue(LOADERHANDLE handle);
 
 protected:
     // Parameter marshaling helpers.
@@ -308,22 +299,19 @@ protected:
     void                    MarshalReturnValueManagedToNative(DispatchMemberInfo *pMemberInfo, OBJECTREF *pSrcObj, VARIANT *pDestVar);
     void                    CleanUpNativeParam(DispatchMemberInfo *pDispMemberInfo, int iParam, OBJECTREF *pBackupStaticArray, VARIANT *pArgVariant);
 
-    // DISPID to named argument convertion helper.
+    // DISPID to named argument conversion helper.
     void                    SetUpNamedParamArray(DispatchMemberInfo *pMemberInfo, DISPID *pSrcArgNames, int NumNamedArgs, PTRARRAYREF *pNamedParamArray);
 
     // Helper method to retrieve the source VARIANT from the VARIANT contained in the disp params.
     VARIANT*                RetrieveSrcVariant(VARIANT *pDispParamsVariant);
 
-    // Helper method to determine if a member is publically accessible.
+    // Helper method to determine if a member is publicly accessible.
     bool                    IsPropertyAccessorVisible(bool fIsSetter, OBJECTREF* pMemberInfo);
 
     // Helper methods called from SynchWithManagedView() to retrieve the lists of members.
     virtual PTRARRAYREF     RetrievePropList();
     virtual PTRARRAYREF     RetrieveFieldList();
     virtual PTRARRAYREF     RetrieveMethList();
-
-    // Virtual method to retrieve the InvokeMember method desc.
-    virtual MethodDesc*     GetInvokeMemberMD();
 
     // Virtual method to retrieve the reflection object associated with the DispatchInfo.
     virtual OBJECTREF       GetReflectionObject();
@@ -335,7 +323,7 @@ protected:
     DISPID                  GenerateDispID();
 
     // Helper method to create an instance of a DispatchMemberInfo.
-    virtual DispatchMemberInfo*  CreateDispatchMemberInfoInstance(DISPID DispID, SString& strMemberName, OBJECTREF MemberInfoObj);
+    DispatchMemberInfo*  CreateDispatchMemberInfoInstance(DISPID dispID, SString& strMemberName, OBJECTREF memberInfoObj);
 
     // Helper function to fill in an EXCEPINFO for an InvocationException.
     static void             GetExcepInfoForInvocationExcep(OBJECTREF objException, EXCEPINFO *pei);
@@ -375,24 +363,15 @@ public:
     // with the managed view if they fail to find the method.
     HRESULT                 SynchInvokeMember(SimpleComCallWrapper *pSimpleWrap, DISPID id, LCID lcid, WORD wFlags, DISPPARAMS *pdp, VARIANT *pVarRes, EXCEPINFO *pei, IServiceProvider *pspCaller, unsigned int *puArgErr);
 
-    // Helper method to create an instance of a DispatchMemberInfo.
-    virtual DispatchMemberInfo*  CreateDispatchMemberInfoInstance(DISPID DispID, SString& strMemberName, OBJECTREF MemberInfoObj);
-
     // These methods return the first and next non deleted members.
     DispatchMemberInfo*     GetFirstMember();
     DispatchMemberInfo*     GetNextMember(DISPID CurrMemberDispID);
-
-    // Methods to retrieve the cached MD's
-    MethodDesc*             GetIReflectMD(BinderMethodID Method);
 
 private:
     // Helper methods called from SynchWithManagedView() to retrieve the lists of members.
     virtual PTRARRAYREF     RetrievePropList();
     virtual PTRARRAYREF     RetrieveFieldList();
     virtual PTRARRAYREF     RetrieveMethList();
-
-    // Virtual method to retrieve the InvokeMember method desc.
-    virtual MethodDesc*     GetInvokeMemberMD();
 
     // Virtual method to retrieve the reflection object associated with the DispatchInfo.
     virtual OBJECTREF       GetReflectionObject();

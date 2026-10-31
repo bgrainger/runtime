@@ -13,12 +13,12 @@ namespace System.Speech.Internal
         /// <summary>
         /// Load a file either from a local network or from the Internet.
         /// </summary>
-        internal Stream LoadFile(Uri uri, out string mimeType, out Uri baseUri, out string localPath)
+        internal Stream LoadFile(Uri uri, out string? mimeType, out Uri? baseUri, out string? localPath)
         {
             localPath = null;
 
             {
-                Stream stream = null;
+                Stream? stream = null;
 
                 // Check for a local file
                 if (!uri.IsAbsoluteUri || uri.IsFile)
@@ -59,14 +59,13 @@ namespace System.Speech.Internal
         /// <summary>
         /// Release a file from a cache if any
         /// </summary>
-        internal void UnloadFile(string localPath)
+        internal void UnloadFile(string? localPath)
         {
         }
 
-        internal Stream LoadFile(Uri uri, out string localPath, out Uri redirectedUri)
+        internal Stream LoadFile(Uri uri, out string? localPath, out Uri? redirectedUri)
         {
-            string mediaTypeUnused;
-            return LoadFile(uri, out mediaTypeUnused, out redirectedUri, out localPath);
+            return LoadFile(uri, out _, out redirectedUri, out localPath);
         }
 
         #endregion
@@ -77,7 +76,7 @@ namespace System.Speech.Internal
         /// Download data from the web.
         /// Set the redirectUri as the location of the file could be redirected in ASP pages.
         /// </summary>
-        private static Stream DownloadData(Uri uri, out Uri redirectedUri)
+        private static MemoryStream DownloadData(Uri uri, out Uri redirectedUri)
         {
 #pragma warning disable SYSLIB0014
             // Create a request for the URL.

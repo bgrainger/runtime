@@ -3,8 +3,6 @@
 
 project(nativehost)
 
-set(DOTNET_PROJECT_NAME "nativehost")
-
 set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 set(MACOSX_RPATH ON)
 if (CLR_CMAKE_TARGET_OSX)
@@ -13,7 +11,6 @@ else()
     set(CMAKE_INSTALL_RPATH "\$ORIGIN")
 endif()
 
-include_directories(${CMAKE_CURRENT_LIST_DIR}/../../nethost)
 
 set(SOURCES
     ./error_writer_redirector.cpp
@@ -36,25 +33,55 @@ set(HEADERS
 
 if(CLR_CMAKE_TARGET_WIN32)
     list(APPEND SOURCES
-        ./comhost_test.cpp)
+        ./comhost_test.cpp
+        ./ijwhost_test.cpp)
 
     list(APPEND HEADERS
-        ./comhost_test.h)
-
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /DELAYLOAD:nethost.dll")
+        ./comhost_test.h
+        ./ijwhost_test.h)
 endif()
 
-include(../../hostmisc/hostmisc.cmake)
+add_executable(nativehost ${SOURCES})
 
-include(../testexe.cmake)
+add_sanitizer_runtime_support(nativehost)
 
-target_link_libraries(${DOTNET_PROJECT_NAME} nethost)
+install_with_stripped_symbols(nativehost TARGETS corehost_test)
+
+target_link_libraries(nativehost PRIVATE
+    $<$<BOOL:${PTHREAD_LIB}>:${PTHREAD_LIB}>)
+
+
+target_link_libraries(nativehost PRIVATE nethost hostmisc)
 
 if (CLR_CMAKE_TARGET_WIN32)
-    target_link_libraries(${DOTNET_PROJECT_NAME} delayimp.lib)
+    target_link_options(nativehost PRIVATE /DELAYLOAD:$<TARGET_FILE_NAME:nethost>)
+    target_link_libraries(nativehost PRIVATE delayimp.lib ole32 oleaut32)
 endif()
 
-# Specify non-default Windows libs to be used for Arm/Arm64 builds
-if (CLR_CMAKE_TARGET_WIN32 AND (CLR_CMAKE_TARGET_ARCH_ARM OR CLR_CMAKE_TARGET_ARCH_ARM64))
-    target_link_libraries(${DOTNET_PROJECT_NAME} Ole32.lib OleAut32.lib)
+# Build a second executable that links against the static nethost library (libnethost)
+# instead of the shared one. This validates the static library consumption scenario.
+add_executable(nativehost_static ${SOURCES})
+
+add_sanitizer_runtime_support(nativehost_static)
+
+install_with_stripped_symbols(nativehost_static TARGETS corehost_test)
+
+target_compile_definitions(nativehost_static PRIVATE NETHOST_USE_AS_STATIC)
+
+target_link_libraries(nativehost_static PRIVATE
+    libnethost
+    hostmisc_public
+    $<$<BOOL:${PTHREAD_LIB}>:${PTHREAD_LIB}>)
+
+if (CLR_CMAKE_TARGET_WIN32)
+    target_link_libraries(nativehost_static PRIVATE ole32 oleaut32)
+endif()
+
+if (MSVC)
+    # Add a linker hook to validate that modules with LTCG are not found.
+    # Shipped static libraries (libnethost) must have LTCG disabled to ensure
+    # that non-MSVC toolchains can work with them.
+    set_target_properties(nativehost_static PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION OFF
+        CXX_LINKER_LAUNCHER "${CMAKE_COMMAND};-P;${CMAKE_CURRENT_SOURCE_DIR}/run-linker-verify-no-ltcg.cmake")
 endif()

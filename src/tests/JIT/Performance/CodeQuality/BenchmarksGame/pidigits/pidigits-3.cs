@@ -10,6 +10,7 @@
 //      use .NET's System.Numerics.BigInteger type instead ****
 
 /* The Computer Language Benchmarks Game
+using TestLibrary;
    http://benchmarksgame.alioth.debian.org/
  *
  * Port of the Java port that uses native GMP to use native GMP with C#
@@ -19,7 +20,9 @@
 */
 using System;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Text;
+using Xunit;
 
 namespace BenchmarksGame
 {
@@ -31,6 +34,8 @@ namespace BenchmarksGame
         int i;
         StringBuilder strBuf = new StringBuilder(40), lastBuf = null;
         int n;
+
+        public pidigits() { }
 
         pidigits(int n)
         {
@@ -121,9 +126,17 @@ namespace BenchmarksGame
             }
         }
 
-        public static int Main(String[] args)
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+        [Fact]
+        public static int TestEntryPoint()
         {
-            int n = (args.Length > 0 ? Int32.Parse(args[0]) : 10);
+            return Test(null);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static int Test(int? arg)
+        {
+            int n = arg ?? 10;
             string result = Bench(n, true).ToString();
             if (result != "3141592653\t:10")
             {

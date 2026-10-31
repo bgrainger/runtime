@@ -18,6 +18,9 @@
 #include "clr/fs/path.h"
 using namespace clr::fs;
 
+// Forward declaration - see src/vm/util.cpp
+BOOL RuntimeFileNotFound(HRESULT hr);
+
 namespace BINDER_SPACE
 {
     namespace
@@ -29,48 +32,6 @@ namespace BINDER_SPACE
 #else
             return W("\\");
 #endif // TARGET_UNIX
-        }
-    }
-
-    void MutateUrlToPath(SString &urlOrPath)
-    {
-        const SString fileUrlPrefix(SString::Literal, W("file://"));
-        SString::Iterator i = urlOrPath.Begin();
-
-        if (urlOrPath.MatchCaseInsensitive(i, fileUrlPrefix))
-        {
-            urlOrPath.Delete(i, fileUrlPrefix.GetCount());
-
-            i = urlOrPath.Begin() + 1;
-            if (i[0] ==  W(':'))
-            {
-                // CLR erroneously passes in file:// prepended to file paths,
-                // so we can't tell the difference between UNC and local file.
-                goto Exit;
-            }
-
-            i = urlOrPath.Begin();
-#if !defined(TARGET_UNIX)
-            if (i[0] == W('/'))
-            {
-                // Disk path file:///
-                urlOrPath.Delete(i, 1);
-            }
-            else if (i[0] != W('\\'))
-            {
-                // UNC Path, re-insert "//" if not the wrong file://\\...
-                urlOrPath.Insert(i, W("//"));
-            }
-#else
-            // Unix doesn't have a distinction between local and network path
-            _ASSERTE(i[0] == W('\\') || i[0] == W('/'));
-#endif
-        }
-
-    Exit:
-        while (urlOrPath.Find(i, W('/')))
-        {
-            urlOrPath.Replace(i, W('\\'));
         }
     }
 
@@ -96,18 +57,14 @@ namespace BINDER_SPACE
 
         const BYTE *pByteKey = publicKeyBLOB;
         DWORD dwKeyLen = publicKeyBLOB.GetSize();
-        BYTE *pByteToken = NULL;
-        DWORD dwTokenLen = 0;
+        StrongNameToken token;
 
         IF_FAIL_GO(StrongNameTokenFromPublicKey(
             const_cast<BYTE*>(pByteKey),
             dwKeyLen,
-            &pByteToken,
-            &dwTokenLen));
+            &token));
 
-        _ASSERTE(pByteToken != NULL);
-        publicKeyTokenBLOB.Set(pByteToken, dwTokenLen);
-        StrongNameFreeBuffer(pByteToken);
+        publicKeyTokenBLOB.Set(token.m_token, StrongNameToken::SIZEOF_TOKEN);
 
     Exit:
         return hr;
@@ -186,62 +143,63 @@ namespace BINDER_SPACE
         return hr;
     }
 
-    HRESULT GetNextTPAPath(const SString& paths, SString::CIterator& startPos, bool dllOnly, SString& outPath, SString& simpleName, bool& isNativeImage)
+    HRESULT GetNextTPAPath(const SString& paths, SString::CIterator& startPos, bool dllOnly, SString& outPath, SString& simpleName)
     {
         HRESULT hr = S_OK;
-        isNativeImage = false;
-
         HRESULT pathResult = S_OK;
-        IF_FAIL_GO(pathResult = GetNextPath(paths, startPos, outPath));
-        if (pathResult == S_FALSE)
+        while(true)
         {
-            return S_FALSE;
-        }
-
-        if (Path::IsRelative(outPath))
-        {
-            GO_WITH_HRESULT(E_INVALIDARG);
-        }
-
-        {
-            // Find the beginning of the simple name
-            SString::CIterator iSimpleNameStart = outPath.End();
-
-            if (!outPath.FindBack(iSimpleNameStart, DIRECTORY_SEPARATOR_CHAR_W))
+            IF_FAIL_GO(pathResult = GetNextPath(paths, startPos, outPath));
+            if (pathResult == S_FALSE)
             {
-                iSimpleNameStart = outPath.Begin();
-            }
-            else
-            {
-                // Advance past the directory separator to the first character of the file name
-                iSimpleNameStart++;
+                return S_FALSE;
             }
 
-            if (iSimpleNameStart == outPath.End())
+            if (Path::IsRelative(outPath))
             {
                 GO_WITH_HRESULT(E_INVALIDARG);
             }
 
-            const SString sNiDll(SString::Literal, W(".ni.dll"));
-            const SString sNiExe(SString::Literal, W(".ni.exe"));
-            const SString sDll(SString::Literal, W(".dll"));
-            const SString sExe(SString::Literal, W(".exe"));
+            {
+                // Find the beginning of the simple name
+                SString::CIterator iSimpleNameStart = outPath.End();
 
-            if (!dllOnly && (outPath.EndsWithCaseInsensitive(sNiDll) ||
-                outPath.EndsWithCaseInsensitive(sNiExe)))
-            {
-                simpleName.Set(outPath, iSimpleNameStart, outPath.End() - 7);
-                isNativeImage = true;
-            }
-            else if (outPath.EndsWithCaseInsensitive(sDll) ||
-                (!dllOnly && outPath.EndsWithCaseInsensitive(sExe)))
-            {
-                simpleName.Set(outPath, iSimpleNameStart, outPath.End() - 4);
-            }
-            else
-            {
-                // Invalid filename
-                GO_WITH_HRESULT(E_INVALIDARG);
+                if (!outPath.FindBack(iSimpleNameStart, DIRECTORY_SEPARATOR_CHAR_W))
+                {
+                    iSimpleNameStart = outPath.Begin();
+                }
+                else
+                {
+                    // Advance past the directory separator to the first character of the file name
+                    iSimpleNameStart++;
+                }
+
+                if (iSimpleNameStart == outPath.End())
+                {
+                    GO_WITH_HRESULT(E_INVALIDARG);
+                }
+
+                const SString sDll(SString::Literal, W(".dll"));
+                const SString sExe(SString::Literal, W(".exe"));
+
+                if (dllOnly && outPath.EndsWithCaseInsensitive(sExe))
+                {
+                    // Skip exe files when the caller requested only dlls
+                    continue;
+                }
+
+                if (outPath.EndsWithCaseInsensitive(sDll) ||
+                    outPath.EndsWithCaseInsensitive(sExe))
+                {
+                    simpleName.Set(outPath, iSimpleNameStart, outPath.End() - 4);
+                }
+                else
+                {
+                    // Invalid filename
+                    GO_WITH_HRESULT(E_INVALIDARG);
+                }
+
+                break;
             }
         }
 

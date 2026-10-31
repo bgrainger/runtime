@@ -2,20 +2,20 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Threading;
 
 internal static partial class Interop
 {
     internal static partial class Winsock
     {
-        private static int s_initialized;
+        private static bool s_initialized;
 
         internal static void EnsureInitialized()
         {
             // No volatile needed here. Reading stale information is just going to cause a harmless extra startup.
-            if (s_initialized == 0)
+            if (!s_initialized)
                 Initialize();
 
             static unsafe void Initialize()
@@ -29,7 +29,7 @@ internal static partial class Interop
                     throw new SocketException((int)errorCode);
                 }
 
-                if (Interlocked.CompareExchange(ref s_initialized, 1, 0) != 0)
+                if (Interlocked.Exchange(ref s_initialized, true))
                 {
                     // Keep the winsock initialization count balanced if other thread beats us to finish the initialization.
                     // This cleanup is just for good hygiene. A few extra startups would not matter.
@@ -39,10 +39,12 @@ internal static partial class Interop
             }
         }
 
-        [GeneratedDllImport(Libraries.Ws2_32)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.Ws2_32)]
         private static unsafe partial SocketError WSAStartup(short wVersionRequested, WSAData* lpWSAData);
 
-        [GeneratedDllImport(Libraries.Ws2_32)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.Ws2_32)]
         private static partial SocketError WSACleanup();
 
         [StructLayout(LayoutKind.Sequential, Size = 408)]

@@ -13,8 +13,7 @@
 // Headers for all ECall entrypoints
 //
 #include "arraynative.h"
-#include "stringnative.h"
-#include "objectnative.h"
+#include "dllimport.h"
 #include "comdelegate.h"
 #include "customattribute.h"
 #include "comdynamic.h"
@@ -24,37 +23,30 @@
 #include "commodule.h"
 #include "marshalnative.h"
 #include "nativelibrarynative.h"
-#include "system.h"
 #include "comutilnative.h"
 #include "comsynchronizable.h"
-#include "floatdouble.h"
-#include "floatsingle.h"
-#include "comdatetime.h"
-#include "compatibilityswitch.h"
 #include "debugdebugger.h"
-#include "assemblyname.hpp"
 #include "assemblynative.hpp"
-#include "comthreadpool.h"
-#include "comwaithandle.h"
-#include "nativeoverlapped.h"
 
 #include "proftoeeinterfaceimpl.h"
 
 #include "appdomainnative.hpp"
+#include "conditionalweaktable.h"
 #include "runtimehandles.h"
 #include "reflectioninvocation.h"
 #include "managedmdimport.hpp"
 #include "typestring.h"
 #include "comdependenthandle.h"
 #include "weakreferencenative.h"
-#include "varargsnative.h"
 #include "mlinfo.h"
 
 #ifdef FEATURE_COMINTEROP
-#include "variant.h"
-#include "oavariant.h"
-#include "mngstdinterfaces.h"
+#include "olevariant.h"
 #endif // FEATURE_COMINTEROP
+
+#if defined(FEATURE_COMWRAPPERS)
+#include "interoplibinterface_comwrappers.h"
+#endif
 
 #include "interoplibinterface.h"
 
@@ -78,6 +70,7 @@
 #endif //FEATURE_PERFTRACING
 
 #include "tailcallhelp.h"
+#include "interpexec.h"
 
 ///////////////////////////////////////////////////////////////////////////////
 //
@@ -113,7 +106,6 @@ enum _gsigl {
 enum _gsigc {
 #include "metasig.h"
 };
-
 
 //
 // The actual array with the hardcoded metasig:
@@ -165,6 +157,11 @@ enum _gsigc {
     const BYTE gsige_IM_ ## varname[] = { (BYTE) -gsigl_IM_ ## varname,         \
         IMAGE_CEE_CS_CALLCONV_HASTHIS, gsigc_IM_ ## varname, retval args };
 
+#define _GM(varname, conv, n, args, retval) extern const BYTE gsige_GM_ ## varname[];    \
+    HardCodedMetaSig gsig_GM_ ## varname = { gsige_GM_ ## varname };              \
+    const BYTE gsige_GM_ ## varname[] = { (BYTE) -gsigl_GM_ ## varname,                        \
+        conv | IMAGE_CEE_CS_CALLCONV_GENERIC, n, gsigc_GM_ ## varname, retval args };
+
 #define _Fld(varname, val) extern const BYTE gsige_Fld_ ## varname[];           \
     HardCodedMetaSig gsig_Fld_ ## varname = { gsige_Fld_ ## varname };          \
     const BYTE gsige_Fld_ ## varname[] = { (BYTE) -gsigl_Fld_ ## varname,       \
@@ -174,9 +171,8 @@ enum _gsigc {
 
 #undef _SM
 #undef _IM
+#undef _GM
 #undef _Fld
-
-
 
 #ifdef _DEBUG
 
@@ -187,7 +183,7 @@ enum _gsigc {
 // it is zero. An assertion failure results in error C2118: negative subscript.
 #define DEFINE_METASIG(body)            body
 #define DEFINE_METASIG_T(body)
-#define METASIG_BODY(varname, types)    C_ASSERT(types 0 == 0);
+#define METASIG_BODY(varname, types)    static_assert(types 0 == 0);
 #define METASIG_ATOM(x)                 0+
 #define METASIG_RECURSE                 1
 #define C(x)                            1+
@@ -203,7 +199,7 @@ enum _gsigc {
 // it is non zero. An assertion failure results in error C2118: negative subscript.
 #define DEFINE_METASIG(body)
 #define DEFINE_METASIG_T(body)          body
-#define METASIG_BODY(varname, types)    C_ASSERT(types 0 != 0);
+#define METASIG_BODY(varname, types)    static_assert(types 0 != 0);
 #define METASIG_ATOM(x)                 0+
 #define METASIG_RECURSE                 1
 #define C(x)                            1+
@@ -212,10 +208,6 @@ enum _gsigc {
 #include "metasig.h"
 
 #endif
-
-
-
-
 
 ///////////////////////////////////////////////////////////////////////////////
 //
@@ -271,35 +263,27 @@ const USHORT c_nCoreLibFieldDescriptions = ARRAY_SIZE(c_rgCoreLibFieldDescriptio
 
 // When compiling crossgen, we only need the target version of the ecall tables
 
-#define FCFuncFlags(intrinsicID, dynamicID) \
-    (BYTE*)( (((BYTE)intrinsicID) << 16) + (((BYTE)dynamicID) << 24) )
+#define FCFuncFlags(dynamicID) \
+    (BYTE*)( (((BYTE)dynamicID) << 24) )
 
-
-#define FCFuncElement(name, impl) FCFuncFlags(CORINFO_INTRINSIC_Illegal, ECall::InvalidDynamicFCallId), \
+#define FCFuncElement(name, impl) FCFuncFlags(ECall::InvalidDynamicFCallId), \
     (LPVOID)GetEEFuncEntryPoint(impl), (LPVOID)name,
 
 #define FCFuncElementSig(name,sig,impl) \
     FCFuncFlag_HasSignature + FCFuncElement(name, impl) (LPVOID)sig,
 
-#define FCIntrinsic(name,impl,intrinsicID) FCFuncFlags(intrinsicID, ECall::InvalidDynamicFCallId), \
-    (LPVOID)GetEEFuncEntryPoint(impl), (LPVOID)name,
-
-#define FCIntrinsicSig(name,sig,impl,intrinsicID) \
-    FCFuncFlag_HasSignature + FCIntrinsic(name,impl,intrinsicID) (LPVOID)sig,
-
-#define FCDynamic(name,intrinsicID,dynamicID) FCFuncFlags(intrinsicID, dynamicID), \
+#define FCDynamic(name,dynamicID) FCFuncFlags(dynamicID), \
     NULL, (LPVOID)name,
 
-#define FCDynamicSig(name,sig,intrinsicID,dynamicID) \
-    FCFuncFlag_HasSignature + FCDynamic(name,intrinsicID,dynamicID) (LPVOID)sig,
+#define FCDynamicSig(name,sig,dynamicID) \
+    FCFuncFlag_HasSignature + FCDynamic(name,dynamicID) (LPVOID)sig,
 
 #define FCUnreferenced FCFuncFlag_Unreferenced +
 
 #define FCFuncStart(name) static const LPVOID name[] = {
-#define FCFuncEnd() FCFuncFlag_EndOfArray + FCFuncFlags(CORINFO_INTRINSIC_Illegal, ECall::InvalidDynamicFCallId) };
+#define FCFuncEnd() FCFuncFlag_EndOfArray + FCFuncFlags(ECall::InvalidDynamicFCallId) };
 
 #include "ecalllist.h"
-
 
 // Extern definitions so that ecall.cpp can see these tables
 extern const ECClass c_rgECClasses[];

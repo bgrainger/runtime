@@ -3,6 +3,8 @@
 
 using System;
 
+using Internal.Text;
+
 namespace Internal.TypeSystem
 {
     // Implementation of MethodImpl api surface implemented without metadata access.
@@ -24,7 +26,7 @@ namespace Internal.TypeSystem
             {
                 MethodDesc decl;
 
-                var implTypeInstantiated = uninstMethodImpls[i].Decl.OwningType.InstantiateSignature(this.Instantiation, new Instantiation());
+                var implTypeInstantiated = uninstMethodImpls[i].Decl.OwningType.InstantiateSignature(this.Instantiation, default(Instantiation));
                 if (implTypeInstantiated is InstantiatedType)
                 {
                     decl = _typeDef.Context.GetMethodForInstantiatedType(uninstMethodImpls[i].Decl.GetTypicalMethodDefinition(), (InstantiatedType)implTypeInstantiated);
@@ -47,7 +49,7 @@ namespace Internal.TypeSystem
             return InstantiateMethodImpls(uninstMethodImpls);
         }
 
-        public override MethodImplRecord[] FindMethodsImplWithMatchingDeclName(string name)
+        public override MethodImplRecord[] FindMethodsImplWithMatchingDeclName(Utf8Span name)
         {
             MethodImplRecord[] uninstMethodImpls = _typeDef.FindMethodsImplWithMatchingDeclName(name);
             return InstantiateMethodImpls(uninstMethodImpls);

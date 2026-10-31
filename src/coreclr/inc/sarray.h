@@ -45,8 +45,8 @@ class SArray
 
     COUNT_T GetAllocation() const;
 
-    void Preallocate(int count) const;
-    void Trim() const;
+    void Preallocate(int count);
+    void Trim();
 
     void Copy(const Iterator &to, const Iterator &from, COUNT_T size);
     void Move(const Iterator &to, const Iterator &from, COUNT_T size);
@@ -59,6 +59,12 @@ class SArray
         WRAPPER_NO_CONTRACT;
 
         COUNT_T count = GetCount();
+        if (BITWISE_COPY && count < GetAllocation())
+        {
+            SetCount(count + 1);
+            return Iterator(this, count);
+        }
+
         if ( GetAllocation() == count )
             Preallocate( 2 * count );
 
@@ -70,15 +76,7 @@ class SArray
     void Append(ELEMENT elem)
     {
         WRAPPER_NO_CONTRACT;
-        *Append() = elem;
-    }
-
-    ELEMENT AppendEx(ELEMENT elem)
-    {
-        WRAPPER_NO_CONTRACT;
-
-        *Append() = elem;
-        return elem;
+        *Append() = std::move(elem);
     }
 
     void Insert(const Iterator &i);
@@ -122,7 +120,7 @@ class SArray
 
  public:
 
-    class EMPTY_BASES_DECL Iterator : public CheckedIteratorBase<SArray<ELEMENT, BITWISE_COPY> >,
+    class EMPTY_BASES Iterator : public CheckedIteratorBase<SArray<ELEMENT, BITWISE_COPY> >,
                                       public Indexer<ELEMENT, Iterator>
     {
         friend class SArray;
@@ -192,7 +190,7 @@ class SArray
 // ================================================================================
 
 template <typename ELEMENT, COUNT_T SIZE, BOOL BITWISE_COPY = TRUE>
-class EMPTY_BASES_DECL InlineSArray : public SArray<ELEMENT, BITWISE_COPY>
+class EMPTY_BASES InlineSArray : public SArray<ELEMENT, BITWISE_COPY>
 {
  private:
 #ifdef TARGET_WINDOWS
@@ -214,8 +212,10 @@ class EMPTY_BASES_DECL InlineSArray : public SArray<ELEMENT, BITWISE_COPY>
 // StackSArray : SArray with relatively large preallocated buffer for stack use
 // ================================================================================
 
+#define STACK_ALLOC 256
+
 template <typename ELEMENT, BOOL BITWISE_COPY = TRUE>
-class EMPTY_BASES_DECL StackSArray : public InlineSArray<ELEMENT, STACK_ALLOC/sizeof(ELEMENT), BITWISE_COPY>
+class EMPTY_BASES StackSArray : public InlineSArray<ELEMENT, STACK_ALLOC/sizeof(ELEMENT), BITWISE_COPY>
 {
 };
 

@@ -9,6 +9,7 @@ using Xunit;
 
 namespace System.Security.Cryptography.Pkcs.EnvelopedCmsTests.Tests
 {
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/126697", typeof(PlatformDetection), nameof(PlatformDetection.IsAppleMobile), nameof(PlatformDetection.IsNativeAot))]
     public class DecryptTestsUsingCertWithPrivateKey : DecryptTests
     {
         public DecryptTestsUsingCertWithPrivateKey() : base(false) { }
@@ -68,7 +69,7 @@ namespace System.Security.Cryptography.Pkcs.EnvelopedCmsTests.Tests
         }
 
         [Fact]
-        public static void DecryptSuccesfullyWithWrongKeyProducesInvalidSymmetricKey()
+        public static void DecryptSuccessfullyWithWrongKeyProducesInvalidSymmetricKey()
         {
             using (X509Certificate2 wrongRecipient = Certificates.RSAKeyTransfer5_ExplicitSkiOfRSAKeyTransfer4.TryGetCertificateWithPrivateKey())
             {
@@ -162,7 +163,7 @@ namespace System.Security.Cryptography.Pkcs.EnvelopedCmsTests.Tests
                 }
             }
 
-            Assert.False(true, "Subject Key Identifier not found");
+            Assert.Fail("Subject Key Identifier not found");
             return null;
         }
     }

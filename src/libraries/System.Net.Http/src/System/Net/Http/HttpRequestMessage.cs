@@ -1,10 +1,11 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Net.Http.Headers;
 using System.Text;
-using System.Threading;
-using System.Collections.Generic;
 
 namespace System.Net.Http
 {
@@ -13,13 +14,20 @@ namespace System.Net.Http
         internal static Version DefaultRequestVersion => HttpVersion.Version11;
         internal static HttpVersionPolicy DefaultVersionPolicy => HttpVersionPolicy.RequestVersionOrLower;
 
-        private const int MessageNotYetSent = 0;
-        private const int MessageAlreadySent = 1;
-        private const int MessageIsRedirect = 2;
+        [Flags]
+        private enum MessageFlags
+        {
+            AlreadySent = 1,
+            PropagatorStateInjectedByDiagnosticsHandler = 2,
+            Disposed = 4,
+            AuthDisabled = 8,
+            ConnectionIdSet = 16,
+            DoNotPartitionConnectionPoolBySni = 32,
+        }
 
-        // Track whether the message has been sent.
-        // The message shouldn't be sent again if this field is equal to MessageAlreadySent.
-        private int _sendStatus = MessageNotYetSent;
+        private MessageFlags _flags;
+
+        private long _connectionId;
 
         private HttpMethod _method;
         private Uri? _requestUri;
@@ -27,18 +35,14 @@ namespace System.Net.Http
         private Version _version;
         private HttpVersionPolicy _versionPolicy;
         private HttpContent? _content;
-        private bool _disposed;
-        private HttpRequestOptions? _options;
+        internal HttpRequestOptions? _options;
 
         public Version Version
         {
             get { return _version; }
             set
             {
-                if (value == null)
-                {
-                    throw new ArgumentNullException(nameof(value));
-                }
+                ArgumentNullException.ThrowIfNull(value);
                 CheckDisposed();
 
                 _version = value;
@@ -53,6 +57,11 @@ namespace System.Net.Http
             get { return _versionPolicy; }
             set
             {
+                if ((uint)value > (uint)HttpVersionPolicy.RequestVersionExact)
+                {
+                    throw new ArgumentException(SR.Format(SR.net_invalid_enum, nameof(HttpVersionPolicy)), nameof(value));
+                }
+
                 CheckDisposed();
 
                 _versionPolicy = value;
@@ -88,10 +97,7 @@ namespace System.Net.Http
             get { return _method; }
             set
             {
-                if (value == null)
-                {
-                    throw new ArgumentNullException(nameof(value));
-                }
+                ArgumentNullException.ThrowIfNull(value);
                 CheckDisposed();
 
                 _method = value;
@@ -120,6 +126,56 @@ namespace System.Net.Http
         /// </summary>
         public HttpRequestOptions Options => _options ??= new HttpRequestOptions();
 
+        /// <summary>
+        /// Gets or sets the identifier of the connection that this request was most recently sent on. The value is not
+        /// guaranteed to be set: it remains <see langword="null"/> when the request was not handled by a connection, for
+        /// example because it timed out before a connection could be obtained.
+        /// </summary>
+        /// <remarks>
+        /// When the request is sent through a <see cref="SocketsHttpHandler"/>, the value matches the connection id
+        /// reported through EventSource telemetry and the id passed to
+        /// <see cref="SocketsHttpHandler.ShouldEvictConnection"/> for the connection that served the request, allowing
+        /// a caller to correlate a request with that connection. It also matches the id surfaced to a custom
+        /// <see cref="SocketsHttpHandler.ConnectCallback"/>. When a request is sent over multiple connections (for
+        /// example after a redirect or a retry), the value reflects the most recent attempt.
+        /// <para>
+        /// HTTP CONNECT proxy tunnels are an exception to the correlation with a custom
+        /// <see cref="SocketsHttpHandler.ConnectCallback"/>: when the request is served over such a tunnel, the callback
+        /// observes the tunnel's underlying transport connection to the proxy, whose id differs from this one (which
+        /// identifies the tunneled connection that carried the request). Both ids remain observable through a
+        /// <see cref="SocketsHttpHandler.PlaintextStreamFilter"/>, which runs once per hop and reports the transport
+        /// connection's id for the CONNECT hop and this id for the tunneled hop.
+        /// </para>
+        /// <para>
+        /// These correlations apply only when the request is handled by <see cref="SocketsHttpHandler"/>. Another
+        /// <see cref="HttpMessageHandler"/> may never set this value, or may assign it a different meaning.
+        /// </para>
+        /// <para>
+        /// This property is intended to be read after the request has been sent. Assigning a value before the request
+        /// is sent has no effect on how the request is handled: it does not request or influence the use of a particular
+        /// connection, and any value set by the caller is overwritten with the id of the connection that actually serves
+        /// the request.
+        /// </para>
+        /// </remarks>
+        [Experimental(Experimentals.SocketsHttpHandlerExperimentalDiagId, UrlFormat = Experimentals.SharedUrlFormat)]
+        public long? ConnectionId
+        {
+            // ConnectionIdSet is stored separately to avoid the extra bytes needed for a nullable 'long?' field.
+            get => _flags.HasFlag(MessageFlags.ConnectionIdSet) ? _connectionId : null;
+            set
+            {
+                if (value is null)
+                {
+                    _flags &= ~MessageFlags.ConnectionIdSet;
+                }
+                else
+                {
+                    _connectionId = value.Value;
+                    _flags |= MessageFlags.ConnectionIdSet;
+                }
+            }
+        }
+
         public HttpRequestMessage()
             : this(HttpMethod.Get, (Uri?)null)
         {
@@ -127,49 +183,86 @@ namespace System.Net.Http
 
         public HttpRequestMessage(HttpMethod method, Uri? requestUri)
         {
+            ArgumentNullException.ThrowIfNull(method);
+
             // It's OK to have a 'null' request Uri. If HttpClient is used, the 'BaseAddress' will be added.
             // If there is no 'BaseAddress', sending this request message will throw.
             // Note that we also allow the string to be empty: null and empty are considered equivalent.
-            _method = method ?? throw new ArgumentNullException(nameof(method));
+            _method = method;
             _requestUri = requestUri;
             _version = DefaultRequestVersion;
             _versionPolicy = DefaultVersionPolicy;
         }
 
-        public HttpRequestMessage(HttpMethod method, string? requestUri)
+        public HttpRequestMessage(HttpMethod method, [StringSyntax(StringSyntaxAttribute.Uri)] string? requestUri)
             : this(method, string.IsNullOrEmpty(requestUri) ? null : new Uri(requestUri, UriKind.RelativeOrAbsolute))
         {
         }
 
         public override string ToString()
         {
-            StringBuilder sb = new StringBuilder();
+            ValueStringBuilder sb = new ValueStringBuilder(stackalloc char[512]);
 
             sb.Append("Method: ");
-            sb.Append(_method);
+            sb.Append(_method.ToString());
 
             sb.Append(", RequestUri: '");
-            sb.Append(_requestUri == null ? "<null>" : _requestUri.ToString());
+            if (_requestUri is null)
+            {
+                sb.Append("<null>");
+            }
+            else
+            {
+                sb.AppendSpanFormattable(_requestUri);
+            }
 
             sb.Append("', Version: ");
-            sb.Append(_version);
+            sb.AppendSpanFormattable(_version);
 
             sb.Append(", Content: ");
             sb.Append(_content == null ? "<null>" : _content.GetType().ToString());
 
-            sb.AppendLine(", Headers:");
-            HeaderUtilities.DumpHeaders(sb, _headers, _content?.Headers);
+            sb.Append(", Headers:");
+            sb.Append(Environment.NewLine);
+            HeaderUtilities.DumpHeaders(ref sb, _headers, _content?.Headers);
 
             return sb.ToString();
         }
 
-        internal bool MarkAsSent() => Interlocked.CompareExchange(ref _sendStatus, MessageAlreadySent, MessageNotYetSent) == MessageNotYetSent;
+        internal bool MarkAsSent()
+        {
+            MessageFlags previousFlags = _flags;
+            _flags = previousFlags | MessageFlags.AlreadySent;
+            return !previousFlags.HasFlag(MessageFlags.AlreadySent);
+        }
 
-        internal bool WasSentByHttpClient() => (_sendStatus & MessageAlreadySent) != 0;
+        internal bool WasSentByHttpClient() => _flags.HasFlag(MessageFlags.AlreadySent);
 
-        internal void MarkAsRedirected() => _sendStatus |= MessageIsRedirect;
+        internal void MarkPropagatorStateInjectedByDiagnosticsHandler() => _flags |= MessageFlags.PropagatorStateInjectedByDiagnosticsHandler;
 
-        internal bool WasRedirected() => (_sendStatus & MessageIsRedirect) != 0;
+        internal bool WasPropagatorStateInjectedByDiagnosticsHandler() => _flags.HasFlag(MessageFlags.PropagatorStateInjectedByDiagnosticsHandler);
+
+        internal void DisableAuth() => _flags |= MessageFlags.AuthDisabled;
+
+        internal bool IsAuthDisabled() => _flags.HasFlag(MessageFlags.AuthDisabled);
+
+        internal bool IsConnectionPoolPartitioningBySniDisabled() => _flags.HasFlag(MessageFlags.DoNotPartitionConnectionPoolBySni);
+
+        // Experimental opt-in accessed via UnsafeAccessor from System.Net.Http tests. There is no product code path
+        // that sets this flag today, so it is preserved from the trimmer via ILLink.Descriptors.LibraryBuild.xml.
+        internal void ExperimentalDangerousDoNotPartitionConnectionPoolBySni() => _flags |= MessageFlags.DoNotPartitionConnectionPoolBySni;
+
+        private bool Disposed
+        {
+            get => _flags.HasFlag(MessageFlags.Disposed);
+            set
+            {
+                Debug.Assert(value);
+                _flags |= MessageFlags.Disposed;
+            }
+        }
+
+        internal bool IsExtendedConnectRequest => Method == HttpMethod.Connect && _headers?.Protocol != null;
 
         #region IDisposable Members
 
@@ -177,13 +270,10 @@ namespace System.Net.Http
         {
             // The reason for this type to implement IDisposable is that it contains instances of types that implement
             // IDisposable (content).
-            if (disposing && !_disposed)
+            if (disposing && !Disposed)
             {
-                _disposed = true;
-                if (_content != null)
-                {
-                    _content.Dispose();
-                }
+                Disposed = true;
+                _content?.Dispose();
             }
         }
 
@@ -197,10 +287,7 @@ namespace System.Net.Http
 
         private void CheckDisposed()
         {
-            if (_disposed)
-            {
-                throw new ObjectDisposedException(this.GetType().ToString());
-            }
+            ObjectDisposedException.ThrowIf(Disposed, this);
         }
     }
 }

@@ -2,13 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 //*****************************************************************************
-// MetaModelRW.h -- header file for Read/Write compressed COM+ metadata.
-//
-
+// MetaModelRW.h -- header file for Read/Write compressed CLR metadata.
 //
 // Used by Emitters and by E&C.
-//
 //*****************************************************************************
+
 #ifndef _METAMODELRW_H_
 #define _METAMODELRW_H_
 
@@ -20,6 +18,7 @@
 #include "metadatahash.h"
 #include "rwutil.h"
 #include "shash.h"
+#include "cdacdata.h"
 
 #include "../heaps/export.h"
 #include "../tables/export.h"
@@ -27,9 +26,6 @@
 #include<minipal/utils.h>
 
 struct HENUMInternal;
-#ifdef FEATURE_METADATA_CUSTOM_DATA_SOURCE
-struct IMDCustomDataSource;
-#endif
 
 // ENUM for marking bit
 enum
@@ -199,18 +195,20 @@ public:
 typedef CMetaDataHashBase CMemberRefHash;
 typedef CMetaDataHashBase CLookUpHash;
 
+#ifdef FEATURE_METADATA_PERSISTENCE
 class MDTOKENMAP;
+#endif
 class MDInternalRW;
-class CorProfileData;
-class UTSemReadWrite;
 
 template <class MiniMd> class CLiteWeightStgdb;
+class DacDbiInterfaceImpl;
 //*****************************************************************************
 // Read/Write MiniMd.
 //*****************************************************************************
 class CMiniMdRW : public CMiniMdTemplate<CMiniMdRW>
 {
 public:
+    friend class ::DacDbiInterfaceImpl;
     friend class CLiteWeightStgdb<CMiniMdRW>;
     friend class CLiteWeightStgdbRW;
     friend class CMiniMdTemplate<CMiniMdRW>;
@@ -220,7 +218,7 @@ public:
     friend class RegMeta;
     friend class FilterTable;
     friend class ImportHelper;
-    friend class VerifyLayoutsMD;
+    friend struct ::cdac_data<CMiniMdRW>;
 
     CMiniMdRW();
     ~CMiniMdRW();
@@ -235,10 +233,6 @@ public:
     HRESULT InitPoolOnMem(int iPool, void *pbData, ULONG cbData, int bReadOnly);
     __checkReturn
     HRESULT InitOnRO(CMiniMd *pMd, int bReadOnly);
-#ifdef FEATURE_METADATA_CUSTOM_DATA_SOURCE
-    __checkReturn
-    HRESULT InitOnCustomDataSource(IMDCustomDataSource* pDataSouce);
-#endif
     __checkReturn
     HRESULT ConvertToRW();
 
@@ -247,14 +241,13 @@ public:
         CorSaveSize               fSave,
         UINT32                   *pcbSize,
         DWORD                    *pbCompressed,
-        MetaDataReorderingOptions reorderingOptions = NoReordering,
-        CorProfileData           *pProfileData = NULL);
+        MetaDataReorderingOptions reorderingOptions = NoReordering);
     int IsPoolEmpty(int iPool);
     __checkReturn
     HRESULT GetPoolSaveSize(int iPool, UINT32 *pcbSize);
 
     __checkReturn
-    HRESULT SaveTablesToStream(IStream *pIStream, MetaDataReorderingOptions reorderingOptions, CorProfileData *pProfileData);
+    HRESULT SaveTablesToStream(IStream *pIStream, MetaDataReorderingOptions reorderingOptions);
     __checkReturn
     HRESULT SavePoolToStream(int iPool, IStream *pIStream);
     __checkReturn
@@ -766,7 +759,7 @@ public:
 
     // look up hash table for tokenless tables.
     // They are constant, FieldMarshal, MethodSemantics, ClassLayout, FieldLayout, ImplMap, FieldRVA, NestedClass, and MethodImpl
-    CLookUpHash * m_pLookUpHashs[TBL_COUNT];
+    CLookUpHash * m_pLookUpHashes[TBL_COUNT];
 
     //*************************************************************************
     // Hash for named items.
@@ -775,19 +768,6 @@ public:
     HRESULT AddNamedItemToHash(             // Return code.
         ULONG       ixTbl,                  // Table with the new item.
         mdToken     tk,                     // Token of new guy.
-        LPCUTF8     szName,                 // Name of item.
-        mdToken     tkParent);              // Token of parent, if any.
-
-    HashSearchResult FindNamedItemFromHash(
-        ULONG     ixTbl,    // Table with the item.
-        LPCUTF8   szName,   // Name of item.
-        mdToken   tkParent, // Token of parent, if any.
-        mdToken * ptk);     // Return if found.
-
-    __checkReturn
-    HRESULT CompareNamedItems(              // S_OK match, S_FALSE no match.
-        ULONG       ixTbl,                  // Table with the item.
-        mdToken     tk,                     // Token to check.
         LPCUTF8     szName,                 // Name of item.
         mdToken     tkParent);              // Token of parent, if any.
 
@@ -879,14 +859,6 @@ public:
     HRESULT FindMethodImplHelper(// return HRESULT
         mdTypeDef   td,                     // TypeDef token for the Class.
         HENUMInternal *phEnum);             // fill in the enum
-
-    //*****************************************************************************
-    // Find helper for a GenericParams
-    //*****************************************************************************
-    __checkReturn
-    HRESULT FindGenericParamHelper(         // Return HRESULT
-        mdToken     tkOwner,                // Token for the GenericParams' owner
-        HENUMInternal *phEnum);             // Fill in the enum.
 
     //*****************************************************************************
     // Find helper for a Generic Constraints
@@ -1012,7 +984,7 @@ public:
     FORCEINLINE int IsPreSaveDone() { return m_bPreSaveDone; }
 
 protected:
-    __checkReturn HRESULT PreSave(MetaDataReorderingOptions reorderingOptions=NoReordering, CorProfileData *pProfileData=NULL);
+    __checkReturn HRESULT PreSave(MetaDataReorderingOptions reorderingOptions=NoReordering);
     __checkReturn HRESULT PostSave();
 
     __checkReturn HRESULT PreSaveFull();
@@ -1029,18 +1001,16 @@ protected:
         CorSaveSize               fSave,
         UINT32                   *pcbSize,
         DWORD                    *pbCompressed,
-        MetaDataReorderingOptions reorderingOptions = NoReordering,
-        CorProfileData           *pProfileData = NULL);
+        MetaDataReorderingOptions reorderingOptions = NoReordering);
     __checkReturn
     HRESULT GetENCSaveSize(UINT32 *pcbSize);
     __checkReturn
     HRESULT GetHotPoolsSaveSize(
         UINT32                   *pcbSize,
-        MetaDataReorderingOptions reorderingOptions,
-        CorProfileData           *pProfileData);
+        MetaDataReorderingOptions reorderingOptions);
 
     __checkReturn
-    HRESULT SaveFullTablesToStream(IStream *pIStream, MetaDataReorderingOptions reorderingOptions=NoReordering, CorProfileData *pProfileData = NULL );
+    HRESULT SaveFullTablesToStream(IStream *pIStream, MetaDataReorderingOptions reorderingOptions=NoReordering);
     __checkReturn
     HRESULT SaveENCTablesToStream(IStream *pIStream);
 
@@ -1139,7 +1109,7 @@ protected:
     //*************************************************************************
     // Overridables -- must be provided in derived classes.
     __checkReturn
-    FORCEINLINE HRESULT Impl_GetString(UINT32 nIndex, __out LPCSTR *pszString)
+    FORCEINLINE HRESULT Impl_GetString(UINT32 nIndex, _Out_ LPCSTR *pszString)
     { return m_StringHeap.GetString(nIndex, pszString); }
     __checkReturn
     HRESULT Impl_GetStringW(ULONG ix, __inout_ecount (cchBuffer) LPWSTR szOut, ULONG cchBuffer, ULONG *pcchBuffer);
@@ -1158,14 +1128,14 @@ protected:
     }
 
     __checkReturn
-    FORCEINLINE HRESULT Impl_GetBlob(ULONG nIndex, __out MetaData::DataBlob *pData)
+    FORCEINLINE HRESULT Impl_GetBlob(ULONG nIndex, _Out_ MetaData::DataBlob *pData)
     { return m_BlobHeap.GetBlob(nIndex, pData); }
 
     __checkReturn
     FORCEINLINE HRESULT Impl_GetRow(
                         UINT32 nTableIndex,
                         UINT32 nRowIndex,
-        __deref_out_opt BYTE **ppRecord)
+        _Outptr_opt_ BYTE **ppRecord)
     {
         _ASSERTE(nTableIndex < TBL_COUNT);
         return m_Tables[nTableIndex].GetRecord(nRowIndex, ppRecord);
@@ -1236,22 +1206,27 @@ protected:
 
     CMiniMdSchema m_StartupSchema;      // Schema at start time.  Keep count of records.
     BYTE        m_bSortable[TBL_COUNT]; // Is a given table sortable?  (Can it be reorganized?)
-#ifdef FEATURE_METADATA_CUSTOM_DATA_SOURCE
-    ReleaseHolder<IMDCustomDataSource> m_pCustomDataSource;
-#endif
 
 #ifdef _DEBUG
 
 protected:
-    UTSemReadWrite * dbg_m_pLock;
+    bool dbg_m_fLockEnabled;
+    Volatile<bool> dbg_m_fIsLockedForWrite;
 
 public:
     // Checks that MetaData is locked for write operation (if thread-safety is enabled and the lock exists)
     void Debug_CheckIsLockedForWrite();
 
-    void Debug_SetLock(UTSemReadWrite * pLock)
+    void Debug_EnableLockCheck()
     {
-        dbg_m_pLock = pLock;
+        dbg_m_fLockEnabled = true;
+    }
+
+    void Debug_SetIsLockedForWrite(bool isLockedForWrite)
+    {
+        _ASSERTE(dbg_m_fLockEnabled);
+        _ASSERTE(dbg_m_fIsLockedForWrite.Load() != isLockedForWrite);
+        dbg_m_fIsLockedForWrite.Store(isLockedForWrite);
     }
 
 #endif //_DEBUG
@@ -1272,8 +1247,10 @@ public:
     FORCEINLINE TOKENMAP *GetMemberRefToMemberDefMap()
     { return m_pTokenRemapManager ? m_pTokenRemapManager->GetMemberRefToMemberDefMap() : NULL; };
 
+#ifdef FEATURE_METADATA_PERSISTENCE
     FORCEINLINE MDTOKENMAP *GetTokenMovementMap()
     { return m_pTokenRemapManager ? m_pTokenRemapManager->GetTokenMovementMap() : NULL; };
+#endif
 
     FORCEINLINE TokenRemapManager *GetTokenRemapManager() { return m_pTokenRemapManager; };
 
@@ -1332,6 +1309,7 @@ public:
 
 private:
     BOOL m_fMinimalDelta;
+    BOOL m_fAll4ByteColumns;
 
 public:
     BOOL IsMinimalDelta()
@@ -1399,5 +1377,16 @@ public:
         bool * pfIsTableVirtualSortValid);
 
 }; // class CMiniMdRW : public CMiniMdTemplate<CMiniMdRW>
+
+template<>
+struct cdac_data<CMiniMdRW>
+{
+    static constexpr size_t All4ByteColumns = offsetof(CMiniMdRW, m_fAll4ByteColumns);
+    static constexpr size_t Tables = offsetof(CMiniMdRW, m_Tables);
+    static constexpr size_t StringHeap = offsetof(CMiniMdRW, m_StringHeap);
+    static constexpr size_t BlobHeap = offsetof(CMiniMdRW, m_BlobHeap);
+    static constexpr size_t UserStringHeap = offsetof(CMiniMdRW, m_UserStringHeap);
+    static constexpr size_t GuidHeap = offsetof(CMiniMdRW, m_GuidHeap);
+};
 
 #endif // _METAMODELRW_H_

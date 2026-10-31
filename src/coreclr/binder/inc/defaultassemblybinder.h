@@ -16,10 +16,12 @@ class DefaultAssemblyBinder final : public AssemblyBinder
 public:
 
     HRESULT BindUsingPEImage(PEImage* pPEImage,
-        BINDER_SPACE::Assembly** ppAssembly) override;
+        bool excludeAppPaths,
+        BINDER_SPACE::Assembly** ppAssembly,
+        BINDER_SPACE::Assembly** ppExistingAssemblyOnConflict = nullptr) override;
 
     HRESULT BindUsingAssemblyName(BINDER_SPACE::AssemblyName* pAssemblyName,
-        BINDER_SPACE::Assembly** ppAssembly) override;
+        BINDER_SPACE::Assembly** ppAssembly, SString* pDiagnosticInfo = NULL) override;
 
     AssemblyLoaderAllocator* GetLoaderAllocator() override
     {
@@ -38,8 +40,6 @@ public:
                               SString  &sPlatformResourceRoots,
                               SString  &sAppPaths);
 
-    HRESULT Bind(LPCWSTR wszCodeBase, BINDER_SPACE::Assembly **ppAssembly);
-
     HRESULT BindToSystem(BINDER_SPACE::Assembly **ppSystemAssembly);
 
 private:
@@ -47,7 +47,9 @@ private:
     HRESULT BindAssemblyByNameWorker(
             BINDER_SPACE::AssemblyName *pAssemblyName,
             BINDER_SPACE::Assembly **ppCoreCLRFoundAssembly,
-            bool excludeAppPaths);
+            bool excludeAppPaths,
+            BINDER_SPACE::Assembly **ppExistingAssemblyOnFailure = nullptr,
+            SString *pDiagnosticInfo = NULL);
 };
 
 #endif // __DEFAULT_ASSEMBLY_BINDER_H__

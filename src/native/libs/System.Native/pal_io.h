@@ -31,15 +31,40 @@ typedef struct
     int64_t BirthTime; // time the file was created
     int64_t BirthTimeNsec; // nanosecond part
     int64_t Dev;       // ID of the device containing the file
+    int64_t RDev;      // ID of the device if it is a special file
     int64_t Ino;       // inode number of the file
     uint32_t UserFlags; // user defined flags
+    uint32_t HardLinkCount; // Number of hard links to the file
 } FileStatus;
 
 typedef struct
 {
-    size_t ResidentSetSize;
-    // add more fields when needed.
-} ProcessStatus;
+    // note: sorted by size to avoid alignment padding
+    uint64_t VirtualSize;
+    uint64_t ResidentSetSize;
+    int64_t StartTime;    // time proc. started
+    int64_t StartTimeNsec;
+    int64_t CpuTotalTime; // Cumulative CPU time (user+sys)
+    int64_t CpuTotalTimeNsec;
+    int32_t Pid;
+    int32_t ParentPid;
+    int32_t SessionId;
+    int32_t Priority;
+    int32_t NiceVal;
+} ProcessInfo;
+
+typedef struct
+{
+    // note: sorted by size to avoid alignment padding
+    int64_t StartTime;          // time thread started
+    int64_t StartTimeNsec;
+    int64_t CpuTotalTime;       // cumulative CPU time (user+sys)
+    int64_t CpuTotalTimeNsec;
+    int32_t Tid;
+    int32_t Priority;
+    int32_t NiceVal;
+    uint16_t StatusCode;        // See ProcFsStateToThreadState()
+} ThreadInfo;
 
 // NOTE: the layout of this type is intended to exactly  match the layout of a `struct iovec`. There are
 //       assertions in pal_networking.c that validate this.
@@ -121,6 +146,7 @@ enum
 {
     PAL_S_IFMT = 0xF000,  // Type of file (apply as mask to FileStatus.Mode and one of S_IF*)
     PAL_S_IFIFO = 0x1000, // FIFO (named pipe)
+    PAL_S_IFBLK = 0x6000, // Block special
     PAL_S_IFCHR = 0x2000, // Character special
     PAL_S_IFDIR = 0x4000, // Directory
     PAL_S_IFREG = 0x8000, // Regular file
@@ -149,11 +175,20 @@ enum
 
     // Flags (combinable)
     // These numeric values are not defined by POSIX and vary across targets.
-    PAL_O_CLOEXEC = 0x0010, // Close-on-exec
-    PAL_O_CREAT = 0x0020,   // Create file if it doesn't already exist
-    PAL_O_EXCL = 0x0040,    // When combined with CREAT, fails if file already exists
-    PAL_O_TRUNC = 0x0080,   // Truncate file to length 0 if it already exists
-    PAL_O_SYNC = 0x0100,    // Block writes call will block until physically written
+    PAL_O_CLOEXEC = 0x0010,  // Close-on-exec
+    PAL_O_CREAT = 0x0020,    // Create file if it doesn't already exist
+    PAL_O_EXCL = 0x0040,     // When combined with CREAT, fails if file already exists
+    PAL_O_TRUNC = 0x0080,    // Truncate file to length 0 if it already exists
+    PAL_O_SYNC = 0x0100,     // Block writes call will block until physically written
+    PAL_O_NOFOLLOW = 0x0200, // Fails to open the target if it's a symlink, parent symlinks are allowed
+    PAL_O_NONBLOCK_READ = 0x0400,  // Set O_NONBLOCK on the read end of a pipe
+    PAL_O_NONBLOCK_WRITE = 0x0800, // Set O_NONBLOCK on the write end of a pipe
+    PAL_O_DIRECTORY = 0x1000, // Fails to open the target if it's not a directory
+};
+
+enum
+{
+    PAL_AT_REMOVEDIR = 0x0001, // Remove the entry as a directory
 };
 
 /**
@@ -262,7 +297,7 @@ enum
 typedef enum
 {
     PAL_MADV_DONTFORK = 1, // don't map pages in to forked process
-} MemmoryAdvice;
+} MemoryAdvice;
 
 /**
  * Name argument to SysConf.
@@ -284,7 +319,7 @@ typedef enum
     PAL_POSIX_FADV_SEQUENTIAL = 2, /* sequential I/O access */
     PAL_POSIX_FADV_WILLNEED = 3,   /* will need specified pages */
     PAL_POSIX_FADV_DONTNEED = 4,   /* don't need the specified pages */
-    PAL_POSIX_FADV_NOREUSE = 5,    /* data will only be acessed once */
+    PAL_POSIX_FADV_NOREUSE = 5,    /* data will only be accessed once */
 } FileAdvice;
 
 /**
@@ -314,6 +349,7 @@ typedef enum
     PAL_IN_ONLYDIR = 0x01000000,
     PAL_IN_DONT_FOLLOW = 0x02000000,
     PAL_IN_EXCL_UNLINK = 0x04000000,
+    PAL_IN_MOVE_SELF = 0x00000800,
     PAL_IN_ISDIR = 0x40000000,
 } NotifyEvents;
 
@@ -346,6 +382,13 @@ PALEXPORT int32_t SystemNative_LStat(const char* path, FileStatus* output);
 PALEXPORT intptr_t SystemNative_Open(const char* path, int32_t flags, int32_t mode);
 
 /**
+ * Open or create a file or device relative to a directory descriptor. Implemented as shim to openat(2).
+ *
+ * Returns file descriptor or -1 for failure. Sets errno on failure.
+ */
+PALEXPORT intptr_t SystemNative_OpenAt(intptr_t dirfd, const char* path, int32_t flags, int32_t mode);
+
+/**
  * Close a file descriptor. Implemented as shim to open(2).
  *
  * Returns 0 for success, -1 for failure. Sets errno on failure.
@@ -367,6 +410,27 @@ PALEXPORT intptr_t SystemNative_Dup(intptr_t oldfd);
 PALEXPORT int32_t SystemNative_Unlink(const char* path);
 
 /**
+ * Delete an entry relative to a directory descriptor. Implemented as shim to unlinkat(2).
+ *
+ * Returns 0 for success, -1 for failure. Sets errno on failure.
+ */
+PALEXPORT int32_t SystemNative_UnlinkAt(intptr_t dirfd, const char* path, int32_t flags);
+
+/**
+ * Check if the system supports memfd_create(2). 
+ * 
+ * Returns 1 if memfd_create is supported, 0 if not supported, or -1 on failure. Sets errno on failure.
+ */
+PALEXPORT int32_t SystemNative_IsMemfdSupported(void);
+
+/**
+ * Create an anonymous file descriptor. Implemented as shim to memfd_create(2).
+ *
+ * Returns file descriptor or -1 on failure. Sets errno on failure.
+ */
+PALEXPORT intptr_t SystemNative_MemfdCreate(const char* name, int32_t isReadonly);
+
+/**
  * Open or create a shared memory object. Implemented as shim to shm_open(3).
  *
  * Returns file descriptor or -1 on fiailure. Sets errno on failure.
@@ -381,16 +445,11 @@ PALEXPORT intptr_t SystemNative_ShmOpen(const char* name, int32_t flags, int32_t
 PALEXPORT int32_t SystemNative_ShmUnlink(const char* name);
 
 /**
- * Returns the size of the dirent struct on the current architecture
- */
-PALEXPORT int32_t SystemNative_GetReadDirRBufferSize(void);
-
-/**
- * Re-entrant readdir that will retrieve the next dirent from the directory stream pointed to by dir.
+ * Retrieves the next dirent from the directory stream pointed to by dir.
  *
  * Returns 0 when data is retrieved; returns -1 when end-of-stream is reached; returns an error code on failure
  */
-PALEXPORT int32_t SystemNative_ReadDirR(DIR* dir, uint8_t* buffer, int32_t bufferSize, DirectoryEntry* outputEntry);
+PALEXPORT int32_t SystemNative_ReadDir(DIR* dir, DirectoryEntry* outputEntry);
 
 /**
  * Returns a DIR struct containing info about the current path or NULL on failure; sets errno on fail.
@@ -404,12 +463,18 @@ PALEXPORT int32_t SystemNative_CloseDir(DIR* dir);
 
 /**
  * Creates a pipe. Implemented as shim to pipe(2) or pipe2(2) if available.
- * Flags are ignored if pipe2 is not available.
  *
  * Returns 0 for success, -1 for failure. Sets errno on failure.
  */
 PALEXPORT int32_t SystemNative_Pipe(int32_t pipefd[2], // [out] pipefds[0] gets read end, pipefd[1] gets write end.
-                        int32_t flags);    // 0 for defaults or PAL_O_CLOEXEC for close-on-exec
+                        int32_t flags);    // 0 for defaults. Use PAL_O_CLOEXEC, PAL_O_NONBLOCK_READ, and PAL_O_NONBLOCK_WRITE for additional behavior.
+
+/**
+ * Determines if the current platform supports atomically creating pipes with non-inheritable file descriptors (pipe2).
+ *
+ * Returns 1 if supported, 0 if not supported.
+ */
+PALEXPORT int32_t SystemNative_IsAtomicNonInheritablePipeCreationSupported(void);
 
 // NOTE: Rather than a general fcntl shim, we opt to export separate functions
 // for each command. This allows use to have strongly typed arguments and saves
@@ -476,6 +541,13 @@ PALEXPORT int32_t SystemNative_FcntlGetIsNonBlocking(intptr_t fd, int32_t* isNon
 PALEXPORT int32_t SystemNative_MkDir(const char* path, int32_t mode);
 
 /**
+ * Create a directory relative to a directory descriptor. Implemented as a shim to mkdirat(2).
+ *
+ * Returns 0 for success, -1 for failure. Sets errno for failure.
+ */
+PALEXPORT int32_t SystemNative_MkDirAt(intptr_t dirfd, const char* path, int32_t mode);
+
+/**
  * Change permissions of a file. Implemented as a shim to chmod(2).
  *
  * Returns 0 for success, -1 for failure. Sets errno for failure.
@@ -521,7 +593,7 @@ PALEXPORT int32_t SystemNative_Access(const char* path, int32_t mode);
 /**
  * Seek to a specified location within a seekable stream
  *
- * On success, the resulting offet, in bytes, from the beginning of the stream; otherwise,
+ * On success, the resulting offset, in bytes, from the beginning of the stream; otherwise,
  * returns -1 and errno is set.
  */
 PALEXPORT int64_t SystemNative_LSeek(intptr_t fd, int64_t offset, int32_t whence);
@@ -539,6 +611,33 @@ PALEXPORT int32_t SystemNative_Link(const char* source, const char* linkTarget);
  * Returns 0 on success; otherwise, returns -1 and errno is set.
  */
 PALEXPORT int32_t SystemNative_SymLink(const char* target, const char* linkPath);
+
+/**
+ * Given a device ID, extracts the major and minor and components and returns them.
+ */
+PALEXPORT void SystemNative_GetDeviceIdentifiers(uint64_t dev, uint32_t* majorNumber, uint32_t* minorNumber);
+
+/**
+ * Creates a special or ordinary file.
+ *
+ * Returns 0 on success; otherwise, returns -1 and errno is set.
+ */
+PALEXPORT int32_t SystemNative_MkNod(const char* pathName, uint32_t mode, uint32_t major, uint32_t minor);
+
+/**
+ * Creates a FIFO special file (named pipe).
+ *
+ * Returns 0 on success; otherwise, returns -1 and errno is set.
+ */
+PALEXPORT int32_t SystemNative_MkFifo(const char* pathName, uint32_t mode);
+
+/**
+ * Creates a directory name that adheres to the specified template, creates the directory on disk with
+ * 0700 permissions, and returns the directory name.
+ *
+ * Returns a pointer to the modified template string on success; otherwise, returns NULL and errno is set.
+ */
+PALEXPORT char* SystemNative_MkdTemp(char* pathTemplate);
 
 /**
  * Creates a file name that adheres to the specified template, creates the file on disk with
@@ -569,6 +668,13 @@ PALEXPORT void* SystemNative_MMap(void* address,
  * Returns 0 for success, -1 for failure. Sets errno on failure.
  */
 PALEXPORT int32_t SystemNative_MUnmap(void* address, uint64_t length);
+
+/**
+ * Change the access protections for the specified memory pages.
+ *
+ * Returns 0 for success, -1 for failure. Sets errno on failure.
+ */
+PALEXPORT int32_t SystemNative_MProtect(void* address, uint64_t length, int32_t protection);
 
 /**
  * Give advice about use of memory. Implemented as shim to madvise(2).
@@ -636,6 +742,14 @@ PALEXPORT int32_t SystemNative_FAllocate(intptr_t fd, int64_t offset, int64_t le
 PALEXPORT int32_t SystemNative_Read(intptr_t fd, void* buffer, int32_t bufferSize);
 
 /**
+ * Reads the number of bytes specified into the provided buffer from the specified, opened non-blocking file descriptor.
+ * If no data is currently available, polls the file descriptor until data arrives or the pipe/socket is closed.
+ *
+ * Returns the number of bytes read on success; 0 on EOF; otherwise, -1 is returned and errno is set.
+ */
+PALEXPORT int32_t SystemNative_ReadFromNonblocking(intptr_t fd, void* buffer, int32_t bufferSize);
+
+/**
  * Takes a path to a symbolic link and attempts to place the link target path into the buffer. If the buffer is too
  * small, the path will be truncated. No matter what, the buffer will not be null terminated.
  *
@@ -647,7 +761,7 @@ PALEXPORT int32_t SystemNative_ReadLink(const char* path, char* buffer, int32_t 
  * Renames a file, moving to the correct destination if necessary. There are many edge cases to this call, check man 2
  * rename for more info
  *
- * Returns 0 on succes; otherwise, returns -1 and errno is set.
+ * Returns 0 on success; otherwise, returns -1 and errno is set.
  */
 PALEXPORT int32_t SystemNative_Rename(const char* oldPath, const char* newPath);
 
@@ -669,6 +783,14 @@ PALEXPORT void SystemNative_Sync(void);
  * Returns the number of bytes written on success; otherwise, returns -1 and sets errno
  */
 PALEXPORT int32_t SystemNative_Write(intptr_t fd, const void* buffer, int32_t bufferSize);
+
+/**
+ * Writes the specified buffer to the provided open non-blocking file descriptor.
+ * If the write buffer is currently full, polls the file descriptor until space is available or the pipe/socket is closed.
+ *
+ * Returns the number of bytes written on success; otherwise, returns -1 and sets errno.
+ */
+PALEXPORT int32_t SystemNative_WriteToNonblocking(intptr_t fd, const void* buffer, int32_t bufferSize);
 
 /**
  * Copies all data from the source file descriptor to the destination file descriptor.
@@ -718,9 +840,9 @@ PALEXPORT char* SystemNative_RealPath(const char* path);
 PALEXPORT int32_t SystemNative_GetPeerID(intptr_t socket, uid_t* euid);
 
 /**
-* Returns file system type on success, or -1 on error.
+* Returns whether file system associated with the handle supports .NET compatible locking.
 */
-PALEXPORT int64_t SystemNative_GetFileSystemType(intptr_t fd);
+PALEXPORT uint32_t SystemNative_FileSystemSupportsLocking(intptr_t fd, int32_t lockOperation, int32_t accessWrite);
 
 /**
 * Attempts to lock/unlock the region of the file "fd" specified by the offset and length. lockType
@@ -738,6 +860,13 @@ PALEXPORT int32_t SystemNative_LockFileRegion(intptr_t fd, int64_t offset, int64
 PALEXPORT int32_t SystemNative_LChflags(const char* path, uint32_t flags);
 
 /**
+* Changes the file flags of the file "fd".
+*
+* Returns 0 for success, -1 for failure. Sets errno for failure.
+*/
+PALEXPORT int32_t SystemNative_FChflags(intptr_t fd, uint32_t flags);
+
+/**
  * Determines if the current platform supports setting UF_HIDDEN (0x8000) flag
  *
  * Returns true (non-zero) if supported, false (zero) if not.
@@ -745,11 +874,25 @@ PALEXPORT int32_t SystemNative_LChflags(const char* path, uint32_t flags);
 PALEXPORT int32_t SystemNative_LChflagsCanSetHiddenFlag(void);
 
 /**
- * Reads the psinfo_t struct and converts into ProcessStatus.
+ * Determines if the current platform supports getting UF_HIDDEN (0x8000) flag
  *
- * Returns 1 if the process status was read; otherwise, 0.
+ * Returns true (non-zero) if supported, false (zero) if not.
  */
-PALEXPORT int32_t SystemNative_ReadProcessStatusInfo(pid_t pid, ProcessStatus* processStatus);
+PALEXPORT int32_t SystemNative_CanGetHiddenFlag(void);
+
+/**
+ * Reads the lwpsinfo_t struct and converts into ThreadInfo.
+ *
+ * Returns 0 on success; otherwise, returns -1 and sets errno.
+ */
+PALEXPORT int32_t SystemNative_ReadThreadInfo(int32_t pid, int32_t tid, ThreadInfo* threadInfo);
+
+/**
+ * Reads the psinfo_t struct and converts into ProcessInfo.
+ *
+ * Returns 0 on success; otherwise, returns -1 and sets errno.
+ */
+PALEXPORT int32_t SystemNative_ReadProcessInfo(int32_t pid, ProcessInfo* processInfo, uint8_t *argBuf, int32_t argBufSize);
 
 /**
  * Reads the number of bytes specified into the provided buffer from the specified, opened file descriptor at specified offset.
@@ -768,13 +911,62 @@ PALEXPORT int32_t SystemNative_PWrite(intptr_t fd, void* buffer, int32_t bufferS
 /**
  * Reads the number of bytes specified into the provided buffers from the specified, opened file descriptor at specified offset.
  *
- * Returns the number of bytes read on success; otherwise, -1 is returned an errno is set.
+ * Returns the number of bytes read on success; otherwise, -1 is returned and errno is set.
  */
 PALEXPORT int64_t SystemNative_PReadV(intptr_t fd, IOVector* vectors, int32_t vectorCount, int64_t fileOffset);
 
 /**
  * Writes the number of bytes specified in the buffers into the specified, opened file descriptor at specified offset.
  *
- * Returns the number of bytes written on success; otherwise, -1 is returned an errno is set.
+ * Returns the number of bytes written on success; otherwise, -1 is returned and errno is set.
  */
 PALEXPORT int64_t SystemNative_PWriteV(intptr_t fd, IOVector* vectors, int32_t vectorCount, int64_t fileOffset);
+
+/**
+ * Reads the number of bytes specified into the provided buffers from the specified, opened file descriptor.
+ *
+ * Returns the number of bytes read on success; otherwise, -1 is returned and errno is set.
+ */
+PALEXPORT int64_t SystemNative_ReadV(intptr_t fd, IOVector* vectors, int32_t vectorCount);
+
+/**
+ * Writes the number of bytes specified in the buffers into the specified, opened file descriptor
+ *
+ * Returns the number of bytes written on success; otherwise, -1 is returned and errno is set.
+ */
+PALEXPORT int64_t SystemNative_WriteV(intptr_t fd, IOVector* vectors, int32_t vectorCount);
+
+/*
+ * Handle async events.
+ */
+typedef enum
+{
+    HandleEvents_NONE = 0x00,
+    HandleEvents_READ = 0x01,
+    HandleEvents_WRITE = 0x02,
+    HandleEvents_READCLOSE = 0x04,
+    HandleEvents_CLOSE = 0x08,
+    HandleEvents_ERROR = 0x10,
+    // Force the enum to use int32_t instead of uint32_t
+    HandleEvents__IGNORE_SIGNED = -1,
+} HandleEvents;
+
+typedef struct
+{
+    uintptr_t Data;      // User data for this event
+    int32_t Events;      // Event flags
+    uint32_t Padding;    // Pad out to 8-byte alignment
+} HandleEvent;
+
+PALEXPORT int32_t SystemNative_CreateHandleEventPort(intptr_t* port);
+
+PALEXPORT int32_t SystemNative_CloseHandleEventPort(intptr_t port);
+
+PALEXPORT int32_t SystemNative_CreateHandleEventBuffer(int32_t count, HandleEvent** buffer);
+
+PALEXPORT int32_t SystemNative_FreeHandleEventBuffer(HandleEvent* buffer);
+
+PALEXPORT int32_t SystemNative_TryChangeHandleEventRegistration(
+    intptr_t port, intptr_t socket, int32_t currentEvents, int32_t newEvents, uintptr_t data);
+
+PALEXPORT int32_t SystemNative_WaitForHandleEvents(intptr_t port, HandleEvent* buffer, int32_t* count);

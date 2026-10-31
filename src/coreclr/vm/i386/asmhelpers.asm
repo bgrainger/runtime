@@ -1,11 +1,6 @@
 ; Licensed to the .NET Foundation under one or more agreements.
 ; The .NET Foundation licenses this file to you under the MIT license.
 
-; ==++==
-;
-
-;
-; ==--==
 ;
 ; FILE: asmhelpers.asm
 ;
@@ -20,117 +15,102 @@
         .model  flat
 
 include asmconstants.inc
+include asmmacros.inc
 
         assume fs: nothing
         option  casemap:none
         .code
 
+g_pThrowDivideByZeroException    TEXTEQU <_g_pThrowDivideByZeroException>
+g_pThrowOverflowException        TEXTEQU <_g_pThrowOverflowException>
+EXTERN g_pThrowDivideByZeroException:DWORD
+EXTERN g_pThrowOverflowException:DWORD
+
 EXTERN __imp__RtlUnwind@16:DWORD
-ifdef _DEBUG
-EXTERN _HelperMethodFrameConfirmState@20:PROC
-endif
-EXTERN _StubRareEnableWorker@4:PROC
-ifdef FEATURE_COMINTEROP
-EXTERN _StubRareDisableHRWorker@4:PROC
-endif ; FEATURE_COMINTEROP
-EXTERN _StubRareDisableTHROWWorker@4:PROC
 ifdef FEATURE_HIJACK
 EXTERN _OnHijackWorker@4:PROC
 endif ;FEATURE_HIJACK
-EXTERN _COMPlusFrameHandler:PROC
-ifdef FEATURE_COMINTEROP
-EXTERN _COMPlusFrameHandlerRevCom:PROC
-endif ; FEATURE_COMINTEROP
+EXTERN _ProcessCLRException:PROC
+EXTERN _UMEntryPrestubUnwindFrameChainHandler:PROC
+EXTERN _CallDescrWorkerUnwindFrameChainHandler:PROC
+EXTERN _ProcessCLRException:PROC
 EXTERN __alloca_probe:PROC
-EXTERN _NDirectImportWorker@4:PROC
-EXTERN _UMThunkStubRareDisableWorker@8:PROC
+EXTERN _PInvokeImportWorker@4:PROC
 
+ifdef FEATURE_VARARGS
 EXTERN _VarargPInvokeStubWorker@12:PROC
-EXTERN _GenericPInvokeCalliStubWorker@12:PROC
-
-ifndef FEATURE_CORECLR
-EXTERN _CopyCtorCallStubWorker@4:PROC
-endif
+endif ; FEATURE_VARARGS
 
 EXTERN _PreStubWorker@8:PROC
+EXTERN _TheUMEntryPrestubWorker@4:PROC
 
 ifdef FEATURE_COMINTEROP
-EXTERN _CLRToCOMWorker@8:PROC
+EXTERN _ComPreStubGetLastHResult@0:PROC
+EXTERN _ComPreStubGetLastStackBytes@0:PROC
 endif
 
 EXTERN _ExternalMethodFixupWorker@16:PROC
 
 ifdef FEATURE_COMINTEROP
-EXTERN _ComPreStubWorker@8:PROC
+EXTERN _ComPreStubWorker@4:PROC
 endif
 
 ifdef FEATURE_READYTORUN
 EXTERN _DynamicHelperWorker@20:PROC
 endif
 
-EXTERN @JIT_InternalThrow@4:PROC
-
 EXTERN @ProfileEnter@8:PROC
 EXTERN @ProfileLeave@8:PROC
 EXTERN @ProfileTailcall@8:PROC
+
+EXTERN __alldiv:PROC
+EXTERN __allrem:PROC
+EXTERN __aulldiv:PROC
+EXTERN __aullrem:PROC
+
+EXTERN _VSD_ResolveWorker@12:PROC
+EXTERN _BackPatchWorkerStaticStub@8:PROC
+ifdef CHAIN_LOOKUP
+g_chained_lookup_call_counter TEXTEQU <_g_chained_lookup_call_counter>
+g_chained_lookup_miss_counter TEXTEQU <_g_chained_lookup_miss_counter>
+g_dispatch_cache_chain_success_counter TEXTEQU <_g_dispatch_cache_chain_success_counter>
+EXTERN @VSD_PromoteChainEntry@4:PROC
+EXTERN g_chained_lookup_call_counter:DWORD
+EXTERN g_chained_lookup_miss_counter:DWORD
+EXTERN g_dispatch_cache_chain_success_counter:DWORD
+endif
+
+EXTERN @IL_Throw_Impl@8:PROC
+EXTERN @IL_ThrowExact_Impl@8:PROC
+EXTERN @IL_Rethrow_Impl@4:PROC
 
 UNREFERENCED macro arg
     local unref
     unref equ size arg
 endm
 
-FASTCALL_FUNC macro FuncName,cbArgs
-FuncNameReal EQU @&FuncName&@&cbArgs
-FuncNameReal proc public
+CPFH_STACK_SIZE     equ 8
+
+PUSH_CLR_EXCEPTION_HANDLER macro handlerName
+    ; setup frame exception handler
+    push        handlerName
+    push        fs:[0]
+    mov         fs:[0], esp
 endm
 
-FASTCALL_ENDFUNC macro
-FuncNameReal endp
+POP_CLR_EXCEPTION_HANDLER macro
+    ; remove frame exception handler
+    pop         fs:[0]
+    add         esp, 4
 endm
-
-ifdef FEATURE_COMINTEROP
-ifdef _DEBUG
-    CPFH_STACK_SIZE     equ SIZEOF_FrameHandlerExRecord + STACK_OVERWRITE_BARRIER_SIZE*4
-else ; _DEBUG
-    CPFH_STACK_SIZE     equ SIZEOF_FrameHandlerExRecord
-endif ; _DEBUG
 
 PUSH_CPFH_FOR_COM macro trashReg, pFrameBaseReg, pFrameOffset
-
-    ;
-    ; Setup the FrameHandlerExRecord
-    ;
-    push    dword ptr [pFrameBaseReg + pFrameOffset]
-    push    _COMPlusFrameHandlerRevCom
-    mov     trashReg, fs:[0]
-    push    trashReg
-    mov     fs:[0], esp
-
-ifdef _DEBUG
-    mov     trashReg, STACK_OVERWRITE_BARRIER_SIZE
-@@:
-    push    STACK_OVERWRITE_BARRIER_VALUE
-    dec     trashReg
-    jnz     @B
-endif ; _DEBUG
-
-endm  ; PUSH_CPFH_FOR_COM
-
+    PUSH_CLR_EXCEPTION_HANDLER _ProcessCLRException
+endm
 
 POP_CPFH_FOR_COM macro trashReg
-
-    ;
-    ; Unlink FrameHandlerExRecord from FS:0 chain
-    ;
-ifdef _DEBUG
-    add     esp, STACK_OVERWRITE_BARRIER_SIZE*4
-endif
-    mov     trashReg, [esp + OFFSETOF__FrameHandlerExRecord__m_ExReg__Next]
-    mov     fs:[0], trashReg
-    add     esp, SIZEOF_FrameHandlerExRecord
-
-endm  ; POP_CPFH_FOR_COM
-endif ; FEATURE_COMINTEROP
+    POP_CLR_EXCEPTION_HANDLER
+endm
 
 ;
 ; FramedMethodFrame prolog
@@ -244,23 +224,17 @@ _RestoreFPUContext@4 ENDP
 
 ; Register CLR exception handlers defined on the C++ side with SAFESEH.
 ; Note that these directives must be in a file that defines symbols that will be used during linking,
-; otherwise it's possible that the resulting .obj will completly be ignored by the linker and these
+; otherwise it's possible that the resulting .obj will completely be ignored by the linker and these
 ; directives will have no effect.
-COMPlusFrameHandler proto c
-.safeseh COMPlusFrameHandler
+ProcessCLRException proto c
+.safeseh ProcessCLRException
+UMEntryPrestubUnwindFrameChainHandler proto c
+.safeseh UMEntryPrestubUnwindFrameChainHandler
+CallDescrWorkerUnwindFrameChainHandler proto c
+.safeseh CallDescrWorkerUnwindFrameChainHandler
 
-COMPlusNestedExceptionHandler proto c
-.safeseh COMPlusNestedExceptionHandler
-
-FastNExportExceptHandler proto c
-.safeseh FastNExportExceptHandler
-
-UMThunkPrestubHandler proto c
-.safeseh UMThunkPrestubHandler
-
-ifdef FEATURE_COMINTEROP
-COMPlusFrameHandlerRevCom proto c
-.safeseh COMPlusFrameHandlerRevCom
+ifdef HAS_ADDRESS_SANITIZER
+EXTERN ___asan_handle_no_return:PROC
 endif
 
 ; Note that RtlUnwind trashes EBX, ESI and EDI, so this wrapper preserves them
@@ -279,289 +253,6 @@ CallRtlUnwind PROC stdcall public USES ebx esi edi, pEstablisherFrame :DWORD, ca
         RET
 CallRtlUnwind ENDP
 
-_ResumeAtJitEHHelper@4 PROC public
-        mov     edx, [esp+4]     ; edx = pContext (EHContext*)
-
-        mov     ebx, [edx+EHContext_Ebx]
-        mov     esi, [edx+EHContext_Esi]
-        mov     edi, [edx+EHContext_Edi]
-        mov     ebp, [edx+EHContext_Ebp]
-        mov     ecx, [edx+EHContext_Esp]
-        mov     eax, [edx+EHContext_Eip]
-        mov     [ecx-4], eax
-        mov     eax, [edx+EHContext_Eax]
-        mov     [ecx-8], eax
-        mov     eax, [edx+EHContext_Ecx]
-        mov     [ecx-0Ch], eax
-        mov     eax, [edx+EHContext_Edx]
-        mov     [ecx-10h], eax
-        lea     esp, [ecx-10h]
-        pop     edx
-        pop     ecx
-        pop     eax
-        ret
-_ResumeAtJitEHHelper@4 ENDP
-
-; int __stdcall CallJitEHFilterHelper(size_t *pShadowSP, EHContext *pContext);
-;   on entry, only the pContext->Esp, Ebx, Esi, Edi, Ebp, and Eip are initialized
-_CallJitEHFilterHelper@8 PROC public
-        push    ebp
-        mov     ebp, esp
-        push    ebx
-        push    esi
-        push    edi
-
-        pShadowSP equ [ebp+8]
-        pContext  equ [ebp+12]
-
-        mov     eax, pShadowSP      ; Write esp-4 to the shadowSP slot
-        test    eax, eax
-        jz      DONE_SHADOWSP_FILTER
-        mov     ebx, esp
-        sub     ebx, 4
-        or      ebx, SHADOW_SP_IN_FILTER_ASM
-        mov     [eax], ebx
-    DONE_SHADOWSP_FILTER:
-
-        mov     edx, [pContext]
-        mov     eax, [edx+EHContext_Eax]
-        mov     ebx, [edx+EHContext_Ebx]
-        mov     esi, [edx+EHContext_Esi]
-        mov     edi, [edx+EHContext_Edi]
-        mov     ebp, [edx+EHContext_Ebp]
-
-        call    dword ptr [edx+EHContext_Eip]
-ifdef _DEBUG
-        nop  ; Indicate that it is OK to call managed code directly from here
-endif
-
-        pop     edi
-        pop     esi
-        pop     ebx
-        pop     ebp ; don't use 'leave' here, as ebp as been trashed
-        retn    8
-_CallJitEHFilterHelper@8 ENDP
-
-
-; void __stdcall CallJITEHFinallyHelper(size_t *pShadowSP, EHContext *pContext);
-;   on entry, only the pContext->Esp, Ebx, Esi, Edi, Ebp, and Eip are initialized
-_CallJitEHFinallyHelper@8 PROC public
-        push    ebp
-        mov     ebp, esp
-        push    ebx
-        push    esi
-        push    edi
-
-        pShadowSP equ [ebp+8]
-        pContext  equ [ebp+12]
-
-        mov     eax, pShadowSP      ; Write esp-4 to the shadowSP slot
-        test    eax, eax
-        jz      DONE_SHADOWSP_FINALLY
-        mov     ebx, esp
-        sub     ebx, 4
-        mov     [eax], ebx
-    DONE_SHADOWSP_FINALLY:
-
-        mov     edx, [pContext]
-        mov     eax, [edx+EHContext_Eax]
-        mov     ebx, [edx+EHContext_Ebx]
-        mov     esi, [edx+EHContext_Esi]
-        mov     edi, [edx+EHContext_Edi]
-        mov     ebp, [edx+EHContext_Ebp]
-        call    dword ptr [edx+EHContext_Eip]
-ifdef _DEBUG
-        nop  ; Indicate that it is OK to call managed code directly from here
-endif
-
-        ; Reflect the changes to the context and only update non-volatile registers.
-        ; This will be used later to update REGDISPLAY
-        mov     edx, [esp+12+12]
-        mov     [edx+EHContext_Ebx], ebx
-        mov     [edx+EHContext_Esi], esi
-        mov     [edx+EHContext_Edi], edi
-        mov     [edx+EHContext_Ebp], ebp
-
-        pop     edi
-        pop     esi
-        pop     ebx
-        pop     ebp ; don't use 'leave' here, as ebp as been trashed
-        retn    8
-_CallJitEHFinallyHelper@8 ENDP
-
-
-_GetSpecificCpuTypeAsm@0 PROC public
-        push    ebx         ; ebx is trashed by the cpuid calls
-
-        ; See if the chip supports CPUID
-        pushfd
-        pop     ecx         ; Get the EFLAGS
-        mov     eax, ecx    ; Save for later testing
-        xor     ecx, 200000h ; Invert the ID bit.
-        push    ecx
-        popfd               ; Save the updated flags.
-        pushfd
-        pop     ecx         ; Retrieve the updated flags
-        xor     ecx, eax    ; Test if it actually changed (bit set means yes)
-        push    eax
-        popfd               ; Restore the flags
-
-        test    ecx, 200000h
-        jz      Assume486
-
-        xor     eax, eax
-        cpuid
-
-        test    eax, eax
-        jz      Assume486   ; brif CPUID1 not allowed
-
-        mov     eax, 1
-        cpuid
-
-        ; filter out everything except family and model
-        ; Note that some multi-procs have different stepping number for each proc
-        and     eax, 0ff0h
-
-        jmp     CpuTypeDone
-
-Assume486:
-        mov     eax, 0400h ; report 486
-CpuTypeDone:
-        pop     ebx
-        retn
-_GetSpecificCpuTypeAsm@0 ENDP
-
-; uint32_t __stdcall GetSpecificCpuFeaturesAsm(uint32_t *pInfo);
-_GetSpecificCpuFeaturesAsm@4 PROC public
-        push    ebx         ; ebx is trashed by the cpuid calls
-
-        ; See if the chip supports CPUID
-        pushfd
-        pop     ecx         ; Get the EFLAGS
-        mov     eax, ecx    ; Save for later testing
-        xor     ecx, 200000h ; Invert the ID bit.
-        push    ecx
-        popfd               ; Save the updated flags.
-        pushfd
-        pop     ecx         ; Retrieve the updated flags
-        xor     ecx, eax    ; Test if it actually changed (bit set means yes)
-        push    eax
-        popfd               ; Restore the flags
-
-        test    ecx, 200000h
-        jz      CpuFeaturesFail
-
-        xor     eax, eax
-        cpuid
-
-        test    eax, eax
-        jz      CpuFeaturesDone ; br if CPUID1 not allowed
-
-        mov     eax, 1
-        cpuid
-        mov     eax, edx        ; return all feature flags
-        mov     edx, [esp+8]
-        test    edx, edx
-        jz      CpuFeaturesDone
-        mov     [edx],ebx       ; return additional useful information
-        jmp     CpuFeaturesDone
-
-CpuFeaturesFail:
-        xor     eax, eax    ; Nothing to report
-CpuFeaturesDone:
-        pop     ebx
-        retn    4
-_GetSpecificCpuFeaturesAsm@4 ENDP
-
-
-;-----------------------------------------------------------------------
-; The out-of-line portion of the code to enable preemptive GC.
-; After the work is done, the code jumps back to the "pRejoinPoint"
-; which should be emitted right after the inline part is generated.
-;
-; Assumptions:
-;      ebx = Thread
-; Preserves
-;      all registers except ecx.
-;
-;-----------------------------------------------------------------------
-_StubRareEnable proc public
-        push    eax
-        push    edx
-
-        push    ebx
-        call    _StubRareEnableWorker@4
-
-        pop     edx
-        pop     eax
-        retn
-_StubRareEnable ENDP
-
-ifdef FEATURE_COMINTEROP
-_StubRareDisableHR proc public
-        push    edx
-
-        push    ebx     ; Thread
-        call    _StubRareDisableHRWorker@4
-
-        pop     edx
-        retn
-_StubRareDisableHR ENDP
-endif ; FEATURE_COMINTEROP
-
-_StubRareDisableTHROW proc public
-        push    eax
-        push    edx
-
-        push    ebx     ; Thread
-        call    _StubRareDisableTHROWWorker@4
-
-        pop     edx
-        pop     eax
-        retn
-_StubRareDisableTHROW endp
-
-
-InternalExceptionWorker proc public
-        pop     edx             ; recover RETADDR
-        add     esp, eax        ; release caller's args
-        push    edx             ; restore RETADDR
-        jmp     @JIT_InternalThrow@4
-InternalExceptionWorker endp
-
-; EAX -> number of caller arg bytes on the stack that we must remove before going
-; to the throw helper, which assumes the stack is clean.
-_ArrayOpStubNullException proc public
-        ; kFactorReg and kTotalReg could not have been modified, but let's pop
-        ; them anyway for consistency and to avoid future bugs.
-        pop     esi
-        pop     edi
-        mov     ecx, CORINFO_NullReferenceException_ASM
-        jmp     InternalExceptionWorker
-_ArrayOpStubNullException endp
-
-; EAX -> number of caller arg bytes on the stack that we must remove before going
-; to the throw helper, which assumes the stack is clean.
-_ArrayOpStubRangeException proc public
-        ; kFactorReg and kTotalReg could not have been modified, but let's pop
-        ; them anyway for consistency and to avoid future bugs.
-        pop     esi
-        pop     edi
-        mov     ecx, CORINFO_IndexOutOfRangeException_ASM
-        jmp     InternalExceptionWorker
-_ArrayOpStubRangeException endp
-
-; EAX -> number of caller arg bytes on the stack that we must remove before going
-; to the throw helper, which assumes the stack is clean.
-_ArrayOpStubTypeMismatchException proc public
-        ; kFactorReg and kTotalReg could not have been modified, but let's pop
-        ; them anyway for consistency and to avoid future bugs.
-        pop     esi
-        pop     edi
-        mov     ecx, CORINFO_ArrayTypeMismatchException_ASM
-        jmp     InternalExceptionWorker
-_ArrayOpStubTypeMismatchException endp
-
 ;------------------------------------------------------------------------------
 ; This helper routine enregisters the appropriate arguments and makes the
 ; actual call.
@@ -571,6 +262,11 @@ CallDescrWorkerInternal PROC stdcall public USES EBX,
                          pParams: DWORD
 
         mov     ebx, pParams
+
+        ; We are about to run managed code so we need to put an exception
+        ; handler on the SEH stack; Note that ThePreStub and CallCatchFunclet
+        ; may replace where the handler points to!
+        PUSH_CLR_EXCEPTION_HANDLER _ProcessCLRException
 
         mov     ecx, [ebx+CallDescrData__numStackSlots]
         mov     eax, [ebx+CallDescrData__pSrc]            ; copy the stack
@@ -597,10 +293,12 @@ donestack:
         mov     ecx, dword ptr [eax+4]
 
         call    [ebx+CallDescrData__pTarget]
+
+CallDescrWorkerInternalReturnAddress:
 ifdef _DEBUG
-        nop     ; This is a tag that we use in an assert.  Fcalls expect to
-                ; be called from Jitted code or from certain blessed call sites like
-                ; this one.  (See HelperMethodFrame::InsureInit)
+    nop     ; Debug-only tag used in asserts.
+            ; FCalls expect to be called from Jitted code or specific approved call sites,
+            ; like this one.
 endif
 
         ; Save FP return value if necessary
@@ -620,7 +318,8 @@ ReturnsInt:
         mov     [ebx+CallDescrData__returnValue+4], edx
 
 Epilog:
-       RET
+        POP_CLR_EXCEPTION_HANDLER
+        ret
 
 ReturnsFloat:
         fstp    dword ptr [ebx+CallDescrData__returnValue]    ; Spill the Float return value
@@ -630,67 +329,11 @@ ReturnsDouble:
         fstp    qword ptr [ebx+CallDescrData__returnValue]    ; Spill the Double return value
         jmp     Epilog
 
+public _CallDescrWorkerInternalReturnAddressOffset
+_CallDescrWorkerInternalReturnAddressOffset:
+        dd      CallDescrWorkerInternalReturnAddress - CallDescrWorkerInternal
+
 CallDescrWorkerInternal endp
-
-ifdef _DEBUG
-; int __fastcall HelperMethodFrameRestoreState(HelperMethodFrame*, struct MachState *)
-FASTCALL_FUNC HelperMethodFrameRestoreState,8
-    mov         eax, edx        ; eax = MachState*
-else
-; int __fastcall HelperMethodFrameRestoreState(struct MachState *)
-FASTCALL_FUNC HelperMethodFrameRestoreState,4
-    mov         eax, ecx        ; eax = MachState*
-endif
-    ; restore the registers from the m_MachState stucture.  Note that
-    ; we only do this for register that where not saved on the stack
-    ; at the time the machine state snapshot was taken.
-
-    cmp         [eax+MachState__pRetAddr], 0
-
-ifdef _DEBUG
-    jnz         noConfirm
-    push        ebp
-    push        ebx
-    push        edi
-    push        esi
-    push        ecx     ; HelperFrame*
-    call        _HelperMethodFrameConfirmState@20
-    ; on return, eax = MachState*
-    cmp         [eax+MachState__pRetAddr], 0
-noConfirm:
-endif
-
-    jz          doRet
-
-    lea         edx, [eax+MachState__esi]       ; Did we have to spill ESI
-    cmp         [eax+MachState__pEsi], edx
-    jnz         SkipESI
-    mov         esi, [edx]                      ; Then restore it
-SkipESI:
-
-    lea         edx, [eax+MachState__edi]       ; Did we have to spill EDI
-    cmp         [eax+MachState__pEdi], edx
-    jnz         SkipEDI
-    mov         edi, [edx]                      ; Then restore it
-SkipEDI:
-
-    lea         edx, [eax+MachState__ebx]       ; Did we have to spill EBX
-    cmp         [eax+MachState__pEbx], edx
-    jnz         SkipEBX
-    mov         ebx, [edx]                      ; Then restore it
-SkipEBX:
-
-    lea         edx, [eax+MachState__ebp]       ; Did we have to spill EBP
-    cmp         [eax+MachState__pEbp], edx
-    jnz         SkipEBP
-    mov         ebp, [edx]                      ; Then restore it
-SkipEBP:
-
-doRet:
-    xor         eax, eax
-    retn
-FASTCALL_ENDFUNC HelperMethodFrameRestoreState
-
 
 ifdef FEATURE_HIJACK
 
@@ -772,8 +415,8 @@ endif ; FEATURE_HIJACK
 
 ;==========================================================================
 ; This function is reached only via the embedded ImportThunkGlue code inside
-; an NDirectMethodDesc. It's purpose is to load the DLL associated with an
-; N/Direct method, then backpatch the DLL target into the methoddesc.
+; an PInvokeMethodDesc. It's purpose is to load the DLL associated with an
+; PInvoke method, then backpatch the DLL target into the methoddesc.
 ;
 ; Initial state:
 ;
@@ -791,7 +434,7 @@ endif ; FEATURE_HIJACK
 ;
 ;
 ;==========================================================================
-_NDirectImportThunk@0 proc public
+_PInvokeImportThunk@0 proc public
 
         ; Preserve argument registers
         push    ecx
@@ -799,102 +442,27 @@ _NDirectImportThunk@0 proc public
 
         ; Invoke the function that does the real work.
         push    eax
-        call    _NDirectImportWorker@4
+        call    _PInvokeImportWorker@4
 
         ; Restore argument registers
         pop     edx
         pop     ecx
 
-        ; If we got back from NDirectImportWorker, the MD has been successfully
+        ; If we got back from PInvokeImportWorker, the MD has been successfully
         ; linked and "eax" contains the DLL target. Proceed to execute the
         ; original DLL call.
         jmp     eax     ; Jump to DLL target
-_NDirectImportThunk@0 endp
+_PInvokeImportThunk@0 endp
 
-;==========================================================================
-; The call in fixup precode initally points to this function.
-; The pupose of this function is to load the MethodDesc and forward the call the prestub.
-_PrecodeFixupThunk@0 proc public
-
-        pop     eax         ; Pop the return address. It points right after the call instruction in the precode.
-        push    esi
-        push    edi
-
-        ; Inline computation done by FixupPrecode::GetMethodDesc()
-        movzx   esi,byte ptr [eax+2]    ; m_PrecodeChunkIndex
-        movzx   edi,byte ptr [eax+1]    ; m_MethodDescChunkIndex
-        mov     eax,dword ptr [eax+esi*8+3]
-        lea     eax,[eax+edi*4]
-
-        pop     edi
-        pop     esi
-        jmp     _ThePreStub@0
-
-_PrecodeFixupThunk@0 endp
-
-; void __stdcall setFPReturn(int fpSize, INT64 retVal)
-_setFPReturn@12 proc public
-    mov     ecx, [esp+4]
-
-    ; leave the return value in eax:edx if it is not the floating point case
-    mov     eax, [esp+8]
-    mov     edx, [esp+12]
-
-    cmp     ecx, 4
-    jz      setFPReturn4
-
-    cmp     ecx, 8
-    jnz     setFPReturnNot8
-    fld     qword ptr [esp+8]
-setFPReturnNot8:
-    retn    12
-
-setFPReturn4:
-    fld     dword ptr [esp+8]
-    retn    12
-_setFPReturn@12 endp
-
-; void __stdcall getFPReturn(int fpSize, INT64 *pretVal)
-_getFPReturn@8 proc public
-   mov     ecx, [esp+4]
-   mov     eax, [esp+8]
-   cmp     ecx, 4
-   jz      getFPReturn4
-
-   cmp     ecx, 8
-   jnz     getFPReturnNot8
-   fstp    qword ptr [eax]
-getFPReturnNot8:
-   retn    8
-
-getFPReturn4:
-   fstp    dword ptr [eax]
-   retn    8
-_getFPReturn@8 endp
-
-; VOID __cdecl UMThunkStubRareDisable()
-;<TODO>
-; @todo: this is very similar to StubRareDisable
-;</TODO>
-_UMThunkStubRareDisable proc public
-    push    eax
-    push    ecx
-
-    push    eax          ; Push the UMEntryThunk
-    push    ecx          ; Push thread
-    call    _UMThunkStubRareDisableWorker@8
-
-    pop     ecx
-    pop     eax
-    retn
-_UMThunkStubRareDisable endp
-
+ifdef PROFILING_SUPPORTED
 
 ; void __stdcall JIT_ProfilerEnterLeaveTailcallStub(UINT_PTR ProfilerHandle)
 _JIT_ProfilerEnterLeaveTailcallStub@4 proc public
     ; this function must preserve all registers, including scratch
     retn    4
 _JIT_ProfilerEnterLeaveTailcallStub@4 endp
+
+endif ; PROFILING_SUPPORTED
 
 ;
 ; Used to get the current instruction pointer value
@@ -905,12 +473,14 @@ _GetCurrentIP@0 proc public
     retn
 _GetCurrentIP@0 endp
 
-; LPVOID __stdcall GetCurrentSP(void);
+; void* GetCurrentSP(void);
 _GetCurrentSP@0 proc public
     mov     eax, esp
     retn
 _GetCurrentSP@0 endp
 
+
+ifdef PROFILING_SUPPORTED
 
 ; void __stdcall ProfileEnterNaked(FunctionIDOrClientID functionIDOrClientID);
 _ProfileEnterNaked@4 proc public
@@ -1090,10 +660,13 @@ _ProfileTailcallNaked@4 proc public
     retn    4
 _ProfileTailcallNaked@4 endp
 
+endif ; PROFILING_SUPPORTED
+
+ifdef FEATURE_VARARGS
 ;==========================================================================
 ; Invoked for vararg forward P/Invoke calls as a stub.
 ; Except for secret return buffer, arguments come on the stack so EDX is available as scratch.
-; EAX       - the NDirectMethodDesc
+; EAX       - the PInvokeMethodDesc
 ; ECX       - may be return buffer address
 ; [ESP + 4] - the VASigCookie
 ;
@@ -1137,223 +710,7 @@ GoCallVarargWorker:
     jmp _VarargPInvokeStub@0
 
 _VarargPInvokeStub@0 endp
-
-;==========================================================================
-; Invoked for marshaling-required unmanaged CALLI calls as a stub.
-; EAX       - the unmanaged target
-; ECX, EDX  - arguments
-; EBX       - the VASigCookie
-;
-_GenericPInvokeCalliHelper@0 proc public
-
-    cmp     dword ptr [ebx + VASigCookie__StubOffset], 0
-    jz      GoCallCalliWorker
-
-    ; Stub is already prepared, just jump to it
-    jmp     dword ptr [ebx + VASigCookie__StubOffset]
-
-GoCallCalliWorker:
-    ;
-    ; call the stub generating worker
-    ; target ptr in EAX, VASigCookie ptr in EBX
-    ;
-
-    STUB_PROLOG
-
-    mov         esi, esp
-
-    ; save target
-    push        eax
-
-    push        eax                         ; unmanaged target
-    push        ebx                         ; pVaSigCookie (first stack argument)
-    push        esi                         ; pTransitionBlock
-
-    call        _GenericPInvokeCalliStubWorker@12
-
-    ; restore target
-    pop     eax
-
-    STUB_EPILOG
-
-    ; jump back to the helper - this time it won't come back here as the stub already exists
-    jmp _GenericPInvokeCalliHelper@0
-
-_GenericPInvokeCalliHelper@0 endp
-
-ifdef FEATURE_COMINTEROP
-
-;==========================================================================
-; This is a fast alternative to CallDescr* tailored specifically for
-; COM to CLR calls. Stack arguments don't come in a continuous buffer
-; and secret argument can be passed in EAX.
-;
-
-; extern "C" ARG_SLOT __fastcall COMToCLRDispatchHelper(
-;     INT_PTR dwArgECX,                 ; ecx
-;     INT_PTR dwArgEDX,                 ; edx
-;     PCODE   pTarget,                  ; [esp + 4]
-;     PCODE   pSecretArg,               ; [esp + 8]
-;     INT_PTR *pInputStack,             ; [esp + c]
-;     WORD    wOutputStackSlots,        ; [esp +10]
-;     UINT16  *pOutputStackOffsets,     ; [esp +14]
-;     Frame   *pCurFrame);              ; [esp +18]
-
-FASTCALL_FUNC COMToCLRDispatchHelper, 32
-
-    ; ecx: dwArgECX
-    ; edx: dwArgEDX
-
-    offset_pTarget              equ 4
-    offset_pSecretArg           equ 8
-    offset_pInputStack          equ 0Ch
-    offset_wOutputStackSlots    equ 10h
-    offset_pOutputStackOffsets  equ 14h
-    offset_pCurFrame            equ 18h
-
-    movzx   eax, word ptr [esp + offset_wOutputStackSlots]
-    test    eax, eax
-    jnz     CopyStackArgs
-
-    ; There are no stack args to copy and ECX and EDX are already setup
-    ; with the correct arguments for the callee, so we just have to
-    ; push the CPFH and make the call.
-
-    PUSH_CPFH_FOR_COM   eax, esp, offset_pCurFrame     ; trashes eax
-
-    mov     eax, [esp + offset_pSecretArg + CPFH_STACK_SIZE]
-    call    [esp + offset_pTarget + CPFH_STACK_SIZE]
-ifdef _DEBUG
-    nop     ; This is a tag that we use in an assert.
-endif
-
-    POP_CPFH_FOR_COM    ecx     ; trashes ecx
-
-    ret     18h
-
-
-CopyStackArgs:
-    ; eax: num stack slots
-    ; ecx: dwArgECX
-    ; edx: dwArgEDX
-
-    push    ebp
-    mov     ebp, esp
-    push    ebx
-    push    esi
-    push    edi
-
-    ebpFrame_adjust         equ 4h
-    ebp_offset_pCurFrame    equ ebpFrame_adjust + offset_pCurFrame
-
-    PUSH_CPFH_FOR_COM   ebx, ebp, ebp_offset_pCurFrame     ; trashes ebx
-
-    mov     edi, [ebp + ebpFrame_adjust + offset_pOutputStackOffsets]
-    mov     esi, [ebp + ebpFrame_adjust + offset_pInputStack]
-
-    ; eax: num stack slots
-    ; ecx: dwArgECX
-    ; edx: dwArgEDX
-    ; edi: pOutputStackOffsets
-    ; esi: pInputStack
-
-CopyStackLoop:
-    dec     eax
-    movzx   ebx, word ptr [edi + 2 * eax] ; ebx <- input stack offset
-    push    [esi + ebx]                   ; stack <- value on the input stack
-    jnz     CopyStackLoop
-
-    ; ECX and EDX are setup with the correct arguments for the callee,
-    ; and we've copied the stack arguments over as well, so now it's
-    ; time to make the call.
-
-    mov     eax, [ebp + ebpFrame_adjust + offset_pSecretArg]
-    call    [ebp + ebpFrame_adjust + offset_pTarget]
-ifdef _DEBUG
-    nop     ; This is a tag that we use in an assert.
-endif
-
-    POP_CPFH_FOR_COM    ecx     ; trashes ecx
-
-    pop     edi
-    pop     esi
-    pop     ebx
-    pop     ebp
-
-    ret     18h
-
-FASTCALL_ENDFUNC
-
-endif ; FEATURE_COMINTEROP
-
-ifndef FEATURE_CORECLR
-
-;==========================================================================
-; This is small stub whose purpose is to record current stack pointer and
-; call CopyCtorCallStubWorker to invoke copy constructors and destructors
-; as appropriate. This stub operates on arguments already pushed to the
-; stack by JITted IL stub and must not create a new frame, i.e. it must tail
-; call to the target for it to see the arguments that copy ctors have been
-; called on.
-;
-_CopyCtorCallStub@0 proc public
-    ; there may be an argument in ecx - save it
-    push    ecx
-
-    ; push pointer to arguments
-    lea     edx, [esp + 8]
-    push    edx
-
-    call    _CopyCtorCallStubWorker@4
-
-    ; restore ecx and tail call to the target
-    pop     ecx
-    jmp     eax
-_CopyCtorCallStub@0 endp
-
-endif ; !FEATURE_CORECLR
-
-;==========================================================================
-_ExternalMethodFixupStub@0 proc public
-
-    pop     eax             ; pop off the return address to the stub
-                            ; leaving the actual caller's return address on top of the stack
-
-    STUB_PROLOG
-
-    mov         esi, esp
-
-    ; EAX is return address into CORCOMPILE_EXTERNAL_METHOD_THUNK. Subtract 5 to get start address.
-    sub         eax, 5
-
-    push        0
-    push        0
-
-    push        eax
-
-    ; pTransitionBlock
-    push        esi
-
-    call        _ExternalMethodFixupWorker@16
-
-    ; eax now contains replacement stub. PreStubWorker will never return
-    ; NULL (it throws an exception if stub creation fails.)
-
-    ; From here on, mustn't trash eax
-
-    STUB_EPILOG
-
-_ExternalMethodFixupPatchLabel@0:
-public _ExternalMethodFixupPatchLabel@0
-
-    ; Tailcall target
-    jmp eax
-
-    ; This will never be executed. It is just to help out stack-walking logic
-    ; which disassembles the epilog to unwind the stack.
-    ret
-
-_ExternalMethodFixupStub@0 endp
+endif ; FEATURE_VARARGS
 
 ifdef FEATURE_READYTORUN
 ;==========================================================================
@@ -1380,8 +737,8 @@ _DelayLoad_MethodCall@0 proc public
 
     STUB_EPILOG
 
-    ; Share the patch label
-    jmp _ExternalMethodFixupPatchLabel@0
+    ; Tailcall target
+    jmp eax
 
     ; This will never be executed. It is just to help out stack-walking logic
     ; which disassembles the epilog to unwind the stack.
@@ -1432,125 +789,115 @@ public _ThePreStubPatchLabel@0
     ret
 _ThePreStubPatch@0 endp
 
-ifdef FEATURE_COMINTEROP
-;==========================================================================
-; CLR -> COM generic or late-bound call
-_GenericComPlusCallStub@0 proc public
+_TheUMEntryPrestub@0 proc public
+    ; push argument registers
+    push        ecx
+    push        edx
 
-    STUB_PROLOG
+    PUSH_CLR_EXCEPTION_HANDLER _UMEntryPrestubUnwindFrameChainHandler
 
-    ; pTransitionBlock
-    mov         esi, esp
+    push    eax     ; UMEntryThunkData*
+    call    _TheUMEntryPrestubWorker@4
 
-    ; return value
-    sub         esp, 8
+    POP_CLR_EXCEPTION_HANDLER
 
-    ; save pMD
-    mov         ebx, eax
+    ; pop argument registers
+    pop         edx
+    pop         ecx
 
-    push        eax                 ; pMD
-    push        esi                 ; pTransitionBlock
-    call        _CLRToCOMWorker@8
-
-    push        eax
-    call        _setFPReturn@12     ; pop & set the return value
-
-    ; From here on, mustn't trash eax:edx
-
-    ; Get pComPlusCallInfo for return thunk
-    mov         ecx, [ebx + ComPlusCallMethodDesc__m_pComPlusCallInfo]
-
-    STUB_EPILOG_RETURN
-
-    ; Tailcall return thunk
-    jmp [ecx + ComPlusCallInfo__m_pRetThunk]
-
-    ; This will never be executed. It is just to help out stack-walking logic
-    ; which disassembles the epilog to unwind the stack.
-    ret
-
-_GenericComPlusCallStub@0 endp
-endif ; FEATURE_COMINTEROP
-
+    ; eax = PCODE
+    jmp     eax     ; Tail Jmp
+_TheUMEntryPrestub@0 endp
 
 ifdef FEATURE_COMINTEROP
-;--------------------------------------------------------------------------
-; This is the code that all com call method stubs run initially.
-; Most of the real work occurs in ComStubWorker(), a C++ routine.
-; The template only does the part that absolutely has to be in assembly
-; language.
-;--------------------------------------------------------------------------
 _ComCallPreStub@0 proc public
-    pop     eax                 ;ComCallMethodDesc*
 
-    ; push ebp-frame
-    push        ebp
-    mov         ebp,esp
+    push    eax     ; UMEntryThunkData* ; Push the secret arg for after the worker call.
+    PUSH_CLR_EXCEPTION_HANDLER _UMEntryPrestubUnwindFrameChainHandler
 
-    ; save CalleeSavedRegisters
-    push        ebx
-    push        esi
-    push        edi
+    push    eax     ; UMEntryThunkData*
+    call    _ComPreStubWorker@4
 
-    push        eax         ; ComCallMethodDesc*
-    sub         esp, 5*4    ; next, vtable, gscookie, 64-bit error return
+    POP_CLR_EXCEPTION_HANDLER
 
-    lea     edi, [esp]
-    lea     esi, [esp+3*4]
+    mov edx, eax ; preserve the PCODE returned from the worker in edx
+    pop eax ; restore the secret arg into eax
 
-    push    edi                 ; pErrorReturn
-    push    esi                 ; pFrame
-    call    _ComPreStubWorker@8
+    ; edx = PCODE
+    jmp     edx     ; Tail Jmp
+_ComCallPreStub@0 endp
 
-    ; eax now contains replacement stub. ComStubWorker will  return NULL if stub creation fails
-    cmp eax, 0
-    je nostub                   ; oops we could not create a stub
+_ComStubReturnHResult@0 proc public
+    ; HRESULT result in eax
+    call    _ComPreStubGetLastHResult@0
+    push    eax
 
-    add     esp, 6*4
+    ; Pop stack args based on most recent COM prestub call
+    call    _ComPreStubGetLastStackBytes@0
+    mov     edx, eax
 
-    ; pop CalleeSavedRegisters
-    pop edi
-    pop esi
-    pop ebx
-    pop ebp
+    pop     eax
+    pop     ecx                 ; return address
+    add     esp, edx            ; pop bytes of the stack
+    push    ecx                 ; return address
 
-    jmp     eax                 ; Reexecute with replacement stub.
-    ; We will never get here. This "ret" is just so that code-disassembling
-    ; profilers know to stop disassembling any further
     ret
+_ComStubReturnHResult@0 endp
 
-nostub:
-
-    ; Even though the ComPreStubWorker sets a 64 bit value as the error return code.
-    ; Only the lower 32 bits contain usefula data. The reason for this is that the
-    ; possible error return types are: failure HRESULT, 0 and floating point 0.
-    ; In each case, the data fits in 32 bits. Instead, we use the upper half of
-    ; the return value to store number of bytes to pop
-    mov     eax, [edi]
-    mov     edx, [edi+4]
-
-    add     esp, 6*4
-
-    ; pop CalleeSavedRegisters
-    pop edi
-    pop esi
-    pop ebx
-    pop ebp
+_ComStubReturnBool@0 proc public
+    call    _ComPreStubGetLastStackBytes@0
+    mov     edx, eax
 
     pop     ecx                 ; return address
     add     esp, edx            ; pop bytes of the stack
     push    ecx                 ; return address
 
-    ; We need to deal with the case where the method is PreserveSig=true and has an 8
-    ; byte return type. There are 2 types of 8 byte return types: integer and floating point.
-    ; For integer 8 byte return types, we always return 0 in case of failure. For floating
-    ; point return types, we return the value in the floating point register. In both cases
-    ; edx should be 0.
-    xor     edx, edx            ; edx <-- 0
+    xor     eax, eax            ; FALSE
+    ret
+_ComStubReturnBool@0 endp
+
+_ComStubReturnR4NaN@0 proc public
+    call    _ComPreStubGetLastStackBytes@0
+    mov     edx, eax
+
+    pop     ecx                 ; return address
+    add     esp, edx            ; pop bytes of the stack
+    push    ecx                 ; return address
+
+    push    0FFC00000h          ; -std::numeric_limits<float>::quiet_NaN() in IEEE 754
+    fld     dword ptr [esp]
+    add     esp, 4
 
     ret
+_ComStubReturnR4NaN@0 endp
 
-_ComCallPreStub@0 endp
+_ComStubReturnR8NaN@0 proc public
+    call    _ComPreStubGetLastStackBytes@0
+    mov     edx, eax
+
+    pop     ecx                 ; return address
+    add     esp, edx            ; pop bytes of the stack
+    push    ecx                 ; return address
+
+    push    0FFF80000h          ; high dword of std::numeric_limits<double>::quiet_NaN() in IEEE 754
+    push    000000000h          ; low dword of std::numeric_limits<double>::quiet_NaN() in IEEE 754
+    fld     qword ptr [esp]
+    add     esp, 8
+
+    ret
+_ComStubReturnR8NaN@0 endp
+
+_ComStubReturnVoid@0 proc public
+    call    _ComPreStubGetLastStackBytes@0
+    mov     edx, eax
+
+    pop     ecx                 ; return address
+    add     esp, edx            ; pop bytes of the stack
+    push    ecx                 ; return address
+
+    ret
+_ComStubReturnVoid@0 endp
+
 endif ; FEATURE_COMINTEROP
 
 ifdef FEATURE_READYTORUN
@@ -1599,12 +946,6 @@ ifdef FEATURE_TIERED_COMPILATION
 EXTERN _OnCallCountThresholdReached@8:proc
 
 _OnCallCountThresholdReachedStub@0 proc public
-    ; Pop the return address (the stub-identifying token) into a non-argument volatile register that can be trashed
-    pop     eax
-    jmp     _OnCallCountThresholdReachedStub2@0
-_OnCallCountThresholdReachedStub@0 endp
-
-_OnCallCountThresholdReachedStub2@0 proc public
     STUB_PROLOG
 
     mov     esi, esp
@@ -1619,8 +960,446 @@ _OnCallCountThresholdReachedStub2@0 proc public
     ; This will never be executed. It is just to help out stack-walking logic
     ; which disassembles the epilog to unwind the stack.
     ret
-_OnCallCountThresholdReachedStub2@0 endp
+_OnCallCountThresholdReachedStub@0 endp
 
 endif ; FEATURE_TIERED_COMPILATION
+
+    DivisorLow32BitsOffset     equ 04h
+    DivisorHi32BitsOffset     equ 08h
+    DividendLow32BitsOffset     equ 0Ch
+    DividendHi32BitsOffset     equ 10h
+
+;; Stack on entry
+;; dividend (hi 32 bits)
+;; dividend (lo 32 bits)
+;; divisor (hi 32 bits)
+;; divisor (lo 32 bits)
+;; return address
+ALIGN 16
+FASTCALL_FUNC JIT_LDiv, 16
+    mov     eax,dword ptr [esp + DivisorLow32BitsOffset]
+    cdq
+    cmp     edx,dword ptr [esp + DivisorHi32BitsOffset]
+    jne     JIT_LDiv_Call__alldiv ; We're going to call CRT Helper routine
+    test    eax, eax
+    je      JIT_ThrowDivideByZero_Long
+    cmp     eax,0FFFFFFFFh
+    jne     JIT_LDiv_DoDivideBy32BitDivisor
+    mov     eax,dword  ptr [esp + DividendLow32BitsOffset]
+    test    eax, eax
+    mov     edx,dword  ptr [esp + DividendHi32BitsOffset]
+    jne     JIT_LDiv_DoNegate
+    cmp     edx,80000000h
+    je      JIT_ThrowOverflow_Long
+JIT_LDiv_DoNegate:
+    neg     eax
+    adc     edx,0
+    neg     edx
+    ret     10h
+ALIGN 16
+JIT_LDiv_DoDivideBy32BitDivisor:
+    ; First check to see if dividend is also 32 bits
+    mov     ecx, eax ; Put divisor in ecx
+    mov     eax, dword ptr  [esp + DividendLow32BitsOffset]
+    cdq
+    cmp     edx, dword ptr [esp + DividendHi32BitsOffset]
+    jne     JIT_LDiv_Call__alldiv ; We're going to call CRT Helper routine
+    idiv    ecx
+    cdq
+    ret     10h
+ALIGN 16
+JIT_LDiv_Call__alldiv:
+    ; Swap the divisor and dividend in output
+    mov     eax,dword ptr [esp + DivisorLow32BitsOffset]
+    mov     ecx,dword ptr [esp + DivisorHi32BitsOffset]
+    mov     edx,dword ptr [esp + DividendLow32BitsOffset]
+    mov     dword ptr [esp + DividendLow32BitsOffset], eax
+    mov     eax,dword ptr [esp + DividendHi32BitsOffset]
+    mov     dword ptr [esp + DividendHi32BitsOffset], ecx
+    mov     dword ptr [esp + DivisorLow32BitsOffset], edx
+    mov     dword ptr [esp + DivisorHi32BitsOffset], eax
+    jne     __alldiv ; Tail call the CRT Helper routine for 64 bit divide
+FASTCALL_ENDFUNC
+
+;; Stack on entry
+;; dividend (hi 32 bits)
+;; dividend (lo 32 bits)
+;; divisor (hi 32 bits)
+;; divisor (lo 32 bits)
+;; return address
+ALIGN 16
+FASTCALL_FUNC JIT_LMod, 16
+    mov     eax,dword ptr [esp + DivisorLow32BitsOffset]
+    cdq
+    cmp     edx,dword ptr [esp + DivisorHi32BitsOffset]
+    jne     JIT_LMod_Call__allrem ; We're going to call CRT Helper routine
+    test    eax, eax
+    je      JIT_ThrowDivideByZero_Long
+    cmp     eax,0FFFFFFFFh
+    jne     JIT_LMod_DoDivideBy32BitDivisor
+    mov     eax,dword  ptr [esp + DividendLow32BitsOffset]
+    test    eax, eax
+    jne     JIT_LMod_ReturnZero
+    mov     edx,dword  ptr [esp + DividendHi32BitsOffset]
+    cmp     edx,80000000h
+    je      JIT_ThrowOverflow_Long
+JIT_LMod_ReturnZero:
+    xor     eax, eax
+    xor     edx, edx
+    ret     10h
+ALIGN 16
+JIT_LMod_DoDivideBy32BitDivisor:
+    ; First check to see if dividend is also 32 bits
+    mov     ecx, eax ; Put divisor in ecx
+    mov     eax, dword ptr [esp + DividendLow32BitsOffset]
+    cdq
+    cmp     edx, dword ptr [esp + DividendHi32BitsOffset]
+    jne     JIT_LMod_Call__allrem ; We're going to call CRT Helper routine
+    idiv    ecx
+    mov     eax,edx
+    cdq
+    ret     10h
+ALIGN 16
+JIT_LMod_Call__allrem:
+    ; Swap the divisor and dividend in output
+    mov     eax,dword ptr [esp + DivisorLow32BitsOffset]
+    mov     ecx,dword ptr [esp + DivisorHi32BitsOffset]
+    mov     edx,dword ptr [esp + DividendLow32BitsOffset]
+    mov     dword ptr [esp + DividendLow32BitsOffset], eax
+    mov     eax,dword ptr [esp + DividendHi32BitsOffset]
+    mov     dword ptr [esp + DividendHi32BitsOffset], ecx
+    mov     dword ptr [esp + DivisorLow32BitsOffset], edx
+    mov     dword ptr [esp + DivisorHi32BitsOffset], eax
+    jne     __allrem ; Tail call the CRT Helper routine for 64 bit divide
+FASTCALL_ENDFUNC
+
+;; Stack on entry
+;; dividend (hi 32 bits)
+;; dividend (lo 32 bits)
+;; divisor (hi 32 bits)
+;; divisor (lo 32 bits)
+;; return address
+ALIGN 16
+FASTCALL_FUNC JIT_ULDiv, 16
+    mov     eax,dword ptr [esp + DivisorLow32BitsOffset]
+    cmp     dword ptr [esp + DivisorHi32BitsOffset], 0
+    jne     JIT_ULDiv_Call__aulldiv ; We're going to call CRT Helper routine
+    test    eax, eax
+    je      JIT_ThrowDivideByZero_Long
+    ; First check to see if dividend is also 32 bits
+    mov     ecx, eax ; Put divisor in ecx
+    cmp     dword ptr [esp + DividendHi32BitsOffset], 0
+    jne     JIT_ULDiv_Call__aulldiv ; We're going to call CRT Helper routine
+    mov     eax, dword ptr [esp + DividendLow32BitsOffset]
+    xor     edx, edx
+    div     ecx
+    xor     edx, edx
+    ret     10h
+ALIGN 16
+JIT_ULDiv_Call__aulldiv:
+    ; Swap the divisor and dividend in output
+    mov     ecx,dword ptr [esp + DivisorHi32BitsOffset]
+    mov     edx,dword ptr [esp + DividendLow32BitsOffset]
+    mov     dword ptr [esp + DividendLow32BitsOffset], eax
+    mov     eax,dword ptr [esp + DividendHi32BitsOffset]
+    mov     dword ptr [esp + DividendHi32BitsOffset], ecx
+    mov     dword ptr [esp + DivisorLow32BitsOffset], edx
+    mov     dword ptr [esp + DivisorHi32BitsOffset], eax
+    jne    __aulldiv ; Tail call the CRT Helper routine for 64 bit unsigned divide
+FASTCALL_ENDFUNC
+
+;; Stack on entry
+;; dividend (hi 32 bits)
+;; dividend (lo 32 bits)
+;; divisor (hi 32 bits)
+;; divisor (lo 32 bits)
+;; return address
+ALIGN 16
+FASTCALL_FUNC JIT_ULMod, 16
+    mov     eax,dword ptr [esp + DivisorLow32BitsOffset]
+    cdq
+    cmp     dword ptr [esp + DivisorHi32BitsOffset], 0
+    jne     JIT_LMod_Call__aullrem ; We're going to call CRT Helper routine
+    test    eax, eax
+    je      JIT_ThrowDivideByZero_Long
+    ; First check to see if dividend is also 32 bits
+    mov     ecx, eax ; Put divisor in ecx
+    cmp     dword ptr [esp + DividendHi32BitsOffset], 0
+    jne     JIT_LMod_Call__aullrem ; We're going to call CRT Helper routine
+    mov     eax, dword ptr [esp + DividendLow32BitsOffset]
+    xor     edx, edx
+    div     ecx
+    mov     eax, edx
+    xor     edx, edx
+    ret     10h
+ALIGN 16
+JIT_LMod_Call__aullrem:
+    ; Swap the divisor and dividend in output
+    mov     ecx,dword ptr [esp + DivisorHi32BitsOffset]
+    mov     edx,dword ptr [esp + DividendLow32BitsOffset]
+    mov     dword ptr [esp + DividendLow32BitsOffset], eax
+    mov     eax,dword ptr [esp + DividendHi32BitsOffset]
+    mov     dword ptr [esp + DividendHi32BitsOffset], ecx
+    mov     dword ptr [esp + DivisorLow32BitsOffset], edx
+    mov     dword ptr [esp + DivisorHi32BitsOffset], eax
+    jne     __aullrem ; Tail call the CRT Helper routine for 64 bit unsigned modulus
+FASTCALL_ENDFUNC
+
+JIT_ThrowDivideByZero_Long proc public
+    pop eax ; Pop return address into eax
+    add esp, 10h
+    push eax ; Fix return address
+    mov eax, g_pThrowDivideByZeroException
+    jmp eax
+JIT_ThrowDivideByZero_Long endp
+
+JIT_ThrowOverflow_Long proc public
+    pop eax ; Pop return address into eax
+    add esp, 10h
+    push eax ; Fix return address
+    mov eax, g_pThrowOverflowException
+    jmp eax
+JIT_ThrowOverflow_Long endp
+
+; rcx -This pointer
+; rdx -ReturnBuffer
+_ThisPtrRetBufPrecodeWorker@0 proc public
+    mov  eax, [eax + ThisPtrRetBufPrecodeData__Target]
+    ; Use XOR swap technique to set avoid the need to spill to the stack
+    xor ecx, edx
+    xor edx, ecx
+    xor ecx, edx
+    jmp eax
+_ThisPtrRetBufPrecodeWorker@0 endp
+
+;==========================================================================
+; Call the resolver, it will return where we are supposed to go.
+; There is a little stack magic here, in that we are entered with one
+; of the arguments for the resolver (the token) on the stack already.
+; We just push the other arguments, <this> in the call frame and the call site pointer,
+; and call the resolver.
+;
+; On return we have the stack frame restored to the way it was when the ResolveStub
+; was called, i.e. as it was at the actual call site.  The return value from
+; the resolver is the address we need to transfer control to, simulating a direct
+; call from the original call site.  If we get passed back NULL, it means that the
+; resolution failed, an unimpelemented method is being called.
+;
+; Entry stack:
+;          dispatch token
+;          siteAddrForRegisterIndirect (used only if this is a RegisterIndirect dispatch call)
+;          return address of caller to stub
+;
+; Call stack:
+;          pointer to TransitionBlock
+;          call site
+;          dispatch token
+;          TransitionBlock
+;              ArgumentRegisters (ecx, edx)
+;              CalleeSavedRegisters (ebp, ebx, esi, edi)
+;          return address of caller to stub
+;==========================================================================
+_ResolveWorkerAsmStub@0 proc public
+    ;
+    ; The stub arguments are where we want to setup the TransitionBlock. We will
+    ; setup the TransitionBlock later once we can trash them
+    ;
+    ; push ebp-frame
+    ; push  ebp
+    ; mov   ebp,esp
+
+    ; save CalleeSavedRegisters
+    ; push  ebx
+
+    push    esi
+    push    edi
+
+    ; push ArgumentRegisters
+    push    ecx
+    push    edx
+
+    mov     esi, esp
+
+    push    [esi + 4*4]     ; dispatch token
+    push    [esi + 5*4]     ; siteAddrForRegisterIndirect
+    push    esi             ; pTransitionBlock
+
+    ; Setup up proper EBP frame now that the stub arguments can be trashed
+    mov     [esi + 4*4], ebx
+    mov     [esi + 5*4], ebp
+    lea     ebp, [esi + 5*4]
+
+    ; Make the call
+    call    _VSD_ResolveWorker@12
+
+    ; From here on, mustn't trash eax
+
+    STUB_EPILOG
+    jmp     eax
+
+    ; This will never be executed. It is just to help out stack-walking logic
+    ; which disassembles the epilog to unwind the stack.
+    ret
+_ResolveWorkerAsmStub@0 endp
+
+ifdef CHAIN_LOOKUP
+;==========================================================================
+; This will perform a chained lookup of the entry if the initial cache lookup fails
+;
+; Entry stack:
+;          dispatch token
+;          siteAddrForRegisterIndirect (used only if this is a RegisterIndirect dispatch call)
+;          return address of caller to stub
+; Also, EAX contains the pointer to the first ResolveCacheElem pointer for the calculated
+; bucket in the cache table.
+;==========================================================================
+_ResolveWorkerChainLookupAsmStub@0 proc public
+    ; this is the part of the stack that is present as we enter this function:
+
+    ChainLookup__token equ                  00h
+    ChainLookup__indirect_addr equ          04h
+    ChainLookup__caller_ret_addr equ        08h
+    ChainLookup__ret_esp equ                0ch
+
+    ChainLookup_spilled_reg_size equ        8
+
+ifdef STUB_LOGGING
+    inc     g_chained_lookup_call_counter
+endif
+
+    ; spill regs
+    push    edx
+    push    ecx
+
+    ; move the token into edx
+    mov     edx, [esp + ChainLookup_spilled_reg_size + ChainLookup__token]
+
+    ; move the MT into ecx
+    mov     ecx, [ecx]
+
+main_loop:
+
+    ; get the next entry in the chain (don't bother checking the first entry again)
+    mov     eax, [eax + ResolveCacheElem__pNext]
+
+    ; test if we hit a terminating NULL
+    test    eax, eax
+    jz      fail
+
+    ; compare the MT of the ResolveCacheElem
+    cmp     ecx, [eax + ResolveCacheElem__pMT]
+    jne     main_loop
+
+    ; compare the token of the ResolveCacheElem
+    cmp     edx, [eax + ResolveCacheElem__token]
+    jne     main_loop
+
+    ; success
+    ; decrement success counter and move entry to start if necessary
+    sub     g_dispatch_cache_chain_success_counter, 1
+
+    ; @TODO: Perhaps this should be a jl for better branch prediction?
+    jge     nopromote
+
+    ; be quick to reset the counter so we don't get a bunch of contending threads
+    add     g_dispatch_cache_chain_success_counter, ASM__CALL_STUB_CACHE_INITIAL_SUCCESS_COUNT
+
+    ; promote the entry to the beginning of the chain
+    mov     ecx, eax
+    call    @VSD_PromoteChainEntry@4
+
+nopromote:
+    pop     ecx
+    pop     edx
+    add     esp, (ChainLookup__caller_ret_addr - ChainLookup__token)
+    mov     eax, [eax + ResolveCacheElem__target]
+    jmp     eax
+
+fail:
+ifdef STUB_LOGGING
+    inc     g_chained_lookup_miss_counter
+endif
+
+    ; restore registers
+    pop     ecx
+    pop     edx
+    jmp     _ResolveWorkerAsmStub@0
+_ResolveWorkerChainLookupAsmStub@0 endp
+endif ; CHAIN_LOOKUP
+
+;==========================================================================
+; Call the callsite back patcher.  The fail stub piece of the resolver is being
+; call too often, i.e. dispatch stubs are failing the expect MT test too often.
+; In this stub wraps the call to the BackPatchWorker to take care of any stack magic
+; needed.
+;==========================================================================
+_BackPatchWorkerAsmStub@0 proc public
+    push    ebp
+    mov     ebp, esp
+
+    push    eax                 ; it may contain siteAddrForRegisterIndirect
+    push    ecx
+    push    edx
+
+    push    eax                 ; push any indirect call address as the second arg to BackPatchWorker
+    push    dword ptr [ebp + 8] ; and push return address as the first arg to BackPatchWorker
+    call    _BackPatchWorkerStaticStub@8
+
+    pop     edx
+    pop     ecx
+    pop     eax
+
+    mov     esp, ebp
+    pop     ebp
+    ret
+_BackPatchWorkerAsmStub@0 endp
+
+;==========================================================================
+; Capture a transition block with register values and call the IL_Throw
+; implementation written in C.
+;
+; Input state:
+;   ECX = Pointer to exception object
+;==========================================================================
+FASTCALL_FUNC IL_Throw, 4
+    STUB_PROLOG
+
+    mov     edx, esp
+    call    @IL_Throw_Impl@8
+
+    STUB_EPILOG
+    ret     4
+FASTCALL_ENDFUNC IL_Throw
+
+;==========================================================================
+; Capture a transition block with register values and call the IL_ThrowExact
+; implementation written in C.
+;
+; Input state:
+;   ECX = Pointer to exception object
+;==========================================================================
+FASTCALL_FUNC IL_ThrowExact, 4
+    STUB_PROLOG
+
+    mov     edx, esp
+    call    @IL_ThrowExact_Impl@8
+
+    STUB_EPILOG
+    ret     4
+FASTCALL_ENDFUNC IL_ThrowExact
+
+;==========================================================================
+; Capture a transition block with register values and call the IL_Rethrow
+; implementation written in C.
+;==========================================================================
+FASTCALL_FUNC IL_Rethrow, 0
+    STUB_PROLOG
+
+    mov     ecx, esp
+    call    @IL_Rethrow_Impl@4
+
+    STUB_EPILOG
+    ret     4
+FASTCALL_ENDFUNC IL_Rethrow
 
     end

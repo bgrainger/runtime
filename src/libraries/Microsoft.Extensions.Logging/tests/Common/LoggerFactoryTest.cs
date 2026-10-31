@@ -2,10 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using System.IO;
 using System.Text;
 using System.Diagnostics;
 using System.Collections.Generic;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
 
@@ -19,7 +21,7 @@ namespace Microsoft.Extensions.Logging.Test
             var factory = new LoggerFactory();
             factory.Dispose();
 
-            Assert.Throws<ObjectDisposedException>(() => ((ILoggerFactory) factory).AddProvider(CreateProvider()));
+            Assert.Throws<ObjectDisposedException>(() => ((ILoggerFactory)factory).AddProvider(CreateProvider()));
         }
 
         [Fact]
@@ -213,7 +215,7 @@ namespace Microsoft.Extensions.Logging.Test
         public void TestInvalidActivityTrackingOptions()
         {
             Assert.Throws<ArgumentException>(() =>
-                LoggerFactory.Create(builder => { builder.Configure(o => o.ActivityTrackingOptions = (ActivityTrackingOptions) 0xFF00);})
+                LoggerFactory.Create(builder => { builder.Configure(o => o.ActivityTrackingOptions = (ActivityTrackingOptions)0xFF00); })
             );
         }
 
@@ -407,10 +409,50 @@ namespace Microsoft.Extensions.Logging.Test
         }
 
         [Fact]
+        public void BaggageFormattedOutput()
+        {
+            var loggerProvider = new ExternalScopeLoggerWithFormatterProvider();
+            var loggerFactory = LoggerFactory.Create(builder =>
+            {
+                builder
+                    .Configure(o => o.ActivityTrackingOptions = ActivityTrackingOptions.TraceId | ActivityTrackingOptions.Baggage | ActivityTrackingOptions.Tags)
+                    .AddProvider(loggerProvider);
+            });
+
+            var logger = loggerFactory.CreateLogger("Logger");
+
+            Activity activity = new Activity("ScopeActivity");
+            activity.Start();
+
+            activity.AddTag("Tag1", "1");
+            activity.AddBaggage("Baggage1", "1");
+
+            using (logger.BeginScope("Scope1"))
+            {
+                activity.AddTag("Tag2", "2");
+                activity.AddBaggage("Baggage2", "2");
+                logger.LogInformation("Inside Scope Info!");
+            }
+            activity.Stop();
+
+            string[] loggerOutput = new string[]
+            {
+                $"Inside Scope Info!",
+                $"[TraceId, {activity.GetTraceId()}]",
+                $"[Tag1, 1]",
+                $"[Tag2, 2]",
+                $"[Baggage2, 2]",
+                $"[Baggage1, 1]",
+                $"Scope1",
+            };
+            Assert.Equal(loggerOutput, loggerProvider.LogText);
+        }
+
+        [Fact]
         public void CallsSetScopeProvider_OnSupportedProviders()
         {
             var loggerProvider = new ExternalScopeLoggerProvider();
-            var loggerFactory = new LoggerFactory(new [] { loggerProvider });
+            var loggerFactory = new LoggerFactory(new[] { loggerProvider });
 
             var logger = loggerFactory.CreateLogger("Logger");
 
@@ -439,7 +481,7 @@ namespace Microsoft.Extensions.Logging.Test
         public void BeginScope_ReturnsExternalSourceTokenDirectly()
         {
             var loggerProvider = new ExternalScopeLoggerProvider();
-            var loggerFactory = new LoggerFactory(new [] { loggerProvider });
+            var loggerFactory = new LoggerFactory(new[] { loggerProvider });
 
             var logger = loggerFactory.CreateLogger("Logger");
 
@@ -462,7 +504,7 @@ namespace Microsoft.Extensions.Logging.Test
         {
             var loggerProvider = new ExternalScopeLoggerProvider();
             var loggerProvider2 = new InternalScopeLoggerProvider();
-            var loggerFactory = new LoggerFactory(new ILoggerProvider[] { loggerProvider, loggerProvider2});
+            var loggerFactory = new LoggerFactory(new ILoggerProvider[] { loggerProvider, loggerProvider2 });
 
             var logger = loggerFactory.CreateLogger("Logger");
 
@@ -502,10 +544,55 @@ namespace Microsoft.Extensions.Logging.Test
             var provider = new Mock<ILoggerProvider>();
             provider.Setup(p => p.Dispose()).Callback(() => disposed = true);
 
-            var factory = LoggerFactory.Create(builder => builder.Services.AddSingleton(_=> provider.Object));
+            var factory = LoggerFactory.Create(builder => builder.Services.AddSingleton(_ => provider.Object));
             factory.Dispose();
 
             Assert.True(disposed);
+        }
+
+        // Moq heavily utilizes RefEmit, which does not work on most aot workloads
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
+        public void TestCreateLoggers_NullLoggerIsIgnoredWhenReturnedByProvider()
+        {
+            // We test this via checking if Scope optimisaion (ie not return scope wrapper but the
+            // returned scope directly only one logger) is applied.
+            var nullProvider = new Mock<ILoggerProvider>();
+            nullProvider.Setup(p => p.CreateLogger(It.IsAny<string>())).Returns(NullLogger.Instance);
+
+            var validProvider = new CustomScopeLoggerProvider();
+
+            var factory = LoggerFactory.Create(builder =>
+            {
+                builder.AddProvider(nullProvider.Object);
+                builder.AddProvider(validProvider);
+            });
+            var logger = factory.CreateLogger("TestLogger");
+
+            var scope = logger.BeginScope("TestScope");
+            Assert.IsType<CustomScopeLoggerProvider.CustomScope>(scope);
+
+            logger.LogInformation("Test message");
+            Assert.Equal(1, validProvider.LogText.Count);
+        }
+
+        private class CustomScopeLoggerProvider : ILoggerProvider, ILogger
+        {
+            public List<string> LogText { get; set; } = new List<string>();
+
+            public void Dispose() { }
+
+            public ILogger CreateLogger(string categoryName) => this;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter) => LogText.Add(formatter(state, exception));
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public IDisposable BeginScope<TState>(TState state) => new CustomScope();
+
+            internal class CustomScope : IDisposable
+            {
+                public void Dispose() { }
+            }
         }
 
         private class InternalScopeLoggerProvider : ILoggerProvider, ILogger
@@ -572,6 +659,53 @@ namespace Microsoft.Extensions.Logging.Test
             {
                 return true;
             }
+
+            public IDisposable BeginScope<TState>(TState state)
+            {
+                BeginScopeCalledTimes++;
+                return null;
+            }
+        }
+
+        // Support formatting IEnumerable<KeyValuePair<string, object?>> scopes
+        private class ExternalScopeLoggerWithFormatterProvider : ILoggerProvider, ISupportExternalScope, ILogger
+        {
+            public void SetScopeProvider(IExternalScopeProvider scopeProvider)
+            {
+                ScopeProvider = scopeProvider;
+            }
+
+            public IExternalScopeProvider ScopeProvider { get; set; }
+
+            public int BeginScopeCalledTimes { get; set; }
+
+            public List<string> LogText { get; set; } = new List<string>();
+
+            public void Dispose() { }
+
+            public ILogger CreateLogger(string categoryName) => this;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+            {
+                LogText.Add(formatter(state, exception));
+
+                ScopeProvider.ForEachScope((scope, builder) =>
+                {
+                    if (scope is IEnumerable<KeyValuePair<string, object>> scopeItems)
+                    {
+                        foreach (KeyValuePair<string, object> item in scopeItems)
+                        {
+                            builder.Add(item.ToString());
+                        }
+                    }
+                    else
+                    {
+                        builder.Add(scope.ToString());
+                    }
+                }, LogText);
+            }
+
+            public bool IsEnabled(LogLevel logLevel) => true;
 
             public IDisposable BeginScope<TState>(TState state)
             {

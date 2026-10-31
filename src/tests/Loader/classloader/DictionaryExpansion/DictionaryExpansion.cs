@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using Xunit;
+using TestLibrary;
 
 class TestType1<T> { }
 class TestType2<T> { }
@@ -167,8 +168,8 @@ public class GenClass<T> : GenBase
     [MethodImpl(MethodImplOptions.NoInlining)]
     public override void VFunc()
     {
-        Assert.Equal(typeof(KeyValuePair<T, string>).ToString(), "System.Collections.Generic.KeyValuePair`2[System.Object,System.String]");
-        Assert.Equal(typeof(KeyValuePair<T, string>).ToString(), "System.Collections.Generic.KeyValuePair`2[System.Object,System.String]");
+        Assert.Equal("System.Collections.Generic.KeyValuePair`2[System.Object,System.String]", typeof(KeyValuePair<T, string>).ToString());
+        Assert.Equal("System.Collections.Generic.KeyValuePair`2[System.Object,System.String]", typeof(KeyValuePair<T, string>).ToString());
     }
 }
 
@@ -278,7 +279,9 @@ public class Test_DictionaryExpansion
             Assert.Equal(GFunc<Test_DictionaryExpansion>(i).ToString(), i == 0 ? "Test_DictionaryExpansion" : $"TestType{i}`1[Test_DictionaryExpansion]");
     }
 
-    public static int Main()
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/90427", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoMINIFULLAOT))]
+    [ConditionalFact(typeof(Utilities), nameof(Utilities.IsReflectionEmitSupported))]
+    public static void TestEntryPoint()
     {
         GenBase deriv4 = new GenDerived4();
 
@@ -328,7 +331,5 @@ public class Test_DictionaryExpansion
         // base type dictionaries were expanded.
         for(int i = 0; i < 5; i++)
             deriv4.VFunc();
-
-        return 100;
     }
 }

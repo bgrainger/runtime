@@ -29,7 +29,7 @@ namespace System.Speech.Recognition
         #endregion
 
         #region Public Methods
-        public void SetDictationContext(string precedingText, string subsequentText)
+        public void SetDictationContext(string? precedingText, string? subsequentText)
         {
             if (State != GrammarState.Loaded)
             {
@@ -50,7 +50,7 @@ namespace System.Speech.Recognition
 
         #region Private Fields
 
-        private static Uri s_defaultDictationUri = new("grammar:dictation");
+        private static readonly Uri s_defaultDictationUri = new("grammar:dictation");
 
         #endregion
     }

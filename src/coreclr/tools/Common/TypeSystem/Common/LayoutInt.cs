@@ -12,7 +12,9 @@ namespace Internal.TypeSystem
     /// type system do not have a known size. This type is used to make such sizes viral through the type layout
     /// computations)
     /// </summary>
+#pragma warning disable CA1066 // IEquatable<T> implementation wouldn't be used
     public struct LayoutInt
+#pragma warning restore CA1066
     {
         private int _value;
 
@@ -24,7 +26,7 @@ namespace Internal.TypeSystem
         {
             if (input < 0)
             {
-                throw new ArgumentException();
+                throw new ArgumentOutOfRangeException(nameof(input));
             }
             else
             {
@@ -88,6 +90,20 @@ namespace Internal.TypeSystem
                 return Indeterminate;
 
             return new LayoutInt(checked(left._value - right._value));
+        }
+
+        public static LayoutInt AddThrowing(LayoutInt left, LayoutInt right, TypeDesc loadedType)
+        {
+            if (left.IsIndeterminate || right.IsIndeterminate)
+                return Indeterminate;
+
+            int result = left._value + right._value;
+
+            // Overflow if both arguments have the opposite sign of the result
+            if (((left._value ^ result) & (right._value ^ result)) < 0)
+                ThrowHelper.ThrowTypeLoadException(loadedType);
+
+            return new LayoutInt(result);
         }
 
         public override bool Equals(object obj)

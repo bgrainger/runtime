@@ -1,25 +1,25 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-//
 
 using System;
-using System.Collections.Generic;
-using System.Text;
+
 namespace XUnitWrapperLibrary;
+
+using Interlocked = System.Threading.Interlocked;
 
 public class TestFilter
 {
-    interface ISearchClause
+    public interface ISearchClause
     {
         bool IsMatch(string fullyQualifiedName, string displayName, string[] traits);
     }
 
-    enum TermKind
+    public enum TermKind
     {
         FullyQualifiedName,
         DisplayName
     }
-    sealed class NameClause : ISearchClause
+    public sealed class NameClause : ISearchClause
     {
         public NameClause(TermKind kind, string filter, bool substring)
         {
@@ -27,6 +27,7 @@ public class TestFilter
             Filter = filter;
             Substring = substring;
         }
+
         public TermKind Kind { get; }
         public string Filter { get; }
         public bool Substring { get; }
@@ -46,9 +47,14 @@ public class TestFilter
             }
             return stringToSearch == Filter;
         }
+
+        public override string ToString()
+        {
+            return $"{Kind}{(Substring ? "~" : "=")}{Filter}";
+        }
     }
 
-    sealed class AndClause : ISearchClause
+    public sealed class AndClause : ISearchClause
     {
         private ISearchClause _left;
         private ISearchClause _right;
@@ -59,10 +65,17 @@ public class TestFilter
             _right = right;
         }
 
-        public bool IsMatch(string fullyQualifiedName, string displayName, string[] traits) => _left.IsMatch(fullyQualifiedName, displayName, traits) && _right.IsMatch(fullyQualifiedName, displayName, traits);
+        public bool IsMatch(string fullyQualifiedName, string displayName, string[] traits) =>
+            _left.IsMatch(fullyQualifiedName, displayName, traits)
+            && _right.IsMatch(fullyQualifiedName, displayName, traits);
+
+        public override string ToString()
+        {
+            return $"({_left}) && ({_right})";
+        }
     }
 
-    sealed class OrClause : ISearchClause
+    public sealed class OrClause : ISearchClause
     {
         private ISearchClause _left;
         private ISearchClause _right;
@@ -73,10 +86,17 @@ public class TestFilter
             _right = right;
         }
 
-        public bool IsMatch(string fullyQualifiedName, string displayName, string[] traits) => _left.IsMatch(fullyQualifiedName, displayName, traits) || _right.IsMatch(fullyQualifiedName, displayName, traits);
+        public bool IsMatch(string fullyQualifiedName, string displayName, string[] traits) =>
+            _left.IsMatch(fullyQualifiedName, displayName, traits)
+            || _right.IsMatch(fullyQualifiedName, displayName, traits);
+
+        public override string ToString()
+        {
+            return $"({_left}) || ({_right})";
+        }
     }
 
-    sealed class NotClause : ISearchClause
+    public sealed class NotClause : ISearchClause
     {
         private ISearchClause _inner;
 
@@ -85,19 +105,115 @@ public class TestFilter
             _inner = inner;
         }
 
-        public bool IsMatch(string fullyQualifiedName, string displayName, string[] traits) => !_inner.IsMatch(fullyQualifiedName, displayName, traits);
-    }
+        public bool IsMatch(string fullyQualifiedName, string displayName, string[] traits)
+            => !_inner.IsMatch(fullyQualifiedName, displayName, traits);
 
-    private ISearchClause? _filter;
-
-    public TestFilter(string filterString)
-    {
-        if (filterString.IndexOfAny(new[] { '!', '(', ')', '~', '=' }) != -1)
+        public override string ToString()
         {
-            throw new ArgumentException("Complex test filter expressions are not supported today. The only filters supported today are the simple form supported in 'dotnet test --filter' (substrings of the test's fully qualified name). If further filtering options are desired, file an issue on dotnet/runtime for support.", nameof(filterString));
+            return $"!({_inner})";
         }
-        _filter = new NameClause(TermKind.FullyQualifiedName, filterString, substring: true);
     }
 
-    public bool ShouldRunTest(string fullyQualifiedName, string displayName, string[]? traits = null) => _filter is null ? true : _filter.IsMatch(fullyQualifiedName, displayName, traits ?? Array.Empty<string>());
+    private readonly ISearchClause? _filter;
+
+    private readonly int _stripe;
+    private readonly int _stripeCount = 1;
+    private int _shouldRunQuery = -1;
+
+    public TestFilter(string? filterString) :
+        this(filterString == null ? Array.Empty<string>() : new string[]{filterString})
+    {
+    }
+
+    public TestFilter(string[] filterArgs)
+    {
+        string? filterString = null;
+
+        for (int i = 0; i < filterArgs.Length; i++)
+        {
+            if (filterArgs[i].StartsWith("-stripe"))
+            {
+                _stripe = int.Parse(filterArgs[++i]);
+                _stripeCount = int.Parse(filterArgs[++i]);
+            }
+            else
+            {
+                filterString ??= filterArgs[0];
+            }
+        }
+
+        var stripeEnvironment = Environment.GetEnvironmentVariable("TEST_HARNESS_STRIPE_TO_EXECUTE");
+        if (!string.IsNullOrEmpty(stripeEnvironment) && stripeEnvironment != ".0.1")
+        {
+            var stripes = stripeEnvironment.Split('.');
+            if (stripes.Length == 3)
+            {
+                Console.WriteLine($"Test striping enabled via TEST_HARNESS_STRIPE_TO_EXECUTE environment"
+                                  + $" variable set to '{stripeEnvironment}'");
+                _stripe = int.Parse(stripes[1]);
+                _stripeCount = int.Parse(stripes[2]);
+            }
+        }
+
+        if (filterString is not null)
+        {
+            _filter = ParseFilter(filterString, nameof(filterArgs));
+        }
+    }
+
+    public TestFilter(ISearchClause? filter)
+    {
+        _filter = filter;
+    }
+
+    public bool ShouldRunTest(string fullyQualifiedName, string displayName, string[]? traits = null)
+    {
+        bool shouldRun;
+        if (_filter is null)
+        {
+            shouldRun = true;
+        }
+        else
+        {
+            shouldRun = _filter.IsMatch(fullyQualifiedName, displayName, traits ?? Array.Empty<string>());
+        }
+
+        if (shouldRun)
+        {
+            // Test stripe, if true, then report success
+            return ((Interlocked.Increment(ref _shouldRunQuery)) % _stripeCount) == _stripe;
+        }
+        return false;
+    }
+
+    private static ISearchClause ParseFilter(string filterString, string argName)
+    {
+        ReadOnlySpan<string> unsupported = ["|", "&", "(", ")", "!=", "!~"];
+        foreach (string s in unsupported)
+        {
+            if (filterString.Contains(s))
+            {
+                throw new ArgumentException("Test filtering with |, &, (, ), !=, !~ is not supported", argName);
+            }
+        }
+
+        int delimiter = filterString.IndexOfAny(['=', '~']);
+        if (delimiter == -1)
+        {
+            return new NameClause(TermKind.FullyQualifiedName, filterString, substring: true);
+        }
+
+        bool isSubstring = filterString[delimiter] == '~';
+        string termName = filterString.Substring(0, delimiter);
+        string testName = filterString.Substring(delimiter + 1);
+
+        TermKind termKind = termName switch
+        {
+            "FullyQualifiedName" => TermKind.FullyQualifiedName,
+            "DisplayName" => TermKind.DisplayName,
+            _ => throw new ArgumentException("Test filtering not supported with property " + termName, argName),
+        };
+
+        return new NameClause(termKind, testName, substring: isSubstring);
+    }
 }

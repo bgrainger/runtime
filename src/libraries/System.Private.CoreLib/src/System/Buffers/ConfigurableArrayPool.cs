@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace System.Buffers
@@ -21,14 +22,8 @@ namespace System.Buffers
 
         internal ConfigurableArrayPool(int maxArrayLength, int maxArraysPerBucket)
         {
-            if (maxArrayLength <= 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(maxArrayLength));
-            }
-            if (maxArraysPerBucket <= 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(maxArraysPerBucket));
-            }
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxArrayLength);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxArraysPerBucket);
 
             // Our bucketing algorithm has a min length of 2^4 and a max length of 2^30.
             // Constrain the actual max used to those values.
@@ -56,20 +51,18 @@ namespace System.Buffers
         /// <summary>Gets an ID for the pool to use with events.</summary>
         private int Id => GetHashCode();
 
+        [MethodImpl(MethodImplOptions.NoInlining)]
         public override T[] Rent(int minimumLength)
         {
             // Arrays can't be smaller than zero.  We allow requesting zero-length arrays (even though
             // pooling such an array isn't valuable) as it's a valid length array, and we want the pool
             // to be usable in general instead of using `new`, even for computed lengths.
-            if (minimumLength < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(minimumLength));
-            }
-            else if (minimumLength == 0)
+            ArgumentOutOfRangeException.ThrowIfNegative(minimumLength);
+            if (minimumLength == 0)
             {
                 // No need for events with the empty array.  Our pool is effectively infinite
                 // and we'll never allocate for rents and never store for returns.
-                return Array.Empty<T>();
+                return [];
             }
 
             ArrayPoolEventSource log = ArrayPoolEventSource.Log;
@@ -120,13 +113,12 @@ namespace System.Buffers
             return buffer;
         }
 
+        [MethodImpl(MethodImplOptions.NoInlining)]
         public override void Return(T[] array, bool clearArray = false)
         {
-            if (array == null)
-            {
-                throw new ArgumentNullException(nameof(array));
-            }
-            else if (array.Length == 0)
+            ArgumentNullException.ThrowIfNull(array);
+
+            if (array.Length == 0)
             {
                 // Ignore empty arrays.  When a zero-length array is rented, we return a singleton
                 // rather than actually taking a buffer out of the lowest bucket.
@@ -160,7 +152,7 @@ namespace System.Buffers
                 log.BufferReturned(bufferId, array.Length, Id);
                 if (!haveBucket)
                 {
-                    log.BufferDropped(bufferId, array.Length, Id, ArrayPoolEventSource.NoBucketId, ArrayPoolEventSource.BufferDroppedReason.Full);
+                    log.BufferDropped(bufferId, array.Length, Id, ArrayPoolEventSource.NoBucketId, ArrayPoolEventSource.BufferDroppedReason.OverMaximumSize);
                 }
             }
         }

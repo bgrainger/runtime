@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Buffers;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
@@ -25,7 +26,7 @@ namespace System
         {
         }
 
-        public UriBuilder(string uri)
+        public UriBuilder([StringSyntax(StringSyntaxAttribute.Uri)] string uri)
         {
             // setting allowRelative=true for a string like www.acme.org
             _uri = new Uri(uri, UriKind.RelativeOrAbsolute);
@@ -40,7 +41,9 @@ namespace System
 
         public UriBuilder(Uri uri)
         {
-            _uri = uri ?? throw new ArgumentNullException(nameof(uri));
+            ArgumentNullException.ThrowIfNull(uri);
+
+            _uri = uri;
             SetFieldsFromUri();
         }
 
@@ -155,16 +158,40 @@ namespace System
             }
         }
 
+        /// <summary>
+        /// Problematic characters that could result in the Host component escaping into other components like the Path.
+        /// </summary>
+        private static readonly SearchValues<char> s_hostReservedChars = SearchValues.Create(@":/\?#@[]");
+        private static readonly SearchValues<char> s_hostReservedCharsExceptColon = SearchValues.Create(@"/\?#@[]");
+
         [AllowNull]
         public string Host
         {
             get => _host;
             set
             {
-                if (!string.IsNullOrEmpty(value) && value.Contains(':') && value[0] != '[')
+                if (!string.IsNullOrEmpty(value) && value.AsSpan().ContainsAny(s_hostReservedChars))
                 {
-                    //probable ipv6 address - Note: this is only supported for cases where the authority is inet-based.
-                    value = "[" + value + "]";
+                    if (value.Contains(':'))
+                    {
+                        if (!value.StartsWith('[') || !value.EndsWith(']'))
+                        {
+                            // probable ipv6 address - Note: this is only supported for cases where the authority is inet-based.
+                            value = $"[{value}]";
+                        }
+
+                        if (value.AsSpan(1, value.Length - 2).ContainsAny(s_hostReservedCharsExceptColon))
+                        {
+                            // Reject inputs like "[::]/path" or "::]/path".
+                            throw new ArgumentException(SR.net_uri_BadHostName, nameof(value));
+                        }
+                    }
+                    else
+                    {
+                        // Reject inputs like "contoso.com/path" or "user@contoso.com".
+                        // Nonsensical inputs will only be allowed by a custom parser with GenericUriParserOptions.GenericAuthority set.
+                        throw new ArgumentException(SR.net_uri_BadHostName, nameof(value));
+                    }
                 }
 
                 _host = value ?? string.Empty;
@@ -177,10 +204,8 @@ namespace System
             get => _port;
             set
             {
-                if (value < -1 || value > 0xFFFF)
-                {
-                    throw new ArgumentOutOfRangeException(nameof(value));
-                }
+                ArgumentOutOfRangeException.ThrowIfLessThan(value, -1);
+                ArgumentOutOfRangeException.ThrowIfGreaterThan(value, 0xFFFF);
                 _port = value;
                 _changed = true;
             }
@@ -253,6 +278,27 @@ namespace System
 
         public override int GetHashCode() => Uri.GetHashCode();
 
+        // The following characters ("/" / "\" / "?" / "#" / "@") are from the gen-delims group.
+        // We have to escape them to avoid corrupting the rest of the Uri string.
+        // Other characters like spaces or non-ASCII will be escaped by Uri, we can ignore them here.
+        private static readonly SearchValues<char> s_userInfoReservedChars =
+            SearchValues.Create(@"/\?#@");
+
+        private static string EncodeUserInfo(string input)
+        {
+            if (!input.AsSpan().ContainsAny(s_userInfoReservedChars))
+            {
+                return input;
+            }
+
+            return input
+                .Replace("/", "%2F", StringComparison.Ordinal)
+                .Replace(@"\", "%5C", StringComparison.Ordinal)
+                .Replace("?", "%3F", StringComparison.Ordinal)
+                .Replace("#", "%23", StringComparison.Ordinal)
+                .Replace("@", "%40", StringComparison.Ordinal);
+        }
+
         private void SetFieldsFromUri()
         {
             Debug.Assert(_uri is not null);
@@ -313,12 +359,12 @@ namespace System
                 vsb.Append(schemeDelimiter);
             }
 
-            string username = UserName;
+            string username = EncodeUserInfo(UserName);
             if (username.Length != 0)
             {
                 vsb.Append(username);
 
-                string password = Password;
+                string password = EncodeUserInfo(Password);
                 if (password.Length != 0)
                 {
                     vsb.Append(':');
@@ -343,7 +389,7 @@ namespace System
                 }
             }
 
-            var path = Path;
+            string path = Path;
             if (path.Length != 0)
             {
                 if (!path.StartsWith('/') && host.Length != 0)

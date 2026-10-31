@@ -3,6 +3,8 @@
 
 using System;
 using System.Collections.Generic;
+using Xunit;
+using TestLibrary;
 
 class Base<T1>
 {
@@ -13,12 +15,12 @@ class Derived<T1, T2> : Base<T1>
     public override Derived<T1, T2> Method() => null;
 }
 
-class Program
+public class Program
 {
-    static int Main()
+    [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+    [Fact]
+    public static void TestEntryPoint()
     {
         _ = new Derived<string, int>();
-
-        return 100;
     }
 }

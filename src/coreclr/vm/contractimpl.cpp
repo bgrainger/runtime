@@ -36,18 +36,17 @@ MethodDesc * DispatchSlot::GetMethodDesc()
     if (IsNull())
         return NULL;
     else
-        return MethodTable::GetMethodDescForSlotAddress(GetTarget());
+        return NonVirtualEntry2MethodDesc(GetTarget());
 }
 
 //------------------------------------------------------------------------
-void TypeIDMap::Init(UINT32 idStartValue, UINT32 idIncrementValue)
+void TypeIDMap::Init()
 {
     STANDARD_VM_CONTRACT;
 
     LockOwner lock = {&m_lock, IsOwnerOfCrst};
     m_idMap.Init(11, TRUE, &lock);
     m_mtMap.Init(11, TRUE, &lock);
-    m_idProvider.Init(idStartValue, idIncrementValue);
     m_entryCount = 0;
 }
 
@@ -62,8 +61,7 @@ UINT32 TypeIDMap::LookupTypeID(PTR_MethodTable pMT)
         if (GetThread()->PreemptiveGCDisabled()) { GC_NOTRIGGER; } else { GC_TRIGGERS; }
     } CONTRACTL_END;
 
-    UINT32 id = (UINT32) m_mtMap.LookupValue((UPTR)dac_cast<TADDR>(pMT), 0);
-    _ASSERTE(!pMT->RequiresFatDispatchTokens() || (DispatchToken::RequiresDispatchTokenFat(id, 0)));
+    UINT32 id = (UINT32) m_mtMap.LookupValueByUniqueKey((UPTR)dac_cast<TADDR>(pMT));
 
     return id;
 }
@@ -78,10 +76,7 @@ PTR_MethodTable TypeIDMap::LookupType(UINT32 id)
         PRECONDITION(id <= TypeIDProvider::MAX_TYPE_ID);
     } CONTRACTL_END;
 
-    if (!m_idProvider.OwnsID(id))
-        return NULL;
-
-    UPTR ret = m_idMap.LookupValue((UPTR)id, 0);
+    UPTR ret = m_idMap.LookupValueByUniqueKey((UPTR)id);
     if (ret == static_cast<UPTR>(INVALIDENTRY))
         return NULL;
 
@@ -93,12 +88,16 @@ PTR_MethodTable TypeIDMap::LookupType(UINT32 id)
 //------------------------------------------------------------------------
 // Returns the ID of the type if found. If not found, assigns the ID and
 // returns the new ID.
-UINT32 TypeIDMap::GetTypeID(PTR_MethodTable pMT)
+// If useFatPointerDispatch = true, return the next Fat ID of the type.
+UINT32 TypeIDMap::GetTypeID(PTR_MethodTable pMT, bool useFatPointerDispatch)
 {
-    CONTRACTL {
+    CONTRACTL
+    {
         THROWS;
         GC_TRIGGERS;
-    } CONTRACTL_END;
+        MODE_ANY;
+    }
+    CONTRACTL_END;
 
     // Lookup the value.
     UINT32 id = LookupTypeID(pMT);
@@ -115,15 +114,7 @@ UINT32 TypeIDMap::GetTypeID(PTR_MethodTable pMT)
         {
             return id;
         }
-        // Get the next ID
-        if (pMT->RequiresFatDispatchTokens())
-        {
-            id = GetNextFatID();
-        }
-        else
-        {
-            id = GetNextID();
-        }
+        id = GetNextID(useFatPointerDispatch);
 
         CONSISTENCY_CHECK(id <= TypeIDProvider::MAX_TYPE_ID);
         // Insert the pair, with lookups in both directions
@@ -281,7 +272,6 @@ DispatchMapBuilderNode * DispatchMapBuilder::NewEntry()
     CONTRACTL {
         THROWS;
         GC_NOTRIGGER;
-        INJECT_FAULT(COMPlusThrowOM());
     } CONTRACTL_END;
 
     return new (m_pAllocator) DispatchMapBuilderNode();
@@ -316,7 +306,6 @@ DispatchMap::DispatchMap(
 // }
 void
 DispatchMap::CreateEncodedMapping(
-    MethodTable *        pMT,
     DispatchMapBuilder * pMapBuilder,
     StackingAllocator *  pAllocator,
     BYTE **              ppbMap,
@@ -325,8 +314,7 @@ DispatchMap::CreateEncodedMapping(
     CONTRACTL {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM());
-        PRECONDITION(CheckPointer(pMT));
+        MODE_ANY;
         PRECONDITION(CheckPointer(pMapBuilder));
         PRECONDITION(CheckPointer(pAllocator));
         PRECONDITION(CheckPointer(ppbMap));
@@ -338,12 +326,16 @@ DispatchMap::CreateEncodedMapping(
 
     UINT32 cNumTypes = 0;
     UINT32 cNumEntries = 0;
+    UINT32 cClassAliases = 0;
 
     {
         DispatchMapBuilder::Iterator it(pMapBuilder);
-        // We don't want to record overrides or methodImpls in the dispatch map since
-        // we have vtables to track this information.
-        it.SkipThisTypeEntries();
+        while (it.IsValid() && it.GetTypeID().IsThisClass())
+        {
+            if (it.GetSlotNumber() != it.GetTargetSlot())
+                cClassAliases++;
+            it.Next();
+        }
         if (it.IsValid())
         {
             DispatchMapTypeID curType = DispatchMapTypeID::FromUINT32(INVALIDENTRY);
@@ -367,7 +359,8 @@ DispatchMap::CreateEncodedMapping(
     // some working space for createing the encoded map in.
     // Sizes: flag==UINT32, typeID==UINT32, slot==UINT32, index/slot==UINT32
 
-    S_UINT32 scbMap = S_UINT32(sizeof(UINT32)) +
+    S_UINT32 scbMap = S_UINT32(2 * sizeof(UINT32)) +
+                   S_UINT32(cClassAliases) * S_UINT32(2 * sizeof(UINT32)) +
                    S_UINT32(cNumTypes) * S_UINT32(sizeof(UINT32)) +
                    S_UINT32(cNumEntries) * S_UINT32((sizeof(UINT32) + sizeof(UINT32)));
 
@@ -379,8 +372,22 @@ DispatchMap::CreateEncodedMapping(
     {
         // Create the encoder over the newly allocated memory
         Encoder e(pbMap);
-        // Encode the count of type entries
-        e.Encode((unsigned)cNumTypes);
+        // The low header bit announces the sparse class-alias section.
+        e.Encode((unsigned)((cNumTypes << 1) | (cClassAliases != 0 ? 1 : 0)));
+        if (cClassAliases != 0)
+        {
+            e.Encode(cClassAliases);
+            DispatchMapBuilder::Iterator aliases(pMapBuilder);
+            while (aliases.IsValid() && aliases.GetTypeID().IsThisClass())
+            {
+                if (aliases.GetSlotNumber() != aliases.GetTargetSlot())
+                {
+                    e.Encode(aliases.GetSlotNumber());
+                    e.Encode(aliases.GetTargetSlot());
+                }
+                aliases.Next();
+            }
+        }
         // Start encoding the map
         DispatchMapBuilder::Iterator it(pMapBuilder);
         it.SkipThisTypeEntries();
@@ -427,9 +434,6 @@ DispatchMap::CreateEncodedMapping(
             curTargetSlot = -1;
             do
             {
-                // Only virtual targets can be mapped virtually.
-                CONSISTENCY_CHECK((it.GetTargetMD() == NULL) ||
-                                  it.GetTargetMD()->IsVirtual());
                 // Encode the slot
                 prevSlot = curSlot;
                 curSlot = it.GetSlotNumber();
@@ -539,7 +543,17 @@ void DispatchMap::EncodedMapIterator::Init(PTR_BYTE pbMap)
     {
         // Initialize the map decoder
         m_d.Init(pbMap);
-        m_numTypes = m_d.Next();
+        UINT32 header = m_d.Next();
+        m_numTypes = header >> 1;
+        if ((header & 1) != 0)
+        {
+            UINT32 aliases = m_d.Next();
+            while (aliases-- != 0)
+            {
+                m_d.Next();
+                m_d.Next();
+            }
+        }
         m_curType = -1;
         m_curTypeId = DispatchMapTypeID::FromUINT32(static_cast<UINT32>(-1));
         m_numEntries = 0;
@@ -564,9 +578,9 @@ DispatchMap::EncodedMapIterator::EncodedMapIterator(MethodTable * pMT)
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
-    if (pMT->HasDispatchMap())
+    DispatchMap * pMap = pMT->GetDispatchMap();
+    if (pMap != NULL)
     {
-        DispatchMap * pMap = pMT->GetDispatchMap();
         Init(PTR_BYTE(PTR_HOST_MEMBER_TADDR(DispatchMap, pMap, m_rgMap)));
     }
     else
@@ -655,10 +669,7 @@ BOOL DispatchMap::EncodedMapIterator::Next()
 DispatchMap::Iterator::Iterator(MethodTable * pMT)
     : m_mapIt(pMT)
 {
-    CONTRACTL {
-        THROWS;
-        GC_TRIGGERS;
-    } CONTRACTL_END;
+    WRAPPER_NO_CONTRACT;
 }
 
 //--------------------------------------------------------------------
@@ -690,7 +701,6 @@ DispatchMapEntry * DispatchMap::Iterator::Entry()
         MODE_ANY;
         if (FORBIDGC_LOADER_USE_ENABLED()) NOTHROW; else THROWS;
         if (FORBIDGC_LOADER_USE_ENABLED()) GC_NOTRIGGER; else GC_TRIGGERS;
-        if (FORBIDGC_LOADER_USE_ENABLED()) FORBID_FAULT; else { INJECT_FAULT(COMPlusThrowOM()); }
         PRECONDITION(IsValid());
     } CONTRACTL_END;
 */

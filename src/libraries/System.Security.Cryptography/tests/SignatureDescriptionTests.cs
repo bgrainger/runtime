@@ -4,6 +4,8 @@
 // (C) 2002 Motus Technologies Inc. (http://www.motus.com)
 // (C) 2004 Novell  http://www.novell.com
 
+using System.Security.Cryptography.Dsa.Tests;
+using Test.Cryptography;
 using Xunit;
 
 namespace System.Security.Cryptography.Tests
@@ -39,7 +41,6 @@ namespace System.Security.Cryptography.Tests
         }
 
         [Fact]
-        [SkipOnPlatform(TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst, "Not supported on iOS/tvOS/MacCatalyst")]
         public void Constructor_SecurityElement_DSA()
         {
             SecurityElement se = new SecurityElement("DSASignature");
@@ -102,8 +103,7 @@ namespace System.Security.Cryptography.Tests
             Assert.Null(sig.KeyAlgorithm);
         }
 
-        [Fact]
-        [SkipOnPlatform(TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst, "Not supported on iOS/tvOS/MacCatalyst")]
+        [ConditionalFact(typeof(PlatformSupport), nameof(PlatformSupport.IsDSASupported))]
         public void Deformatter()
         {
             AsymmetricSignatureDeformatter def;
@@ -128,54 +128,32 @@ namespace System.Security.Cryptography.Tests
             Assert.Throws<NullReferenceException>(() => def = sig.CreateDeformatter(dsa));
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsNotBuiltWithAggressiveTrimming))]
         [PlatformSpecific(TestPlatforms.Windows)]  // Operation is not supported on Unix
         public void Digest()
         {
             bool rightClass = false;
-            HashAlgorithm hash = null;
             SignatureDescription sig = new SignatureDescription();
 
             // null hash
-            AssertExtensions.Throws<ArgumentNullException>("name", () => hash = sig.CreateDigest());
+            AssertExtensions.Throws<ArgumentNullException>("name", () => sig.CreateDigest());
 
-            sig.DigestAlgorithm = "SHA1";
-            hash = sig.CreateDigest();
-            Assert.NotNull(hash);
-            rightClass = (hash.ToString().IndexOf(sig.DigestAlgorithm) > 0);
-            Assert.True(rightClass, "CreateDigest(SHA1)");
-
-            sig.DigestAlgorithm = "MD5";
-            hash = sig.CreateDigest();
-            Assert.NotNull(hash);
-            rightClass = (hash.ToString().IndexOf(sig.DigestAlgorithm) > 0);
-            Assert.True(rightClass, "CreateDigest(MD5)");
-
-            sig.DigestAlgorithm = "SHA256";
-            hash = sig.CreateDigest();
-            Assert.NotNull(hash);
-            rightClass = (hash.ToString().IndexOf(sig.DigestAlgorithm) > 0);
-            Assert.True(rightClass, "CreateDigest(SHA256)");
-
-            sig.DigestAlgorithm = "SHA384";
-            hash = sig.CreateDigest();
-            Assert.NotNull(hash);
-            rightClass = (hash.ToString().IndexOf(sig.DigestAlgorithm) > 0);
-            Assert.True(rightClass, "CreateDigest(SHA384)");
-
-            sig.DigestAlgorithm = "SHA512";
-            hash = sig.CreateDigest();
-            Assert.NotNull(hash);
-            rightClass = (hash.ToString().IndexOf(sig.DigestAlgorithm) > 0);
-            Assert.True(rightClass, "CreateDigest(SHA512)");
+            foreach (string name in new[] { "SHA1", "MD5", "SHA256", "SHA384", "SHA512" })
+            {
+                sig.DigestAlgorithm = name;
+                using (HashAlgorithm hash = sig.CreateDigest())
+                {
+                    Assert.NotNull(hash);
+                    rightClass = hash.ToString().IndexOf(sig.DigestAlgorithm) > 0;
+                    Assert.True(rightClass, $"CreateDigest({name})");
+                }
+            }
 
             sig.DigestAlgorithm = "bad";
-            hash = sig.CreateDigest();
-            Assert.Null(hash);
+            Assert.Null(sig.CreateDigest());
         }
 
-        [Fact]
-        [SkipOnPlatform(TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst, "Not supported on iOS/tvOS/MacCatalyst")]
+        [ConditionalFact(typeof(PlatformSupport), nameof(PlatformSupport.IsDSASupported))]
         public void Formatter()
         {
             SignatureDescription sig = new SignatureDescription();

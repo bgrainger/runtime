@@ -19,9 +19,7 @@ namespace System.IO.Packaging
         /// <param name="stream"></param>
         internal IgnoreFlushAndCloseStream(Stream stream)
         {
-            if (stream == null)
-                throw new ArgumentNullException(nameof(stream));
-
+            ArgumentNullException.ThrowIfNull(stream);
             _stream = stream;
         }
 

@@ -3,6 +3,8 @@
 
 using System;
 using System.Collections.Generic;
+using Xunit;
+using TestLibrary;
 
 public abstract class AComponent { }
 public class Component : AComponent { }
@@ -18,12 +20,12 @@ public sealed class Concrete<T> : Abstract
     public override IReadOnlyList<T> New => throw null;
 }
 
-class Program
+public class Program
 {
-    static int Main()
+    [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+    [Fact]
+    public static void TestEntryPoint()
     {
         new Concrete<Component>();
-
-        return 100;
     }
 }

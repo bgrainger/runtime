@@ -15,11 +15,11 @@ namespace System.Speech.Internal.Synthesis
         }
 
         internal abstract IntPtr GetOutputFormat(IntPtr targetFormat);
-        internal abstract void AddLexicon(Uri lexicon, string mediaType);
+        internal abstract void AddLexicon(Uri lexicon, string? mediaType);
         internal abstract void RemoveLexicon(Uri lexicon);
         internal abstract void Speak(List<TextFragment> frags, byte[] wfx);
         internal abstract void ReleaseInterface();
-        internal abstract char[] ConvertPhonemes(char[] phones, AlphabetType alphabet);
+        internal abstract char[]? ConvertPhonemes(char[] phones, AlphabetType alphabet);
         internal abstract AlphabetType EngineAlphabet { get; }
         internal AlphabetConverter AlphabetConverter { get { return _alphabetConverter; } }
 
@@ -46,7 +46,7 @@ namespace System.Speech.Internal.Synthesis
             return _ssmlEngine.GetOutputFormat(SpeakOutputFormat.WaveFormat, targetFormat);
         }
 
-        internal override void AddLexicon(Uri lexicon, string mediaType)
+        internal override void AddLexicon(Uri lexicon, string? mediaType)
         {
             _ssmlEngine.AddLexicon(lexicon, mediaType, _site);
         }
@@ -70,7 +70,7 @@ namespace System.Speech.Internal.Synthesis
             }
         }
 
-        internal override char[] ConvertPhonemes(char[] phones, AlphabetType alphabet)
+        internal override char[]? ConvertPhonemes(char[] phones, AlphabetType alphabet)
         {
             if (alphabet == AlphabetType.Ipa)
             {
@@ -122,18 +122,18 @@ namespace System.Speech.Internal.Synthesis
 
         #region Internal Methods
 
-        internal override IntPtr GetOutputFormat(IntPtr preferedFormat)
+        internal override IntPtr GetOutputFormat(IntPtr preferredFormat)
         {
             // Initialize TTS Engine
             Guid formatId = SAPIGuids.SPDFID_WaveFormatEx;
             Guid guidNull = new();
             IntPtr coMem = IntPtr.Zero;
 
-            _sapiEngine.GetOutputFormat(ref formatId, preferedFormat, out guidNull, out coMem);
+            _sapiEngine.GetOutputFormat(ref formatId, preferredFormat, out guidNull, out coMem);
             return coMem;
         }
 
-        internal override void AddLexicon(Uri lexicon, string mediaType)
+        internal override void AddLexicon(Uri lexicon, string? mediaType)
         {
             // SAPI: Ignore
         }
@@ -178,7 +178,7 @@ namespace System.Speech.Internal.Synthesis
             }
         }
 
-        internal override char[] ConvertPhonemes(char[] phones, AlphabetType alphabet)
+        internal override char[]? ConvertPhonemes(char[] phones, AlphabetType alphabet)
         {
             if (alphabet == AlphabetType.Ipa)
             {

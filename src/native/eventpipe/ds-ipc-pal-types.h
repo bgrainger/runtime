@@ -23,20 +23,11 @@ typedef struct _DiagnosticsIpcStream DiagnosticsIpcStream;
  */
 
 typedef enum {
-	DS_IPC_POLL_EVENTS_NONE = 0x00, // no events
-	DS_IPC_POLL_EVENTS_SIGNALED = 0x01, // ready for use
-	DS_IPC_POLL_EVENTS_HANGUP = 0x02, // connection remotely closed
-	DS_IPC_POLL_EVENTS_ERR = 0x04, // error
-	DS_IPC_POLL_EVENTS_UNKNOWN = 0x80 // unknown state
-} DiagnosticsIpcPollEvents;
-
-typedef enum {
 	DS_IPC_CONNECTION_MODE_CONNECT,
 	DS_IPC_CONNECTION_MODE_LISTEN
 } DiagnosticsIpcConnectionMode;
 
 #define DS_IPC_MAX_TO_STRING_LEN 128
-#define DS_IPC_TIMEOUT_INFINITE (uint32_t)-1
 
 #define DS_IPC_POLL_TIMEOUT_FALLOFF_FACTOR (float)1.25
 #define DS_IPC_POLL_TIMEOUT_MIN_MS (uint32_t)10
@@ -46,7 +37,7 @@ typedef enum {
  * DiagnosticsIpcPollHandle.
  */
 
-// The bookeeping struct used for polling on server and client structs
+// The bookkeeping struct used for polling on server and client structs
 #if defined(DS_INLINE_GETTER_SETTER) || defined(DS_IMPL_IPC_PAL_GETTER_SETTER) || defined(DS_IMPL_IPC_PAL_NAMEDPIPE_GETTER_SETTER) || defined(DS_IMPL_IPC_PAL_SOCKET_GETTER_SETTER)
 struct _DiagnosticsIpcPollHandle {
 #else

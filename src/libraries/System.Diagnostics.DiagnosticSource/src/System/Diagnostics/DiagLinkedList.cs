@@ -3,7 +3,7 @@
 
 using System.Collections;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
+using System.Text;
 
 namespace System.Diagnostics
 {
@@ -20,7 +20,7 @@ namespace System.Diagnostics
         private DiagNode<T>? _first;
         private DiagNode<T>? _last;
 
-        public DiagLinkedList() {}
+        public DiagLinkedList() { }
 
         public DiagLinkedList(T firstValue) => _last = _first = new DiagNode<T>(firstValue);
 
@@ -147,25 +147,140 @@ namespace System.Diagnostics
             }
         }
 
-        // Note: Some consumers use this GetEnumerator dynamically to avoid allocations.
-        public Enumerator<T> GetEnumerator() => new Enumerator<T>(_first);
+        public DiagEnumerator<T> GetEnumerator() => new DiagEnumerator<T>(_first);
         IEnumerator<T> IEnumerable<T>.GetEnumerator() => GetEnumerator();
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
-    }
 
-    // Note: Some consumers use this Enumerator dynamically to avoid allocations.
-    internal struct Enumerator<T> : IEnumerator<T>
-    {
-        private DiagNode<T>? _nextNode;
-        [AllowNull, MaybeNull] private T _currentItem;
-
-        public Enumerator(DiagNode<T>? head)
+        private static void ActivityLinkToString(ref ActivityLink al, ref ValueStringBuilder vsb)
         {
-            _nextNode = head;
-            _currentItem = default;
+            ActivityContext ac = al.Context;
+
+            vsb.Append("(");
+            vsb.Append(ac.TraceId.ToHexString());
+            vsb.Append(",\u200B");
+            vsb.Append(ac.SpanId.ToHexString());
+            vsb.Append(",\u200B");
+            vsb.Append(ac.TraceFlags.ToString());
+            vsb.Append(",\u200B");
+            vsb.Append(ac.TraceState ?? "null");
+            vsb.Append(",\u200B");
+            vsb.Append(ac.IsRemote ? "true" : "false");
+
+            if (al.Tags is not null)
+            {
+                vsb.Append(",\u200B[");
+                string sep = "";
+                foreach (KeyValuePair<string, object?> kvp in al.EnumerateTagObjects())
+                {
+                    vsb.Append(sep);
+                    vsb.Append(kvp.Key);
+                    vsb.Append(":\u200B");
+                    vsb.Append(kvp.Value?.ToString() ?? "null");
+                    sep = ",\u200B";
+                }
+
+                vsb.Append("]");
+            }
+            vsb.Append(")");
         }
 
-        public T Current => _currentItem!;
+        private static void ActivityEventToString(ref ActivityEvent ae, ref ValueStringBuilder vsb)
+        {
+            vsb.Append("(");
+            vsb.Append(ae.Name);
+            vsb.Append(",\u200B");
+            vsb.Append(ae.Timestamp.ToString("o"));
+
+            if (ae.Tags is not null)
+            {
+                vsb.Append(",\u200B[");
+                string sep = "";
+                foreach (KeyValuePair<string, object?> kvp in ae.EnumerateTagObjects())
+                {
+                    vsb.Append(sep);
+                    vsb.Append(kvp.Key);
+                    vsb.Append(":\u200B");
+                    vsb.Append(kvp.Value?.ToString() ?? "null");
+                    sep = ",\u200B";
+                }
+
+                vsb.Append("]");
+            }
+            vsb.Append(")");
+        }
+
+        public override string ToString()
+        {
+            lock (this)
+            {
+                DiagNode<T>? current = _first;
+                if (current is null)
+                {
+                    return "[]";
+                }
+
+                var vsb = new ValueStringBuilder(stackalloc char[256]);
+                vsb.Append("[");
+
+                if (typeof(T) == typeof(ActivityLink))
+                {
+                    while (current is not null)
+                    {
+                        ActivityLink al = (ActivityLink)(object)current.Value!;
+                        ActivityLinkToString(ref al, ref vsb);
+                        current = current.Next;
+                        if (current is not null)
+                        {
+                            vsb.Append(",\u200B");
+                        }
+                    }
+                }
+                else if (typeof(T) == typeof(ActivityEvent))
+                {
+                    while (current is not null)
+                    {
+                        ActivityEvent ae = (ActivityEvent)(object)current.Value!;
+                        ActivityEventToString(ref ae, ref vsb);
+                        current = current.Next;
+                        if (current is not null)
+                        {
+                            vsb.Append(",\u200B");
+                        }
+                    }
+                }
+                else
+                {
+                    while (current is not null)
+                    {
+                        vsb.Append(current.Value?.ToString() ?? "null");
+                        current = current.Next;
+                        if (current is not null)
+                        {
+                            vsb.Append(",\u200B");
+                        }
+                    }
+                }
+
+                vsb.Append("]");
+                return vsb.ToString();
+            }
+        }
+    }
+
+    internal struct DiagEnumerator<T> : IEnumerator<T>
+    {
+        private static readonly DiagNode<T> s_Empty = new DiagNode<T>(default!);
+
+        private DiagNode<T>? _nextNode;
+        private DiagNode<T> _currentNode;
+
+        public DiagEnumerator(DiagNode<T>? head)
+        {
+            _nextNode = head;
+            _currentNode = s_Empty;
+        }
+
+        public T Current => _currentNode.Value;
 
         object? IEnumerator.Current => Current;
 
@@ -173,11 +288,11 @@ namespace System.Diagnostics
         {
             if (_nextNode == null)
             {
-                _currentItem = default;
+                _currentNode = s_Empty;
                 return false;
             }
 
-            _currentItem = _nextNode.Value;
+            _currentNode = _nextNode;
             _nextNode = _nextNode.Next;
             return true;
         }
@@ -188,5 +303,4 @@ namespace System.Diagnostics
         {
         }
     }
-
 }

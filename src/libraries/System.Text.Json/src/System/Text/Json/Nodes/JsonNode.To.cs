@@ -12,13 +12,25 @@ namespace System.Text.Json.Nodes
         /// <returns>JSON representation of current instance.</returns>
         public string ToJsonString(JsonSerializerOptions? options = null)
         {
-            using var output = new PooledByteBufferWriter(JsonSerializerOptions.BufferSizeDefault);
-            using (var writer = new Utf8JsonWriter(output, options == null ? default(JsonWriterOptions) : options.GetWriterOptions()))
+            JsonWriterOptions writerOptions = default;
+            int defaultBufferSize = JsonSerializerOptions.BufferSizeDefault;
+            if (options is not null)
             {
-                WriteTo(writer, options);
+                writerOptions = options.GetWriterOptions();
+                defaultBufferSize = options.DefaultBufferSize;
             }
 
-            return JsonHelpers.Utf8GetString(output.WrittenMemory.ToArray());
+            Utf8JsonWriter writer = Utf8JsonWriterCache.RentWriterAndBuffer(writerOptions, defaultBufferSize, out PooledByteBufferWriter output);
+            try
+            {
+                WriteTo(writer, options);
+                writer.Flush();
+                return Encoding.UTF8.GetString(output.WrittenSpan);
+            }
+            finally
+            {
+                Utf8JsonWriterCache.ReturnWriterAndBuffer(writer, output);
+            }
         }
 
         /// <summary>
@@ -30,25 +42,28 @@ namespace System.Text.Json.Nodes
             // Special case for string; don't quote it.
             if (this is JsonValue)
             {
-                if (this is JsonValue<string> jsonString)
+                switch (this)
                 {
-                    return jsonString.Value;
-                }
-
-                if (this is JsonValue<JsonElement> jsonElement &&
-                    jsonElement.Value.ValueKind == JsonValueKind.String)
-                {
-                    return jsonElement.Value.GetString()!;
+                    case JsonValuePrimitive<string> jsonString:
+                        return jsonString.Value;
+                    case JsonValueOfElement { Value.ValueKind: JsonValueKind.String } jsonElement:
+                        return jsonElement.Value.GetString()!;
+                    case JsonValueOfJsonString jsonValueOfJsonString:
+                        return jsonValueOfJsonString.GetValue<string>()!;
                 }
             }
 
-            using var output = new PooledByteBufferWriter(JsonSerializerOptions.BufferSizeDefault);
-            using (var writer = new Utf8JsonWriter(output, new JsonWriterOptions { Indented = true }))
+            Utf8JsonWriter writer = Utf8JsonWriterCache.RentWriterAndBuffer(new JsonWriterOptions { Indented = true }, JsonSerializerOptions.BufferSizeDefault, out PooledByteBufferWriter output);
+            try
             {
                 WriteTo(writer);
+                writer.Flush();
+                return Encoding.UTF8.GetString(output.WrittenSpan);
             }
-
-            return JsonHelpers.Utf8GetString(output.WrittenMemory.ToArray());
+            finally
+            {
+                Utf8JsonWriterCache.ReturnWriterAndBuffer(writer, output);
+            }
         }
 
         /// <summary>

@@ -10,15 +10,20 @@ namespace Internal.Text
     public class Utf8StringBuilder
     {
         private byte[] _buffer = Array.Empty<byte>();
-        private int _length = 0;
+        private int _length;
 
         public Utf8StringBuilder()
         {
         }
 
-        // TODO: This should return ReadOnlySpan<byte> instead once available
-        public byte[] UnderlyingArray => _buffer;
+        public Utf8StringBuilder(int capacity)
+        {
+            _buffer = new byte[capacity];
+        }
+
         public int Length => _length;
+
+        public ReadOnlySpan<byte> AsSpan() => _buffer.AsSpan(0, _length);
 
         public Utf8StringBuilder Clear()
         {
@@ -35,39 +40,65 @@ namespace Internal.Text
 
         public Utf8StringBuilder Append(Utf8String value)
         {
-            return Append(value.UnderlyingArray);
+            return Append(value.AsSpan());
         }
 
-        public Utf8StringBuilder Append(byte[] value)
+        public Utf8StringBuilder Append(Utf8Span value)
+        {
+            return Append(value.AsSpan());
+        }
+
+        public Utf8StringBuilder Append(ReadOnlySpan<byte> value)
         {
             Ensure(value.Length);
-            Buffer.BlockCopy(value, 0, _buffer, _length, value.Length);
+            value.CopyTo(_buffer.AsSpan(_length));
             _length += value.Length;
             return this;
         }
 
         public Utf8StringBuilder Append(char value)
         {
+            Debug.Assert(Ascii.IsValid(value));
+
             Ensure(1);
-            if (value > 0x7F)
-                return Append(Encoding.UTF8.GetBytes(new char[] { value }));
             _buffer[_length++] = (byte)value;
+            return this;
+        }
+
+        public Utf8StringBuilder AppendAscii(ReadOnlySpan<char> value)
+        {
+            Ensure(value.Length);
+            Debug.Assert(Ascii.IsValid(value), "Non-ASCII character detected");
+
+            for (int i = 0; i < value.Length; i++)
+            {
+                _buffer[_length++] = (byte)value[i];
+            }
+
             return this;
         }
 
         public Utf8StringBuilder Append(string value)
         {
-            Ensure(value.Length);
+            int length = Encoding.UTF8.GetByteCount(value);
+            Ensure(length);
 
-            byte[] buffer = _buffer;
-            for (int i = 0; i < value.Length; i++)
+            Encoding.UTF8.GetBytes(value, _buffer.AsSpan(_length));
+            _length += length;
+
+            return this;
+        }
+
+        public Utf8StringBuilder Append(int value)
+        {
+            // Max int string length is 11 chars (-2147483648)
+            Span<byte> buffer = stackalloc byte[11];
+            if (value.TryFormat(buffer, out int bytesWritten))
             {
-                char c = value[i];
-                if (c > 0x7F)
-                    return Append(Encoding.UTF8.GetBytes(value));
-                buffer[_length+i] = (byte)c;
+                Ensure(bytesWritten);
+                buffer.Slice(0, bytesWritten).CopyTo(_buffer.AsSpan(_length));
+                _length += bytesWritten;
             }
-            _length += value.Length;
 
             return this;
         }
@@ -84,9 +115,7 @@ namespace Internal.Text
 
         public Utf8String ToUtf8String()
         {
-            var ret = new byte[_length];
-            Buffer.BlockCopy(_buffer, 0, ret, 0, _length);
-            return new Utf8String(ret);
+            return new Utf8String(AsSpan().ToArray());
         }
 
         private void Ensure(int extraSpace)
@@ -99,53 +128,8 @@ namespace Internal.Text
         {
             int newSize = Math.Max(2 * _buffer.Length, _length + extraSpace);
             byte[] newBuffer = new byte[newSize];
-            Buffer.BlockCopy(_buffer, 0, newBuffer, 0, _length);
+            AsSpan().CopyTo(newBuffer);
             _buffer = newBuffer;
-        }
-
-        // Find the boundary of the last character prior to a position 
-        // If pos points to the last byte of a char, then return pos; Otherwise,
-        // return the position of the last byte of the preceding char.
-        public int LastCharBoundary(int pos)
-        {
-            Debug.Assert(pos < _length);
-
-            if (_buffer[pos] < 128 /*10000000*/)
-            {
-                // This is a single byte character
-                return pos;
-            }
-
-            int origPos = pos;
-
-            // Skip following bytes of a multi-byte character until the first byte is seen
-            while (_buffer[pos] < 192 /*11000000*/)
-            {
-                pos--;
-            }
-
-            if (pos == origPos - 3)
-            {
-                // We just skipped a four-byte character
-                Debug.Assert(_buffer[pos] >= 240 /*11110000*/);
-                return origPos;
-            }
-
-            if (pos == origPos - 2 && _buffer[pos] < 240 && _buffer[pos] >= 224 /*11100000*/)
-            {
-                // We just skipped a three-byte character
-                return origPos;
-            }
-
-            if (pos == origPos - 1 && _buffer[pos] < 224)
-            {
-                // We just skipped a two-byte character
-                Debug.Assert(_buffer[pos] >= 192 /*11000000*/);
-                return origPos;
-            }
-
-            // We were in the middle of a multi-byte character
-            return pos - 1;
         }
     }
 }

@@ -1,12 +1,16 @@
 ﻿// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.ComponentModel;
+using System.Reflection;
+
 namespace System.Text.Json.Serialization.Metadata
 {
     /// <summary>
     /// Provides serialization metadata about a property or field.
     /// </summary>
     /// <typeparam name="T">The type to convert of the <see cref="JsonConverter{T}"/> for the property.</typeparam>
+    [EditorBrowsable(EditorBrowsableState.Never)]
     public sealed class JsonPropertyInfoValues<T>
     {
         /// <summary>
@@ -78,5 +82,10 @@ namespace System.Text.Json.Serialization.Metadata
         /// The name to be used when processing the property or field, specified by <see cref="JsonPropertyNameAttribute"/>.
         /// </summary>
         public string? JsonPropertyName { get; init; }
+
+        /// <summary>
+        /// Provides a <see cref="ICustomAttributeProvider"/> factory that maps to <see cref="JsonPropertyInfo.AttributeProvider"/>.
+        /// </summary>
+        public Func<ICustomAttributeProvider>? AttributeProviderFactory { get; init; }
     }
 }

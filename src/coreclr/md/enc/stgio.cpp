@@ -1,9 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
+
 //*****************************************************************************
 // StgIO.h
-//
-
 //
 // This module handles disk/memory i/o for a generic set of storage solutions,
 // including:
@@ -33,12 +32,14 @@
 //      only the portion of the file with the .clb in it.
 //</REVISIT_TODO>
 //*****************************************************************************
+
 #include "stdafx.h"                     // Standard headers.
 #include "stgio.h"                      // Our definitions.
 #include "corerror.h"
 #include "posterror.h"
 #include "pedecoder.h"
 #include "pedecoder.inl"
+#include <minipal.h>
 
 //********** Types. ***********************************************************
 #define SMALL_ALLOC_MAP_SIZE (64 * 1024) // 64 kb is the minimum size of virtual
@@ -102,7 +103,6 @@ void StgIO::CtorInit()
     m_rgBuff = 0;
     m_cbBuff = 0;
     m_rgPageMap = 0;
-    m_FileType = FILETYPE_UNKNOWN;
     m_cRef = 1;
     m_mtMappedType = MTYPE_NOMAPPING;
 }
@@ -233,7 +233,7 @@ HRESULT StgIO::Open(                    // Return code.
             // most of the security risk anyway).
             if ((fFlags & DBPROP_TMODEF_TRYLOADLIBRARY) != 0)
             {
-                m_hModule = WszLoadLibraryEx(szName, NULL, LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+                m_hModule = WszLoadLibrary(szName, NULL, LOAD_LIBRARY_AS_IMAGE_RESOURCE);
                 if (m_hModule != NULL)
                 {
                     m_iType = STGIO_HMODULE;
@@ -288,7 +288,7 @@ HRESULT StgIO::Open(                    // Return code.
                 return (PostError(CLDB_E_NO_DATA));
 
             // Data will come from the file.
-            m_hFile = hFile.Extract();
+            m_hFile = hFile.Detach();
 
             m_iType = STGIO_HFILE;
         }
@@ -310,19 +310,6 @@ ErrExit:
 
     // Save flags for later.
     m_fFlags = fFlags;
-    if ((szName != NULL) && (*szName != 0))
-    {
-        WCHAR rcExt[_MAX_PATH];
-        SplitPath(szName, NULL, 0, NULL, 0, NULL, 0, rcExt, _MAX_PATH);
-        if (SString::_wcsicmp(rcExt, W(".obj")) == 0)
-        {
-            m_FileType = FILETYPE_NTOBJ;
-        }
-        else if (SString::_wcsicmp(rcExt, W(".tlb")) == 0)
-        {
-            m_FileType = FILETYPE_TLB;
-        }
-    }
 
     // For auto map case, map the view of the file as part of open.
     if (m_bAutoMap &&
@@ -479,7 +466,7 @@ HRESULT StgIO::Read(                    // Return code.
     // Get the data based on type.
     switch (m_iType)
     {
-        // For data on file, there are two possiblities:
+        // For data on file, there are two possibilities:
         // (1) We have an in memory backing store we should use, or
         // (2) We just need to read from the file.
         case STGIO_HFILE:
@@ -840,7 +827,7 @@ HRESULT StgIO::MapFileToMem(            // Return code.
 
             DWORD dwProtectionFlags = PAGE_READONLY;
 
-            if ((m_hMapping = WszCreateFileMapping(m_hFile, pAttributes, dwProtectionFlags,
+            if ((m_hMapping = CreateFileMapping(m_hFile, pAttributes, dwProtectionFlags,
                 0, 0, nullptr)) == 0)
             {
                 return (MapFileError(GetLastError()));
@@ -896,7 +883,7 @@ HRESULT StgIO::MapFileToMem(            // Return code.
             memset(m_rgPageMap, 0, sizeof(BYTE) * (iMaxSize / m_iPageSize));
 
             // Allocate space for the file contents.
-            if ((m_pBaseData = m_pData = ::ClrVirtualAlloc(0, iMaxSize, MEM_RESERVE, PAGE_NOACCESS)) == 0)
+            if ((m_pBaseData = m_pData = VMToOSInterface::ReserveMemory(iMaxSize)) == 0)
             {
                 hr = PostError(OutOfMemory());
                 goto ErrExit;
@@ -923,42 +910,6 @@ ErrExit:
         *pcbSize = m_cbData;
     return (hr);
 }
-
-
-//*****************************************************************************
-// Free the mapping object for shared memory but keep the rest of the internal
-// state intact.
-//*****************************************************************************
-HRESULT StgIO::ReleaseMappingObject()   // Return code.
-{
-    // Check type first.
-    if (m_iType != STGIO_SHAREDMEM)
-    {
-        _ASSERTE(FALSE);
-        return S_OK;
-    }
-
-    // Must have an allocated handle.
-    _ASSERTE(m_hMapping != 0);
-
-    // Freeing the mapping object doesn't do any good if you still have the file.
-    _ASSERTE(m_hFile == INVALID_HANDLE_VALUE);
-
-    // Unmap the memory we allocated before freeing the handle.  But keep the
-    // memory address intact.
-    if (m_pData)
-        VERIFY(UnmapViewOfFile(m_pData));
-
-    // Free the handle.
-    if (m_hMapping != 0)
-    {
-        VERIFY(CloseHandle(m_hMapping));
-        m_hMapping = 0;
-    }
-    return S_OK;
-}
-
-
 
 //*****************************************************************************
 // Resets the logical base address and size to the value given.  This is for
@@ -1059,8 +1010,8 @@ HRESULT StgIO::GetPtrForMem(            // Return code.
             }
 
             // First commit the memory for this part of the file.
-            if (::ClrVirtualAlloc((void *) ((DWORD_PTR) m_pData + iOffset),
-                    iSize, MEM_COMMIT, PAGE_READWRITE) == 0)
+            if (VMToOSInterface::CommitReservedMemory((void *) ((DWORD_PTR) m_pData + iOffset),
+                    iSize, VMToOSInterface::MemoryProtection::ReadWrite) == 0)
                 return (PostError(OutOfMemory()));
 
             // Now load that portion of the file from disk.
@@ -1070,11 +1021,13 @@ HRESULT StgIO::GetPtrForMem(            // Return code.
                 return (hr);
             }
 
+#ifndef TARGET_WASM
             // Change the memory to read only to avoid any modifications.  Any faults
             // that occur indicate a bug whereby the engine is trying to write to
             // protected memory.
-            _ASSERTE(::ClrVirtualAlloc((void *) ((DWORD_PTR) m_pData + iOffset),
-                    iSize, MEM_COMMIT, PAGE_READONLY) != 0);
+            _ASSERTE(VMToOSInterface::ProtectMemory((void *) ((DWORD_PTR) m_pData + iOffset),
+                    iSize, VMToOSInterface::MemoryProtection::ReadOnly));
+#endif // !TARGET_WASM
 
             // Record each new loaded page.
             for (;  j<i;  j++)
@@ -1260,56 +1213,6 @@ HRESULT StgIO::ReadFromDisk(            // Return code.
 
 
 //*****************************************************************************
-// Copy the contents of the file for this storage to the target path.
-//*****************************************************************************
-HRESULT StgIO::CopyFileInternal(        // Return code.
-    LPCWSTR     szTo,                   // Target save path for file.
-    int         bFailIfThere,           // true to fail if target exists.
-    int         bWriteThrough)          // Should copy be written through OS cache.
-{
-    DWORD       iCurrent;               // Save original location.
-    DWORD       cbRead;                 // Byte count for buffer.
-    DWORD       cbWrite;                // Check write of bytes.
-    const DWORD cbBuff = 4096;          // Size of buffer for copy (in bytes).
-    BYTE       *pBuff = (BYTE*)alloca(cbBuff); // Buffer for copy.
-    HANDLE      hFile;                  // Target file.
-    HRESULT     hr = S_OK;
-
-    // Create target file.
-    if ((hFile = ::WszCreateFile(szTo, GENERIC_WRITE, 0, 0,
-            (bFailIfThere) ? CREATE_NEW : CREATE_ALWAYS,
-            (bWriteThrough) ? FILE_FLAG_WRITE_THROUGH : 0,
-            0)) == INVALID_HANDLE_VALUE)
-    {
-        return (MapFileError(GetLastError()));
-    }
-
-    // Save current location and reset it later.
-    iCurrent = ::SetFilePointer(m_hFile, 0, 0, FILE_CURRENT);
-    ::SetFilePointer(m_hFile, 0, 0, FILE_BEGIN);
-
-    // Copy while there are bytes.
-    while (::ReadFile(m_hFile, pBuff, cbBuff, &cbRead, 0) && cbRead)
-    {
-        if (!::WriteFile(hFile, pBuff, cbRead, &cbWrite, 0) || cbWrite != cbRead)
-        {
-            hr = STG_E_WRITEFAULT;
-            break;
-        }
-    }
-
-    // Reset file offset.
-    ::SetFilePointer(m_hFile, iCurrent, 0, FILE_BEGIN);
-
-    // Close target.
-    if (!bWriteThrough)
-        VERIFY(::FlushFileBuffers(hFile));
-    ::CloseHandle(hFile);
-    return (hr);
-}
-
-
-//*****************************************************************************
 // Free the data used for backing store from disk in read/write scenario.
 //*****************************************************************************
 void StgIO::FreePageMap()
@@ -1328,8 +1231,9 @@ void StgIO::FreePageMap()
     {
         delete [] m_rgPageMap;
         m_rgPageMap = 0;
-        VERIFY(::ClrVirtualFree(m_pBaseData, (((m_cbData - 1) & ~(m_iPageSize - 1)) + m_iPageSize), MEM_DECOMMIT));
-        VERIFY(::ClrVirtualFree(m_pBaseData, 0, MEM_RELEASE));
+        ULONG iMaxSize = (((m_cbData - 1) & ~(m_iPageSize - 1)) + m_iPageSize);
+        VERIFY(VMToOSInterface::DecommitMemory(m_pBaseData, iMaxSize));
+        VERIFY(VMToOSInterface::ReleaseMemoryReservation(m_pBaseData, iMaxSize));
         m_pBaseData = 0;
         m_cbData = 0;
     }
@@ -1382,7 +1286,7 @@ void *AllocateMemory(int iSize)
 
 #if defined(_DEBUG) && defined(_TRACE_MEM_)
     static int i=0;
-    DbgWriteEx(W("AllocateMemory: (%d) 0x%08x, size %d\n"), ++i, ptr, iSize);
+    printf("AllocateMemory: (%d) 0x%p, size %d\n", ++i, ptr, iSize);
 #endif
     return (ptr);
 }
@@ -1392,10 +1296,9 @@ void FreeMemory(void *pbData)
 {
 #if defined(_DEBUG) && defined(_TRACE_MEM_)
     static int i=0;
-    DbgWriteEx(W("FreeMemory: (%d) 0x%08x\n"), ++i, pbData);
+    printf("FreeMemory: (%d) 0x%p\n", ++i, pbData);
 #endif
 
     _ASSERTE(pbData);
     delete [] (BYTE *) pbData;
 }
-

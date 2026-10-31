@@ -8,7 +8,8 @@ internal static partial class Interop
 {
     internal static partial class WinMM
     {
-        [GeneratedDllImport(Interop.Libraries.WinMM)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Interop.Libraries.WinMM)]
         internal static partial int mmioClose(IntPtr hMIO, int flags);
     }
 }

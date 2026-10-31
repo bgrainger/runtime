@@ -5,8 +5,13 @@ using System;
 using System.Collections.Generic;
 
 using Internal.NativeFormat;
+using Internal.Text;
 
 using Debug = System.Diagnostics.Debug;
+
+#if TYPE_LOADER_IMPLEMENTATION
+using MetadataType = Internal.TypeSystem.DefType;
+#endif
 
 namespace Internal.TypeSystem
 {
@@ -34,7 +39,7 @@ namespace Internal.TypeSystem
     /// <summary>
     /// Base class for specialized and universal canon types
     /// </summary>
-    public abstract partial class CanonBaseType : MetadataType
+    public abstract partial class CanonBaseType
     {
         private TypeSystemContext _context;
 
@@ -51,53 +56,7 @@ namespace Internal.TypeSystem
             }
         }
 
-        protected override MethodImplRecord[] ComputeVirtualMethodImplsForType()
-        {
-            return Array.Empty<MethodImplRecord>();
-        }
-
-        public override MetadataType MetadataBaseType => (MetadataType)BaseType;
-
-        public override DefType ContainingType => null;
-
-        public override DefType[] ExplicitlyImplementedInterfaces => Array.Empty<DefType>();
-
-        public override bool IsAbstract => false;
-
-        public override bool IsBeforeFieldInit => false;
-
-        public override bool IsSequentialLayout => false;
-
-        public override bool IsExplicitLayout => false;
-
-        public override ModuleDesc Module => _context.SystemModule;
-
-        public override bool IsModuleType => false;
-
-        public override MethodImplRecord[] FindMethodsImplWithMatchingDeclName(string name)
-        {
-            return null;
-        }
-
-        public override ClassLayoutMetadata GetClassLayout()
-        {
-            return default(ClassLayoutMetadata);
-        }
-
-        public override MetadataType GetNestedType(string name)
-        {
-            return null;
-        }
-
-        public override IEnumerable<MetadataType> GetNestedTypes()
-        {
-            return Array.Empty<MetadataType>();
-        }
-
-        public override bool HasCustomAttribute(string attributeNamespace, string attributeName)
-        {
-            return false;
-        }
+        public override MetadataType ContainingType => null;
     }
 
     /// <summary>
@@ -105,29 +64,23 @@ namespace Internal.TypeSystem
     /// </summary>
     internal sealed partial class CanonType : CanonBaseType
     {
-        private const string _Namespace = "System";
-        private const string _Name = "__Canon";
-        public const string FullName = _Namespace + "." + _Name;
-
         private int _hashcode;
 
-        public override string Namespace
+        public override Utf8Span Namespace
         {
             get
             {
-                return _Namespace;
+                return "System"u8;
             }
         }
 
-        public override string Name
+        public override Utf8Span Name
         {
             get
             {
-                return _Name;
+                return "__Canon"u8;
             }
         }
-
-        public override bool IsSealed => false;
 
         public CanonType(TypeSystemContext context)
             : base(context)
@@ -139,11 +92,11 @@ namespace Internal.TypeSystem
         // consumer-specific initialization.
         partial void Initialize();
 
-        public override DefType BaseType
+        public override MetadataType BaseType
         {
             get
             {
-                return Context.GetWellKnownType(WellKnownType.Object);
+                return (MetadataType)Context.GetWellKnownType(WellKnownType.Object);
             }
         }
 
@@ -183,7 +136,7 @@ namespace Internal.TypeSystem
         {
             if (_hashcode == 0)
             {
-                _hashcode = TypeHashingAlgorithms.ComputeNameHashCode(FullName);
+                _hashcode = VersionResilientHashCode.NameHashCode(Namespace, Name);
             }
 
             return _hashcode;
@@ -195,29 +148,23 @@ namespace Internal.TypeSystem
     /// </summary>
     internal sealed partial class UniversalCanonType : CanonBaseType
     {
-        private const string _Namespace = "System";
-        private const string _Name = "__UniversalCanon";
-        public const string FullName = _Namespace + "." + _Name;
-
         private int _hashcode;
 
-        public override string Namespace
+        public override Utf8Span Namespace
         {
             get
             {
-                return _Namespace;
+                return "System"u8;
             }
         }
 
-        public override string Name
+        public override Utf8Span Name
         {
             get
             {
-                return _Name;
+                return "__UniversalCanon"u8;
             }
         }
-
-        public override bool IsSealed => true;
 
         public UniversalCanonType(TypeSystemContext context)
             : base(context)
@@ -229,12 +176,12 @@ namespace Internal.TypeSystem
         // consumer-specific initialization.
         partial void Initialize();
 
-        public override DefType BaseType
+        public override MetadataType BaseType
         {
             get
             {
                 // UniversalCanon is "a struct of indeterminate size and GC layout"
-                return Context.GetWellKnownType(WellKnownType.ValueType);
+                return (MetadataType)Context.GetWellKnownType(WellKnownType.ValueType);
             }
         }
 
@@ -262,6 +209,7 @@ namespace Internal.TypeSystem
 
             flags |= TypeFlags.HasFinalizerComputed;
             flags |= TypeFlags.AttributeCacheComputed;
+            flags |= TypeFlags.HasGenericVarianceComputed;
 
             return flags;
         }
@@ -270,7 +218,7 @@ namespace Internal.TypeSystem
         {
             if (_hashcode == 0)
             {
-                _hashcode = TypeHashingAlgorithms.ComputeNameHashCode(FullName);
+                _hashcode = VersionResilientHashCode.NameHashCode(Namespace, Name);
             }
 
             return _hashcode;

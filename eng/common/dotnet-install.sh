@@ -16,9 +16,10 @@ scriptroot="$( cd -P "$( dirname "$source" )" && pwd )"
 version='Latest'
 architecture=''
 runtime='dotnet'
+dotnetPath=''
 runtimeSourceFeed=''
 runtimeSourceFeedKey=''
-while [[ $# > 0 ]]; do
+while [[ $# -gt 0 ]]; do
   opt="$(echo "$1" | tr "[:upper:]" "[:lower:]")"
   case "$opt" in
     -version|-v)
@@ -32,6 +33,10 @@ while [[ $# > 0 ]]; do
     -runtime|-r)
       shift
       runtime="$1"
+      ;;
+    -dotnetpath)
+      shift
+      dotnetPath="$1"
       ;;
     -runtimesourcefeed)
       shift
@@ -52,8 +57,15 @@ done
 # Use uname to determine what the CPU is, see https://en.wikipedia.org/wiki/Uname#Examples
 cpuname=$(uname -m)
 case $cpuname in
-  aarch64)
+  arm64|aarch64)
     buildarch=arm64
+    if [ "$(getconf LONG_BIT)" -lt 64 ]; then
+        # This is 32-bit OS running on 64-bit CPU (for example Raspberry Pi OS)
+        buildarch=arm
+    fi
+    ;;
+  loongarch64)
+    buildarch=loongarch64
     ;;
   amd64|x86_64)
     buildarch=x64
@@ -61,8 +73,11 @@ case $cpuname in
   armv*l)
     buildarch=arm
     ;;
-  i686)
+  i[3-6]86)
     buildarch=x86
+    ;;
+  riscv64)
+    buildarch=riscv64
     ;;
   *)
     echo "Unknown CPU $cpuname detected, treating it as x64"
@@ -70,12 +85,18 @@ case $cpuname in
     ;;
 esac
 
-dotnetRoot="${repo_root}.dotnet"
+if [[ -n "${dotnetPath:-}" ]]; then
+  dotnetRoot="$dotnetPath"
+elif [[ -n "${DOTNET_GLOBAL_INSTALL_DIR:-}" ]]; then
+  dotnetRoot="$DOTNET_GLOBAL_INSTALL_DIR"
+else
+  dotnetRoot="${repo_root}.dotnet"
+fi
 if [[ $architecture != "" ]] && [[ $architecture != $buildarch ]]; then
   dotnetRoot="$dotnetRoot/$architecture"
 fi
 
-InstallDotNet $dotnetRoot $version "$architecture" $runtime true $runtimeSourceFeed $runtimeSourceFeedKey || {
+InstallDotNet "$dotnetRoot" $version "$architecture" $runtime true $runtimeSourceFeed $runtimeSourceFeedKey || {
   local exit_code=$?
   Write-PipelineTelemetryError -Category 'InitializeToolset' -Message "dotnet-install.sh failed (exit code '$exit_code')." >&2
   ExitWithExitCode $exit_code

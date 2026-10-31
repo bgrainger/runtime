@@ -11,19 +11,23 @@ function print_usage {
     echo 'Optional arguments:'
     echo '  -h|--help                        : Show usage information.'
     echo '  -v, --verbose                    : Show output from each test.'
-    echo '  <arch>                           : One of x64, x86, arm, arm64, wasm. Defaults to current architecture.'
-    echo '  Android                          : Set build OS to Android.'
+    echo '  <arch>                           : One of x64, x86, arm, arm64, loongarch64, riscv64, wasm. Defaults to current architecture.'
+    echo '  <build configuration>            : One of debug, checked, release. Defaults to debug.'
+    echo '  android                          : Set build OS to Android.'
+    echo '  wasi                             : Set build OS to WASI.'
     echo '  --test-env=<path>                : Script to set environment variables for tests'
     echo '  --testRootDir=<path>             : Root directory of the test build (e.g. runtime/artifacts/tests/windows.x64.Debug).'
-    echo '  --disableEventLogging            : Disable the events logged by both VM and Managed Code'
+    echo '  --coreRootDir=<path>             : Directory to the CORE_ROOT location.'
+    echo '  --enableEventLogging             : Enable event logging through LTTNG.'
     echo '  --sequential                     : Run tests sequentially (default is to run in parallel).'
-    echo '  --runcrossgen2tests              : Runs the ReadyToRun tests compiled with Crossgen2' 
-    echo '  --jitstress=<n>                  : Runs the tests with COMPlus_JitStress=n'
-    echo '  --jitstressregs=<n>              : Runs the tests with COMPlus_JitStressRegs=n'
-    echo '  --jitminopts                     : Runs the tests with COMPlus_JITMinOpts=1'
-    echo '  --jitforcerelocs                 : Runs the tests with COMPlus_ForceRelocs=1'
-    echo '  --gcname=<n>                     : Runs the tests with COMPlus_GCName=n'
-    echo '  --gcstresslevel=<n>              : Runs the tests with COMPlus_GCStress=n'
+    echo '  --runcrossgen2tests              : Runs the ReadyToRun tests compiled with Crossgen2'
+    echo '  --synthesizepgo                  : Runs the tests allowing crossgen2 to synthesize PGO data'
+    echo '  --jitstress=<n>                  : Runs the tests with DOTNET_JitStress=n'
+    echo '  --jitstressregs=<n>              : Runs the tests with DOTNET_JitStressRegs=n'
+    echo '  --jitminopts                     : Runs the tests with DOTNET_JITMinOpts=1'
+    echo '  --jitforcerelocs                 : Runs the tests with DOTNET_ForceRelocs=1'
+    echo '  --gcname=<n>                     : Runs the tests with DOTNET_GCName=n'
+    echo '  --gcstresslevel=<n>              : Runs the tests with DOTNET_GCStress=n'
     echo '    0: None                                1: GC on all allocs and '"'easy'"' places'
     echo '    2: GC on transitions to preemptive GC  4: GC on every allowable JITed instr'
     echo '    8: GC on every allowable NGEN instr   16: GC only on a unique stack trace'
@@ -31,76 +35,59 @@ function print_usage {
     echo '  --long-gc                        : Runs the long GC tests'
     echo '  --useServerGC                    : Enable server GC for this test run'
     echo '  --ilasmroundtrip                 : Runs ilasm round trip on the tests'
-    echo '  --link <ILlink>                  : Runs the tests after linking via ILlink'
+    echo '  --link=<ILlink>                  : Runs the tests after linking via ILlink'
     echo '  --printLastResultsOnly           : Print the results of the last run'
+    echo '  --logsDir=<path>                 : Specify the logs directory (default: artifacts/log)'
     echo '  --runincontext                   : Run each tests in an unloadable AssemblyLoadContext'
     echo '  --tieringtest                    : Run each test to encourage tier1 rejitting'
+    echo '  --runnativeaottests              : Run NativeAOT compiled tests'
+    echo '  --interpreter                    : Runs the tests with the interpreter enabled'
+    echo '  --node                           : Runs the tests with NodeJS (wasm only)'
+    echo '  --runner-filter=<pattern>        : Only run merged runners whose name contains <pattern>'
+    echo '  --active-issue-details           : Show per-issue breakdown of ActiveIssue-skipped tests'
+    echo '  --tree=<path>                    : Only run tests under the specified subtree (e.g. JIT/Regression)'
     echo '  --limitedDumpGeneration          : '
 }
-
-function check_cpu_architecture {
-    local CPUName=$(uname -m)
-    local __arch=
-
-    if [[ "$(uname -s)" == "SunOS" ]]; then
-        CPUName=$(isainfo -n)
-    fi
-
-    case $CPUName in
-        i686)
-            __arch=x86
-            ;;
-        amd64|x86_64)
-            __arch=x64
-            ;;
-        armv7l)
-            __arch=arm
-            ;;
-        aarch64|arm64)
-            __arch=arm64
-            ;;
-        *)
-            echo "Unknown CPU $CPUName detected, configuring as if for x64"
-            __arch=x64
-            ;;
-    esac
-
-    echo "$__arch"
-}
-
-################################################################################
-# Handle Arguments
-################################################################################
-
-ARCH=$(check_cpu_architecture)
 
 # Exit code constants
 readonly EXIT_CODE_SUCCESS=0       # Script ran normally.
 readonly EXIT_CODE_EXCEPTION=1     # Script exited because something exceptional happened (e.g. bad arguments, Ctrl-C interrupt).
 readonly EXIT_CODE_TEST_FAILURE=2  # Script completed successfully, but one or more tests failed.
 
+scriptPath="$(cd "$(dirname "$BASH_SOURCE[0]")"; pwd -P)"
+repoRootDir="$(cd "$scriptPath"/../..; pwd -P)"
+source "$repoRootDir/eng/common/native/init-os-and-arch.sh"
+
 # Argument variables
-buildArch=$ARCH
+buildArch="$arch"
 buildOS=
 buildConfiguration="Debug"
 testRootDir=
+coreRootDir=
+logsDir=
 testEnv=
 gcsimulator=
 longgc=
 limitedCoreDumps=
-((disableEventLogging = 0))
-((serverGC = 0))
-
-# Handle arguments
 verbose=0
 ilasmroundtrip=
 printLastResultsOnly=
 runSequential=0
 runincontext=0
 tieringtest=0
+nativeaottest=0
+runnerFilter=
+activeIssueDetails=
+treeSubtree=
 
 for i in "$@"
 do
+    if [[ "$__nextTreeArg" == "1" ]]; then
+        treeSubtree="$i"
+        __nextTreeArg=
+        continue
+    fi
+
     case $i in
         -h|--help)
             print_usage
@@ -121,11 +108,20 @@ do
         arm64)
             buildArch="arm64"
             ;;
+        loongarch64)
+            buildArch="loongarch64"
+            ;;
+        riscv64)
+            buildArch="riscv64"
+            ;;
         wasm)
             buildArch="wasm"
             ;;
-        Android)
-            buildOS="Android"
+        android)
+            buildOS="android"
+            ;;
+        wasi)
+            buildOS="wasi"
             ;;
         debug|Debug)
             buildConfiguration="Debug"
@@ -140,20 +136,16 @@ do
             printLastResultsOnly=1
             ;;
         --jitstress=*)
-            export COMPlus_JitStress=${i#*=}
+            export DOTNET_JitStress=${i#*=}
             ;;
         --jitstressregs=*)
-            export COMPlus_JitStressRegs=${i#*=}
+            export DOTNET_JitStressRegs=${i#*=}
             ;;
         --jitminopts)
-            export COMPlus_JITMinOpts=1
+            export DOTNET_JITMinOpts=1
             ;;
         --jitforcerelocs)
-            export COMPlus_ForceRelocs=1
-            ;;
-        --link=*)
-            export ILLINK=${i#*=}
-            export DoLink=true
+            export DOTNET_ForceRelocs=1
             ;;
         --ilasmroundtrip)
             ((ilasmroundtrip = 1))
@@ -161,17 +153,26 @@ do
         --testRootDir=*)
             testRootDir=${i#*=}
             ;;
-        --disableEventLogging)
-            ((disableEventLogging = 1))
+        --coreRootDir=*)
+            coreRootDir=${i#*=}
+            ;;
+        --logsDir=*)
+            logsDir=${i#*=}
+            ;;
+        --enableEventLogging)
+            export DOTNET_EnableEventLog=1
             ;;
         --runcrossgen2tests)
             export RunCrossGen2=1
+            ;;
+        --synthesizepgo)
+            export CrossGen2SynthesizePgo=1
             ;;
         --sequential)
             runSequential=1
             ;;
         --useServerGC)
-            ((serverGC = 1))
+            export DOTNET_gcServer=1
             ;;
         --long-gc)
             ((longgc = 1))
@@ -181,12 +182,12 @@ do
             ;;
         --test-env=*)
             testEnv=${i#*=}
-            ;;            
+            ;;
         --gcstresslevel=*)
-            export COMPlus_GCStress=${i#*=}
-            ;;            
+            export DOTNET_GCStress=${i#*=}
+            ;;
         --gcname=*)
-            export COMPlus_GCName=${i#*=}
+            export DOTNET_GCName=${i#*=}
             ;;
         --limitedDumpGeneration)
             limitedCoreDumps=ON
@@ -197,6 +198,30 @@ do
         --tieringtest)
             tieringtest=1
             ;;
+        --runnativeaottests)
+            nativeaottest=1
+            ;;
+        --tree=*|-tree=*)
+            treeSubtree=${i#*=}
+            ;;
+        --tree:*|-tree:*)
+            treeSubtree=${i#*:}
+            ;;
+        --tree|-tree)
+            __nextTreeArg=1
+            ;;
+        --interpreter)
+            export RunInterpreter=1
+            ;;
+        --node)
+            export RunWithNodeJS=1
+            ;;
+        --runner-filter=*)
+            runnerFilter=${i#*=}
+            ;;
+        --active-issue-details)
+            activeIssueDetails=1
+            ;;
         *)
             echo "Unknown switch: $i"
             print_usage
@@ -205,103 +230,134 @@ do
     esac
 done
 
-################################################################################
-# Set environment variables affecting tests.
-# (These should be run.py arguments.)
-################################################################################
-
-if ((disableEventLogging == 0)); then
-    export COMPlus_EnableEventLog=1
-fi
-
-if ((serverGC != 0)); then
-    export COMPlus_gcServer="$serverGC"
+# Set default for RunWithNodeJS when using wasm architecture
+if [ "$buildArch" = "wasm" ] && [ -z "$RunWithNodeJS" ]; then
+    export RunWithNodeJS=1
 fi
 
 ################################################################################
-# Call run.py to run tests.
+# Call run.cs to run tests.
 ################################################################################
 
-runtestPyArguments=("-arch" "${buildArch}" "-build_type" "${buildConfiguration}")
-scriptPath="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
-repoRootDir=$scriptPath/../..
+runtestArguments=("-arch" "${buildArch}" "-build_type" "${buildConfiguration}")
 
 echo "Build Architecture            : ${buildArch}"
 echo "Build Configuration           : ${buildConfiguration}"
 
-if [ "$buildArch" = "wasm" ]; then
-    runtestPyArguments+=("-os" "Browser")
+if [ "$buildArch" = "wasm" -a -z "$buildOS" ]; then
+    buildOS="browser"
 fi
 
-if [ "$buildOS" = "Android" ]; then
-    runtestPyArguments+=("-os" "Android")
+if [ -n "$buildOS" ]; then
+    runtestArguments+=("-os" "$buildOS")
 fi
-    
-if [ ! -z "$testRootDir" ]; then
-    runtestPyArguments+=("-test_location" "$testRootDir")
+
+if [ "$buildOS" = "android" ]; then
+    runtestArguments+=("-os" "android")
+fi
+
+if [[ -n "$testRootDir" ]]; then
+    runtestArguments+=("-test_location" "$testRootDir")
     echo "Test Location                 : ${testRootDir}"
 fi
 
-if [ ! -z "${testEnv}" ]; then
-    runtestPyArguments+=("-test_env" "${testEnv}")
+if [[ -n "$coreRootDir" ]]; then
+    runtestArguments+=("-core_root" "$coreRootDir")
+    echo "CORE_ROOT                     : ${coreRootDir}"
+fi
+
+if [[ -n "$logsDir" ]]; then
+    runtestArguments+=("-logs_dir" "$logsDir")
+    echo "Logs directory                : ${logsDir}"
+fi
+
+if [[ -n "${testEnv}" ]]; then
+    runtestArguments+=("-test_env" "${testEnv}")
     echo "Test Env                      : ${testEnv}"
 fi
 
 echo ""
 
-if [ ! -z "$longgc" ]; then
+if [[ -n "$longgc" ]]; then
     echo "Running Long GC tests"
-    runtestPyArguments+=("--long_gc")
+    runtestArguments+=("--long_gc")
 fi
 
-if [ ! -z "$gcsimulator" ]; then
+if [[ -n "$gcsimulator" ]]; then
     echo "Running GC simulator tests"
-    runtestPyArguments+=("--gcsimulator")
+    runtestArguments+=("--gcsimulator")
 fi
 
-if [ ! -z "$ilasmroundtrip" ]; then
+if [[ -n "$ilasmroundtrip" ]]; then
     echo "Running Ilasm round trip"
-    runtestPyArguments+=("--ilasmroundtrip")
+    runtestArguments+=("--ilasmroundtrip")
 fi
 
 if (($verbose!=0)); then
-    runtestPyArguments+=("--verbose")
+    runtestArguments+=("--verbose")
 fi
 
-if [ ! "$runSequential" -eq 0 ]; then
+if [ "$runSequential" -ne 0 ]; then
     echo "Run tests sequentially."
-    runtestPyArguments+=("--sequential")
+    runtestArguments+=("--sequential")
 fi
 
-if [ ! -z "$printLastResultsOnly" ]; then
-    runtestPyArguments+=("--analyze_results_only")
+if [[ -n "$printLastResultsOnly" ]]; then
+    runtestArguments+=("--analyze_results_only")
 fi
 
-if [ ! -z "$RunCrossGen2" ]; then
-    runtestPyArguments+=("--run_crossgen2_tests")
+if [[ -n "$RunCrossGen2" ]]; then
+    runtestArguments+=("--run_crossgen2_tests")
 fi
 
-if [ "$limitedCoreDumps" == "ON" ]; then
-    runtestPyArguments+=("--limited_core_dumps")
+if [[ -n "$CrossGen2SynthesizePgo" ]]; then
+    runtestArguments+=("--synthesize_pgo")
 fi
 
-if [[ ! "$runincontext" -eq 0 ]]; then
+if [[ "$limitedCoreDumps" == "ON" ]]; then
+    runtestArguments+=("--limited_core_dumps")
+fi
+
+if [[ "$runincontext" -ne 0 ]]; then
     echo "Running in an unloadable AssemblyLoadContext"
-    runtestPyArguments+=("--run_in_context")
+    runtestArguments+=("--run_in_context")
 fi
 
-if [[ ! "$tieringtest" -eq 0 ]]; then
+if [[ "$tieringtest" -ne 0 ]]; then
     echo "Running to encourage tier1 rejitting"
-   runtestPyArguments+=("--tieringtest")
+    runtestArguments+=("--tiering_test")
 fi
 
-# Default to python3 if it is installed
-__Python=python
- if command -v python3 &>/dev/null; then
-    __Python=python3
+if [[ "$nativeaottest" -ne 0 ]]; then
+    echo "Running NativeAOT compiled tests"
+    runtestArguments+=("--run_nativeaot_tests")
 fi
 
-# Run the tests using cross platform run.py
-echo "$__Python $repoRootDir/src/tests/run.py ${runtestPyArguments[@]}"
-$__Python "$repoRootDir/src/tests/run.py" "${runtestPyArguments[@]}"
+if [[ -n "$RunInterpreter" ]]; then
+    echo "Running tests with the interpreter"
+    runtestArguments+=("--interpreter")
+fi
+
+if [[ -n "$RunWithNodeJS" ]]; then
+    echo "Running tests with NodeJS"
+    runtestArguments+=("--node")
+fi
+
+if [[ -n "$runnerFilter" ]]; then
+    echo "Runner filter                 : ${runnerFilter}"
+    runtestArguments+=("--runner_filter" "$runnerFilter")
+fi
+
+if [[ -n "$activeIssueDetails" ]]; then
+    runtestArguments+=("--active_issue_details")
+fi
+
+if [[ -n "$treeSubtree" ]]; then
+    echo "Running tests under subtree   : ${treeSubtree}"
+    runtestArguments+=("--tree" "$treeSubtree")
+fi
+
+# Run the tests using the cross-platform file-based app.
+echo "$repoRootDir/dotnet.sh $repoRootDir/src/tests/run.cs -- ${runtestArguments[*]}"
+"$repoRootDir/dotnet.sh" "$repoRootDir/src/tests/run.cs" -- "${runtestArguments[@]}"
 exit "$?"

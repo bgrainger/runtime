@@ -70,16 +70,14 @@ namespace System
         private DelegateData data;
 
         private bool method_is_virtual;
+        private bool bound;
         #endregion
 
         [RequiresUnreferencedCode("The target method might be removed")]
         protected Delegate(object target, string method)
         {
-            if (target is null)
-                throw new ArgumentNullException(nameof(target));
-
-            if (method is null)
-                throw new ArgumentNullException(nameof(method));
+            ArgumentNullException.ThrowIfNull(target);
+            ArgumentNullException.ThrowIfNull(method);
 
             this._target = target;
             this.data = new DelegateData()
@@ -88,16 +86,14 @@ namespace System
             };
         }
 
-        protected Delegate([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)] Type target, string method)
+        protected Delegate([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.AllMethods)] Type target, string method)
         {
-            if (target is null)
-                throw new ArgumentNullException(nameof(target));
+            ArgumentNullException.ThrowIfNull(target);
 
             if (target.ContainsGenericParameters)
                 throw new ArgumentException(SR.Arg_UnboundGenParam, nameof(target));
 
-            if (method is null)
-                throw new ArgumentNullException(nameof(method));
+            ArgumentNullException.ThrowIfNull(method);
 
             if (target is not RuntimeType)
                 throw new ArgumentException(SR.Argument_MustBeRuntimeType, nameof(target));
@@ -109,9 +105,17 @@ namespace System
             };
         }
 
-        public object? Target => GetTarget();
+        public partial bool HasSingleTarget => Unsafe.As<MulticastDelegate>(this).HasSingleTarget;
+
+        public object? Target => Unsafe.As<MulticastDelegate>(this).GetTarget();
 
         internal virtual object? GetTarget() => _target;
+
+        protected Delegate CombineImpl(Delegate? d) => Unsafe.As<MulticastDelegate>(this).CombineImplImpl(d);
+
+        protected Delegate? RemoveImpl(Delegate? d) => Unsafe.As<MulticastDelegate>(this).RemoveImplImpl(d);
+
+        public Delegate[] GetInvocationList() => Unsafe.As<MulticastDelegate>(this).GetInvocationListImpl();
 
         public static Delegate CreateDelegate(Type type, object? firstArgument, MethodInfo method, bool throwOnBindFailure)
         {
@@ -125,10 +129,8 @@ namespace System
 
         private static Delegate? CreateDelegate(Type type, object? firstArgument, MethodInfo method, bool throwOnBindFailure, bool allowClosed)
         {
-            if (type is null)
-                throw new ArgumentNullException(nameof(type));
-            if (method is null)
-                throw new ArgumentNullException(nameof(method));
+            ArgumentNullException.ThrowIfNull(type);
+            ArgumentNullException.ThrowIfNull(method);
 
             if (type is not RuntimeType rtType)
                 throw new ArgumentException(SR.Argument_MustBeRuntimeType, nameof(type));
@@ -146,7 +148,7 @@ namespace System
                 return null;
             }
 
-            Delegate? d = CreateDelegate_internal(type, firstArgument, method, throwOnBindFailure);
+            Delegate? d = CreateDelegate_internal(new QCallTypeHandle(ref rtType), firstArgument, method, throwOnBindFailure);
             if (d != null)
             {
                 d.original_method_info = method;
@@ -159,12 +161,9 @@ namespace System
         [RequiresUnreferencedCode("The target method might be removed")]
         public static Delegate? CreateDelegate(Type type, object target, string method, bool ignoreCase, bool throwOnBindFailure)
         {
-            if (type is null)
-                throw new ArgumentNullException(nameof(type));
-            if (target is null)
-                throw new ArgumentNullException(nameof(target));
-            if (method is null)
-                throw new ArgumentNullException(nameof(method));
+            ArgumentNullException.ThrowIfNull(type);
+            ArgumentNullException.ThrowIfNull(target);
+            ArgumentNullException.ThrowIfNull(method);
 
             if (type is not RuntimeType rtType)
                 throw new ArgumentException(SR.Argument_MustBeRuntimeType, nameof(type));
@@ -180,19 +179,16 @@ namespace System
                 return null;
             }
 
-            return CreateDelegate_internal(type, target, info, throwOnBindFailure);
+            return CreateDelegate_internal(new QCallTypeHandle(ref rtType), target, info, throwOnBindFailure);
         }
 
-        public static Delegate? CreateDelegate(Type type, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)] Type target, string method, bool ignoreCase, bool throwOnBindFailure)
+        public static Delegate? CreateDelegate(Type type, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.AllMethods)] Type target, string method, bool ignoreCase, bool throwOnBindFailure)
         {
-            if (type is null)
-                throw new ArgumentNullException(nameof(type));
-            if (target is null)
-                throw new ArgumentNullException(nameof(target));
+            ArgumentNullException.ThrowIfNull(type);
+            ArgumentNullException.ThrowIfNull(target);
             if (target.ContainsGenericParameters)
                 throw new ArgumentException(SR.Arg_UnboundGenParam, nameof(target));
-            if (method is null)
-                throw new ArgumentNullException(nameof(method));
+            ArgumentNullException.ThrowIfNull(method);
 
             if (type is not RuntimeType rtType)
                 throw new ArgumentException(SR.Argument_MustBeRuntimeType, nameof(type));
@@ -211,18 +207,16 @@ namespace System
                 return null;
             }
 
-            return CreateDelegate_internal(type, null, info, throwOnBindFailure);
+            return CreateDelegate_internal(new QCallTypeHandle(ref rtType), null, info, throwOnBindFailure);
         }
 
-        // GetCandidateMethod is annotated as DynamicallyAccessedMemberTypes.All because it will bind to non-public methods
-        // on a base type of methodType. Using All is currently the only way ILLinker will preserve these methods.
-        private static MethodInfo? GetCandidateMethod(RuntimeType type, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)] Type target, string method, BindingFlags bflags, bool ignoreCase)
+        private static MethodInfo? GetCandidateMethod(RuntimeType type, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.AllMethods)] Type target, string method, BindingFlags bflags, bool ignoreCase)
         {
-            MethodInfo? invoke = GetDelegateInvokeMethod(type);
+            MethodInfo? invoke = GetInvokeMethod(type);
             if (invoke is null)
                 return null;
 
-            ParameterInfo[] delargs = invoke.GetParametersInternal();
+            ReadOnlySpan<ParameterInfo> delargs = invoke.GetParametersAsSpan();
             Type[] delargtypes = new Type[delargs.Length];
 
             for (int i = 0; i < delargs.Length; i++)
@@ -255,15 +249,15 @@ namespace System
 
         private static bool IsMatchingCandidate(RuntimeType type, object? target, MethodInfo method, bool allowClosed, out DelegateData? delegateData)
         {
-            MethodInfo? invoke = GetDelegateInvokeMethod(type);
+            MethodInfo? invoke = GetInvokeMethod(type);
             if (invoke == null || !IsReturnTypeMatch(invoke.ReturnType!, method.ReturnType!))
             {
                 delegateData = null;
                 return false;
             }
 
-            ParameterInfo[] delargs = invoke.GetParametersInternal();
-            ParameterInfo[] args = method.GetParametersInternal();
+            ReadOnlySpan<ParameterInfo> delargs = invoke.GetParametersAsSpan();
+            ReadOnlySpan<ParameterInfo> args = method.GetParametersAsSpan();
 
             bool argLengthMatch;
 
@@ -369,15 +363,6 @@ namespace System
             return argsMatch;
         }
 
-        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2070:UnrecognizedReflectionPattern",
-            Justification = "ILLinker will never remove the Invoke method from delegates.")]
-        private static MethodInfo? GetDelegateInvokeMethod(RuntimeType type)
-        {
-            Debug.Assert(type.IsDelegate());
-
-            return type.GetMethod("Invoke");
-        }
-
         private static bool IsReturnTypeMatch(Type delReturnType, Type returnType)
         {
             bool returnMatch = returnType == delReturnType;
@@ -439,18 +424,17 @@ namespace System
 
         protected virtual object? DynamicInvokeImpl(object?[]? args)
         {
-            MethodInfo _method = Method ?? throw new NullReferenceException ("method_info is null");
+            MethodInfo method = Method;
 
             object? target = _target;
 
-            if (data is null)
-                data = CreateDelegateData();
+            data ??= CreateDelegateData();
 
             // replace all Type.Missing with default values defined on parameters of the delegate if any
-            MethodInfo? invoke = GetType().GetMethod("Invoke");
+            MethodInfo? invoke = GetInvokeMethod(GetType());
             if (invoke != null && args != null)
             {
-                ParameterInfo[] delegateParameters = invoke.GetParameters();
+                ReadOnlySpan<ParameterInfo> delegateParameters = invoke.GetParametersAsSpan();
                 for (int i = 0; i < args.Length; i++)
                 {
                     if (args[i] == Type.Missing)
@@ -464,7 +448,7 @@ namespace System
                 }
             }
 
-            if (_method.IsStatic)
+            if (method.IsStatic)
             {
                 //
                 // The delegate is bound to _target
@@ -495,12 +479,12 @@ namespace System
                 }
             }
 
-            return _method.Invoke(target, args);
+            return method.Invoke(target, args);
         }
 
         public override bool Equals([NotNullWhen(true)] object? obj)
         {
-            if (!(obj is Delegate d) || !InternalEqualTypes(this, obj))
+            if (!(obj is Delegate d) || !RuntimeHelpers.AreTypesEquivalent(this, obj))
                 return false;
 
             // Do not compare method_ptr, since it can point to a trampoline
@@ -560,7 +544,7 @@ namespace System
                 }
                 else
                 {
-                    MethodInfo? invoke = GetType().GetMethod("Invoke");
+                    MethodInfo? invoke = GetInvokeMethod(GetType());
                     if (invoke != null && invoke.GetParametersCount() + 1 == method_info.GetParametersCount())
                         delegate_data.curried_first_arg = true;
                 }
@@ -569,16 +553,11 @@ namespace System
             return delegate_data;
         }
 
-        private static bool InternalEqualTypes(object source, object value)
-        {
-            return source.GetType() == value.GetType();
-        }
-
         [MethodImplAttribute(MethodImplOptions.InternalCall)]
         private protected static extern MulticastDelegate AllocDelegateLike_internal(Delegate d);
 
         [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern Delegate? CreateDelegate_internal(Type type, object? target, MethodInfo info, bool throwOnBindFailure);
+        private static extern Delegate? CreateDelegate_internal(QCallTypeHandle type, object? target, MethodInfo info, bool throwOnBindFailure);
 
         [MethodImplAttribute(MethodImplOptions.InternalCall)]
         private extern MethodInfo GetVirtualMethod_internal();

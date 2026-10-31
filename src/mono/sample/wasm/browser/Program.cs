@@ -2,21 +2,27 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices.JavaScript;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 
 namespace Sample
 {
-    public class Test
+    public partial class Test
     {
-        public static void Main(string[] args)
+        public static Task<int> Main(string[] args)
         {
-            Console.WriteLine ("Hello, World!");
+            DisplayMeaning(42);
+            return Task.FromResult(0);
         }
 
-        [MethodImpl(MethodImplOptions.NoInlining)]
-        public static int TestMeaning()
+        [JSImport("Sample.Test.displayMeaning", "main.js")]
+        internal static partial void DisplayMeaning(int meaning);
+
+        [JSExport]
+        internal static async Task PrintMeaning(Task<int> meaningPromise)
         {
-            return 42;
+            Console.WriteLine("Meaning of life is " + await meaningPromise);
         }
     }
 }

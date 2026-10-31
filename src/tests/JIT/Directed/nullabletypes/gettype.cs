@@ -1,9 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+namespace JitTest_Directed_nullabletypes_gettype;
+
 using System;
 using System.Linq;
 using System.Collections.Generic;
+using Xunit;
 
 class C<T>
 {
@@ -19,7 +22,9 @@ class C<T>
 
 public class P
 {
-    public static int Main()
+    [OuterLoop]
+    [Fact]
+    public static int TestEntryPoint()
     {
         C<bool?> c = new();
 

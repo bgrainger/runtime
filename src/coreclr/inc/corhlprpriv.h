@@ -63,6 +63,10 @@ namespace NSQuickBytesHelper
 
 void DECLSPEC_NORETURN ThrowHR(HRESULT hr);
 
+#ifndef DACCESS_COMPILE
+inline BOOL IsSuspendEEThread();
+#endif // !DACCESS_COMPILE
+
 template <SIZE_T SIZE, SIZE_T INCREMENT>
 class CQuickMemoryBase
 {
@@ -81,7 +85,7 @@ protected:
     template <BOOL bGrow, BOOL bThrow>
     void *_Alloc(SIZE_T iItems)
     {
-#if defined(_BLD_CLR) && defined(_DEBUG)
+#if defined(_DEBUG)
         {  // Exercise heap for OOM-fault injection purposes
             BYTE * pb = NSQuickBytesHelper::_AllocBytes<bThrow>::Invoke(iItems);
             _ASSERTE(!bThrow || pb != NULL); // _AllocBytes would have thrown if bThrow == TRUE
@@ -182,12 +186,56 @@ public:
         _Alloc<TRUE /*bGrow*/, TRUE /*bThrow*/>(iItems);
     }
 
-#ifdef __GNUC__
-    // This makes sure that we will not get an undefined symbol
-    // when building a release version of libcoreclr using LLVM/GCC.
-    __attribute__((used))
-#endif // __GNUC__
-    HRESULT ReSizeNoThrow(SIZE_T iItems);
+    HRESULT ReSizeNoThrow(SIZE_T iItems)
+    {
+#ifdef _DEBUG
+#ifndef DACCESS_COMPILE
+        // Exercise heap for OOM-fault injection purposes
+        // But we can't do this if current thread suspends EE
+        if (!IsSuspendEEThread())
+        {
+            BYTE *pTmp = NEW_NOTHROW(iItems);
+            if (!pTmp)
+            {
+                return E_OUTOFMEMORY;
+            }
+            delete [] pTmp;
+        }
+#endif
+#endif
+
+        if (iItems <= cbTotal)
+        {
+            iSize = iItems;
+            return NOERROR;
+        }
+
+#ifndef DACCESS_COMPILE
+        // not allowed to do allocation if current thread suspends EE
+        if (IsSuspendEEThread())
+            return E_OUTOFMEMORY;
+#endif
+
+        BYTE *pbBuffNew = NEW_NOTHROW(iItems + INCREMENT);
+        if (!pbBuffNew)
+            return E_OUTOFMEMORY;
+
+        if (pbBuff)
+        {
+            memcpy(pbBuffNew, pbBuff, cbTotal);
+            delete [] pbBuff;
+        }
+        else
+        {
+            _ASSERTE(cbTotal == SIZE);
+            memcpy(pbBuffNew, rgData, cbTotal);
+        }
+
+        cbTotal = iItems + INCREMENT;
+        iSize = iItems;
+        pbBuff = pbBuffNew;
+        return NOERROR;
+    }
 
     void Shrink(SIZE_T iItems)
     {
@@ -294,15 +342,12 @@ public:
     }
 
     // Copy single byte string and hold it
-    const char * SetStringNoThrow(const char * pStr, SIZE_T len)
+    const char * SetString(const char * pStr, SIZE_T len)
     {
-        LPSTR buffer = (LPSTR) AllocNoThrow(len + 1);
+        LPSTR buffer = (LPSTR) AllocThrows(len + 1);
 
-        if (buffer != NULL)
-        {
-            memcpy(buffer, pStr, len);
-            buffer[len] = 0;
-        }
+        memcpy(buffer, pStr, len);
+        buffer[len] = 0;
 
         return buffer;
     }
@@ -477,12 +522,12 @@ private:
 template <class T> class CQuickArray : public CQuickArrayBase<T>
 {
 public:
-    CQuickArray<T>()
+    CQuickArray()
     {
         this->Init();
     }
 
-    ~CQuickArray<T>()
+    ~CQuickArray()
     {
         this->Destroy();
     }
@@ -576,6 +621,16 @@ public:
         return m_curSize;
     }
 
+    T* Ptr()
+    {
+        return (T*) CQuickBytesBase::Ptr();
+    }
+
+    const T* Ptr() const
+    {
+        return (T*) CQuickBytesBase::Ptr();
+    }
+
     void Shrink()
     {
         CQuickArray<T>::Shrink(m_curSize);
@@ -605,7 +660,7 @@ public:
         HRESULT  hr     = S_OK;
         mdToken  rid    = RidFromToken(token);
         SIZE_T   index  = rid / 8;
-        BYTE     bit    = (1 << (rid % 8));
+        BYTE     bit    = (BYTE)(1 << (rid % 8));
 
         if (index >= buffer.Size())
         {
@@ -623,7 +678,7 @@ public:
     {
         mdToken rid   = RidFromToken(token);
         SIZE_T  index = rid / 8;
-        BYTE    bit   = (1 << (rid % 8));
+        BYTE    bit   = (BYTE)(1 << (rid % 8));
 
         return ((index < buffer.Size()) && (buffer[index] & bit));
     }
@@ -651,7 +706,7 @@ HRESULT _CountBytesOfOneArg(
     ULONG       *pcbTotal);
 
 HRESULT _GetFixedSigOfVarArg(           // S_OK or error.
-    PCCOR_SIGNATURE pvSigBlob,          // [IN] point to a blob of CLR signature
+    PCCOR_SIGNATURE pvSigBlob,          // [IN] point to a blob of signature
     ULONG   cbSigBlob,                  // [IN] size of signature
     CQuickBytes *pqbSig,                // [OUT] output buffer for fixed part of VarArg Signature
     ULONG   *pcbSigBlob);               // [OUT] number of bytes written to the above output buffer
@@ -743,7 +798,7 @@ CorSigUncompressPointer_EndPtr(
     // make it easier to catch invalid signatures in trusted code (e.g. IL stubs, NGEN images, etc.)
     if (pData + sizeof(void *) > pDataEnd)
     {   // Not enough data in the buffer
-        _ASSERTE(!"This signature is invalid. Note that caller should check that it is not comming from untrusted source!");
+        _ASSERTE(!"This signature is invalid. Note that caller should check that it is not coming from untrusted source!");
         return META_E_BAD_SIGNATURE;
     }
     *ppvPointerOut = *(void * UNALIGNED *)pData;

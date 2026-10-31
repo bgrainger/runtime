@@ -6,6 +6,7 @@ using Xunit;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
+using TestLibrary;
 
 internal class MyCriticalHandle : CriticalHandle
 {
@@ -56,6 +57,7 @@ internal class MyCriticalHandle : CriticalHandle
     }
 }
 
+[ActiveIssue("https://github.com/dotnet/runtime/issues/91388", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
 public class Reverse
 {
     public static void In()
@@ -131,7 +133,10 @@ public class Reverse
         internal static extern IntPtr InvokeRetCallback(RetCallback callback);
     }
 
-    public static int Main(string[] args)
+    [ActiveIssue("https://github.com/dotnet/runtimelab/issues/173", typeof(Utilities), nameof(Utilities.IsNativeAot))]
+    [ActiveIssue("needs triage", TestRuntimes.Mono)]
+    [Fact]
+    public static int TestEntryPoint()
     {
         try
         {

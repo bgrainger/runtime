@@ -5,7 +5,10 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
+
+using Xunit.Sdk;
 
 namespace Xunit
 {
@@ -15,7 +18,7 @@ namespace Xunit
         ///     Asserts that the given delegate throws an <see cref="ArgumentException"/> with the given parameter name.
         /// </summary>
         /// <param name="action">
-        ///     The delagate of type <see cref="Action"/> to execute.
+        ///     The delegate of type <see cref="Action"/> to execute.
         /// </param>
         /// <param name="message">
         ///     A <see cref="String"/> containing additional information for when the assertion fails.
@@ -41,14 +44,11 @@ namespace Xunit
         /// <summary>
         ///     Asserts that the given delegate throws an <see cref="ArgumentException"/> of type <typeparamref name="T"/> with the given parameter name.
         /// </summary>
-        /// <param name="action">
-        ///     The delagate of type <see cref="Action"/> to execute.
-        /// </param>
-        /// <param name="message">
-        ///     A <see cref="String"/> containing additional information for when the assertion fails.
-        /// </param>
         /// <param name="parameterName">
         ///     A <see cref="String"/> containing the parameter of name to check, <see langword="null"/> to skip parameter validation.
+        /// </param>
+        /// <param name="action">
+        ///     The delegate of type <see cref="Action"/> to execute.
         /// </param>
         /// <returns>
         ///     The thrown <see cref="Exception"/>.
@@ -75,11 +75,41 @@ namespace Xunit
         }
 
         /// <summary>
+        ///     Asserts that the given delegate throws an <see cref="MissingMemberException"/> of type <typeparamref name="T"/> with the given parameter name.
+        /// </summary>
+        /// <param name="memberName">
+        ///     A <see cref="String"/> containing the parameter of name to check, <see langword="null"/> to skip parameter validation.
+        /// </param>
+        /// <param name="action">
+        ///     The delegate of type <see cref="Action"/> to execute.
+        /// </param>
+        /// <returns>
+        ///     The thrown <see cref="Exception"/>.
+        /// </returns>
+        /// <exception cref="AssertFailedException">
+        ///     <see cref="Exception"/> of type <typeparam name="T"/> was not thrown.
+        ///     <para>
+        ///         -or-
+        ///     </para>
+        ///     <see cref="MissingMemberException.Message"/> does not contain <paramref name="memberName"/> .
+        /// </exception>
+        public static T ThrowsMissingMemberException<T>(string memberName, Action action)
+            where T : MissingMemberException
+        {
+            T exception = Assert.Throws<T>(action);
+
+            if (memberName != null)
+                Assert.True(exception.Message.Contains(memberName));
+
+            return exception;
+        }
+
+        /// <summary>
         ///     Asserts that the given async delegate throws an <see cref="Exception"/> of type <typeparam name="T" /> and <see cref="Exception.InnerException"/>
         ///     returns an <see cref="Exception"/> of type <typeparam name="TInner" />.
         /// </summary>
         /// <param name="action">
-        ///     The delagate of type <see cref="Action"/> to execute.
+        ///     The delegate of type <see cref="Action"/> to execute.
         /// </param>
         /// <param name="message">
         ///     A <see cref="String"/> containing additional information for when the assertion fails.
@@ -104,12 +134,50 @@ namespace Xunit
             T outerException = Assert.Throws<T>(action);
 
             if (outerException.InnerException == null)
-                Assert.True(false, string.Format("Expected '{0}.InnerException' to be '{1}', however it is null.", typeof(T), typeof(TInner)));
+                Assert.Fail(string.Format("Expected '{0}.InnerException' to be '{1}', however it is null.", typeof(T), typeof(TInner)));
 
             if (outerException.InnerException is not TInner)
-                Assert.True(false, string.Format("Expected '{0}.InnerException', to be '{1}', however, '{2}' is.", typeof(T), typeof(TInner), outerException.InnerException.GetType()));
+                Assert.Fail(string.Format("Expected '{0}.InnerException', to be '{1}', however, '{2}' is.", typeof(T), typeof(TInner), outerException.InnerException.GetType()));
 
             return (TInner)outerException.InnerException;
+        }
+
+        public static void ThrowsAny(Type firstExceptionType, Type secondExceptionType, Action action)
+        {
+            ThrowsAnyInternal(action, firstExceptionType, secondExceptionType);
+        }
+
+        private static void ThrowsAnyInternal(Action action, params Type[] exceptionTypes)
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception e)
+            {
+                Type exceptionType = e.GetType();
+                if (exceptionTypes.Any(t => t.Equals(exceptionType)))
+                    return;
+
+                throw new XunitException($"Expected one of: ({string.Join<Type>(", ", exceptionTypes)}) -> Actual: ({exceptionType}): {e}"); // Log message and callstack to help diagnosis
+            }
+
+            throw new XunitException($"Expected one of: ({string.Join<Type>(", ", exceptionTypes)}) -> Actual: No exception thrown");
+        }
+
+        public static void ThrowsAny<TFirstExceptionType, TSecondExceptionType>(Action action)
+            where TFirstExceptionType : Exception
+            where TSecondExceptionType : Exception
+        {
+            ThrowsAnyInternal(action, typeof(TFirstExceptionType), typeof(TSecondExceptionType));
+        }
+
+        public static void ThrowsAny<TFirstExceptionType, TSecondExceptionType, TThirdExceptionType>(Action action)
+            where TFirstExceptionType : Exception
+            where TSecondExceptionType : Exception
+            where TThirdExceptionType : Exception
+        {
+            ThrowsAnyInternal(action, typeof(TFirstExceptionType), typeof(TSecondExceptionType), typeof(TThirdExceptionType));
         }
 
 

@@ -1,18 +1,36 @@
 project(System.IO.Ports.Native C)
 
+if(CLR_CMAKE_TARGET_ARCH_WASM)
+    message(FATAL_ERROR "Not implemented for WASM")
+endif()
+
+set(PORTS_SOURCES
+    pal_termios.c
+    pal_serial.c
+)
+
+if (HAVE_TERMIOS2)
+    list (APPEND PORTS_SOURCES pal_termios2.c)
+endif ()
+
 if (GEN_SHARED_LIB)
     add_library(System.IO.Ports.Native
         SHARED
-        pal_termios.c
-        pal_serial.c
+        ${PORTS_SOURCES}
         ${VERSION_FILE_PATH}
     )
+
+    if (CLR_CMAKE_TARGET_HAIKU)
+        target_link_libraries(System.IO.Ports.Native
+            PRIVATE
+            -lnetwork
+        )
+    endif()
 endif()
 
 add_library(System.IO.Ports.Native-Static
     STATIC
-    pal_termios.c
-    pal_serial.c
+    ${PORTS_SOURCES}
 )
 
 set_target_properties(System.IO.Ports.Native-Static PROPERTIES OUTPUT_NAME System.IO.Ports.Native  CLEAN_DIRECT_OUTPUT 1)

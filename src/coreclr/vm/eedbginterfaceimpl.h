@@ -1,12 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-
 /*
- *
- * COM+99 EE to Debugger Interface Implementation
- *
+ * EE to Debugger Interface Implementation
  */
+
 #ifndef _eedbginterfaceimpl_h_
 #define _eedbginterfaceimpl_h_
 
@@ -21,6 +19,7 @@
 #include "eetwain.h"
 #include "jitinterface.h"
 #include "stubmgr.h"
+#include "exinfo.h"
 
 #include "eedbginterface.h"
 #include "debugdebugger.h"
@@ -78,13 +77,6 @@ public:
 
     void* GetObjectFromHandle(OBJECTHANDLE handle);
 
-    OBJECTHANDLE GetHandleFromObject(void *obj,
-                              bool fStrongNewRef,
-                              AppDomain *pAppDomain);
-
-    void DbgDestroyHandle(OBJECTHANDLE oh,
-                          bool fStrongNewRef);
-
     OBJECTHANDLE GetThreadException(Thread *pThread);
 
     bool IsThreadExceptionNull(Thread *pThread);
@@ -116,6 +108,8 @@ public:
 
     BOOL IsManagedNativeCode(const BYTE *address);
 
+    BOOL IsIPInModule(PTR_VOID pModuleBaseAddress, PCODE ip) DAC_UNEXPECTED();
+
     PCODE GetNativeCodeStartAddress(PCODE address) DAC_UNEXPECTED();
 
     MethodDesc *GetNativeCodeMethodDesc(const PCODE address) DAC_UNEXPECTED();
@@ -134,10 +128,8 @@ public:
                              size_t *hotSize,
                              size_t *coldSize);
 
-#if defined(FEATURE_EH_FUNCLETS)
     DWORD GetFuncletStartOffsets(const BYTE *pStart, DWORD* pStartOffsets, DWORD dwLength);
     StackFrame FindParentStackFrame(CrawlFrame* pCF);
-#endif // FEATURE_EH_FUNCLETS
 
     size_t GetFunctionSize(MethodDesc *pFD) DAC_UNEXPECTED();
 
@@ -152,10 +144,6 @@ public:
     DWORD MethodDescIsStatic(MethodDesc *pFD);
 
     Module *MethodDescGetModule(MethodDesc *pFD);
-
-    COR_ILMETHOD* MethodDescGetILHeader(MethodDesc *pFD);
-
-    ULONG MethodDescGetRVA(MethodDesc *pFD);
 
     MethodDesc *FindLoadedMethodRefOrDef(Module* pModule,
                                           mdToken memberRef);
@@ -220,7 +208,7 @@ public:
 
     void MarkDebuggerUnattached(void);
 
-#ifdef EnC_SUPPORTED
+#ifdef FEATURE_METADATA_UPDATER
 
     // Apply an EnC edit to the specified module
     // This function should never return.
@@ -236,7 +224,7 @@ public:
                                  void *debuggerFuncHandle,
                                  SIZE_T resumeIP,
                                  T_CONTEXT *pContext);
-  #endif // EnC_SUPPORTED
+  #endif // FEATURE_METADATA_UPDATER
 
     bool CrawlFrameIsGcSafe(CrawlFrame *pCF);
 
@@ -281,9 +269,6 @@ public:
                            SIZE_T *pEEFrameNextOffset,
                            DWORD  *pEEIsManagedExceptionStateMask);
 
-    void DebuggerModifyingLogSwitch (int iNewLevel,
-                                     const WCHAR *pLogSwitchName);
-
     HRESULT SetIPFromSrcToDst(Thread *pThread,
                               SLOT addrStart,
                               DWORD offFrom,
@@ -301,7 +286,7 @@ public:
                           CorDebugThreadState state);
 
     // This is pretty much copied from VM\COMSynchronizable's
-    // INT32 __stdcall ThreadNative::GetThreadState, so propogate changes
+    // INT32 __stdcall ThreadNative::GetThreadState, so propagate changes
     // to both functions
     CorDebugUserState GetPartialUserState( Thread *pThread );
 

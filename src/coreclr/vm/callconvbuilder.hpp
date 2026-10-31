@@ -24,7 +24,7 @@ public:
     struct State
     {
         CorInfoCallConvExtension CallConvBase;
-        CallConvModifiers CallConvModifiers;
+        enum CallConvModifiers CallConvModifiers;
     };
 
 private:
@@ -78,7 +78,23 @@ namespace CallConv
         _In_ PCCOR_SIGNATURE pSig,
         _In_ ULONG cSig,
         _Inout_ CallConvBuilder *builder,
-        _Out_ UINT *errorResID);
+        _Out_ UINT* errorResID);
+
+    //-------------------------------------------------------------------------
+    // Gets the unmanaged calling convention by reading any modopts, starting the sig
+    // walk at the return type in the signature
+    //
+    // Returns:
+    //   S_OK - No errors
+    //   COR_E_BADIMAGEFORMAT - Signature had an invalid format
+    //   COR_E_INVALIDPROGRAM - Program is considered invalid (more
+    //                          than one calling convention specified)
+    //-------------------------------------------------------------------------
+    HRESULT TryGetUnmanagedCallingConventionFromModOptSigStartingAtRetType(
+        _In_ CORINFO_MODULE_HANDLE pModule,
+        _In_ SigPointer sig,
+        _Inout_ CallConvBuilder* builder,
+        _Out_ UINT* errorResID);
 
     //-------------------------------------------------------------------------
     // Gets the calling convention from the UnmanagedCallConv attribute

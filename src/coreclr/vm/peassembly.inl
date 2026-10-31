@@ -26,11 +26,11 @@ inline CHECK PEAssembly::Invariant()
     }
     CONTRACT_CHECK_END;
 
-    if (IsDynamic())
+    if (IsReflectionEmit())
     {
         // dynamic module case
         CHECK(m_PEImage == NULL);
-        CHECK(CheckPointer(m_pEmitter));
+        CHECK(CheckPointer(m_pMDInternalEmit));
     }
     else
     {
@@ -56,43 +56,26 @@ inline ULONG PEAssembly::AddRef()
     }
     CONTRACTL_END;
 
-    return FastInterlockIncrement(&m_refCount);
+    return InterlockedIncrement(&m_refCount);
 }
 
 inline ULONG PEAssembly::Release()
 {
-    CONTRACT(COUNT_T)
+    CONTRACTL
     {
         DESTRUCTOR_CHECK;
         NOTHROW;
         GC_TRIGGERS;
         MODE_ANY;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
-    LONG result = FastInterlockDecrement(&m_refCount);
+    LONG result = InterlockedDecrement(&m_refCount);
     _ASSERTE(result >= 0);
     if (result == 0)
         delete this;
 
-    RETURN result;
-}
-
-// ------------------------------------------------------------
-// Identity
-// ------------------------------------------------------------
-
-inline ULONG PEAssembly::HashIdentity()
-{
-    CONTRACTL
-    {
-        PRECONDITION(CheckPointer(m_PEImage));
-        MODE_ANY;
-        THROWS;
-        GC_TRIGGERS;
-    }
-    CONTRACTL_END;
-    return m_pHostAssembly->GetAssemblyName()->Hash(BINDER_SPACE::AssemblyName::INCLUDE_VERSION);
+    return result;
 }
 
 inline void PEAssembly::ValidateForExecution()
@@ -119,7 +102,7 @@ inline void PEAssembly::ValidateForExecution()
     //
     // Ensure platform is valid for execution
     //
-    if (!IsDynamic())
+    if (!IsReflectionEmit())
     {
         if (IsMarkedAsNoPlatform())
         {
@@ -132,7 +115,7 @@ inline void PEAssembly::ValidateForExecution()
 inline BOOL PEAssembly::IsMarkedAsNoPlatform()
 {
     WRAPPER_NO_CONTRACT;
-    return (IsAfPA_NoPlatform(GetFlags()));
+    return IsAfPA_NoPlatform(GetFlags());
 }
 
 
@@ -142,7 +125,6 @@ inline void PEAssembly::GetMVID(GUID *pMvid)
     {
         THROWS;
         GC_NOTRIGGER;
-        FORBID_FAULT;
         MODE_ANY;
     }
     CONTRACTL_END;
@@ -167,7 +149,7 @@ inline const SString& PEAssembly::GetPath()
     }
     CONTRACTL_END;
 
-    if (IsDynamic() || m_PEImage->IsInBundle ())
+    if (IsReflectionEmit() || m_PEImage->IsInBundle() || m_PEImage->IsExternalData())
     {
         return SString::Empty();
     }
@@ -199,7 +181,6 @@ inline const SString& PEAssembly::GetIdentityPath()
     return m_PEImage->GetPath();
 }
 
-#ifdef DACCESS_COMPILE
 inline const SString &PEAssembly::GetModuleFileNameHint()
 {
     CONTRACTL
@@ -211,17 +192,16 @@ inline const SString &PEAssembly::GetModuleFileNameHint()
     }
     CONTRACTL_END;
 
-    if (IsDynamic())
+    if (IsReflectionEmit())
     {
         return SString::Empty();
     }
     else
         return m_PEImage->GetModuleFileNameHintForDAC();
 }
-#endif // DACCESS_COMPILE
 
 #ifdef LOGGING
-inline LPCWSTR PEAssembly::GetDebugName()
+inline LPCUTF8 PEAssembly::GetDebugName()
 {
     CONTRACTL
     {
@@ -232,28 +212,23 @@ inline LPCWSTR PEAssembly::GetDebugName()
         CANNOT_TAKE_LOCK;
     }
     CONTRACTL_END;
-
-#ifdef _DEBUG
     return m_pDebugName;
-#else
-    return GetPath();
-#endif
 }
-#endif
+#endif // LOGGING
 
 // ------------------------------------------------------------
 // Classification
 // ------------------------------------------------------------
 
-inline BOOL PEAssembly::IsSystem() const
+inline bool PEAssembly::IsSystem() const
 {
     LIMITED_METHOD_CONTRACT;
     SUPPORTS_DAC;
 
-    return m_isSystem;
+    return this == SystemDomain::SystemPEAssembly();
 }
 
-inline BOOL PEAssembly::IsDynamic() const
+inline BOOL PEAssembly::IsReflectionEmit() const
 {
     LIMITED_METHOD_CONTRACT;
     SUPPORTS_DAC;
@@ -278,46 +253,52 @@ inline IMDInternalImport* PEAssembly::GetMDImport()
 #endif
 };
 
-#ifndef DACCESS_COMPILE
+inline IMDInternalEmit* PEAssembly::GetMDInternalEmit()
+{
+    LIMITED_METHOD_CONTRACT;
+
+    _ASSERTE(m_pMDInternalEmit != NULL);
+    return m_pMDInternalEmit;
+}
+
+#if !defined(DACCESS_COMPILE) && (defined(PROFILING_SUPPORTED) || defined(FEATURE_METADATA_UPDATER))
 
 inline IMetaDataImport2 *PEAssembly::GetRWImporter()
 {
-    CONTRACT(IMetaDataImport2 *)
+    CONTRACTL
     {
         INSTANCE_CHECK;
-        POSTCONDITION(CheckPointer(RETVAL));
         GC_NOTRIGGER;
         THROWS;
         MODE_ANY;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     if (m_pImporter == NULL)
         OpenImporter();
 
-    RETURN m_pImporter;
+    return m_pImporter;
 }
 
 inline IMetaDataEmit *PEAssembly::GetEmitter()
 {
-    CONTRACT(IMetaDataEmit *)
+    CONTRACTL
     {
         INSTANCE_CHECK;
         MODE_ANY;
         GC_NOTRIGGER;
-        POSTCONDITION(CheckPointer(RETVAL));
         THROWS;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     if (m_pEmitter == NULL)
         OpenEmitter();
 
-    RETURN m_pEmitter;
+    return m_pEmitter;
 }
 
 
-#endif // DACCESS_COMPILE
+#endif // !DACCESS_COMPILE && (PROFILING_SUPPORTED || FEATURE_METADATA_UPDATER)
 
 // Same as the managed Module.ScopeName property, this unconditionally looks in the
 // metadata Module table to get the name.  Useful for profilers and others who don't
@@ -353,7 +334,7 @@ inline BOOL PEAssembly::IsReadyToRun()
     }
     CONTRACTL_END;
 
-    if (HasPEImage())
+    if (HasPEImage() && HasLoadedPEImage())
     {
         return GetLoadedLayout()->HasReadyToRunHeader();
     }
@@ -367,7 +348,7 @@ inline mdToken PEAssembly::GetEntryPointToken()
 {
     WRAPPER_NO_CONTRACT;
 
-    if (IsDynamic())
+    if (IsReflectionEmit())
         return mdTokenNil;
 
     return GetPEImage()->GetEntryPointToken();
@@ -378,9 +359,9 @@ inline BOOL PEAssembly::IsILOnly()
     WRAPPER_NO_CONTRACT;
     SUPPORTS_DAC;
 
-    CONTRACT_VIOLATION(ThrowsViolation|GCViolation|FaultViolation);
+    CONTRACT_VIOLATION(ThrowsViolation|GCViolation);
 
-    if (IsDynamic())
+    if (IsReflectionEmit())
         return FALSE;
 
     return GetPEImage()->IsILOnly();
@@ -388,24 +369,23 @@ inline BOOL PEAssembly::IsILOnly()
 
 inline PTR_VOID PEAssembly::GetRvaField(RVA field)
 {
-    CONTRACT(void *)
+    CONTRACTL
     {
         INSTANCE_CHECK;
-        PRECONDITION(!IsDynamic());
+        PRECONDITION(!IsReflectionEmit());
         PRECONDITION(CheckRvaField(field));
         PRECONDITION(HasLoadedPEImage());
         NOTHROW;
         GC_NOTRIGGER;
         MODE_ANY;
         SUPPORTS_DAC;
-        POSTCONDITION(CheckPointer(RETVAL));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     // Note that the native image Rva fields are currently cut off before
     // this point.  We should not get here for an IL only native image.
 
-    RETURN dac_cast<PTR_VOID>(GetLoadedLayout()->GetRvaData(field,NULL_OK));
+    return dac_cast<PTR_VOID>(GetLoadedLayout()->GetRvaData(field,NULL_OK));
 }
 
 inline CHECK PEAssembly::CheckRvaField(RVA field)
@@ -413,7 +393,7 @@ inline CHECK PEAssembly::CheckRvaField(RVA field)
     CONTRACT_CHECK
     {
         INSTANCE_CHECK;
-        PRECONDITION(!IsDynamic());
+        PRECONDITION(!IsReflectionEmit());
         PRECONDITION(HasLoadedPEImage());
         NOTHROW;
         GC_NOTRIGGER;
@@ -433,7 +413,7 @@ inline CHECK PEAssembly::CheckRvaField(RVA field, COUNT_T size)
     CONTRACT_CHECK
     {
         INSTANCE_CHECK;
-        PRECONDITION(!IsDynamic());
+        PRECONDITION(!IsReflectionEmit());
         PRECONDITION(HasLoadedPEImage());
         NOTHROW;
         GC_NOTRIGGER;
@@ -461,7 +441,7 @@ inline BOOL PEAssembly::HasTls()
     CONTRACTL_END;
 
     // Dynamic modules do not contain TLS data.
-    if (IsDynamic())
+    if (IsReflectionEmit())
         return FALSE;
     // ILOnly modules do not contain TLS data.
     else if (IsILOnly())
@@ -530,20 +510,19 @@ inline UINT32 PEAssembly::GetTlsIndex()
 
 inline const void *PEAssembly::GetInternalPInvokeTarget(RVA target)
 {
-    CONTRACT(void *)
+    CONTRACTL
     {
         INSTANCE_CHECK;
-        PRECONDITION(!IsDynamic());
+        PRECONDITION(!IsReflectionEmit());
         PRECONDITION(CheckInternalPInvokeTarget(target));
         PRECONDITION(HasLoadedPEImage());
         NOTHROW;
         GC_NOTRIGGER;
         MODE_ANY;
-        POSTCONDITION(CheckPointer(RETVAL));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
-    RETURN (void*)GetLoadedLayout()->GetRvaData(target);
+    return (void*)GetLoadedLayout()->GetRvaData(target);
 }
 
 inline CHECK PEAssembly::CheckInternalPInvokeTarget(RVA target)
@@ -551,7 +530,7 @@ inline CHECK PEAssembly::CheckInternalPInvokeTarget(RVA target)
     CONTRACT_CHECK
     {
         INSTANCE_CHECK;
-        PRECONDITION(!IsDynamic());
+        PRECONDITION(!IsReflectionEmit());
         PRECONDITION(HasLoadedPEImage());
         NOTHROW;
         GC_NOTRIGGER;
@@ -567,44 +546,42 @@ inline CHECK PEAssembly::CheckInternalPInvokeTarget(RVA target)
 
 inline IMAGE_COR_VTABLEFIXUP *PEAssembly::GetVTableFixups(COUNT_T *pCount/*=NULL*/)
 {
-    CONTRACT(IMAGE_COR_VTABLEFIXUP *)
+    CONTRACTL
     {
         PRECONDITION(HasLoadedPEImage());
         INSTANCE_CHECK;
         NOTHROW;
         GC_NOTRIGGER;
         MODE_ANY;
-        POSTCONDITION(CheckPointer(RETVAL, NULL_OK));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
-    if (IsDynamic() || IsILOnly())
+    if (IsReflectionEmit() || IsILOnly())
     {
         if (pCount != NULL)
             *pCount = 0;
-        RETURN NULL;
+        return NULL;
     }
     else
-        RETURN GetLoadedLayout()->GetVTableFixups(pCount);
+        return GetLoadedLayout()->GetVTableFixups(pCount);
 }
 
 inline void *PEAssembly::GetVTable(RVA rva)
 {
-    CONTRACT(void *)
+    CONTRACTL
     {
         INSTANCE_CHECK;
-        PRECONDITION(!IsDynamic());
+        PRECONDITION(!IsReflectionEmit());
         PRECONDITION(HasLoadedPEImage());
         PRECONDITION(!IsILOnly());
         PRECONDITION(GetLoadedLayout()->CheckRva(rva));
         NOTHROW;
         GC_NOTRIGGER;
         MODE_ANY;
-        POSTCONDITION(CheckPointer(RETVAL));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
-    RETURN (void *)GetLoadedLayout()->GetRvaData(rva);
+    return (void *)GetLoadedLayout()->GetRvaData(rva);
 }
 
 // @todo: this is bad to expose. But it is needed to support current IJW thunks
@@ -613,7 +590,7 @@ inline HMODULE PEAssembly::GetIJWBase()
     CONTRACTL
     {
         INSTANCE_CHECK;
-        PRECONDITION(!IsDynamic());
+        PRECONDITION(!IsReflectionEmit());
         PRECONDITION(HasLoadedPEImage());
         PRECONDITION(!IsILOnly());
         NOTHROW;
@@ -627,16 +604,15 @@ inline HMODULE PEAssembly::GetIJWBase()
 
 inline PTR_VOID PEAssembly::GetDebuggerContents(COUNT_T *pSize/*=NULL*/)
 {
-    CONTRACT(PTR_VOID)
+    CONTRACTL
     {
         INSTANCE_CHECK;
         PRECONDITION(CheckPointer(pSize, NULL_OK));
         WRAPPER(THROWS);
         WRAPPER(GC_TRIGGERS);
         MODE_ANY;
-        POSTCONDITION(CheckPointer(RETVAL, NULL_OK));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     // We cannot in general force a LoadLibrary; we might be in the
     // helper thread.  The debugger will have to expect a zero base
@@ -647,14 +623,14 @@ inline PTR_VOID PEAssembly::GetDebuggerContents(COUNT_T *pSize/*=NULL*/)
         if (pSize != NULL)
             *pSize = GetLoadedLayout()->GetSize();
 
-        RETURN GetLoadedLayout()->GetBase();
+        return GetLoadedLayout()->GetBase();
     }
     else
     {
         if (pSize != NULL)
             *pSize = 0;
 
-        RETURN NULL;
+        return NULL;
     }
 }
 
@@ -691,16 +667,15 @@ inline PTR_CVOID PEAssembly::GetLoadedImageContents(COUNT_T *pSize/*=NULL*/)
 #ifndef DACCESS_COMPILE
 inline const void *PEAssembly::GetManagedFileContents(COUNT_T *pSize/*=NULL*/)
 {
-    CONTRACT(const void *)
+    CONTRACTL
     {
         INSTANCE_CHECK;
         PRECONDITION(HasLoadedPEImage());
         WRAPPER(THROWS);
         WRAPPER(GC_TRIGGERS);
         MODE_ANY;
-        POSTCONDITION((!GetLoadedLayout()->GetSize()) || CheckPointer(RETVAL));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     // Right now, we will trigger a LoadLibrary for the caller's sake,
     // even if we are in a scenario where we could normally avoid it.
@@ -710,7 +685,7 @@ inline const void *PEAssembly::GetManagedFileContents(COUNT_T *pSize/*=NULL*/)
         *pSize = GetLoadedLayout()->GetSize();
 
 
-    RETURN GetLoadedLayout()->GetBase();
+    return GetLoadedLayout()->GetBase();
 }
 #endif // DACCESS_COMPILE
 
@@ -721,7 +696,6 @@ inline BOOL PEAssembly::IsPtrInPEImage(PTR_CVOID data)
         INSTANCE_CHECK;
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
         SUPPORTS_DAC;
     }
     CONTRACTL_END;
@@ -737,25 +711,23 @@ inline BOOL PEAssembly::IsPtrInPEImage(PTR_CVOID data)
 // ------------------------------------------------------------
 // Descriptive strings
 // ------------------------------------------------------------
+#ifndef DACCESS_COMPILE
 inline void PEAssembly::GetDisplayName(SString &result, DWORD flags)
 {
     CONTRACTL
     {
         PRECONDITION(CheckValue(result));
         THROWS;
-        GC_TRIGGERS;
+        GC_NOTRIGGER;
         MODE_ANY;
     }
     CONTRACTL_END;
 
-#ifndef DACCESS_COMPILE
     AssemblySpec spec;
     spec.InitializeSpec(this);
-    spec.GetFileOrDisplayName(flags, result);
-#else
-    DacNotImpl();
-#endif //DACCESS_COMPILE
+    spec.GetDisplayName(flags, result);
 }
+#endif //DACCESS_COMPILE
 
 // ------------------------------------------------------------
 // Metadata access
@@ -784,22 +756,6 @@ inline LPCSTR PEAssembly::GetSimpleName()
     }
     return name;
 }
-
-inline BOOL PEAssembly::IsStrongNamed()
-{
-    CONTRACTL
-    {
-        THROWS;
-        WRAPPER(GC_NOTRIGGER);
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    DWORD flags = 0;
-    IfFailThrow(GetMDImport()->GetAssemblyProps(TokenFromRid(1, mdtAssembly), NULL, NULL, NULL, NULL, NULL, &flags));
-    return (flags & afPublicKey) != NULL;
-}
-
 
 //---------------------------------------------------------------------------------------
 //
@@ -859,7 +815,6 @@ inline DWORD PEAssembly::GetFlags()
         INSTANCE_CHECK;
         if (FORBIDGC_LOADER_USE_ENABLED()) NOTHROW; else THROWS;
         if (FORBIDGC_LOADER_USE_ENABLED()) GC_NOTRIGGER; else GC_TRIGGERS;
-        if (FORBIDGC_LOADER_USE_ENABLED()) FORBID_FAULT; else { INJECT_FAULT(COMPlusThrowOM()); }
         MODE_ANY;
     }
     CONTRACTL_END;

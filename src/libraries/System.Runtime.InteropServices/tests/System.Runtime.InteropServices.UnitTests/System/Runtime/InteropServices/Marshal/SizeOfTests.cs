@@ -28,14 +28,26 @@ namespace System.Runtime.InteropServices.Tests
         [Fact]
         public void SizeOf_Object_ReturnsExpected()
         {
-            SomeTestStruct someTestStruct = new SomeTestStruct();
-            Assert.NotEqual(0, Marshal.SizeOf(someTestStruct.GetType()));
+            Assert.NotEqual(0, Marshal.SizeOf(typeof(SomeTestStruct)));
+        }
+
+        [Fact]
+        public unsafe void SizeOf_FunctionPointer_ReturnsExpected()
+        {
+            Assert.Equal(IntPtr.Size, Marshal.SizeOf(typeof(delegate*<void>)));
         }
 
         [Fact]
         public void SizeOf_Pointer_ReturnsExpected()
         {
             Assert.Equal(IntPtr.Size, Marshal.SizeOf(typeof(int).MakePointerType()));
+        }
+
+        [Fact]
+        public void SizeOf_Primitives_ReturnsExpected()
+        {
+            Assert.Equal(1, Marshal.SizeOf<char>());
+            Assert.Equal(4, Marshal.SizeOf<bool>());
         }
 
         [Fact]
@@ -78,16 +90,20 @@ namespace System.Runtime.InteropServices.Tests
 
             yield return new object[] { typeof(GenericClass<>).GetTypeInfo().GenericTypeParameters[0], null };
 
-            AssemblyBuilder assemblyBuilder = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("Assembly"), AssemblyBuilderAccess.Run);
-            ModuleBuilder moduleBuilder = assemblyBuilder.DefineDynamicModule("Module");
-            TypeBuilder typeBuilder = moduleBuilder.DefineType("Type");
-            yield return new object[] { typeBuilder, "t" };
+            if (PlatformDetection.IsReflectionEmitSupported)
+            {
+                AssemblyBuilder assemblyBuilder = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("Assembly"), AssemblyBuilderAccess.Run);
+                ModuleBuilder moduleBuilder = assemblyBuilder.DefineDynamicModule("Module");
+                TypeBuilder typeBuilder = moduleBuilder.DefineType("Type");
+                yield return new object[] { typeBuilder, "t" };
+            }
 
             yield return new object[] { typeof(TestStructWithFxdLPSTRSAFld), null };
             yield return new object[] { typeof(int[]), null };
         }
 
         [Theory]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/75666", typeof(PlatformDetection), nameof(PlatformDetection.IsNativeAot))]
         [ActiveIssue("https://github.com/mono/mono/issues/15087", TestRuntimes.Mono)]
         [MemberData(nameof(SizeOf_InvalidType_TestData))]
         public void SizeOf_InvalidType_ThrowsArgumentException(Type type, string paramName)

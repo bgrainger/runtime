@@ -3,7 +3,7 @@
 
 using Xunit;
 using System.Collections.Generic;
-using System.Diagnostics;
+using System.Linq;
 
 namespace System.Diagnostics.Tests
 {
@@ -21,7 +21,7 @@ namespace System.Diagnostics.Tests
                 KeyValuePair<string, object?>[] array = new KeyValuePair<string, object?>[tagList.Count];
                 tagList.CopyTo(array);
                 TagList list = new TagList(array.AsSpan());
-                ValidateTags(in tagList, i);
+                ValidateTags(in list, i);
             }
         }
 
@@ -83,6 +83,9 @@ namespace System.Diagnostics.Tests
                 array = new KeyValuePair<string, object?>[tagList.Count];
                 tagList.CopyTo(array);
                 ValidateTags(tagList, array);
+                array = new KeyValuePair<string, object?>[tagList.Count];
+                ((ICollection<KeyValuePair<string, object?>>)tagList).CopyTo(array, 0);
+                ValidateTags(tagList, array);
             }
         }
 
@@ -105,7 +108,7 @@ namespace System.Diagnostics.Tests
                 Assert.Equal(i, list[i].Value);
             }
 
-            // Insert at begining
+            // Insert at beginning
             int count = list.Count;
             for (int i = 1; i < 10; i++)
             {
@@ -279,6 +282,31 @@ namespace System.Diagnostics.Tests
         }
 
         [Fact]
+        public void TestEmptyTagListCopyTo()
+        {
+            TagList emptyList = new TagList();
+            Assert.Equal(0, emptyList.Count);
+
+            KeyValuePair<string, object?>[] emptyArray = Array.Empty<KeyValuePair<string, object?>>();
+            emptyList.CopyTo(emptyArray, 0);
+            emptyList.CopyTo(emptyArray.AsSpan());
+            emptyList.CopyTo(emptyArray);
+
+            KeyValuePair<string, object?>[] nonEmptyArray = new KeyValuePair<string, object?>[3];
+            emptyList.CopyTo(nonEmptyArray, 0);
+            emptyList.CopyTo(nonEmptyArray, 2);
+            emptyList.CopyTo(nonEmptyArray, 3);
+            emptyList.CopyTo(nonEmptyArray.AsSpan());
+            emptyList.CopyTo(nonEmptyArray);
+
+            Assert.Throws<ArgumentOutOfRangeException>(() => emptyList.CopyTo(nonEmptyArray, -1));
+            Assert.Throws<ArgumentOutOfRangeException>(() => emptyList.CopyTo(nonEmptyArray, 4));
+
+            KeyValuePair<string, object?>[] result = emptyList.ToArray();
+            Assert.Empty(result);
+        }
+
+        [Fact]
         public void TestNegativeCases()
         {
             TagList list = new TagList { new KeyValuePair<string, object?>("1", 1), new KeyValuePair<string, object?>("2", 2) } ;
@@ -303,7 +331,7 @@ namespace System.Diagnostics.Tests
             Assert.Throws<ArgumentOutOfRangeException>(() => list.RemoveAt(2));
         }
 
-        private void ValidateTags(in TagList tagList, KeyValuePair<string, object?>[] array)
+        internal static void ValidateTags(in TagList tagList, KeyValuePair<string, object?>[] array)
         {
             Assert.True(tagList.Count <= array.Length);
             for (int i = 0; i < tagList.Count; i++)
@@ -313,7 +341,7 @@ namespace System.Diagnostics.Tests
             }
         }
 
-        private void ValidateTags(in TagList tagList, int tagsCount)
+        internal static void ValidateTags(in TagList tagList, int tagsCount)
         {
             Assert.Equal(tagsCount, tagList.Count);
             for (int i = 0; i < tagList.Count; i++)
@@ -323,7 +351,7 @@ namespace System.Diagnostics.Tests
             }
         }
 
-        private void CreateTagList(int tagsCount, out TagList tagList)
+        internal static void CreateTagList(int tagsCount, out TagList tagList)
         {
             tagList = new TagList();
             for (int i = 0; i < tagsCount; i++)
@@ -333,5 +361,3 @@ namespace System.Diagnostics.Tests
         }
     }
 }
-
-

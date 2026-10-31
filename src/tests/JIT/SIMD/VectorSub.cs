@@ -4,8 +4,11 @@
 
 using System;
 using System.Numerics;
+using Xunit;
 
-internal partial class VectorTest
+namespace SIMDTests.VectorSubTests;
+
+public partial class VectorTest : VectorTestBase
 {
     private const int Pass = 100;
     private const int Fail = -1;
@@ -66,7 +69,8 @@ internal partial class VectorTest
             return Pass;
         }
     }
-    private static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         int returnVal = Pass;
         if (VectorSubTest<float>.VectorSub(3, 2, (float)(3 - 2)) != Pass) returnVal = Fail;

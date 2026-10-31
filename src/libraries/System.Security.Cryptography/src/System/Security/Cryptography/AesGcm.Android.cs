@@ -10,11 +10,13 @@ namespace System.Security.Cryptography
     public sealed partial class AesGcm
     {
         private SafeEvpCipherCtxHandle _ctxHandle;
+        private static readonly KeySizes s_tagByteSizes = new KeySizes(12, 16, 1);
 
-        public static bool IsSupported => true;
+        public static partial bool IsSupported => true;
+        public static partial KeySizes TagByteSizes => s_tagByteSizes;
 
         [MemberNotNull(nameof(_ctxHandle))]
-        private void ImportKey(ReadOnlySpan<byte> key)
+        private partial void ImportKey(ReadOnlySpan<byte> key)
         {
             // Convert key length to bits.
             _ctxHandle = Interop.Crypto.EvpCipherCreatePartial(GetCipher(key.Length * 8));
@@ -23,17 +25,17 @@ namespace System.Security.Cryptography
             Interop.Crypto.EvpCipherSetKeyAndIV(
                 _ctxHandle,
                 key,
-                Span<byte>.Empty,
+                ReadOnlySpan<byte>.Empty,
                 Interop.Crypto.EvpCipherDirection.NoChange);
             Interop.Crypto.CipherSetNonceLength(_ctxHandle, NonceSize);
         }
 
-        private void EncryptCore(
+        private partial void EncryptCore(
             ReadOnlySpan<byte> nonce,
             ReadOnlySpan<byte> plaintext,
             Span<byte> ciphertext,
             Span<byte> tag,
-            ReadOnlySpan<byte> associatedData = default)
+            ReadOnlySpan<byte> associatedData)
         {
 
             if (!Interop.Crypto.CipherSetTagLength(_ctxHandle, tag.Length))
@@ -43,7 +45,7 @@ namespace System.Security.Cryptography
 
             Interop.Crypto.EvpCipherSetKeyAndIV(
                 _ctxHandle,
-                Span<byte>.Empty,
+                ReadOnlySpan<byte>.Empty,
                 nonce,
                 Interop.Crypto.EvpCipherDirection.Encrypt);
 
@@ -55,7 +57,8 @@ namespace System.Security.Cryptography
             byte[]? rented = null;
             try
             {
-                Span<byte> ciphertextAndTag = stackalloc byte[0];
+                scoped Span<byte> ciphertextAndTag;
+
                 // Arbitrary limit.
                 const int StackAllocMax = 128;
                 if (checked(ciphertext.Length + tag.Length) <= StackAllocMax)
@@ -73,11 +76,13 @@ namespace System.Security.Cryptography
                     throw new CryptographicException();
                 }
 
-                if (!Interop.Crypto.EvpCipherFinalEx(
+                if (!Interop.Crypto.EvpAeadCipherFinalEx(
                     _ctxHandle,
                     ciphertextAndTag.Slice(ciphertextBytesWritten),
-                    out int bytesWritten))
+                    out int bytesWritten,
+                    out bool authTagMismatch))
                 {
+                    Debug.Assert(!authTagMismatch);
                     throw new CryptographicException();
                 }
 
@@ -103,7 +108,7 @@ namespace System.Security.Cryptography
             }
         }
 
-        private void DecryptCore(
+        private partial void DecryptCore(
             ReadOnlySpan<byte> nonce,
             ReadOnlySpan<byte> ciphertext,
             ReadOnlySpan<byte> tag,
@@ -140,13 +145,20 @@ namespace System.Security.Cryptography
 
             plaintextBytesWritten += bytesWritten;
 
-            if (!Interop.Crypto.EvpCipherFinalEx(
+            if (!Interop.Crypto.EvpAeadCipherFinalEx(
                 _ctxHandle,
                 plaintext.Slice(plaintextBytesWritten),
-                out bytesWritten))
+                out bytesWritten,
+                out bool authTagMismatch))
             {
                 CryptographicOperations.ZeroMemory(plaintext);
-                throw new CryptographicException(SR.Cryptography_AuthTagMismatch);
+
+                if (authTagMismatch)
+                {
+                    throw new AuthenticationTagMismatchException();
+                }
+
+                throw new CryptographicException(SR.Arg_CryptographyException);
             }
 
             plaintextBytesWritten += bytesWritten;
@@ -162,14 +174,14 @@ namespace System.Security.Cryptography
         {
             return keySizeInBits switch
             {
-                 128 => Interop.Crypto.EvpAes128Gcm(),
-                 192 => Interop.Crypto.EvpAes192Gcm(),
-                 256 => Interop.Crypto.EvpAes256Gcm(),
-                 _ => IntPtr.Zero
+                128 => Interop.Crypto.EvpAes128Gcm(),
+                192 => Interop.Crypto.EvpAes192Gcm(),
+                256 => Interop.Crypto.EvpAes256Gcm(),
+                _ => IntPtr.Zero
             };
         }
 
-        public void Dispose()
+        public partial void Dispose()
         {
             _ctxHandle.Dispose();
         }

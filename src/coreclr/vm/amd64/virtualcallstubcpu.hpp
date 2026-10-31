@@ -17,8 +17,6 @@
 
 #include "dbginterface.h"
 
-//#define STUB_LOGGING
-
 #pragma pack(push, 1)
 // since we are placing code, we want byte packing of the structs
 
@@ -126,86 +124,171 @@ a DispatchStubLong which is bigger but is a full 64-bit jump. */
 
 /*DispatchStubShort*********************************************************************************
 This is the logical continuation of DispatchStub for the case when the failure target is within
-a rel32 jump (DISPL). */
+a rel32 jump (DISPL). Uses a union to handle both legacy and APX encodings. */
 struct DispatchStubShort
 {
     friend struct DispatchHolder;
     friend struct DispatchStub;
 
     static BOOL isShortStub(LPCBYTE pCode);
-    inline PCODE implTarget() const { LIMITED_METHOD_CONTRACT;  return (PCODE) _implTarget; }
+
+    inline PCODE implTarget() const
+    {
+        LIMITED_METHOD_CONTRACT;
+        return IsJmpAbsAvailable() ? (PCODE)_apx._implTarget : (PCODE)_legacy._implTarget;
+    }
 
     inline TADDR implTargetSlot() const
     {
         LIMITED_METHOD_CONTRACT;
-        return (TADDR)&_implTarget;
+        return IsJmpAbsAvailable() ? (TADDR)&_apx._implTarget : (TADDR)&_legacy._implTarget;
     }
 
-    inline PCODE failTarget() const { LIMITED_METHOD_CONTRACT;  return (PCODE) &_failDispl + sizeof(DISPL) + _failDispl; }
+    inline PCODE failTarget() const
+    {
+        LIMITED_METHOD_CONTRACT;
+        if (IsJmpAbsAvailable())
+        {
+            // APX: displacement base after the jne instruction
+            return (PCODE)&_apx._failDispl + sizeof(DISPL) + _apx._failDispl;
+        }
+        else
+        {
+            // Legacy: displacement base after the jne instruction
+            return (PCODE)&_legacy._failDispl + sizeof(DISPL) + _legacy._failDispl;
+        }
+    }
 
 private:
-    BYTE    part1 [2];            // 48 B8                    mov    rax,
-    size_t  _implTarget;          // xx xx xx xx xx xx xx xx              64-bit address
-    BYTE    part2[2];             // 0f 85                    jne
-    DISPL   _failDispl;           // xx xx xx xx                     failEntry         ;must be forward jmp for perf reasons
-    BYTE    part3 [2];            // FF E0                    jmp    rax
+    // _implTarget is backpatched atomically, so it must be 8-byte aligned.
+    union
+    {
+        struct
+        {
+            BYTE    nop;              // 90                       nop      ; aligns _implTarget
+            BYTE    part1[2];         // 48 B8                    mov    rax,
+            size_t  _implTarget;      // xx xx xx xx xx xx xx xx              64-bit address at +3
+            BYTE    part2[2];         // 0F 85                    jne
+            DISPL   _failDispl;       // xx xx xx xx                     failEntry
+            BYTE    part3[2];         // FF E0                    jmp    rax
+        } _legacy;
+
+        struct
+        {
+            BYTE    nop[2];           // 66 90                    nop      ; aligns _implTarget
+            BYTE    part1[2];         // 0F 85                    jne near
+            DISPL   _failDispl;       // xx xx xx xx                     4-byte displacement
+            BYTE    jmpabsPrefix[3];  // D5 00 A1                 jmpabs
+            size_t  _implTarget;      // xx xx xx xx xx xx xx xx              64-bit address at +11
+        } _apx;
+
+    };
 };
 
-#define DispatchStubShort_offsetof_failDisplBase (offsetof(DispatchStubLong, _failDispl) + sizeof(DISPL))
+#define DispatchStubShort_offsetof_failDisplBase (offsetof(DispatchStubShort, _legacy._failDispl) + sizeof(DISPL))
 
 inline BOOL DispatchStubShort::isShortStub(LPCBYTE pCode)
 {
-    LIMITED_METHOD_CONTRACT;
-    return reinterpret_cast<DispatchStubShort const *>(pCode)->part2[0] == 0x0f;
+    LIMITED_METHOD_DAC_CONTRACT;
+
+    if (IsJmpAbsAvailable())
+    {
+        // APX short opens with nop2 (66 90), long with jne near (0F 85). Test byte 1, not byte 0:
+        // byte 0 is an instruction boundary and a breakpoint would overwrite it with int3.
+        return pCode[1] == 0x90;
+    }
+
+    // Legacy: both open with nop; mov rax, imm64; the jne that follows differs (0F 85 vs 75).
+    return reinterpret_cast<DispatchStubShort const *>(pCode)->_legacy.part2[0] == 0x0F;
 }
 
 
 /*DispatchStubLong**********************************************************************************
 This is the logical continuation of DispatchStub for the case when the failure target is not
-reachable by a rel32 jump (DISPL). */
+reachable by a rel32 jump (DISPL). Uses a union to handle both legacy and APX encodings. */
 struct DispatchStubLong
 {
     friend struct DispatchHolder;
     friend struct DispatchStub;
 
     static inline BOOL isLongStub(LPCBYTE pCode);
-    inline PCODE implTarget() const { LIMITED_METHOD_CONTRACT;  return (PCODE) _implTarget; }
+    inline PCODE implTarget() const
+    {
+        LIMITED_METHOD_CONTRACT;
+        return IsJmpAbsAvailable() ? (PCODE)_apx._implTarget : (PCODE)_legacy._implTarget;
+    }
 
     inline TADDR implTargetSlot() const
     {
         LIMITED_METHOD_CONTRACT;
-        return (TADDR)&_implTarget;
+        return IsJmpAbsAvailable() ? (TADDR)&_apx._implTarget : (TADDR)&_legacy._implTarget;
     }
 
-    inline PCODE failTarget() const { LIMITED_METHOD_CONTRACT;  return (PCODE) _failTarget; }
+    inline PCODE failTarget() const
+    {
+        LIMITED_METHOD_CONTRACT;
+        return IsJmpAbsAvailable() ? (PCODE)_apx._failTarget : (PCODE)_legacy._failTarget;
+    }
 
 private:
-    BYTE    part1[2];             // 48 B8                    mov    rax,
-    size_t  _implTarget;          // xx xx xx xx xx xx xx xx              64-bit address
-    BYTE    part2 [1];            // 75                       jne
-    BYTE    _failDispl;           //    xx                           failLabel
-    BYTE    part3 [2];            // FF E0                    jmp    rax
-    // failLabel:
-    BYTE    part4 [2];            // 48 B8                    mov    rax,
-    size_t  _failTarget;          // xx xx xx xx xx xx xx xx              64-bit address
-    BYTE    part5 [2];            // FF E0                    jmp    rax
+    // Padding aligns _implTarget as in DispatchStubShort.
+    union
+    {
+        struct
+        {
+            BYTE    nop;              // 90                       nop      ; aligns _implTarget
+            BYTE    part1[2];         // 48 B8                    mov    rax,
+            size_t  _implTarget;      // xx xx xx xx xx xx xx xx              64-bit address at +3
+            BYTE    part2 [1];        // 75                       jne
+            BYTE    _failDispl;       //    xx                           failLabel
+            BYTE    part3 [2];        // FF E0                    jmp    rax
+            // failLabel:
+            BYTE    part4 [2];        // 48 B8                    mov    rax,
+            size_t  _failTarget;      // xx xx xx xx xx xx xx xx              64-bit address
+            BYTE    part5 [2];        // FF E0                    jmp    rax
+            BYTE    pad[8];           // CC ...                   unreachable padding
+        } _legacy;
+
+        struct
+        {
+            BYTE    part1[2];            // 0F 85                 jne near
+            DISPL   _failDispl;          // xx xx xx xx                  failLabel
+            BYTE    nop[2];              // 66 90                 nop      ; aligns _implTarget
+            BYTE    jmpabsPrefix[3];     // D5 00 A1              jmpabs
+            size_t  _implTarget;         // xx xx xx xx xx xx xx xx           64-bit address at +11
+            // failLabel:
+            BYTE    failJmpabsPrefix[3]; // D5 00 A1              jmpabs
+            size_t  _failTarget;         // xx xx xx xx xx xx xx xx           64-bit address
+            BYTE    pad[5];              // CC ...                unreachable padding
+        } _apx;
+
+    };
 };
 
-#define DispatchStubLong_offsetof_failDisplBase (offsetof(DispatchStubLong, _failDispl) + sizeof(BYTE))
-#define DispatchStubLong_offsetof_failLabel (offsetof(DispatchStubLong, part4[0]))
+#define DispatchStubLong_offsetof_failDisplBase (offsetof(DispatchStubLong, _legacy._failDispl) + sizeof(BYTE))
+#define DispatchStubLong_offsetof_failLabel (offsetof(DispatchStubLong, _legacy.part4[0]))
+
+#define DispatchStubLong_offsetof_apx_failDisplBase (offsetof(DispatchStubLong, _apx.nop))
+#define DispatchStubLong_offsetof_apx_failLabel (offsetof(DispatchStubLong, _apx.failJmpabsPrefix))
 
 inline BOOL DispatchStubLong::isLongStub(LPCBYTE pCode)
 {
-    LIMITED_METHOD_CONTRACT;
-    return reinterpret_cast<DispatchStubLong const *>(pCode)->part2[0] == 0x75;
+    LIMITED_METHOD_DAC_CONTRACT;
+
+    if (IsJmpAbsAvailable())
+    {
+        return pCode[1] == 0x85;
+    }
+
+    return reinterpret_cast<DispatchStubLong const *>(pCode)->_legacy.part2[0] == 0x75;
 }
 
 /*DispatchStub**************************************************************************************
 Monomorphic and mostly monomorphic call sites eventually point to DispatchStubs.
 A dispatch stub has an expected type (expectedMT), target address (target) and fail address (failure).
 If the calling frame does in fact have the <this> type be of the expected type, then
-control is transfered to the target address, the method implementation.  If not,
-then control is transfered to the fail address, a fail stub (see below) where a polymorphic
+control is transferred to the target address, the method implementation.  If not,
+then control is transferred to the fail address, a fail stub (see below) where a polymorphic
 lookup is done to find the correct address to go to.
 
 implementation note: Order, choice of instructions, and branch directions
@@ -214,7 +297,7 @@ attention needs to be paid to the effects on the BTB and branch prediction, both
 and in the large, i.e. it needs to run well in the face of BTB overflow--using static predictions.
 Note that since this stub is only used for mostly monomorphic callsites (ones that are not, get patched
 to something else), therefore the conditional jump "jne failure" is mostly not taken, and hence it is important
-that the branch prediction staticly predict this, which means it must be a forward jump.  The alternative
+that the branch prediction statically predict this, which means it must be a forward jump.  The alternative
 is to reverse the order of the jumps and make sure that the resulting conditional jump "je implTarget"
 is statically predicted as taken, i.e a backward jump. The current choice was taken since it was easier
 to control the placement of the stubs than control the placement of the jitted code and the stubs. */
@@ -286,7 +369,6 @@ private:
     BYTE    _entryPoint [2];      // 48 B8                    mov    rax,
     size_t  _expectedMT;          // xx xx xx xx xx xx xx xx              64-bit address
     BYTE    part1 [3];            // 48 39 XX                 cmp    [THIS_REG], rax
-    BYTE    nopOp;                // 90                       nop                      ; 1-byte nop to align _implTarget
 
     // Followed by either DispatchStubShort or DispatchStubLong, depending
     // on whether we were able to make a rel32 or had to make an abs64 jump
@@ -326,9 +408,21 @@ struct DispatchHolder
     static BOOL CanShortJumpDispatchStubReachFailTarget(PCODE failTarget, LPCBYTE stubMemory)
     {
         STATIC_CONTRACT_WRAPPER;
-        LPCBYTE pFrom = stubMemory + sizeof(DispatchStub) + DispatchStubShort_offsetof_failDisplBase;
-        size_t cbRelJump = failTarget - (PCODE)pFrom;
-        return FitsInI4(cbRelJump);
+
+        if (IsJmpAbsAvailable())
+        {
+            // APX
+            LPCBYTE pFrom = stubMemory + sizeof(DispatchStub) + offsetof(DispatchStubShort, _apx.jmpabsPrefix);
+            size_t cbRelJump = failTarget - (PCODE)pFrom;
+            return FitsInI4(cbRelJump);
+        }
+        else
+        {
+            // Legacy encoding
+            LPCBYTE pFrom = stubMemory + sizeof(DispatchStub) + DispatchStubShort_offsetof_failDisplBase;
+            size_t cbRelJump = failTarget - (PCODE)pFrom;
+            return FitsInI4(cbRelJump);
+        }
     }
 
     DispatchStub* stub()      { LIMITED_METHOD_CONTRACT;  return reinterpret_cast<DispatchStub *>(this); }
@@ -362,7 +456,7 @@ transfers to the resolve piece (see ResolveStub).  The failEntryPoint decrements
 every time it is entered.  The ee at various times will add a large chunk to the counter.
 
 ResolveEntry - does a lookup via in a cache by hashing the actual type of the calling frame s
-<this> and the token identifying the (contract,method) pair desired.  If found, control is transfered
+<this> and the token identifying the (contract,method) pair desired.  If found, control is transferred
 to the method implementation.  If not found in the cache, the token is pushed and the ee is entered via
 the ResolveWorkerStub to do a full lookup and eventual transfer to the correct method implementation.  Since
 there is a different resolve stub for every token, the token can be inlined and the token can be pre-hashed.
@@ -393,16 +487,17 @@ struct ResolveStub
     inline UINT32 hashedToken()         { LIMITED_METHOD_CONTRACT; return _hashedToken >> LOG2_PTRSIZE;    }
     inline size_t cacheAddress()        { LIMITED_METHOD_CONTRACT; return _cacheAddress;   }
     inline size_t token()               { LIMITED_METHOD_CONTRACT; return _token;          }
-    inline size_t size()                { LIMITED_METHOD_CONTRACT; return sizeof(LookupStub); }
+    inline size_t size()                { LIMITED_METHOD_CONTRACT; return sizeof(ResolveStub); }
 
 private:
     friend struct ResolveHolder;
 
-    BYTE    _resolveEntryPoint[3];//                resolveStub:
+    BYTE    _resolveEntryPoint[6];//                resolveStub:
+                                  // 48 8B XX                 mov    rax, [THIS_REG]
                                   // 52                       push   rdx
                                   // 49 BA                    mov    r10,
     size_t  _cacheAddress;        // xx xx xx xx xx xx xx xx              64-bit address
-    BYTE    part1 [15];           // 48 8B XX                 mov    rax, [THIS_REG]     ; Compute hash = ((MT + MT>>12) ^ prehash)
+    BYTE    part1 [12];           //                                                     ; Compute hash = ((MT + MT>>12) ^ prehash)
                                   // 48 8B D0                 mov    rdx, rax            ; rdx <- current MethodTable
                                   // 48 C1 E8 0C              shr    rax, 12
                                   // 48 03 C2                 add    rax, rdx
@@ -453,7 +548,7 @@ struct ResolveHolder
 {
     static void  InitializeStatic();
 
-    void  Initialize(ResolveHolder* pResolveHolderRX, 
+    void  Initialize(ResolveHolder* pResolveHolderRX,
                      PCODE resolveWorkerTarget, PCODE patcherTarget,
                      size_t dispatchToken, UINT32 hashedToken,
                      void * cacheAddr, INT32* counterAddr);
@@ -557,7 +652,7 @@ extern size_t g_miss_cache_counter;
 
 void LookupHolder::InitializeStatic()
 {
-    static_assert_no_msg((sizeof(LookupHolder) % sizeof(void*)) == 0);
+    static_assert((sizeof(LookupHolder) % sizeof(void*)) == 0);
 
     // The first instruction of a LookupStub is nop
     // and we use it in order to differentiate the first two bytes
@@ -591,12 +686,15 @@ void  LookupHolder::Initialize(LookupHolder* pLookupHolderRX, PCODE resolveWorke
 void DispatchHolder::InitializeStatic()
 {
     // Check that _implTarget is aligned in the DispatchStub for backpatching
-    static_assert_no_msg(((sizeof(DispatchStub) + offsetof(DispatchStubShort, _implTarget)) % sizeof(void *)) == 0);
-    static_assert_no_msg(((sizeof(DispatchStub) + offsetof(DispatchStubLong, _implTarget)) % sizeof(void *)) == 0);
+    static_assert(((sizeof(DispatchStub) + offsetof(DispatchStubShort, _legacy._implTarget)) % sizeof(void *)) == 0);
+    static_assert(((sizeof(DispatchStub) + offsetof(DispatchStubShort, _apx._implTarget)) % sizeof(void *)) == 0);
+    static_assert(((sizeof(DispatchStub) + offsetof(DispatchStubLong, _legacy._implTarget)) % sizeof(void *)) == 0);
+    static_assert(((sizeof(DispatchStub) + offsetof(DispatchStubLong, _apx._implTarget)) % sizeof(void *)) == 0);
+    static_assert((DispatchStubLong_offsetof_failLabel - DispatchStubLong_offsetof_failDisplBase) < INT8_MAX);
 
-    static_assert_no_msg(((sizeof(DispatchStub) + sizeof(DispatchStubShort)) % sizeof(void*)) == 0);
-    static_assert_no_msg(((sizeof(DispatchStub) + sizeof(DispatchStubLong)) % sizeof(void*)) == 0);
-    static_assert_no_msg((DispatchStubLong_offsetof_failLabel - DispatchStubLong_offsetof_failDisplBase) < INT8_MAX);
+    // Each stub must fit its CODE_SIZE_ALIGN slot (16-byte granularity).
+    static_assert((sizeof(DispatchStub) + sizeof(DispatchStubShort)) == 32);
+    static_assert((sizeof(DispatchStub) + sizeof(DispatchStubLong)) == 48);
 
     // Common dispatch stub initialization
     dispatchInit._entryPoint [0]      = 0x48;
@@ -605,32 +703,65 @@ void DispatchHolder::InitializeStatic()
     dispatchInit.part1 [0]            = X64_INSTR_CMP_IND_THIS_REG_RAX & 0xff;
     dispatchInit.part1 [1]            = (X64_INSTR_CMP_IND_THIS_REG_RAX >> 8) & 0xff;
     dispatchInit.part1 [2]            = (X64_INSTR_CMP_IND_THIS_REG_RAX >> 16) & 0xff;
-    dispatchInit.nopOp                = 0x90;
 
-    // Short dispatch stub initialization
-    dispatchShortInit.part1 [0]       = 0x48;
-    dispatchShortInit.part1 [1]       = 0xb8;
-    dispatchShortInit._implTarget     = 0xcccccccccccccccc;
-    dispatchShortInit.part2 [0]       = 0x0F;
-    dispatchShortInit.part2 [1]       = 0x85;
-    dispatchShortInit._failDispl      = 0xcccccccc;
-    dispatchShortInit.part3 [0]       = 0xFF;
-    dispatchShortInit.part3 [1]       = 0xE0;
+    if (IsJmpAbsAvailable())
+    {
+        // Short dispatch stub initialization (APX encoding)
+        dispatchShortInit._apx.nop [0]                = 0x66;
+        dispatchShortInit._apx.nop [1]                = INSTR_NOP;
+        dispatchShortInit._apx.part1 [0]              = 0x0F;
+        dispatchShortInit._apx.part1 [1]              = 0x85;
+        dispatchShortInit._apx._failDispl             = 0xcccccccc;
+        dispatchShortInit._apx.jmpabsPrefix [0]       = 0xD5;
+        dispatchShortInit._apx.jmpabsPrefix [1]       = 0x00;
+        dispatchShortInit._apx.jmpabsPrefix [2]       = 0xA1;
+        dispatchShortInit._apx._implTarget            = 0xcccccccccccccccc;
 
-    // Long dispatch stub initialization
-    dispatchLongInit.part1 [0]        = 0x48;
-    dispatchLongInit.part1 [1]        = 0xb8;
-    dispatchLongInit._implTarget      = 0xcccccccccccccccc;
-    dispatchLongInit.part2 [0]        = 0x75;
-    dispatchLongInit._failDispl       = BYTE(DispatchStubLong_offsetof_failLabel - DispatchStubLong_offsetof_failDisplBase);
-    dispatchLongInit.part3 [0]        = 0xFF;
-    dispatchLongInit.part3 [1]        = 0xE0;
-        // failLabel:
-    dispatchLongInit.part4 [0]        = 0x48;
-    dispatchLongInit.part4 [1]        = 0xb8;
-    dispatchLongInit._failTarget      = 0xcccccccccccccccc;
-    dispatchLongInit.part5 [0]        = 0xFF;
-    dispatchLongInit.part5 [1]        = 0xE0;
+        // Long dispatch stub initialization (APX encoding)
+        dispatchLongInit._apx.part1 [0]               = 0x0F;
+        dispatchLongInit._apx.part1 [1]               = 0x85;
+        dispatchLongInit._apx._failDispl              = (DISPL)(DispatchStubLong_offsetof_apx_failLabel - DispatchStubLong_offsetof_apx_failDisplBase);
+        dispatchLongInit._apx.nop [0]                 = 0x66;
+        dispatchLongInit._apx.nop [1]                 = INSTR_NOP;
+        dispatchLongInit._apx.jmpabsPrefix [0]        = 0xD5;
+        dispatchLongInit._apx.jmpabsPrefix [1]        = 0x00;
+        dispatchLongInit._apx.jmpabsPrefix [2]        = 0xA1;
+        dispatchLongInit._apx._implTarget             = 0xcccccccccccccccc;
+        dispatchLongInit._apx.failJmpabsPrefix [0]    = 0xD5;
+        dispatchLongInit._apx.failJmpabsPrefix [1]    = 0x00;
+        dispatchLongInit._apx.failJmpabsPrefix [2]    = 0xA1;
+        dispatchLongInit._apx._failTarget             = 0xcccccccccccccccc;
+        memset(dispatchLongInit._apx.pad, INSTR_INT3, sizeof(dispatchLongInit._apx.pad));
+    }
+    else
+    {
+        // Short dispatch stub initialization (legacy encoding)
+        dispatchShortInit._legacy.nop             = INSTR_NOP;
+        dispatchShortInit._legacy.part1 [0]       = 0x48;
+        dispatchShortInit._legacy.part1 [1]       = 0xb8;
+        dispatchShortInit._legacy._implTarget     = 0xcccccccccccccccc;
+        dispatchShortInit._legacy.part2 [0]       = 0x0F;
+        dispatchShortInit._legacy.part2 [1]       = 0x85;
+        dispatchShortInit._legacy._failDispl      = 0xcccccccc;
+        dispatchShortInit._legacy.part3 [0]       = 0xFF;
+        dispatchShortInit._legacy.part3 [1]       = 0xE0;
+
+        // Long dispatch stub initialization (legacy encoding)
+        dispatchLongInit._legacy.nop              = INSTR_NOP;
+        dispatchLongInit._legacy.part1 [0]        = 0x48;
+        dispatchLongInit._legacy.part1 [1]        = 0xb8;
+        dispatchLongInit._legacy._implTarget      = 0xcccccccccccccccc;
+        dispatchLongInit._legacy.part2 [0]        = 0x75;
+        dispatchLongInit._legacy._failDispl       = BYTE(DispatchStubLong_offsetof_failLabel - DispatchStubLong_offsetof_failDisplBase);
+        dispatchLongInit._legacy.part3 [0]        = 0xFF;
+        dispatchLongInit._legacy.part3 [1]        = 0xE0;
+        dispatchLongInit._legacy.part4 [0]        = 0x48;
+        dispatchLongInit._legacy.part4 [1]        = 0xb8;
+        dispatchLongInit._legacy._failTarget      = 0xcccccccccccccccc;
+        dispatchLongInit._legacy.part5 [0]        = 0xFF;
+        dispatchLongInit._legacy.part5 [1]        = 0xE0;
+        memset(dispatchLongInit._legacy.pad, INSTR_INT3, sizeof(dispatchLongInit._legacy.pad));
+    }
 };
 
 void  DispatchHolder::Initialize(DispatchHolder* pDispatchHolderRX, PCODE implTarget, PCODE failTarget, size_t expectedMT,
@@ -658,11 +789,22 @@ void  DispatchHolder::Initialize(DispatchHolder* pDispatchHolderRX, PCODE implTa
         *shortStubRW = dispatchShortInit;
 
         // fill in the dynamic data
-        size_t displ = (failTarget - ((PCODE) &shortStubRX->_failDispl + sizeof(DISPL)));
-        CONSISTENCY_CHECK(FitsInI4(displ));
-        shortStubRW->_failDispl   = (DISPL) displ;
-        shortStubRW->_implTarget  = (size_t) implTarget;
-        CONSISTENCY_CHECK((PCODE)&shortStubRX->_failDispl + sizeof(DISPL) + shortStubRX->_failDispl == failTarget);
+        if (IsJmpAbsAvailable())
+        {
+            size_t displ = failTarget - (PCODE)&shortStubRX->_apx.jmpabsPrefix;
+            CONSISTENCY_CHECK(FitsInI4(displ));
+            shortStubRW->_apx._failDispl  = (DISPL)displ;
+            shortStubRW->_apx._implTarget = (size_t)implTarget;
+            CONSISTENCY_CHECK((PCODE)&shortStubRX->_apx.jmpabsPrefix + shortStubRW->_apx._failDispl == failTarget);
+        }
+        else
+        {
+            size_t displ = failTarget - ((PCODE)&shortStubRX->_legacy._failDispl + sizeof(DISPL));
+            CONSISTENCY_CHECK(FitsInI4(displ));
+            shortStubRW->_legacy._failDispl  = (DISPL)displ;
+            shortStubRW->_legacy._implTarget = (size_t)implTarget;
+            CONSISTENCY_CHECK((PCODE)&shortStubRX->_legacy._failDispl + sizeof(DISPL) + shortStubRW->_legacy._failDispl == failTarget);
+        }
     }
     else
     {
@@ -673,8 +815,16 @@ void  DispatchHolder::Initialize(DispatchHolder* pDispatchHolderRX, PCODE implTa
         *longStub = dispatchLongInit;
 
         // fill in the dynamic data
-        longStub->_implTarget = implTarget;
-        longStub->_failTarget = failTarget;
+        if (IsJmpAbsAvailable())
+        {
+            longStub->_apx._implTarget = implTarget;
+            longStub->_apx._failTarget = failTarget;
+        }
+        else
+        {
+            longStub->_legacy._implTarget = implTarget;
+            longStub->_legacy._failTarget = failTarget;
+        }
     }
 }
 
@@ -685,28 +835,28 @@ void  DispatchHolder::Initialize(DispatchHolder* pDispatchHolderRX, PCODE implTa
 
 void ResolveHolder::InitializeStatic()
 {
-    static_assert_no_msg((sizeof(ResolveHolder) % sizeof(void*)) == 0);
+    static_assert((sizeof(ResolveHolder) % sizeof(void*)) == 0);
 
-    resolveInit._resolveEntryPoint [0] = 0x52;
-    resolveInit._resolveEntryPoint [1] = 0x49;
-    resolveInit._resolveEntryPoint [2] = 0xBA;
+    resolveInit._resolveEntryPoint [0] = X64_INSTR_MOV_RAX_IND_THIS_REG & 0xff;
+    resolveInit._resolveEntryPoint [1] = (X64_INSTR_MOV_RAX_IND_THIS_REG >> 8) & 0xff;
+    resolveInit._resolveEntryPoint [2] = (X64_INSTR_MOV_RAX_IND_THIS_REG >> 16) & 0xff;
+    resolveInit._resolveEntryPoint [3] = 0x52;
+    resolveInit._resolveEntryPoint [4] = 0x49;
+    resolveInit._resolveEntryPoint [5] = 0xBA;
     resolveInit._cacheAddress          = 0xcccccccccccccccc;
-    resolveInit.part1 [ 0]             = X64_INSTR_MOV_RAX_IND_THIS_REG & 0xff;
-    resolveInit.part1 [ 1]             = (X64_INSTR_MOV_RAX_IND_THIS_REG >> 8) & 0xff;
-    resolveInit.part1 [ 2]             = (X64_INSTR_MOV_RAX_IND_THIS_REG >> 16) & 0xff;
+    resolveInit.part1 [ 0]             = 0x48;
+    resolveInit.part1 [ 1]             = 0x8B;
+    resolveInit.part1 [ 2]             = 0xD0;
     resolveInit.part1 [ 3]             = 0x48;
-    resolveInit.part1 [ 4]             = 0x8B;
-    resolveInit.part1 [ 5]             = 0xD0;
-    resolveInit.part1 [ 6]             = 0x48;
-    resolveInit.part1 [ 7]             = 0xC1;
-    resolveInit.part1 [ 8]             = 0xE8;
-    resolveInit.part1 [ 9]             = CALL_STUB_CACHE_NUM_BITS;
+    resolveInit.part1 [ 4]             = 0xC1;
+    resolveInit.part1 [ 5]             = 0xE8;
+    resolveInit.part1 [ 6]             = CALL_STUB_CACHE_NUM_BITS;
+    resolveInit.part1 [ 7]             = 0x48;
+    resolveInit.part1 [ 8]             = 0x03;
+    resolveInit.part1 [ 9]             = 0xC2;
     resolveInit.part1 [10]             = 0x48;
-    resolveInit.part1 [11]             = 0x03;
-    resolveInit.part1 [12]             = 0xC2;
-    resolveInit.part1 [13]             = 0x48;
-    resolveInit.part1 [14]             = 0x35;
-// Review truncation from unsigned __int64 to UINT32 of a constant value.
+    resolveInit.part1 [11]             = 0x35;
+// Review truncation from uint64_t to UINT32 of a constant value.
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable:4305 4309)
@@ -771,7 +921,7 @@ void ResolveHolder::InitializeStatic()
     resolveInit.part10 [1]             = 0xE0;
 };
 
-void  ResolveHolder::Initialize(ResolveHolder* pResolveHolderRX, 
+void  ResolveHolder::Initialize(ResolveHolder* pResolveHolderRX,
                                 PCODE resolveWorkerTarget, PCODE patcherTarget,
                                 size_t dispatchToken, UINT32 hashedToken,
                                 void * cacheAddr, INT32* counterAddr)
@@ -868,63 +1018,6 @@ void VTableCallHolder::Initialize(unsigned slot)
 
     _ASSERT(p == (BYTE*)stub()->entryPoint() + VTableCallHolder::GetHolderSize(slot));
     _ASSERT(stub()->size() == VTableCallHolder::GetHolderSize(slot));
-}
-
-VirtualCallStubManager::StubKind VirtualCallStubManager::predictStubKind(PCODE stubStartAddress)
-{
-#ifdef DACCESS_COMPILE
-    return SK_BREAKPOINT;  // Dac always uses the slower lookup
-#else
-    StubKind stubKind = SK_UNKNOWN;
-
-    EX_TRY
-    {
-        // If stubStartAddress is completely bogus, then this might AV,
-        // so we protect it with SEH. An AV here is OK.
-        AVInRuntimeImplOkayHolder AVOkay;
-
-        WORD firstWord = *((WORD*) stubStartAddress);
-
-        if (firstWord == 0xB848)
-        {
-            stubKind = SK_DISPATCH;
-        }
-        else if (firstWord == 0x4890)
-        {
-            stubKind = SK_LOOKUP;
-        }
-        else if (firstWord == 0x4952)
-        {
-            stubKind = SK_RESOLVE;
-        }
-        else if (firstWord == 0x48F8)
-        {
-            stubKind = SK_LOOKUP;
-        }
-        else if (firstWord == 0x8B48)
-        {
-            stubKind = SK_VTABLECALL;
-        }
-        else
-        {
-            BYTE firstByte  = ((BYTE*) stubStartAddress)[0];
-            BYTE secondByte = ((BYTE*) stubStartAddress)[1];
-
-            if ((firstByte  == INSTR_INT3) || (secondByte == INSTR_INT3))
-            {
-                stubKind = SK_BREAKPOINT;
-            }
-        }
-    }
-    EX_CATCH
-    {
-        stubKind = SK_UNKNOWN;
-    }
-    EX_END_CATCH(SwallowAllExceptions);
-
-    return stubKind;
-
-#endif // DACCESS_COMPILE
 }
 
 #endif //DECLARE_DATA

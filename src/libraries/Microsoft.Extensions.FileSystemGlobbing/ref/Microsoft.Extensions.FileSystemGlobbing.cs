@@ -31,6 +31,7 @@ namespace Microsoft.Extensions.FileSystemGlobbing
     {
         public Matcher() { }
         public Matcher(System.StringComparison comparisonType) { }
+        public Matcher(System.StringComparison comparisonType = System.StringComparison.OrdinalIgnoreCase, bool preserveFilterOrder = false) { }
         public virtual Microsoft.Extensions.FileSystemGlobbing.Matcher AddExclude(string pattern) { throw null; }
         public virtual Microsoft.Extensions.FileSystemGlobbing.Matcher AddInclude(string pattern) { throw null; }
         public virtual Microsoft.Extensions.FileSystemGlobbing.PatternMatchingResult Execute(Microsoft.Extensions.FileSystemGlobbing.Abstractions.DirectoryInfoBase directoryInfo) { throw null; }
@@ -247,14 +248,14 @@ namespace Microsoft.Extensions.FileSystemGlobbing.Internal.PatternContexts
         public override void Declare(System.Action<Microsoft.Extensions.FileSystemGlobbing.Internal.IPathSegment, bool> onDeclare) { }
         public override bool Test(Microsoft.Extensions.FileSystemGlobbing.Abstractions.DirectoryInfoBase directory) { throw null; }
     }
-    public abstract partial class PatternContext<TFrame> : Microsoft.Extensions.FileSystemGlobbing.Internal.IPatternContext
+    public abstract partial class PatternContext<TFrame> : Microsoft.Extensions.FileSystemGlobbing.Internal.IPatternContext where TFrame : struct
     {
-        protected TFrame? Frame;
+        protected TFrame Frame;
         protected PatternContext() { }
         public virtual void Declare(System.Action<Microsoft.Extensions.FileSystemGlobbing.Internal.IPathSegment, bool> declare) { }
         protected bool IsStackEmpty() { throw null; }
         public virtual void PopDirectory() { }
-        protected void PushDataFrame(TFrame? frame) { }
+        protected void PushDataFrame(TFrame frame) { }
         public abstract void PushDirectory(Microsoft.Extensions.FileSystemGlobbing.Abstractions.DirectoryInfoBase directory);
         public abstract bool Test(Microsoft.Extensions.FileSystemGlobbing.Abstractions.DirectoryInfoBase directory);
         public abstract Microsoft.Extensions.FileSystemGlobbing.Internal.PatternTestResult Test(Microsoft.Extensions.FileSystemGlobbing.Abstractions.FileInfoBase file);

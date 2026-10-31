@@ -3,7 +3,9 @@
 
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
+using Microsoft.DotNet.RemoteExecutor;
 using Xunit;
 
 namespace System.Reflection.Emit.Tests
@@ -144,14 +146,7 @@ namespace System.Reflection.Emit.Tests
             Assert.Equal("<In Memory Module>", module.Name);
 
             // The coreclr ignores the name passed to AssemblyBuilder.DefineDynamicModule
-            if (PlatformDetection.IsNetFramework)
-            {
-                Assert.Equal(name, module.FullyQualifiedName);
-            }
-            else
-            {
-                Assert.Equal("RefEmit_InMemoryManifestModule", module.FullyQualifiedName);
-            }
+            Assert.Equal("RefEmit_InMemoryManifestModule", module.FullyQualifiedName);
 
             Assert.Equal(module, assembly.GetDynamicModule(module.FullyQualifiedName));
         }
@@ -232,7 +227,7 @@ namespace System.Reflection.Emit.Tests
         [Theory]
         [InlineData(AssemblyBuilderAccess.Run)]
         [InlineData(AssemblyBuilderAccess.RunAndCollect)]
-        public void SetCustomAttribute_ConstructorBuidler_ByteArray(AssemblyBuilderAccess access)
+        public void SetCustomAttribute_ConstructorBuilder_ByteArray(AssemblyBuilderAccess access)
         {
             AssemblyBuilder assembly = Helpers.DynamicAssembly(access: access);
             ConstructorInfo constructor = typeof(BoolAllAttribute).GetConstructor(new Type[] { typeof(bool) });
@@ -243,18 +238,95 @@ namespace System.Reflection.Emit.Tests
         }
 
         [Fact]
-        public void SetCustomAttribute_ConstructorBuidler_ByteArray_NullConstructorBuilder_ThrowsArgumentNullException()
+        public void SetCustomAttribute_ConstructorBuildler_ByteArray_NullConstructorBuilder_ThrowsArgumentNullException()
         {
             AssemblyBuilder assembly = Helpers.DynamicAssembly();
             AssertExtensions.Throws<ArgumentNullException>("con", () => assembly.SetCustomAttribute(null, new byte[0]));
         }
 
         [Fact]
-        public void SetCustomAttribute_ConstructorBuidler_ByteArray_NullByteArray_ThrowsArgumentNullException()
+        public void SetCustomAttribute_ConstructorBuildler_ByteArray_NullByteArray_ThrowsArgumentNullException()
         {
             AssemblyBuilder assembly = Helpers.DynamicAssembly();
             ConstructorInfo constructor = typeof(IntAllAttribute).GetConstructor(new Type[] { typeof(int) });
             AssertExtensions.Throws<ArgumentNullException>("binaryAttribute", () => assembly.SetCustomAttribute(constructor, null));
+        }
+
+        [Fact]
+        public void SetCustomAttribute_ConstructorInfo_ByteArray_DuplicateNamedField_LastAssignmentWins()
+        {
+            AssemblyBuilder assembly = Helpers.DynamicAssembly();
+            ConstructorInfo constructor = typeof(IntAllAttribute).GetConstructor(new Type[] { typeof(int) });
+
+            // Two named "Field _i" entries with different values. C# cannot express a duplicate named
+            // attribute argument (CS0643 at compile time), so this can only be built as a raw blob.
+            byte[] blob = CustomAttributeBlob.Concat(
+                CustomAttributeBlob.Prolog,
+                CustomAttributeBlob.I4(1),
+                CustomAttributeBlob.U2(2),
+                new byte[] { CustomAttributeBlob.TagField, CustomAttributeBlob.TagInt32 }, CustomAttributeBlob.PackedString("_i"), CustomAttributeBlob.I4(10),
+                new byte[] { CustomAttributeBlob.TagField, CustomAttributeBlob.TagInt32 }, CustomAttributeBlob.PackedString("_i"), CustomAttributeBlob.I4(20));
+            assembly.SetCustomAttribute(constructor, blob);
+
+            IntAllAttribute attribute = (IntAllAttribute)assembly.GetCustomAttributes().Single();
+            Assert.Equal(20, attribute._i);
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(127)]
+        [InlineData(128)]
+        [InlineData(16383)]
+        [InlineData(16384)]
+        public void SetCustomAttribute_PackedStringBoundaries(int length)
+        {
+            string expected = new string('x', length);
+            AssemblyBuilder assembly = Helpers.DynamicAssembly();
+            assembly.SetCustomAttribute(typeof(ObjectAllAttribute).GetConstructor(new[] { typeof(object) }),
+                CustomAttributeBlob.Concat(CustomAttributeBlob.Prolog, new[] { CustomAttributeBlob.TagString },
+                    CustomAttributeBlob.PackedString(expected), CustomAttributeBlob.U2(0)));
+
+            ObjectAllAttribute attribute = Assert.IsType<ObjectAllAttribute>(assembly.GetCustomAttributes().Single());
+            Assert.Equal(expected, attribute._o);
+        }
+
+        [Theory]
+        [InlineData(true, 0x80000000L)]
+        [InlineData(true, 0x7fc01234L)]
+        [InlineData(true, 0x7f800000L)]
+        [InlineData(false, long.MinValue)]
+        [InlineData(false, 0x7ff8000000001234L)]
+        [InlineData(false, 0x7ff0000000000000L)]
+        public void SetCustomAttribute_FloatingPointBits(bool single, long bits)
+        {
+            AssemblyBuilder assembly = Helpers.DynamicAssembly();
+            byte tag = single ? CustomAttributeBlob.TagFloat : CustomAttributeBlob.TagDouble;
+            byte[] value = single ? CustomAttributeBlob.I4(unchecked((int)bits)) : CustomAttributeBlob.U8(unchecked((ulong)bits));
+            assembly.SetCustomAttribute(typeof(ObjectAllAttribute).GetConstructor(new[] { typeof(object) }),
+                CustomAttributeBlob.Concat(CustomAttributeBlob.Prolog, new[] { tag }, value, CustomAttributeBlob.U2(0)));
+
+            object actual = Assert.IsType<ObjectAllAttribute>(assembly.GetCustomAttributes().Single())._o;
+            if (single)
+            {
+                Assert.Equal(unchecked((int)bits), BitConverter.SingleToInt32Bits(Assert.IsType<float>(actual)));
+            }
+            else
+            {
+                Assert.Equal(bits, BitConverter.DoubleToInt64Bits(Assert.IsType<double>(actual)));
+            }
+        }
+
+        [Fact]
+        public void SetCustomAttribute_InvalidUtf8String()
+        {
+            AssemblyBuilder assembly = Helpers.DynamicAssembly();
+            assembly.SetCustomAttribute(typeof(ObjectAllAttribute).GetConstructor(new[] { typeof(object) }),
+                CustomAttributeBlob.Concat(CustomAttributeBlob.Prolog,
+                    new[] { CustomAttributeBlob.TagString, (byte)1, (byte)0xff },
+                    CustomAttributeBlob.U2(0)));
+
+            ObjectAllAttribute attribute = Assert.IsType<ObjectAllAttribute>(assembly.GetCustomAttributes().Single());
+            Assert.Equal("\ufffd", attribute._o);
         }
 
         [Theory]
@@ -276,6 +348,76 @@ namespace System.Reflection.Emit.Tests
         {
             AssemblyBuilder assembly = Helpers.DynamicAssembly();
             AssertExtensions.Throws<ArgumentNullException>("customBuilder", () => assembly.SetCustomAttribute(null));
+        }
+
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
+        public void SetCustomAttribute_GetCustomAttributesData_NonPublicVisibility_DefinedInternally()
+        {
+            AssemblyBuilder assembly = Helpers.DynamicAssembly();
+            ModuleBuilder module = assembly.DefineDynamicModule("DynamicModule");
+
+            TypeBuilder internalAttributeType = module.DefineType("DynamicInternalAttribute", TypeAttributes.NotPublic, typeof(Attribute));
+            ConstructorBuilder internalAttributeCtor = internalAttributeType.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, new Type[0]);
+            internalAttributeCtor.GetILGenerator().Emit(OpCodes.Ret);
+
+            ConstructorInfo internalAttributeCtorInfo = internalAttributeType.CreateTypeInfo().GetConstructor(Array.Empty<Type>());
+            CustomAttributeBuilder customAttribute = new CustomAttributeBuilder(internalAttributeCtorInfo, Array.Empty<object>());
+
+            assembly.SetCustomAttribute(customAttribute);
+            Assert.Single(assembly.GetCustomAttributesData());
+        }
+
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
+        public void SetCustomAttribute_GetCustomAttributes_NonPublicVisibility_DefinedInternally()
+        {
+            AssemblyBuilder assembly = Helpers.DynamicAssembly();
+            ModuleBuilder module = assembly.DefineDynamicModule("DynamicModule");
+
+            TypeBuilder internalAttributeType = module.DefineType("DynamicInternalAttribute", TypeAttributes.NotPublic, typeof(Attribute));
+            ConstructorBuilder internalAttributeCtor = internalAttributeType.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, new Type[0]);
+            internalAttributeCtor.GetILGenerator().Emit(OpCodes.Ret);
+
+            ConstructorInfo internalAttributeCtorInfo = internalAttributeType.CreateTypeInfo().GetConstructor(Array.Empty<Type>());
+            CustomAttributeBuilder customAttribute = new CustomAttributeBuilder(internalAttributeCtorInfo, Array.Empty<object>());
+
+            assembly.SetCustomAttribute(customAttribute);
+            Assert.Single(assembly.GetCustomAttributes(false));
+        }
+
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
+        public void SetCustomAttribute_GetCustomAttributesData_NonPublicVisibility_DefinedExternally()
+        {
+            AssemblyBuilder assembly1 = Helpers.DynamicAssembly();
+            ModuleBuilder module1 = assembly1.DefineDynamicModule("DynamicModule");
+            AssemblyBuilder assembly2 = Helpers.DynamicAssembly("AnotherTestAssembly");
+
+            TypeBuilder internalAttributeType = module1.DefineType("DynamicInternalAttribute", TypeAttributes.NotPublic, typeof(Attribute));
+            ConstructorBuilder internalAttributeCtor = internalAttributeType.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, new Type[0]);
+            internalAttributeCtor.GetILGenerator().Emit(OpCodes.Ret);
+
+            ConstructorInfo internalAttributeCtorInfo = internalAttributeType.CreateTypeInfo().GetConstructor(Array.Empty<Type>());
+            CustomAttributeBuilder customAttribute = new CustomAttributeBuilder(internalAttributeCtorInfo, Array.Empty<object>());
+
+            assembly2.SetCustomAttribute(customAttribute);
+            Assert.Single(assembly2.GetCustomAttributesData());
+        }
+
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
+        public void SetCustomAttribute_GetCustomAttributes_NonPublicVisibility_DefinedExternally()
+        {
+            AssemblyBuilder assembly1 = Helpers.DynamicAssembly();
+            ModuleBuilder module1 = assembly1.DefineDynamicModule("DynamicModule");
+            AssemblyBuilder assembly2 = Helpers.DynamicAssembly("AnotherTestAssembly");
+
+            TypeBuilder internalAttributeType = module1.DefineType("DynamicInternalAttribute", TypeAttributes.NotPublic, typeof(Attribute));
+            ConstructorBuilder internalAttributeCtor = internalAttributeType.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, new Type[0]);
+            internalAttributeCtor.GetILGenerator().Emit(OpCodes.Ret);
+
+            ConstructorInfo internalAttributeCtorInfo = internalAttributeType.CreateTypeInfo().GetConstructor(Array.Empty<Type>());
+            CustomAttributeBuilder customAttribute = new CustomAttributeBuilder(internalAttributeCtorInfo, Array.Empty<object>());
+
+            assembly2.SetCustomAttribute(customAttribute);
+            Assert.Empty(assembly2.GetCustomAttributes(false));
         }
 
         public static IEnumerable<object[]> Equals_TestData()
@@ -347,100 +489,115 @@ namespace System.Reflection.Emit.Tests
             Assert.Empty(assembly.GetTypes());
         }
 
-	private static void SamplePrivateMethod ()
-	{
-	}
+        private static void SamplePrivateMethod()
+        {
+        }
 
-	internal static void SampleInternalMethod ()
-	{
-	}
+        internal static void SampleInternalMethod()
+        {
+        }
 
-	[ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
-	void Invoke_Private_CrossAssembly_ThrowsMethodAccessException()
-	{
-	    TypeBuilder tb = Helpers.DynamicType(TypeAttributes.Public);
-	    var mb = tb.DefineMethod ("MyMethod", MethodAttributes.Public | MethodAttributes.Static, typeof(void), new Type[] {  });
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
+        void Invoke_Private_CrossAssembly_ThrowsMethodAccessException()
+        {
+            TypeBuilder tb = Helpers.DynamicType(TypeAttributes.Public);
+            var mb = tb.DefineMethod("MyMethod", MethodAttributes.Public | MethodAttributes.Static, typeof(void), new Type[] { });
 
-	    var ilg = mb.GetILGenerator ();
+            var ilg = mb.GetILGenerator();
 
-	    var callee = typeof (AssemblyTests).GetMethod ("SamplePrivateMethod", BindingFlags.Static | BindingFlags.NonPublic);
+            var callee = typeof(AssemblyTests).GetMethod("SamplePrivateMethod", BindingFlags.Static | BindingFlags.NonPublic);
 
-	    ilg.Emit (OpCodes.Call, callee);
-	    ilg.Emit (OpCodes.Ret);
+            ilg.Emit(OpCodes.Call, callee);
+            ilg.Emit(OpCodes.Ret);
 
-	    var ty = tb.CreateType ();
+            var ty = tb.CreateType();
 
-	    var mi = ty.GetMethod ("MyMethod", BindingFlags.Static | BindingFlags.Public);
+            var mi = ty.GetMethod("MyMethod", BindingFlags.Static | BindingFlags.Public);
 
-	    var d = (Action) mi.CreateDelegate (typeof(Action));
+            var d = (Action)mi.CreateDelegate(typeof(Action));
 
-	    Assert.Throws<MethodAccessException>(() => d ());
-	}
+            Assert.Throws<MethodAccessException>(() => d());
+        }
 
-	[ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
-	void Invoke_Internal_CrossAssembly_ThrowsMethodAccessException()
-	{
-	    TypeBuilder tb = Helpers.DynamicType(TypeAttributes.Public);
-	    var mb = tb.DefineMethod ("MyMethod", MethodAttributes.Public | MethodAttributes.Static, typeof(void), new Type[] {  });
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
+        void Invoke_Internal_CrossAssembly_ThrowsMethodAccessException()
+        {
+            TypeBuilder tb = Helpers.DynamicType(TypeAttributes.Public);
+            var mb = tb.DefineMethod("MyMethod", MethodAttributes.Public | MethodAttributes.Static, typeof(void), new Type[] { });
 
-	    var ilg = mb.GetILGenerator ();
+            var ilg = mb.GetILGenerator();
 
-	    var callee = typeof (AssemblyTests).GetMethod ("SampleInternalMethod", BindingFlags.Static | BindingFlags.NonPublic);
+            var callee = typeof(AssemblyTests).GetMethod("SampleInternalMethod", BindingFlags.Static | BindingFlags.NonPublic);
 
-	    ilg.Emit (OpCodes.Call, callee);
-	    ilg.Emit (OpCodes.Ret);
+            ilg.Emit(OpCodes.Call, callee);
+            ilg.Emit(OpCodes.Ret);
 
-	    var ty = tb.CreateType ();
+            var ty = tb.CreateType();
 
-	    var mi = ty.GetMethod ("MyMethod", BindingFlags.Static | BindingFlags.Public);
+            var mi = ty.GetMethod("MyMethod", BindingFlags.Static | BindingFlags.Public);
 
-	    var d = (Action) mi.CreateDelegate (typeof(Action));
+            var d = (Action)mi.CreateDelegate(typeof(Action));
 
-	    Assert.Throws<MethodAccessException>(() => d ());
-	}
-	
-	[ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
-	void Invoke_Private_SameAssembly_ThrowsMethodAccessException()
-	{
-	    ModuleBuilder modb = Helpers.DynamicModule();
-	    
-	    string calleeName = "PrivateMethod";
+            Assert.Throws<MethodAccessException>(() => d());
+        }
 
-	    TypeBuilder tbCalled = modb.DefineType ("CalledClass", TypeAttributes.Public);
-	    var mbCalled = tbCalled.DefineMethod (calleeName, MethodAttributes.Private | MethodAttributes.Static);
-	    mbCalled.GetILGenerator().Emit (OpCodes.Ret);
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
+        void Invoke_Private_SameAssembly_ThrowsMethodAccessException()
+        {
+            ModuleBuilder modb = Helpers.DynamicModule();
 
-	    var tyCalled = tbCalled.CreateType();
-	    var callee = tyCalled.GetMethod (calleeName, BindingFlags.NonPublic | BindingFlags.Static);
+            string calleeName = "PrivateMethod";
 
-	    TypeBuilder tb = modb.DefineType("CallerClass", TypeAttributes.Public);
-	    var mb = tb.DefineMethod ("MyMethod", MethodAttributes.Public | MethodAttributes.Static, typeof(void), new Type[] {  });
+            TypeBuilder tbCalled = modb.DefineType("CalledClass", TypeAttributes.Public);
+            var mbCalled = tbCalled.DefineMethod(calleeName, MethodAttributes.Private | MethodAttributes.Static);
+            mbCalled.GetILGenerator().Emit(OpCodes.Ret);
 
-	    var ilg = mb.GetILGenerator ();
+            var tyCalled = tbCalled.CreateType();
+            var callee = tyCalled.GetMethod(calleeName, BindingFlags.NonPublic | BindingFlags.Static);
 
-	    ilg.Emit (OpCodes.Call, callee);
-	    ilg.Emit (OpCodes.Ret);
+            TypeBuilder tb = modb.DefineType("CallerClass", TypeAttributes.Public);
+            var mb = tb.DefineMethod("MyMethod", MethodAttributes.Public | MethodAttributes.Static, typeof(void), new Type[] { });
 
-	    var ty = tb.CreateType ();
+            var ilg = mb.GetILGenerator();
 
-	    var mi = ty.GetMethod ("MyMethod", BindingFlags.Static | BindingFlags.Public);
+            ilg.Emit(OpCodes.Call, callee);
+            ilg.Emit(OpCodes.Ret);
 
-	    var d = (Action) mi.CreateDelegate (typeof(Action));
+            var ty = tb.CreateType();
 
-	    Assert.Throws<MethodAccessException>(() => d ());
-	}
+            var mi = ty.GetMethod("MyMethod", BindingFlags.Static | BindingFlags.Public);
 
-    [Fact]
-    public void DefineDynamicAssembly_AssemblyBuilderLocationIsEmpty_InternalAssemblyBuilderLocationIsEmpty()
-    {
-        AssemblyBuilder assembly = Helpers.DynamicAssembly(nameof(DefineDynamicAssembly_AssemblyBuilderLocationIsEmpty_InternalAssemblyBuilderLocationIsEmpty));
-        Assembly internalAssemblyBuilder  = AppDomain.CurrentDomain.GetAssemblies()
-                .FirstOrDefault(a => a.FullName == assembly.FullName);
+            var d = (Action)mi.CreateDelegate(typeof(Action));
 
-        Assert.Empty(assembly.Location);
-        Assert.NotNull(internalAssemblyBuilder);
-        Assert.Empty(internalAssemblyBuilder.Location);
-    }
+            Assert.Throws<MethodAccessException>(() => d());
+        }
 
+        [Fact]
+        public void DefineDynamicAssembly_AssemblyBuilderLocationIsEmpty_InternalAssemblyBuilderLocationIsEmpty()
+        {
+            AssemblyBuilder assembly = Helpers.DynamicAssembly(nameof(DefineDynamicAssembly_AssemblyBuilderLocationIsEmpty_InternalAssemblyBuilderLocationIsEmpty));
+            Assembly internalAssemblyBuilder = AppDomain.CurrentDomain.GetAssemblies()
+                    .FirstOrDefault(a => a.FullName == assembly.FullName);
+
+            Assert.Empty(assembly.Location);
+            Assert.NotNull(internalAssemblyBuilder);
+            Assert.Empty(internalAssemblyBuilder.Location);
+        }
+
+        [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
+        public static void ThrowsWhenDynamicCodeNotSupported()
+        {
+            RemoteInvokeOptions options = new RemoteInvokeOptions();
+            options.RuntimeConfigurationOptions.Add("System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", false.ToString());
+
+            using RemoteInvokeHandle remoteHandle = RemoteExecutor.Invoke(static () =>
+            {
+                var assemblyName = new AssemblyName("TestName");
+                AssemblyBuilderAccess access = AssemblyBuilderAccess.Run;
+
+                Assert.Throws<PlatformNotSupportedException>(() => AssemblyBuilder.DefineDynamicAssembly(assemblyName, access));
+                Assert.Throws<PlatformNotSupportedException>(() => AssemblyBuilder.DefineDynamicAssembly(assemblyName, access, assemblyAttributes: null));
+            }, options);
+        }
     }
 }

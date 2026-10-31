@@ -2,7 +2,9 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 
+using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.DotNet.RemoteExecutor;
 using Xunit;
 
@@ -27,22 +29,30 @@ namespace System.Net.Sockets.Tests
         }
 
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
-        public void DisableIPv6_OSSupportsIPv6_False()
+        public async Task DisableIPv6_OSSupportsIPv6_False()
         {
             RemoteInvokeOptions options = new RemoteInvokeOptions();
             options.StartInfo.EnvironmentVariables["DOTNET_SYSTEM_NET_DISABLEIPV6"] = "1";
-            RemoteExecutor.Invoke(RunTest, options).Dispose();
+            await RemoteExecutor.Invoke(RunTest, options).DisposeAsync();
 
             static void RunTest()
             {
                 Assert.False(Socket.OSSupportsIPv6);
+
+                // related to https://github.com/dotnet/runtime/issues/122435
+                var listenSocket = new Socket(AddressFamily.InterNetworkV6, SocketType.Stream, ProtocolType.Tcp);
+                listenSocket.DualMode = true;
+
+                listenSocket.Bind(new IPEndPoint(IPAddress.IPv6Any, 0));
+                listenSocket.Listen(1);
+                listenSocket.Close();
             }
         }
 
         [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
-        public void DisableIPv6_SocketConstructor_CreatesIPv4Socket()
+        public async Task DisableIPv6_SocketConstructor_CreatesIPv4Socket()
         {
-            RemoteExecutor.Invoke(RunTest).Dispose();
+            await RemoteExecutor.Invoke(RunTest).DisposeAsync();
 
             static void RunTest()
             {
@@ -58,6 +68,7 @@ namespace System.Net.Sockets.Tests
         }
 
         [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/107981", TestPlatforms.Wasi)] // https://github.com/WebAssembly/wasi-libc/issues/538
         public void IOControl_FIONREAD_Success()
         {
             using (var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
@@ -97,7 +108,8 @@ namespace System.Net.Sockets.Tests
 
         [PlatformSpecific(TestPlatforms.AnyUnix)]
         [Fact]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/50568", TestPlatforms.Android)]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/50568", TestPlatforms.Android | TestPlatforms.LinuxBionic)]
+        [SkipOnPlatform(TestPlatforms.Wasi, "Wasi doesn't support OOBDATA")]
         public void IOControl_SIOCATMARK_Unix_Success()
         {
             using (var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
@@ -123,7 +135,13 @@ namespace System.Net.Sockets.Tests
                         server.Send(new byte[] { 42 }, SocketFlags.None);
                         server.Send(new byte[] { 43 }, SocketFlags.OutOfBand);
 
-                        // OOB data recieved, but read pointer not at mark.
+                        // SIOCATMARK is already 0 before any data arrives, so wait for the OOB data itself.
+                        // Select, not Poll: macOS poll() does not report OOB data as POLLPRI; Select uses select() there.
+                        var errorList = new List<Socket> { client };
+                        Socket.Select(null, null, errorList, TimeSpan.FromSeconds(10));
+                        Assert.Single(errorList);
+
+                        // OOB data received, but read pointer not at mark.
                         Assert.True(SpinWait.SpinUntil(() =>
                         {
                             Assert.Equal(4, client.IOControl(IOControlCode.OobDataRead, null, siocatmarkResult));
@@ -135,7 +153,7 @@ namespace System.Net.Sockets.Tests
                         Assert.Equal(1, client.Receive(received));
                         Assert.Equal(42, received[0]);
 
-                        // OOB data recieved, read pointer at mark.
+                        // OOB data received, read pointer at mark.
                         Assert.Equal(4, client.IOControl(IOControlCode.OobDataRead, null, siocatmarkResult));
                         Assert.Equal(1, BitConverter.ToInt32(siocatmarkResult, 0));
 
@@ -144,7 +162,7 @@ namespace System.Net.Sockets.Tests
 
                         // OOB data read, read pointer at mark.
                         Assert.Equal(4, client.IOControl(IOControlCode.OobDataRead, null, siocatmarkResult));
-                        Assert.Equal(PlatformDetection.IsOSXLike ? 0 : 1, BitConverter.ToInt32(siocatmarkResult, 0));
+                        Assert.Equal(PlatformDetection.IsApplePlatform ? 0 : 1, BitConverter.ToInt32(siocatmarkResult, 0));
                     }
                 }
             }
@@ -177,7 +195,7 @@ namespace System.Net.Sockets.Tests
                         server.Send(new byte[] { 42 }, SocketFlags.None);
                         server.Send(new byte[] { 43 }, SocketFlags.OutOfBand);
 
-                        // OOB data recieved, but read pointer not at mark
+                        // OOB data received, but read pointer not at mark
                         Assert.True(SpinWait.SpinUntil(() =>
                         {
                             Assert.Equal(4, client.IOControl(IOControlCode.OobDataRead, null, siocatmarkResult));
@@ -189,7 +207,7 @@ namespace System.Net.Sockets.Tests
                         Assert.Equal(1, client.Receive(received));
                         Assert.Equal(42, received[0]);
 
-                        // OOB data recieved, read pointer at mark.
+                        // OOB data received, read pointer at mark.
                         Assert.Equal(4, client.IOControl(IOControlCode.OobDataRead, null, siocatmarkResult));
                         Assert.Equal(0, BitConverter.ToInt32(siocatmarkResult, 0));
 

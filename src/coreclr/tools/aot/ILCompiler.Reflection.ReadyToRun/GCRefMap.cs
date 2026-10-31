@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Reflection.PortableExecutable;
 using System.Runtime.InteropServices;
 using System.IO;
 
@@ -16,7 +17,9 @@ namespace ILCompiler.Reflection.ReadyToRun
         GCREFMAP_INTERIOR = 2,
         GCREFMAP_METHOD_PARAM = 3,
         GCREFMAP_TYPE_PARAM = 4,
-        GCREFMAP_VASIG_COOKIE = 5,
+        GCREFMAP_THIS_REF = 5,
+        GCREFMAP_THIS_BYREF = 6,
+        GCREFMAP_VASIG_COOKIE = 7,
     }
 
     public struct GCRefMapEntry
@@ -57,6 +60,7 @@ namespace ILCompiler.Reflection.ReadyToRun
     public class GCRefMapDecoder
     {
         private readonly ReadyToRunReader _reader;
+        private readonly bool _legacyTokens;
         private int _offset;
         private int _pendingByte;
         private int _pos;
@@ -64,6 +68,7 @@ namespace ILCompiler.Reflection.ReadyToRun
         public GCRefMapDecoder(ReadyToRunReader reader, int offset)
         {
             _reader = reader;
+            _legacyTokens = reader.ReadyToRunHeader.MajorVersion < 33;
             _offset = offset;
             _pendingByte = 0x80;
             _pos = 0;
@@ -116,7 +121,7 @@ namespace ILCompiler.Reflection.ReadyToRun
 
         public uint ReadStackPop()
         {
-            Debug.Assert(_reader.Architecture == Architecture.X86);
+            Debug.Assert(_reader.Machine == Machine.I386);
 
             int x = GetTwoBit();
 
@@ -145,7 +150,11 @@ namespace ILCompiler.Reflection.ReadyToRun
                 else
                 {
                     _pos++;
-                    return (CORCOMPILE_GCREFMAP_TOKENS)((ext >> 1) + 3);
+                    CORCOMPILE_GCREFMAP_TOKENS token = (CORCOMPILE_GCREFMAP_TOKENS)((ext >> 1) + 3);
+                    // Before R2R 33, value 5 denoted the varargs cookie, not a receiver.
+                    if (_legacyTokens && token == CORCOMPILE_GCREFMAP_TOKENS.GCREFMAP_THIS_REF)
+                        return CORCOMPILE_GCREFMAP_TOKENS.GCREFMAP_VASIG_COOKIE;
+                    return token;
                 }
             }
             _pos++;
@@ -159,7 +168,7 @@ namespace ILCompiler.Reflection.ReadyToRun
             List<GCRefMapEntry> entries = new List<GCRefMapEntry>();
             uint stackPop = GCRefMap.InvalidStackPop;
 
-            if (_reader.Architecture == Architecture.X86)
+            if (_reader.Machine == Machine.I386)
             {
                 stackPop = ReadStackPop();
             }

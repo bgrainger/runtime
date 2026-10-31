@@ -1,12 +1,12 @@
-# See here for image contents: https://github.com/microsoft/vscode-dev-containers/tree/v0.192.0/containers/dotnet/.devcontainer/base.Dockerfile
+# See here for image contents: https://github.com/devcontainers/images/tree/main/src/dotnet
 
-# [Choice] .NET version: 5.0, 3.1, 2.1
-ARG VARIANT="5.0"
-FROM mcr.microsoft.com/vscode/devcontainers/dotnet:0-${VARIANT}
+ARG VARIANT="11.0-resolute"
+FROM mcr.microsoft.com/devcontainers/dotnet:${VARIANT}
 
-# Set up machine requirements to build the repo
-RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
-    && apt-get -y install --no-install-recommends cmake llvm-9 clang-9 \
-        build-essential python curl git lldb-6.0 liblldb-6.0-dev \
-        libunwind8 libunwind8-dev gettext libicu-dev liblttng-ust-dev \
-        libssl-dev libnuma-dev libkrb5-dev zlib1g-dev ninja-build
+SHELL [ "/bin/bash", "-c" ]
+
+# Set up machine requirements using the scripts from this checkout.
+COPY eng/common/native/install-dependencies.sh eng/common/native/init-os-and-arch.sh /tmp/runtime-dependencies/
+RUN bash /tmp/runtime-dependencies/install-dependencies.sh && \
+  rm /tmp/runtime-dependencies/{install-dependencies,init-os-and-arch}.sh && \
+  rmdir /tmp/runtime-dependencies

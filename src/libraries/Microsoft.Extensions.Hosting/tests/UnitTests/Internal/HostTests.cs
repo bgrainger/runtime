@@ -4,7 +4,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Diagnostics.Tracing;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,6 +12,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting.Fakes;
 using Microsoft.Extensions.Hosting.Tests;
 using Microsoft.Extensions.Hosting.Tests.Fakes;
+using Microsoft.Extensions.Hosting.Unit.Tests;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
@@ -217,27 +217,54 @@ namespace Microsoft.Extensions.Hosting.Internal
             }
         }
 
-        [Fact]
-        public async Task AppCrashesOnStartWhenFirstHostedServiceThrows()
+        [Theory]
+        [InlineData(1, true), InlineData(1, false)]
+        [InlineData(2, true), InlineData(2, false)]
+        [InlineData(10, true), InlineData(10, false)]
+        public async Task AppCrashesOnStartWhenFirstHostedServiceThrows(int eventCount, bool concurrentStartup)
         {
-            bool[] events1 = null;
-            bool[] events2 = null;
+            bool[][] events = new bool[eventCount][];
 
             using (var host = CreateBuilder()
-                .ConfigureServices((services) =>
+                .ConfigureServices(services =>
                 {
-                    events1 = RegisterCallbacksThatThrow(services);
-                    events2 = RegisterCallbacksThatThrow(services);
+                    services.Configure<HostOptions>(i => i.ServicesStartConcurrently = concurrentStartup);
+
+                    for (int i = 0; i < eventCount; i++)
+                    {
+                        events[i] = RegisterCallbacksThatThrow(services);
+                    }
                 })
                 .Build())
             {
-                await Assert.ThrowsAsync<InvalidOperationException>(() => host.StartAsync());
-                Assert.True(events1[0]);
-                Assert.False(events2[0]);
+                if (concurrentStartup && eventCount > 1)
+                {
+                    await Assert.ThrowsAsync<AggregateException>(() => host.StartAsync());
+                }
+                else
+                {
+                    await Assert.ThrowsAsync<InvalidOperationException>(() => host.StartAsync());
+                }
+
+                for (int i = 0; i < eventCount; i++)
+                {
+                    if (i == 0 || concurrentStartup)
+                    {
+                        Assert.True(events[i][0]);
+                    }
+                    else
+                    {
+                        Assert.False(events[i][0]);
+                    }
+                }
+
                 host.Dispose();
+
                 // Stopping
-                Assert.False(events1[1]);
-                Assert.False(events2[1]);
+                for (int i = 0; i < eventCount; i++)
+                {
+                    Assert.False(events[i][1]);
+                }
             }
         }
 
@@ -256,7 +283,7 @@ namespace Microsoft.Extensions.Hosting.Internal
                         {
                             Assert.False(ct.IsCancellationRequested);
                             serviceStarting.Set();
-                            Assert.True(startCancelled.WaitOne(TimeSpan.FromSeconds(5)));
+                            Assert.True(startCancelled.WaitOne(TimeSpan.FromSeconds(30)));
                             ct.ThrowIfCancellationRequested();
                         }
                     });
@@ -266,7 +293,7 @@ namespace Microsoft.Extensions.Hosting.Internal
                 var cts = new CancellationTokenSource();
 
                 var startTask = Task.Run(() => host.StartAsync(cts.Token));
-                Assert.True(serviceStarting.WaitOne(TimeSpan.FromSeconds(5)));
+                Assert.True(serviceStarting.WaitOne(TimeSpan.FromSeconds(30)));
                 cts.Cancel();
                 startCancelled.Set();
                 await Assert.ThrowsAsync<OperationCanceledException>(() => startTask);
@@ -565,7 +592,8 @@ namespace Microsoft.Extensions.Hosting.Internal
             Assert.Equal(1, service.DisposeCount);
         }
 
-        [Fact]
+        // Moq heavily utilizes RefEmit, which does not work on most aot workloads
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
         public async Task HostStopAsyncCanBeCancelledEarly()
         {
             var service = new Mock<IHostedService>();
@@ -596,7 +624,8 @@ namespace Microsoft.Extensions.Hosting.Internal
             }
         }
 
-        [Fact]
+        // Moq heavily utilizes RefEmit, which does not work on most aot workloads
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
         public async Task HostStopAsyncUsesDefaultTimeoutIfGivenTokenDoesNotFire()
         {
             var service = new Mock<IHostedService>();
@@ -628,7 +657,8 @@ namespace Microsoft.Extensions.Hosting.Internal
             }
         }
 
-        [Fact]
+        // Moq heavily utilizes RefEmit, which does not work on most aot workloads
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
         public async Task WebHostStopAsyncUsesDefaultTimeoutIfNoTokenProvided()
         {
             var service = new Mock<IHostedService>();
@@ -658,7 +688,7 @@ namespace Microsoft.Extensions.Hosting.Internal
         }
 
         [Fact]
-        public async Task HostPropagatesExceptionsThrownWithBackgroundServiceExceptionBehaviorOfStopHost()
+        public async Task HostStopsWithBackgroundServiceExceptionBehaviorOfStopHost()
         {
             using IHost host = CreateBuilder()
                 .ConfigureServices(
@@ -672,7 +702,12 @@ namespace Microsoft.Extensions.Hosting.Internal
                     })
                 .Build();
 
-            await Assert.ThrowsAsync<Exception>(() => host.StartAsync());
+            await host.StartAsync();
+
+            // host is expected to catch exception, then trigger ApplicationStopping.
+            // give the host 1 minute to stop.
+            var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+            Assert.True(lifetime.ApplicationStopping.WaitHandle.WaitOne(TimeSpan.FromMinutes(1)));
         }
 
         [Fact]
@@ -1105,32 +1140,60 @@ namespace Microsoft.Extensions.Hosting.Internal
             }
         }
 
-        [Fact]
-        public async Task HostDoesNotNotifyIHostApplicationLifetimeCallbacksIfIHostedServicesThrow()
+        [Theory]
+        [InlineData(1, true), InlineData(1, false)]
+        [InlineData(2, true), InlineData(2, false)]
+        [InlineData(10, true), InlineData(10, false)]
+        public async Task HostDoesNotNotifyIHostApplicationLifetimeCallbacksIfIHostedServicesThrow(int eventCount, bool concurrentStartup)
         {
-            bool[] events1 = null;
-            bool[] events2 = null;
+            bool[][] events = new bool[eventCount][];
 
             using (var host = CreateBuilder()
                 .ConfigureServices((services) =>
                 {
-                    events1 = RegisterCallbacksThatThrow(services);
-                    events2 = RegisterCallbacksThatThrow(services);
+                    services.Configure<HostOptions>(i => i.ServicesStartConcurrently = concurrentStartup);
+
+                    for (int i = 0; i < eventCount; i++)
+                    {
+                        events[i] = RegisterCallbacksThatThrow(services);
+                    }
                 })
                 .Build())
             {
                 var applicationLifetime = host.Services.GetService<IHostApplicationLifetime>();
-
                 var started = RegisterCallbacksThatThrow(applicationLifetime.ApplicationStarted);
                 var stopping = RegisterCallbacksThatThrow(applicationLifetime.ApplicationStopping);
 
-                await Assert.ThrowsAsync<InvalidOperationException>(() => host.StartAsync());
-                Assert.True(events1[0]);
-                Assert.False(events2[0]);
+                if (concurrentStartup && eventCount > 1)
+                {
+                    await Assert.ThrowsAsync<AggregateException>(() => host.StartAsync());
+                }
+                else
+                {
+                    await Assert.ThrowsAsync<InvalidOperationException>(() => host.StartAsync());
+                }
+
+                for (int i = 0; i < eventCount; i++)
+                {
+                    if (i == 0 || concurrentStartup)
+                    {
+                        Assert.True(events[i][0]);
+                    }
+                    else
+                    {
+                        Assert.False(events[i][0]);
+                    }
+                }
+
                 Assert.False(started.All(s => s));
+
                 host.Dispose();
-                Assert.False(events1[1]);
-                Assert.False(events2[1]);
+
+                for (int i = 0; i < eventCount; i++)
+                {
+                    Assert.False(events[i][1]);
+                }
+
                 Assert.False(stopping.All(s => s));
             }
         }
@@ -1151,7 +1214,8 @@ namespace Microsoft.Extensions.Hosting.Internal
             }
         }
 
-        [Fact]
+        // Moq heavily utilizes RefEmit, which does not work on most aot workloads
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
         public void Dispose_DisposesAppConfigurationProviders()
         {
             var providerMock = new Mock<ConfigurationProvider>().As<IDisposable>();
@@ -1175,7 +1239,8 @@ namespace Microsoft.Extensions.Hosting.Internal
             providerMock.Verify(c => c.Dispose(), Times.AtLeastOnce());
         }
 
-        [Fact]
+        // Moq heavily utilizes RefEmit, which does not work on most aot workloads
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
         public void Dispose_DisposesHostConfigurationProviders()
         {
             var providerMock = new Mock<ConfigurationProvider>().As<IDisposable>();
@@ -1250,7 +1315,8 @@ namespace Microsoft.Extensions.Hosting.Internal
             }
         }
 
-        [Fact]
+        // Moq heavily utilizes RefEmit, which does not work on most aot workloads
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
         public async Task DisposeAsync_DisposesAppConfigurationProviders()
         {
             var providerMock = new Mock<ConfigurationProvider>().As<IDisposable>();
@@ -1274,7 +1340,8 @@ namespace Microsoft.Extensions.Hosting.Internal
             providerMock.Verify(c => c.Dispose(), Times.AtLeastOnce());
         }
 
-        [Fact]
+        // Moq heavily utilizes RefEmit, which does not work on most aot workloads
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
         public async Task DisposeAsync_DisposesHostConfigurationProviders()
         {
             var providerMock = new Mock<ConfigurationProvider>().As<IDisposable>();
@@ -1298,7 +1365,8 @@ namespace Microsoft.Extensions.Hosting.Internal
             providerMock.Verify(c => c.Dispose(), Times.AtLeastOnce());
         }
 
-        [Fact]
+        // Moq heavily utilizes RefEmit, which does not work on most aot workloads
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
         public void ThrowExceptionForCustomImplementationOfIHostApplicationLifetime()
         {
             var hostApplicationLifetimeMock = new Mock<IHostApplicationLifetime>();
@@ -1364,6 +1432,50 @@ namespace Microsoft.Extensions.Hosting.Internal
         }
 
         /// <summary>
+        /// Tests that an exception is logged if a hosted service factory fails.
+        /// </summary>
+        [Fact]
+        public async Task HostedServiceFactoryExceptionGetsLogged()
+        {
+            TestLoggerProvider logger = new TestLoggerProvider();
+
+            using IHost host = CreateBuilder()
+                .ConfigureLogging(logging =>
+                {
+                    logging.AddProvider(logger);
+                })
+                .ConfigureServices((hostContext, services) =>
+                {
+                    services.AddHostedService<WorkerTemplateService>(p => throw new InvalidOperationException("factory failed"));
+                })
+                .Build();
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => host.StartAsync());
+
+            LogEvent[] events = logger.GetEvents();
+            Assert.Single(events);
+            Assert.Equal(LogLevel.Error, events[0].LogLevel);
+            Assert.Equal("HostedServiceStartupFaulted", events[0].EventId.Name);
+        }
+
+        [Fact]
+        public async Task HostConcurrentCancelledStartAsyncAbortsStart()
+        {
+            using CancellationTokenSource cancellationTokenSource = new();
+            StartAsyncCancelledService service = new(cancellationTokenSource);
+
+            using IHost host = CreateBuilder()
+                .ConfigureServices((hostContext, services) =>
+                {
+                    services.Configure<HostOptions>(o => o.ServicesStartConcurrently = true);
+                    services.AddHostedService(sp => service);
+                })
+                .Build();
+
+            await Assert.ThrowsAsync<TaskCanceledException>(() => host.StartAsync(cancellationTokenSource.Token));
+        }
+
+        /// <summary>
         /// Tests that when a BackgroundService is canceled when stopping the host,
         /// no error is logged.
         /// </summary>
@@ -1420,6 +1532,39 @@ namespace Microsoft.Extensions.Hosting.Internal
             {
                 Assert.True(logEvent.LogLevel <= LogLevel.Information, "All logged events should be less than or equal to Information. No Warnings or Errors.");
 
+                Assert.NotEqual("BackgroundServiceFaulted", logEvent.EventId.Name);
+            }
+        }
+
+        /// <summary>
+        /// Tests that when a BackgroundService is cancelled when stopping a host which has not finished starting, it does not log an error
+        /// </summary>
+        [Fact]
+        public async Task HostNoErrorWhenStartingServiceIsCanceledAsPartOfStop()
+        {
+            TestLoggerProvider logger = new TestLoggerProvider();
+
+            using IHost host = CreateBuilder()
+                .ConfigureLogging(logging =>
+                {
+                    logging.AddProvider(logger);
+                })
+                .ConfigureServices(services =>
+                {
+                    services.AddHostedService<WorkerTemplateService>();
+                    services.AddHostedService<SlowStartService>();
+                })
+                .Build();
+
+            IHostApplicationLifetime lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+            _ = host.StartAsync();
+            lifetime.StopApplication();
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
+            await host.WaitForShutdownAsync();
+
+            foreach (LogEvent logEvent in logger.GetEvents())
+            {
+                Assert.True(logEvent.LogLevel < LogLevel.Error);
                 Assert.NotEqual("BackgroundServiceFaulted", logEvent.EventId.Name);
             }
         }
@@ -1494,33 +1639,6 @@ namespace Microsoft.Extensions.Hosting.Internal
             {
                 DisposeCalled = true;
             }
-        }
-
-        private class DelegateHostedService : IHostedService, IDisposable
-        {
-            private readonly Action _started;
-            private readonly Action _stopping;
-            private readonly Action _disposing;
-
-            public DelegateHostedService(Action started, Action stopping, Action disposing)
-            {
-                _started = started;
-                _stopping = stopping;
-                _disposing = disposing;
-            }
-
-            public Task StartAsync(CancellationToken token)
-            {
-                _started();
-                return Task.CompletedTask;
-            }
-            public Task StopAsync(CancellationToken token)
-            {
-                _stopping();
-                return Task.CompletedTask;
-            }
-
-            public void Dispose() => _disposing();
         }
 
         private class AsyncDisposableService : IAsyncDisposable
@@ -1600,6 +1718,27 @@ namespace Microsoft.Extensions.Hosting.Internal
             protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.CompletedTask;
 
             public override Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        }
+
+        private class StartAsyncCancelledService(CancellationTokenSource cancellationTokenSource) : IHostedService
+        {
+            public Task StartAsync(CancellationToken cancellationToken)
+            {
+                cancellationTokenSource.Cancel();
+                return Task.FromCanceled(cancellationToken);
+            }
+
+            public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        }
+
+        private class SlowStartService : IHostedService
+        {
+            public async Task StartAsync(CancellationToken cancellationToken)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(10), CancellationToken.None);
+            }
+
+            public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         }
     }
 }

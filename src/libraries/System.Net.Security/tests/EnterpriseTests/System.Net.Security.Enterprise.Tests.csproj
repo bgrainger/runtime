@@ -1,10 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFrameworks>$(NetCoreAppCurrent)-Unix;$(NetCoreAppCurrent)-Browser</TargetFrameworks>
+    <TargetFrameworks>$(NetCoreAppCurrent)-unix;$(NetCoreAppCurrent)-browser</TargetFrameworks>
   </PropertyGroup>
   <ItemGroup>
     <!-- NegotiateStream Tests -->
     <Compile Include="NegotiateStreamLoopbackTest.cs" />
+    <Compile Include="NegotiateAuthenticationTest.cs" />
 
     <!-- Common test files -->
     <Compile Include="$(CommonPath)System\Net\ArrayBuffer.cs"
@@ -19,7 +20,5 @@
              Link="Common\System\Net\EnterpriseTests\EnterpriseTestConfiguration.cs" />
     <Compile Include="$(CommonTestPath)System\Threading\Tasks\TaskTimeoutExtensions.cs"
              Link="Common\System\Threading\Tasks\TaskTimeoutExtensions.cs" />
-    <Compile Include="$(CommonPath)System\Threading\Tasks\TaskToApm.cs"
-             Link="ProductionCode\Common\System\Threading\Tasks\TaskToApm.cs" />
   </ItemGroup>
 </Project>

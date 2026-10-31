@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Runtime.Versioning;
 using System.Security.Cryptography.X509Certificates;
 
 namespace System.Net.Security
@@ -20,13 +19,12 @@ namespace System.Net.Security
             {
                 throw new PlatformNotSupportedException(SR.net_ssl_trust_store);
             }
-#else
-            if (sendTrustInHandshake)
-            {
-                // to be removed when implemented.
-                throw new PlatformNotSupportedException("Not supported yet.");
-            }
 #endif
+            if (sendTrustInHandshake && !System.OperatingSystem.IsLinux() && !System.OperatingSystem.IsMacOS() &&
+                !System.OperatingSystem.IsWindows())
+            {
+                throw new PlatformNotSupportedException(SR.net_ssl_trust_handshake);
+            }
             if (!store.IsOpen)
             {
                 store.Open(OpenFlags.ReadOnly | OpenFlags.OpenExistingOnly);
@@ -38,21 +36,21 @@ namespace System.Net.Security
             return trust;
         }
 
-        [UnsupportedOSPlatform("windows")]
         public static SslCertificateTrust CreateForX509Collection(X509Certificate2Collection trustList, bool sendTrustInHandshake = false)
         {
-            if (sendTrustInHandshake)
-            {
-                // to be removed when implemented.
-                throw new PlatformNotSupportedException("Not supported yet.");
-            }
 
 #if TARGET_WINDOWS
             if (sendTrustInHandshake)
             {
                 throw new PlatformNotSupportedException(SR.net_ssl_trust_collection);
             }
+#else
+            if (sendTrustInHandshake && !System.OperatingSystem.IsLinux() && !System.OperatingSystem.IsMacOS())
+            {
+                throw new PlatformNotSupportedException(SR.net_ssl_trust_handshake);
+            }
 #endif
+
             var trust = new SslCertificateTrust();
             trust._trustList = trustList;
             trust._sendTrustInHandshake = sendTrustInHandshake;

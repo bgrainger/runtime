@@ -3,12 +3,16 @@
 
 using System;
 using System.Runtime.CompilerServices;
+using Xunit;
+using TestLibrary;
 
 namespace GenericDimValuetypeBug
 {
-    class Program
+    public class Program
     {
-        static int Main()
+        [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+        [Fact]
+        public static int TestEntryPoint()
         {
             if (RunOne() != 17)
                 return 1;

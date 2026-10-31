@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Diagnostics;
 
 namespace ILCompiler.DependencyAnalysis.ARM
@@ -40,6 +39,17 @@ namespace ILCompiler.DependencyAnalysis.ARM
         {
             Debug.Assert(IsLowReg(reg) && !IsBitNumOverflow(immediate, 8));
             Builder.EmitShort((short)(0x2000 + ((byte)reg << 8) + immediate));
+        }
+
+        // movw reg, #imm16
+        // reg range: [0..12, LR, PC]
+        // immediate range: [0..65535]
+        public void EmitMOV(Register reg, ushort immediate)
+        {
+            Debug.Assert(IsValidReg(reg));
+            int imm16 = immediate;
+            Builder.EmitShort((short)(0xF240 | (((imm16 >> 11) & 1) << 10) | ((imm16 >> 12) & 0xF)));
+            Builder.EmitShort((short)((((imm16 >> 8) & 7) << 12) | ((byte)reg << 8) | (imm16 & 0xFF)));
         }
 
         // cmp reg, immediate
@@ -82,7 +92,7 @@ namespace ILCompiler.DependencyAnalysis.ARM
             Builder.EmitByte(0xde);
             Builder.EmitByte(0xfe);
         }
-        
+
         // push reg
         // reg range: [0..12, LR]
         public void EmitPUSH(Register reg)
@@ -112,19 +122,60 @@ namespace ILCompiler.DependencyAnalysis.ARM
         }
 
         // ldr reg, [reg]
-        // reg range: [0..7]
+        // reg range: [0..PC]
         public void EmitLDR(Register destination, Register source)
         {
-            Debug.Assert(IsLowReg(destination) && IsLowReg(source));
-            Builder.EmitShort((short)(0x6800 + (((byte)source & 0x7) << 3) + ((byte)destination & 0x7)));
+            // If both registers are low (R0-R7), use the compact 16-bit encoding
+            if (IsLowReg(destination) && IsLowReg(source))
+            {
+                Builder.EmitShort((short)(0x6800 + (((byte)source & 0x7) << 3) + ((byte)destination & 0x7)));
+            }
+            else
+            {
+                // For high registers (R8-R12), use the 32-bit encoding with offset 0
+                Debug.Assert(IsValidReg(destination) && IsValidReg(source));
+                EmitLDR(destination, source, 0);
+            }
         }
 
         // ldr.w reg, [reg, #offset]
         // reg range: [0..PC]
         // offset range: [-255..4095]
+        //
+        // for offset >= 4096 we do an expansion into:
+        // add.w destination, source, #const
+        // ldr.w destination, [destination, #offset]
         public void EmitLDR(Register destination, Register source, int offset)
         {
             Debug.Assert(IsValidReg(destination) && IsValidReg(source));
+
+            if (offset >= 0x1000)
+            {
+                uint constVal = (uint)offset & ~0xfffu;
+                uint mask32 = 0xff;
+                uint imm8 = 0;
+                int encode = 31; // 11111
+
+                do
+                {
+                    mask32 <<= 1;
+                    if ((constVal & ~mask32) == 0)
+                    {
+                        imm8 = (constVal & mask32) >> (32 - encode);
+                        break;
+                    }
+                    encode--;
+                } while (encode >= 8);
+
+                Debug.Assert(encode >= 8);
+                Debug.Assert((imm8 & 0x80) > 0);
+                Builder.EmitShort((short)(0xF100 + (byte)source + (((byte)encode & 0x10) << 6)));
+                Builder.EmitShort((short)((((byte)encode & 0xE) << 11) + ((byte)destination << 8) + (((byte)encode & 1) << 7) + (imm8 & 0x7f)));
+
+                offset = (int)(offset & 0xfffu);
+                source = destination;
+            }
+
             Debug.Assert(offset >= -255 && offset <= 4095);
             if (offset >= 0)
             {
@@ -140,15 +191,24 @@ namespace ILCompiler.DependencyAnalysis.ARM
 
         // movw  reg, [reloc] & 0x0000FFFF
         // movt  reg, [reloc] & 0xFFFF0000
+        // add   reg, pc
         // reg range: [0..12, LR]
         public void EmitMOV(Register destination, ISymbolNode symbol)
         {
             Debug.Assert(destination >= Register.R0 && (destination <= Register.R12 || destination == TargetRegister.LR));
-            Builder.EmitReloc(symbol, RelocType.IMAGE_REL_BASED_THUMB_MOV32);
+            Builder.EmitReloc(symbol, RelocType.IMAGE_REL_BASED_THUMB_MOV32_PCREL); // 12-byte offset is part of the relocation
             Builder.EmitShort(unchecked((short)0xf240));
             Builder.EmitShort((short)((byte)destination << 8));
             Builder.EmitShort(unchecked((short)0xf2c0));
             Builder.EmitShort((short)((byte)destination << 8));
+            if (destination <= Register.R7)
+            {
+                Builder.EmitShort(unchecked((short)(0x4478u + (byte)destination)));
+            }
+            else
+            {
+                Builder.EmitShort(unchecked((short)(0x44f0u + (byte)destination)));
+            }
         }
 
         // b.w symbol
@@ -207,6 +267,21 @@ namespace ILCompiler.DependencyAnalysis.ARM
         {
             EmitBNE(4);
             EmitRET();
+        }
+
+        // beq label(+4): ret(2) + next(2)
+        // bx lr
+        // label: ...
+        public void EmitRETIfNotEqual()
+        {
+            EmitBEQ(4);
+            EmitRET();
+        }
+
+        // dmb
+        public void EmitDMB()
+        {
+            Builder.EmitUInt(0x8F5FF3BF);
         }
     }
 }

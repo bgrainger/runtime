@@ -23,20 +23,36 @@ namespace System.Threading
             private static void GateThreadStart()
             {
                 bool disableStarvationDetection =
-                    AppContextConfigHelper.GetBooleanConfig("System.Threading.ThreadPool.DisableStarvationDetection", false);
+                    AppContextConfigHelper.GetBooleanComPlusOrDotNetConfig("System.Threading.ThreadPool.DisableStarvationDetection", "ThreadPool_DisableStarvationDetection", false);
                 bool debuggerBreakOnWorkStarvation =
-                    AppContextConfigHelper.GetBooleanConfig("System.Threading.ThreadPool.DebugBreakOnWorkerStarvation", false);
+                    AppContextConfigHelper.GetBooleanComPlusOrDotNetConfig("System.Threading.ThreadPool.DebugBreakOnWorkerStarvation", "ThreadPool_DebugBreakOnWorkerStarvation", false);
+
+                // CPU utilization is updated when the gate thread performs periodic activities (GateActivitiesPeriodMs), so
+                // that would also affect the actual interval. Set to 0 to disable using CPU utilization and have components
+                // behave as though CPU utilization is low. The default value of 1 causes CPU utilization to be updated whenever
+                // the gate thread performs periodic activities.
+                int cpuUtilizationIntervalMs =
+                    AppContextConfigHelper.GetInt32Config(
+                        "System.Threading.ThreadPool.CpuUtilizationIntervalMs",
+                        "DOTNET_ThreadPool_CpuUtilizationIntervalMs",
+                        defaultValue: 1,
+                        allowNegative: false);
 
                 // The first reading is over a time range other than what we are focusing on, so we do not use the read other
                 // than to send it to any runtime-specific implementation that may also use the CPU utilization.
                 CpuUtilizationReader cpuUtilizationReader = default;
-                _ = cpuUtilizationReader.CurrentUtilization;
+                int lastCpuUtilizationRefreshTimeMs = 0;
+                if (cpuUtilizationIntervalMs > 0)
+                {
+                    lastCpuUtilizationRefreshTimeMs = Environment.TickCount;
+                    _ = cpuUtilizationReader.CurrentUtilization;
+                }
 
                 PortableThreadPool threadPoolInstance = ThreadPoolInstance;
                 LowLevelLock threadAdjustmentLock = threadPoolInstance._threadAdjustmentLock;
                 DelayHelper delayHelper = default;
 
-                if (BlockingConfig.IsCooperativeBlockingEnabled)
+                if (BlockingConfig.IsCooperativeBlockingEnabled && !BlockingConfig.IgnoreMemoryUsage)
                 {
                     // Initialize memory usage and limits, and register to update them on gen 2 GCs
                     threadPoolInstance.OnGen2GCCallback();
@@ -102,14 +118,21 @@ namespace System.Threading
                                 (uint)threadPoolInstance.GetAndResetHighWatermarkCountOfThreadsProcessingUserCallbacks());
                         }
 
-                        int cpuUtilization = cpuUtilizationReader.CurrentUtilization;
-                        threadPoolInstance._cpuUtilization = cpuUtilization;
-
-                        bool needGateThreadForRuntime = ThreadPool.PerformRuntimeSpecificGateActivities(cpuUtilization);
+                        // Determine whether CPU utilization should be updated. CPU utilization is only used by the starvation
+                        // heuristic and hill climbing, and neither of those are active when there is a pending blocking
+                        // adjustment.
+                        if (cpuUtilizationIntervalMs > 0 &&
+                            threadPoolInstance._pendingBlockingAdjustment == PendingBlockingAdjustment.None &&
+                            (uint)(currentTimeMs - lastCpuUtilizationRefreshTimeMs) >= (uint)cpuUtilizationIntervalMs)
+                        {
+                            lastCpuUtilizationRefreshTimeMs = currentTimeMs;
+                            int cpuUtilization = (int)cpuUtilizationReader.CurrentUtilization;
+                            threadPoolInstance._cpuUtilization = cpuUtilization;
+                        }
 
                         if (!disableStarvationDetection &&
                             threadPoolInstance._pendingBlockingAdjustment == PendingBlockingAdjustment.None &&
-                            threadPoolInstance._separated.numRequestedWorkers > 0 &&
+                            threadPoolInstance._separated._hasOutstandingThreadRequest != 0 &&
                             SufficientDelaySinceLastDequeue(threadPoolInstance))
                         {
                             bool addWorker = false;
@@ -164,8 +187,7 @@ namespace System.Threading
                             }
                         }
 
-                        if (!needGateThreadForRuntime &&
-                            threadPoolInstance._separated.numRequestedWorkers <= 0 &&
+                        if (threadPoolInstance._separated._hasOutstandingThreadRequest == 0 &&
                             threadPoolInstance._pendingBlockingAdjustment == PendingBlockingAdjustment.None &&
                             Interlocked.Decrement(ref threadPoolInstance._separated.gateThreadRunningState) <= GetRunningStateForNumRuns(0))
                         {
@@ -186,7 +208,7 @@ namespace System.Threading
             // in deciding "too long"
             private static bool SufficientDelaySinceLastDequeue(PortableThreadPool threadPoolInstance)
             {
-                uint delay = (uint)(Environment.TickCount - threadPoolInstance._separated.lastDequeueTime);
+                uint delay = (uint)(Environment.TickCount - threadPoolInstance._separated.lastDispatchTime);
                 uint minimumDelay;
                 if (threadPoolInstance._cpuUtilization < CpuUtilizationLow)
                 {
@@ -221,7 +243,7 @@ namespace System.Threading
                 }
                 else if ((numRunsMask & GateThreadRunningMask) == 0)
                 {
-                    CreateGateThread(threadPoolInstance);
+                    CreateGateThread();
                 }
             }
 
@@ -232,10 +254,8 @@ namespace System.Threading
                 return GateThreadRunningMask | numRuns;
             }
 
-            [MethodImpl(MethodImplOptions.NoInlining)]
-            private static void CreateGateThread(PortableThreadPool threadPoolInstance)
+            private static void CreateGateThread()
             {
-                bool created = false;
                 try
                 {
                     // Thread pool threads must start in the default execution context without transferring the context, so
@@ -244,17 +264,13 @@ namespace System.Threading
                     {
                         IsThreadPoolThread = true,
                         IsBackground = true,
-                        Name = ".NET ThreadPool Gate"
+                        Name = ".NET TP Gate"
                     };
                     gateThread.UnsafeStart();
-                    created = true;
                 }
-                finally
+                catch (Exception e)
                 {
-                    if (!created)
-                    {
-                        Interlocked.Exchange(ref threadPoolInstance._separated.gateThreadRunningState, 0);
-                    }
+                    Environment.FailFast("Failed to create the thread pool Gate thread.", e);
                 }
             }
 
@@ -334,7 +350,5 @@ namespace System.Threading
                 }
             }
         }
-
-        internal static void EnsureGateThreadRunning() => GateThread.EnsureRunning(ThreadPoolInstance);
     }
 }

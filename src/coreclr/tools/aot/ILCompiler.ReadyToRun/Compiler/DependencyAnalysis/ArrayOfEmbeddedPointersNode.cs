@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 
 using Internal.Text;
+using ILCompiler.DependencyAnalysisFramework;
 
 namespace ILCompiler.DependencyAnalysis
 {
@@ -30,13 +31,12 @@ namespace ILCompiler.DependencyAnalysis
         /// </summary>
         public delegate void OnMarkedDelegate(EmbeddedPointerIndirectionNode<TTarget> embeddedObject);
 
-        public ArrayOfEmbeddedPointersNode(string startSymbolMangledName, string endSymbolMangledName, IComparer<EmbeddedPointerIndirectionNode<TTarget>> nodeSorter)
+        public ArrayOfEmbeddedPointersNode(string mangledName, IComparer<EmbeddedPointerIndirectionNode<TTarget>> nodeSorter)
             : base(
-                  startSymbolMangledName,
-                  endSymbolMangledName,
+                  mangledName,
                   nodeSorter)
         {
-            _startSymbolMangledName = startSymbolMangledName;
+            _startSymbolMangledName = mangledName;
         }
 
         public EmbeddedObjectNode NewNode(TTarget target)
@@ -92,13 +92,11 @@ namespace ILCompiler.DependencyAnalysis
                 _parentNode.AddEmbeddedObject(this);
             }
 
-            public override IEnumerable<DependencyListEntry> GetStaticDependencies(NodeFactory factory)
+            public override void AddStaticDependencies(DependencySink sink, NodeFactory factory)
             {
-                return new[]
-                {
+                sink.AddRange(
                     new DependencyListEntry(Target, "reloc"),
-                    new DependencyListEntry(_parentNode, "Pointer region")
-                };
+                    new DependencyListEntry(_parentNode, "Pointer region"));
             }
 
             public override int ClassCode => -66002498;
@@ -127,7 +125,7 @@ namespace ILCompiler.DependencyAnalysis
 
             public override void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
             {
-                sb.Append(nameMangler.CompilationUnitPrefix).Append(_parentNode._startSymbolMangledName).Append("_").Append(_id.ToStringInvariant());
+                sb.Append(nameMangler.CompilationUnitPrefix).Append(_parentNode._startSymbolMangledName).Append("_"u8).Append(_id.ToStringInvariant());
             }
         }
     }

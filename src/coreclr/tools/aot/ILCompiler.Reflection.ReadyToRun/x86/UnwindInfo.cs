@@ -6,7 +6,7 @@ using System.Text;
 namespace ILCompiler.Reflection.ReadyToRun.x86
 {
     /// <summary>
-    /// based on <a href="https://github.com/dotnet/coreclr/blob/master/src/inc/win64unwind.h">src\inc\win64unwind.h</a> _UNWIND_INFO
+    /// based on <a href="https://github.com/dotnet/runtime/blob/main/src/coreclr/inc/win64unwind.h">src\inc\win64unwind.h</a> _UNWIND_INFO
     /// </summary>
     public class UnwindInfo : BaseUnwindInfo
     {
@@ -14,10 +14,10 @@ namespace ILCompiler.Reflection.ReadyToRun.x86
 
         public UnwindInfo() { }
 
-        public UnwindInfo(byte[] image, int offset)
+        public UnwindInfo(NativeReader imageReader, int offset)
         {
             int startOffset = offset;
-            FunctionLength = NativeReader.DecodeUnsignedGc(image, ref offset);
+            FunctionLength = imageReader.DecodeUnsignedGc(ref offset);
             Size = offset - startOffset;
         }
 

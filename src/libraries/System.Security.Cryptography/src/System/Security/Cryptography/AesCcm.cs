@@ -14,11 +14,20 @@ namespace System.Security.Cryptography
         public static KeySizes NonceByteSizes { get; } = new KeySizes(7, 13, 1);
         public static KeySizes TagByteSizes { get; } = new KeySizes(4, 16, 2);
 
+        /// <summary>
+        /// Gets the size of the key, in bytes.
+        /// </summary>
+        /// <value>
+        /// The size of the key, in bytes.
+        /// </value>
+        public int KeySizeInBytes { get; }
+
         public AesCcm(ReadOnlySpan<byte> key)
         {
             ThrowIfNotSupported();
 
             AesAEAD.CheckKeySize(key.Length);
+            KeySizeInBytes = key.Length;
             ImportKey(key);
         }
 
@@ -26,16 +35,20 @@ namespace System.Security.Cryptography
         {
             ThrowIfNotSupported();
 
-            if (key == null)
-                throw new ArgumentNullException(nameof(key));
+            ArgumentNullException.ThrowIfNull(key);
 
             AesAEAD.CheckKeySize(key.Length);
+            KeySizeInBytes = key.Length;
             ImportKey(key);
         }
 
         public void Encrypt(byte[] nonce, byte[] plaintext, byte[] ciphertext, byte[] tag, byte[]? associatedData = null)
         {
-            AeadCommon.CheckArgumentsForNull(nonce, plaintext, ciphertext, tag);
+            ArgumentNullException.ThrowIfNull(nonce);
+            ArgumentNullException.ThrowIfNull(plaintext);
+            ArgumentNullException.ThrowIfNull(ciphertext);
+            ArgumentNullException.ThrowIfNull(tag);
+
             Encrypt((ReadOnlySpan<byte>)nonce, plaintext, ciphertext, tag, associatedData);
         }
 
@@ -52,7 +65,11 @@ namespace System.Security.Cryptography
 
         public void Decrypt(byte[] nonce, byte[] ciphertext, byte[] tag, byte[] plaintext, byte[]? associatedData = null)
         {
-            AeadCommon.CheckArgumentsForNull(nonce, plaintext, ciphertext, tag);
+            ArgumentNullException.ThrowIfNull(nonce);
+            ArgumentNullException.ThrowIfNull(ciphertext);
+            ArgumentNullException.ThrowIfNull(tag);
+            ArgumentNullException.ThrowIfNull(plaintext);
+
             Decrypt((ReadOnlySpan<byte>)nonce, ciphertext, tag, plaintext, associatedData);
         }
 

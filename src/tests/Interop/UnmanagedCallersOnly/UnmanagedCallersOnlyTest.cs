@@ -8,24 +8,18 @@ using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using Xunit;
 using InvalidCSharp;
+using TestLibrary;
 
+[ActiveIssue("https://github.com/dotnet/runtime/issues/91388", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
 public unsafe class Program
 {
     public static class UnmanagedCallersOnlyDll
     {
         [DllImport(nameof(UnmanagedCallersOnlyDll))]
-        public static extern int DoubleImplNative(int n);
-
-        [DllImport(nameof(UnmanagedCallersOnlyDll))]
         public static extern int CallManagedProc(IntPtr callbackProc, int n);
-
-        [DllImport(nameof(UnmanagedCallersOnlyDll))]
-        public static extern int CallManagedProcMultipleTimes(int m, IntPtr callbackProc, int n);
-
-        [DllImport(nameof(UnmanagedCallersOnlyDll))]
-        public static extern int CallManagedProcOnNewThread(IntPtr callbackProc, int n);
 
         [DllImport(nameof(UnmanagedCallersOnlyDll))]
         // Returns -1 if exception was throw and caught.
@@ -35,119 +29,9 @@ public unsafe class Program
     private delegate int IntNativeMethodInvoker();
     private delegate void NativeMethodInvoker();
 
-    public static int Main(string[] args)
-    {
-        try
-        {
-            TestUnmanagedCallersOnlyValid();
-            TestUnmanagedCallersOnlyValid_OnNewNativeThread();
-            TestUnmanagedCallersOnlyValid_PrepareMethod();
-            TestUnmanagedCallersOnlyMultipleTimesValid();
-            NegativeTest_NonStaticMethod();
-            NegativeTest_ViaDelegate();
-            NegativeTest_NonBlittable();
-            NegativeTest_InstantiatedGenericArguments();
-            NegativeTest_FromInstantiatedGenericClass();
-            TestUnmanagedCallersOnlyViaUnmanagedCalli();
-            TestPInvokeMarkedWithUnmanagedCallersOnly();
-
-            // Exception handling is only supported on Windows.
-            if (TestLibrary.Utilities.IsWindows)
-            {
-                TestUnmanagedCallersOnlyValid_ThrowException();
-                TestUnmanagedCallersOnlyViaUnmanagedCalli_ThrowException();
-            }
-
-            if (args.Length != 0 && args[0].Equals("calli"))
-            {
-                NegativeTest_ViaCalli();
-            }
-        }
-        catch (Exception e)
-        {
-            Console.WriteLine($"Test Failure: {e}");
-            return 101;
-        }
-
-        return 100;
-    }
-
-    [UnmanagedCallersOnly]
-    public static int ManagedDoubleCallback(int n)
-    {
-        return DoubleImpl(n);
-    }
-
     private static int DoubleImpl(int n)
     {
         return 2 * n;
-    }
-
-    public static void TestUnmanagedCallersOnlyValid()
-    {
-        Console.WriteLine($"Running {nameof(TestUnmanagedCallersOnlyValid)}...");
-
-        int n = 12345;
-        int expected = DoubleImpl(n);
-        Assert.Equal(expected, UnmanagedCallersOnlyDll.CallManagedProc((IntPtr)(delegate* unmanaged<int, int>)&ManagedDoubleCallback, n));
-    }
-
-    public static void TestUnmanagedCallersOnlyValid_OnNewNativeThread()
-    {
-        Console.WriteLine($"Running {nameof(TestUnmanagedCallersOnlyValid_OnNewNativeThread)}...");
-
-        int n = 12345;
-        int expected = DoubleImpl(n);
-        Assert.Equal(expected, UnmanagedCallersOnlyDll.CallManagedProcOnNewThread((IntPtr)(delegate* unmanaged<int, int>)&ManagedDoubleCallback, n));
-    }
-
-    [UnmanagedCallersOnly]
-    public static int ManagedCallback_Prepared(int n)
-    {
-        return DoubleImpl(n);
-    }
-
-    // This test is about the interaction between Tiered Compilation and the UnmanagedCallersOnlyAttribute.
-    public static void TestUnmanagedCallersOnlyValid_PrepareMethod()
-    {
-        Console.WriteLine($"Running {nameof(TestUnmanagedCallersOnlyValid_PrepareMethod)}...");
-        // Prepare the managed callback.
-        var preparedCallback = typeof(Program).GetMethod(nameof(ManagedCallback_Prepared));
-        RuntimeHelpers.PrepareMethod(preparedCallback.MethodHandle);
-
-        UnmanagedCallersOnlyOnNewNativeThread(12345);
-
-        static void UnmanagedCallersOnlyOnNewNativeThread(int n)
-        {
-            // Call enough to attempt to trigger Tiered Compilation from a new thread.
-            for (int i = 0; i < 100; ++i)
-            {
-                UnmanagedCallersOnlyDll.CallManagedProcOnNewThread((IntPtr)(delegate* unmanaged<int, int>)&ManagedCallback_Prepared, n);
-            }
-        }
-    }
-
-    [UnmanagedCallersOnly]
-    public static int ManagedDoubleInNativeCallback(int n)
-    {
-        // This callback is designed to test if the JIT handles
-        // cases where a P/Invoke is inlined into a function
-        // marked with UnmanagedCallersOnly.
-        return UnmanagedCallersOnlyDll.DoubleImplNative(n);
-    }
-
-    public static void TestUnmanagedCallersOnlyMultipleTimesValid()
-    {
-        Console.WriteLine($"Running {nameof(TestUnmanagedCallersOnlyMultipleTimesValid)}...");
-
-        int callCount = 7;
-        int n = 12345;
-        int expected = 0;
-        for (int i = 0; i < callCount; ++i)
-        {
-            expected += DoubleImpl(n);
-        }
-        Assert.Equal(expected, UnmanagedCallersOnlyDll.CallManagedProcMultipleTimes(callCount, (IntPtr)(delegate* unmanaged<int, int>)&ManagedDoubleInNativeCallback, n));
     }
 
     private const int CallbackThrowsErrorCode = 27;
@@ -158,6 +42,7 @@ public unsafe class Program
         throw new Exception() { HResult = CallbackThrowsErrorCode };
     }
 
+    [ConditionalFact(typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.IsExceptionInteropSupported))]
     public static void TestUnmanagedCallersOnlyValid_ThrowException()
     {
         Console.WriteLine($"Running {nameof(TestUnmanagedCallersOnlyValid_ThrowException)}...");
@@ -167,22 +52,10 @@ public unsafe class Program
         Assert.Equal(-1, UnmanagedCallersOnlyDll.CallManagedProcCatchException((IntPtr)(delegate* unmanaged<int, int>)&CallbackThrows, n));
     }
 
-    public static void NegativeTest_ViaDelegate()
-    {
-        Console.WriteLine($"Running {nameof(NegativeTest_ViaDelegate)}...");
-
-        // Try invoking method directly
-        Assert.Throws<NotSupportedException>(() => { CallAsDelegate(); });
-
-        // Local function to delay exception thrown during JIT
-        void CallAsDelegate()
-        {
-            Func<int, int> invoker = CallingUnmanagedCallersOnlyDirectly.GetDoubleDelegate();
-            invoker(0);
-        }
-    }
-
-
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/57362", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoFULLAOT))]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/64127", typeof(PlatformDetection), nameof(PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+    // On NativeAOT, this fails because the exception escapes the native UnmanagedCallersOnly transition.
+    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsNotNativeAot))]
     public static void NegativeTest_NonStaticMethod()
     {
         Console.WriteLine($"Running {nameof(NegativeTest_NonStaticMethod)}...");
@@ -194,10 +67,14 @@ public unsafe class Program
     [UnmanagedCallersOnly]
     public static int CallbackMethodNonBlittable(bool x1)
     {
-        Assert.True(false, $"Functions with attribute {nameof(UnmanagedCallersOnlyAttribute)} cannot have non-blittable arguments");
+        Assert.Fail($"Functions with attribute {nameof(UnmanagedCallersOnlyAttribute)} cannot have non-blittable arguments");
         return -1;
     }
 
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/57362", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoFULLAOT))]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/64127", typeof(PlatformDetection), nameof(PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+    // On NativeAOT, this fails because the exception escapes the native UnmanagedCallersOnly transition.
+    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsNotNativeAot))]
     public static void NegativeTest_NonBlittable()
     {
         Console.WriteLine($"Running {nameof(NegativeTest_NonBlittable)}...");
@@ -205,8 +82,15 @@ public unsafe class Program
         int n = 12345;
         // Try invoking method
         Assert.Throws<InvalidProgramException>(() => { UnmanagedCallersOnlyDll.CallManagedProc((IntPtr)(delegate* unmanaged<bool, int>)&CallbackMethodNonBlittable, n); });
+        Assert.Throws<InvalidProgramException>(() => { UnmanagedCallersOnlyDll.CallManagedProc(UnmanagedCallersOnlyWithByRefs.GetWithByRefFunctionPointer(), n); });
+        Assert.Throws<InvalidProgramException>(() => { UnmanagedCallersOnlyDll.CallManagedProc(UnmanagedCallersOnlyWithByRefs.GetWithByRefInFunctionPointer(), n); });
+        Assert.Throws<InvalidProgramException>(() => { UnmanagedCallersOnlyDll.CallManagedProc(UnmanagedCallersOnlyWithByRefs.GetWithByRefOutFunctionPointer(), n); });
     }
 
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/57362", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoFULLAOT))]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/64127", typeof(PlatformDetection), nameof(PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+    // On NativeAOT, this fails because the exception escapes the native UnmanagedCallersOnly transition.
+    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsNotNativeAot))]
     public static void NegativeTest_InstantiatedGenericArguments()
     {
         Console.WriteLine($"Running {nameof(NegativeTest_InstantiatedGenericArguments)}...");
@@ -216,6 +100,10 @@ public unsafe class Program
         Assert.Throws<InvalidProgramException>(() => { UnmanagedCallersOnlyDll.CallManagedProc((IntPtr)(delegate* unmanaged<int, int>)&Callbacks.CallbackMethodGeneric<int>, n); });
     }
 
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/57362", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoFULLAOT))]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/64127", typeof(PlatformDetection), nameof(PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+    // On NativeAOT, this fails because the exception escapes the native UnmanagedCallersOnly transition.
+    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsNotNativeAot))]
     public static void NegativeTest_FromInstantiatedGenericClass()
     {
         Console.WriteLine($"Running {nameof(NegativeTest_FromInstantiatedGenericClass)}...");
@@ -225,33 +113,15 @@ public unsafe class Program
         Assert.Throws<InvalidProgramException>(() => { UnmanagedCallersOnlyDll.CallManagedProc((IntPtr)(delegate* unmanaged<int, int>)&GenericClass<int>.CallbackMethod, n); });
     }
 
-    [UnmanagedCallersOnly]
-    public static void CallbackViaCalli(int val)
-    {
-        Assert.True(false, $"Functions with attribute {nameof(UnmanagedCallersOnlyAttribute)} cannot be called via calli");
-    }
-
-    public static void NegativeTest_ViaCalli()
-    {
-        Console.WriteLine($"{nameof(NegativeTest_ViaCalli)} function via calli instruction. The CLR _will_ crash.");
-
-        // It is not possible to catch the resulting ExecutionEngineException exception.
-        // To observe the crashing behavior set a breakpoint in the ReversePInvokeBadTransition() function
-        // located in src/vm/dllimportcallback.cpp.
-        TestNativeMethod();
-
-        static void TestNativeMethod()
-        {
-            ((delegate*<int, void>)(delegate* unmanaged<int, void>)&CallbackViaCalli)(1234);
-        }
-    }
-
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
     public static int CallbackViaUnmanagedCalli(int val)
     {
         return DoubleImpl(val);
     }
 
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/57362", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoFULLAOT))]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/64127", typeof(PlatformDetection), nameof(PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+    [Fact]
     public static void TestUnmanagedCallersOnlyViaUnmanagedCalli()
     {
         Console.WriteLine($"Running {nameof(TestUnmanagedCallersOnlyViaUnmanagedCalli)}...");
@@ -262,12 +132,13 @@ public unsafe class Program
         Assert.Equal(expected, nativeMethod(n));
     }
 
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
     public static int CallbackViaUnmanagedCalliThrows(int val)
     {
         throw new Exception() { HResult = CallbackThrowsErrorCode };
     }
 
+    [ConditionalFact(typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.IsExceptionInteropSupported))]
     public static void TestUnmanagedCallersOnlyViaUnmanagedCalli_ThrowException()
     {
         Console.WriteLine($"Running {nameof(TestUnmanagedCallersOnlyViaUnmanagedCalli_ThrowException)}...");
@@ -278,7 +149,7 @@ public unsafe class Program
         try
         {
             testNativeMethod(n);
-            Assert.True(false, $"Function {nameof(CallbackViaUnmanagedCalliThrows)} should throw");
+            Assert.Fail($"Function {nameof(CallbackViaUnmanagedCalliThrows)} should throw");
         }
         catch (Exception e)
         {
@@ -286,6 +157,10 @@ public unsafe class Program
         }
     }
 
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/57362", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoFULLAOT))]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/64127", typeof(PlatformDetection), nameof(PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+    // On NativeAOT, calling a P/Invoke marked UnmanagedCallersOnly from managed code fails fast.
+    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsNotNativeAot))]
     public static void TestPInvokeMarkedWithUnmanagedCallersOnly()
     {
         Console.WriteLine($"Running {nameof(TestPInvokeMarkedWithUnmanagedCallersOnly)}...");
@@ -301,4 +176,54 @@ public unsafe class Program
         int n = 1234;
         Assert.Throws<NotSupportedException>(() => ((delegate* unmanaged<int, int>)&CallingUnmanagedCallersOnlyDirectly.PInvokeMarkedWithUnmanagedCallersOnly)(n));
     }
+
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/57362", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoFULLAOT))]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/64127", typeof(PlatformDetection), nameof(PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+    [Fact]
+    public static void TestUnmanagedCallersOnlyWithGeneric()
+    {
+        Assert.Equal(0, ((delegate* unmanaged<Blittable<nint>, int>)&BlittableGenericStruct)(new Blittable<nint>()));
+
+        Assert.Equal(0, ((delegate* unmanaged<MaybeBlittable<nint>, int>)&MaybeBlittableGenericStruct)(new MaybeBlittable<nint>()));
+
+
+        // On NativeAOT, this fails because the exception escapes the native UnmanagedCallersOnly transition.
+        if (TestLibrary.Utilities.IsNotNativeAot)
+        {
+            Assert.Throws<InvalidProgramException>(()
+                => ((delegate* unmanaged<nint, int>)(void*)(delegate* unmanaged<NotBlittable<int>, int>)&InvalidGenericUnmanagedCallersOnlyParameters.GenericClass)((nint)1));
+
+            Assert.Throws<InvalidProgramException>(()
+                => ((delegate* unmanaged<nint, int>)(void*)(delegate* unmanaged<MaybeBlittable<object>, int>)&InvalidGenericUnmanagedCallersOnlyParameters.GenericStructWithObjectField)((nint)1));
+        }
+    }
+
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/57362", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoFULLAOT))]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/64127", typeof(PlatformDetection), nameof(PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+    // On NativeAOT, the Task-returning calli throws MarshalDirectiveException before validating UnmanagedCallersOnly.
+    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsNotNativeAot))]
+    [SkipOnMono("Mono doesn't support runtime async and doesn't check the async bit.")]
+    public static void TestUnmanagedCallersOnlyWithRuntimeAsync()
+    {
+        AssertExtensions.ThrowsAny<InvalidProgramException, TypeLoadException>(() =>
+        {
+            ((delegate* unmanaged<Task>)&RuntimeAsyncUnmanagedCallersOnly.AsyncMethodReturningTask)();
+        });
+        AssertExtensions.ThrowsAny<InvalidProgramException, TypeLoadException>(() =>
+        {
+            ((delegate* unmanaged<int>)&RuntimeAsyncUnmanagedCallersOnly.AsyncMethodWithBlittableReturnType)();
+        });
+    }
+
+    internal struct Blittable<T> where T : unmanaged
+    {
+        T Value;
+    }
+
+
+    [UnmanagedCallersOnly]
+    internal static int BlittableGenericStruct(Blittable<nint> param) => 0;
+
+    [UnmanagedCallersOnly]
+    internal static int MaybeBlittableGenericStruct(MaybeBlittable<nint> param) => 0;
 }

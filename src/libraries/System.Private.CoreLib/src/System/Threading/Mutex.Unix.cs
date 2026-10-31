@@ -1,20 +1,33 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Microsoft.Win32.SafeHandles;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace System.Threading
 {
     public sealed partial class Mutex
     {
-        private void CreateMutexCore(bool initiallyOwned, string? name, out bool createdNew)
+        [FeatureSwitchDefinition("System.Threading.Mutex.UnsafeDefaultMutexScopeGlobal")]
+        private static bool UnsafeDefaultMutexScopeGlobal { get; } =
+            AppContext.TryGetSwitch("System.Threading.Mutex.UnsafeDefaultMutexScopeGlobal", out bool enable) ? enable : false;
+
+        private void CreateMutexCore(bool initiallyOwned) => SafeWaitHandle = WaitSubsystem.NewMutex(initiallyOwned);
+
+        private void CreateMutexCore(
+            bool initiallyOwned,
+            string? name,
+            NamedWaitHandleOptionsInternal options,
+            out bool createdNew)
         {
-            if (name != null)
+            if (!string.IsNullOrEmpty(name))
             {
-                SafeWaitHandle? safeWaitHandle = WaitSubsystem.CreateNamedMutex(initiallyOwned, name, out createdNew);
+                name = BuildNameForOptions(name, options);
+
+                SafeWaitHandle? safeWaitHandle = WaitSubsystem.CreateNamedMutex(initiallyOwned, name, isUserScope: CalculateUserScope(options), out createdNew);
                 if (safeWaitHandle == null)
                 {
                     throw new WaitHandleCannotBeOpenedException(SR.Format(SR.Threading_WaitHandleCannotBeOpenedException_InvalidHandle, name));
@@ -27,21 +40,39 @@ namespace System.Threading
             createdNew = true;
         }
 
-        private static OpenExistingResult OpenExistingWorker(string name, out Mutex? result)
+        private static OpenExistingResult OpenExistingWorker(
+            string name,
+            NamedWaitHandleOptionsInternal options,
+            out Mutex? result)
         {
-            if (name == null)
-            {
-                throw new ArgumentNullException(nameof(name));
-            }
+            ArgumentException.ThrowIfNullOrEmpty(name);
 
-            if (name.Length == 0)
-            {
-                throw new ArgumentException(SR.Argument_EmptyName, nameof(name));
-            }
+            name = BuildNameForOptions(name, options);
 
-            OpenExistingResult status = WaitSubsystem.OpenNamedMutex(name, out SafeWaitHandle? safeWaitHandle);
+            OpenExistingResult status = WaitSubsystem.OpenNamedMutex(name, isUserScope: CalculateUserScope(options), out SafeWaitHandle? safeWaitHandle);
             result = status == OpenExistingResult.Success ? new Mutex(safeWaitHandle!) : null;
             return status;
+        }
+
+        private static string BuildNameForOptions(string name, NamedWaitHandleOptionsInternal options)
+        {
+            if (options.WasSpecified)
+            {
+                name = options.GetNameWithSessionPrefix(name);
+            }
+
+            if (name.StartsWith(NamedWaitHandleOptionsInternal.CurrentSessionPrefix) &&
+                name.Length > NamedWaitHandleOptionsInternal.CurrentSessionPrefix.Length)
+            {
+                name = name.Substring(NamedWaitHandleOptionsInternal.CurrentSessionPrefix.Length);
+            }
+
+            return name;
+        }
+
+        private static bool CalculateUserScope(NamedWaitHandleOptionsInternal options)
+        {
+            return options.WasSpecified ? options.CurrentUserOnly : !UnsafeDefaultMutexScopeGlobal;
         }
 
         public void ReleaseMutex()

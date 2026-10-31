@@ -3,9 +3,11 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using Internal.Text;
 using Internal.TypeSystem;
+using ILCompiler.DependencyAnalysisFramework;
 
 namespace ILCompiler.DependencyAnalysis.ReadyToRun
 {
@@ -24,7 +26,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
         public void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
         {
-            sb.Append("MethodGCInfoNode->");
+            sb.Append("MethodGCInfoNode->"u8);
             _methodNode.AppendMangledName(nameMangler, sb);
         }
 
@@ -37,29 +39,82 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             factory.RuntimeFunctionsGCInfo.AddEmbeddedObject(this);
         }
 
+        private static bool TargetUsesPersonalityRoutines(TargetArchitecture targetArch)
+        {
+            return targetArch != TargetArchitecture.X86 && targetArch != TargetArchitecture.Wasm32;
+        }
+
+        private static bool TargetAlignsGCInfoComponents(TargetArchitecture targetArch)
+        {
+            return targetArch != TargetArchitecture.Wasm32;
+        }
+
         public int[] CalculateFuncletOffsets(NodeFactory factory)
         {
-            int[] offsets = new int[_methodNode.FrameInfos.Length];
+            int coldCodeUnwindInfoCount = 0;
+            if (_methodNode.ColdCodeNode != null)
+            {
+                coldCodeUnwindInfoCount = _methodNode.ColdFrameInfos.Length;
+            }
+
+            int[] offsets = new int[_methodNode.FrameInfos.Length + coldCodeUnwindInfoCount];
             if (!factory.RuntimeFunctionsGCInfo.Deduplicator.TryGetValue(this, out var deduplicatedResult))
             {
                 throw new Exception("Did not properly initialize deduplicator");
             }
+
             int offset = deduplicatedResult.OffsetFromBeginningOfArray;
+            bool targetAlignsGCInfoComponents = TargetAlignsGCInfoComponents(factory.Target.Architecture);
+            bool targetUsesPersonalityRoutines = TargetUsesPersonalityRoutines(factory.Target.Architecture);
             for (int frameInfoIndex = 0; frameInfoIndex < deduplicatedResult._methodNode.FrameInfos.Length; frameInfoIndex++)
             {
                 offsets[frameInfoIndex] = offset;
                 offset += deduplicatedResult._methodNode.FrameInfos[frameInfoIndex].BlobData.Length;
-                offset += (-offset & 3); // 4-alignment for the personality routine
-                if (factory.Target.Architecture != TargetArchitecture.X86)
+                if (targetAlignsGCInfoComponents)
+                {
+                    offset += (-offset & 3); // 4-alignment for the personality routine
+                }
+                if (targetUsesPersonalityRoutines)
                 {
                     offset += sizeof(uint); // personality routine
                 }
                 if (frameInfoIndex == 0 && deduplicatedResult._methodNode.GCInfo != null)
                 {
                     offset += deduplicatedResult._methodNode.GCInfo.Length;
-                    offset += (-offset & 3); // 4-alignment after GC info in 1st funclet
+                    if (targetAlignsGCInfoComponents)
+                    {
+                        offset += (-offset & 3); // 4-alignment after GC info in 1st funclet
+                    }
                 }
             }
+
+            if (_methodNode.ColdCodeNode != null)
+            {
+                // TODO: Take a look at deduplicatedResult
+                for (int frameInfoIndex = 0; frameInfoIndex < _methodNode.ColdFrameInfos.Length; frameInfoIndex++)
+                {
+                    offsets[frameInfoIndex + _methodNode.FrameInfos.Length] = offset;
+                    byte[] blobData = _methodNode.ColdFrameInfos[frameInfoIndex].BlobData;
+                    if (blobData != null)
+                    {
+                        offset += blobData.Length;
+                        if (targetAlignsGCInfoComponents)
+                        {
+                            offset += (-offset & 3); // 4-alignment for the personality routine
+                        }
+                        if (targetUsesPersonalityRoutines)
+                        {
+                            offset += sizeof(uint); // personality routine
+                        }
+                    }
+                    else
+                    {
+                        // TODO: Update/Verify this amount
+                        offset += 16;
+                    }
+                }
+            }
+
             return offsets;
         }
 
@@ -67,6 +122,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         {
             public GCInfoComponent(byte[] bytes)
             {
+                Debug.Assert(bytes != null);
                 Bytes = bytes;
                 Symbol = null;
                 SymbolDelta = 0;
@@ -74,6 +130,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
             public GCInfoComponent(ISymbolNode symbol, int symbolDelta)
             {
+                Debug.Assert(symbol != null);
                 Bytes = null;
                 Symbol = symbol;
                 SymbolDelta = symbolDelta;
@@ -110,7 +167,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                 {
                     if (other.Bytes == null)
                         return false;
-                    
+
                     return Bytes.SequenceEqual(other.Bytes);
                 }
                 else
@@ -124,44 +181,67 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         {
             TargetArchitecture targetArch = factory.Target.Architecture;
 
-            for (int frameInfoIndex = 0; frameInfoIndex < _methodNode.FrameInfos.Length; frameInfoIndex++)
+            int numHotFrameInfos = _methodNode.FrameInfos.Length;
+            int numFrameInfos = numHotFrameInfos;
+            if (_methodNode.ColdCodeNode != null)
             {
-                byte[] unwindInfo = _methodNode.FrameInfos[frameInfoIndex].BlobData;
+                numFrameInfos += _methodNode.ColdFrameInfos.Length;
+            }
 
-                if (targetArch == TargetArchitecture.X64)
+            const byte UNW_FLAG_EHANDLER = 1;
+            const byte UNW_FLAG_UHANDLER = 2;
+            const byte UNW_FLAG_CHAININFO = 4;
+            const byte FlagsShift = 3;
+            bool targetUsesPersonalityRoutines = TargetUsesPersonalityRoutines(targetArch);
+
+            for (int frameInfoIndex = 0; frameInfoIndex < numFrameInfos; frameInfoIndex++)
+            {
+                FrameInfo frameInfo = (frameInfoIndex >= numHotFrameInfos) ?
+                    _methodNode.ColdFrameInfos[frameInfoIndex - numHotFrameInfos] :
+                    _methodNode.FrameInfos[frameInfoIndex];
+                byte[] unwindInfo = frameInfo.BlobData;
+                if (unwindInfo == null)
                 {
-                    // On Amd64, patch the first byte of the unwind info by setting the flags to EHANDLER | UHANDLER
-                    // as that's what CoreCLR does (zapcode.cpp, ZapUnwindData::Save).
-                    const byte UNW_FLAG_EHANDLER = 1;
-                    const byte UNW_FLAG_UHANDLER = 2;
-                    const byte FlagsShift = 3;
-
-                    unwindInfo[0] |= (byte)((UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER) << FlagsShift);
+                    // Chain unwind info
+                    byte[] header = new byte[4];
+                    int i = 0;
+                    header[i++] = 1 + (UNW_FLAG_CHAININFO << FlagsShift); // Version = 1, UNW_FLAG_CHAININFO
+                    header[i++] = 0; // SizeOfProlog = 0
+                    header[i++] = 0; // CountOfCode = 0
+                    header[i++] = _methodNode.FrameInfos[0].BlobData[3]; // Copying frame and frame offset from main function
+                    yield return new GCInfoComponent(header);
+                    yield return new GCInfoComponent(_methodNode, 0);
+                    yield return new GCInfoComponent(_methodNode, _methodNode.Size);
+                    // TODO: Is this correct?
+                    yield return new GCInfoComponent(factory.RuntimeFunctionsGCInfo, this.OffsetFromBeginningOfArray);
                 }
-                else if ((targetArch == TargetArchitecture.ARM) || (targetArch == TargetArchitecture.ARM64))
+                else
                 {
-                    // Set the 'X' bit to indicate that there is a personality routine associated with this method
-                    unwindInfo[2] |= 1 << 4;
-                }
-
-                yield return new GCInfoComponent(unwindInfo);
-
-                if (targetArch != TargetArchitecture.X86)
-                {
-                    bool isFilterFunclet = (_methodNode.FrameInfos[frameInfoIndex].Flags & FrameInfoFlags.Filter) != 0;
-                    ISymbolNode personalityRoutine = (isFilterFunclet ? factory.FilterFuncletPersonalityRoutine : factory.PersonalityRoutine);
-                    int codeDelta = 0;
-                    if (targetArch == TargetArchitecture.ARM)
+                    if (targetArch == TargetArchitecture.X64)
                     {
-                        // THUMB_CODE
-                        codeDelta = 1;
+                        // On Amd64, patch the first byte of the unwind info by setting the flags to EHANDLER | UHANDLER
+                        // as that's what CoreCLR does (zapcode.cpp, ZapUnwindData::Save).
+                        unwindInfo[0] |= (byte)((UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER) << FlagsShift);
                     }
-                    yield return new GCInfoComponent(personalityRoutine, codeDelta);
-                }
+                    else if ((targetArch == TargetArchitecture.ARM) || (targetArch == TargetArchitecture.ARM64) || (targetArch == TargetArchitecture.LoongArch64) || (targetArch == TargetArchitecture.RiscV64))
+                    {
+                        // Set the 'X' bit to indicate that there is a personality routine associated with this method
+                        unwindInfo[2] |= 1 << 4;
+                    }
 
-                if (frameInfoIndex == 0 && _methodNode.GCInfo != null)
-                {
-                    yield return new GCInfoComponent(_methodNode.GCInfo);
+                    yield return new GCInfoComponent(unwindInfo);
+
+                    if (targetUsesPersonalityRoutines)
+                    {
+                        bool isFilterFunclet = (frameInfo.Flags & FrameInfoFlags.Filter) != 0;
+                        ISymbolNode personalityRoutine = (isFilterFunclet ? factory.FilterFuncletPersonalityRoutine : factory.PersonalityRoutine);
+                        yield return new GCInfoComponent(personalityRoutine, 0);
+                    }
+
+                    if (frameInfoIndex == 0 && _methodNode.GCInfo != null)
+                    {
+                        yield return new GCInfoComponent(_methodNode.GCInfo);
+                    }
                 }
             }
         }
@@ -204,15 +284,19 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             }
 
             factory.RuntimeFunctionsGCInfo.Deduplicator.Add(this);
+            bool targetAlignsGCInfoComponents = TargetAlignsGCInfoComponents(factory.Target.Architecture);
 
             foreach (var item in EncodeDataCore(factory))
             {
                 if (item.Bytes != null)
                 {
                     dataBuilder.EmitBytes(item.Bytes);
-                    // Maintain 4-alignment for the next unwind / GC info block
-                    int align4Pad = -item.Bytes.Length & 3;
-                    dataBuilder.EmitZeros(align4Pad);
+                    if (targetAlignsGCInfoComponents)
+                    {
+                        // Maintain 4-alignment for the personality routine
+                        int align4Pad = -item.Bytes.Length & 3;
+                        dataBuilder.EmitZeros(align4Pad);
+                    }
                 }
                 else
                 {
@@ -224,12 +308,12 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         protected override string GetName(NodeFactory context)
         {
             Utf8StringBuilder sb = new Utf8StringBuilder();
-            sb.Append("MethodGCInfo->");
+            sb.Append("MethodGCInfo->"u8);
             _methodNode.AppendMangledName(context.NameMangler, sb);
             return sb.ToString();
         }
 
-        public override IEnumerable<DependencyListEntry> GetStaticDependencies(NodeFactory context) => null;
+        public override void AddStaticDependencies(DependencySink sink, NodeFactory context) { }
 
         public override int CompareToImpl(ISortableNode other, CompilerComparer comparer)
         {

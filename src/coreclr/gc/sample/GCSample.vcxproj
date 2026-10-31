@@ -51,7 +51,7 @@
       <PrecompiledHeader>Use</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>WIN32;HOST_X86;_DEBUG;_CONSOLE;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;HOST_X86;NOMINMAX;_DEBUG;_CONSOLE;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <SDLCheck>true</SDLCheck>
       <PrecompiledHeaderFile>common.h</PrecompiledHeaderFile>
       <AdditionalIncludeDirectories>.;..;..\env</AdditionalIncludeDirectories>
@@ -68,7 +68,7 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;HOST_X86;NDEBUG;_CONSOLE;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;HOST_X86;NOMINMAX;NDEBUG;_CONSOLE;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <SDLCheck>true</SDLCheck>
       <AdditionalIncludeDirectories>.;..;..\env</AdditionalIncludeDirectories>
     </ClCompile>
@@ -94,9 +94,28 @@
     <ClCompile Include="..\gchandletable.cpp" />
     <ClCompile Include="..\gcload.cpp" />
     <ClCompile Include="..\gccommon.cpp" />
-    <ClCompile Include="..\gceewks.cpp" />
+    <ClCompile Include="..\gcee.cpp" />
     <ClCompile Include="..\gcscan.cpp" />
-    <ClCompile Include="..\gcwks.cpp" />
+    <ClCompile Include="..\gc.cpp" />
+    <ClCompile Include="..\init.cpp" />
+    <ClCompile Include="..\no_gc.cpp" />
+    <ClCompile Include="..\finalization.cpp" />
+    <ClCompile Include="..\dynamic_tuning.cpp" />
+    <ClCompile Include="..\region_free_list.cpp" />
+    <ClCompile Include="..\region_allocator.cpp" />
+    <ClCompile Include="..\memory.cpp" />
+    <ClCompile Include="..\sweep.cpp" />
+    <ClCompile Include="..\collect.cpp" />
+    <ClCompile Include="..\diagnostics.cpp" />
+    <ClCompile Include="..\dynamic_heap_count.cpp" />
+    <ClCompile Include="..\card_table.cpp" />
+    <ClCompile Include="..\relocate_compact.cpp" />
+    <ClCompile Include="..\mark_phase.cpp" />
+    <ClCompile Include="..\background.cpp" />
+    <ClCompile Include="..\interface.cpp" />
+    <ClCompile Include="..\allocation.cpp" />
+    <ClCompile Include="..\plan_phase.cpp" />
+    <ClCompile Include="..\regions_segments.cpp" />
     <ClCompile Include="..\handletable.cpp" />
     <ClCompile Include="..\handletablecache.cpp" />
     <ClCompile Include="..\handletablecore.cpp" />

@@ -3,12 +3,12 @@
 
 using System;
 using System.Diagnostics;
-using System.Globalization;
-using System.Runtime.InteropServices;
 using System.DirectoryServices;
 using System.DirectoryServices.ActiveDirectory;
-using System.Text;
+using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Security.Principal;
+using System.Text;
 
 namespace System.DirectoryServices.AccountManagement
 {
@@ -153,6 +153,10 @@ namespace System.DirectoryServices.AccountManagement
             {
                 switch (c)
                 {
+                    case '\0':
+                        sb.Append(@"\00");
+                        break;
+
                     case '(':
                         sb.Append(@"\28");
                         break;
@@ -213,7 +217,7 @@ namespace System.DirectoryServices.AccountManagement
 
             foreach (char c in papiString)
             {
-                if (escapeMode == false)
+                if (!escapeMode)
                 {
                     switch (c)
                     {
@@ -467,7 +471,7 @@ namespace System.DirectoryServices.AccountManagement
             {
             }
 
-            // Since we were able to retrive the computer domain above we should be able to access the current forest here.
+            // Since we were able to retrieve the computer domain above we should be able to access the current forest here.
             Forest currentForest = Forest.GetCurrentForest();
 
             Domain targetdom = Domain.GetDomain(new DirectoryContext(DirectoryContextType.Domain, targetDomain, username, password));
@@ -488,7 +492,7 @@ namespace System.DirectoryServices.AccountManagement
             return false;
         }
 
-        internal static string RetriveWkDn(DirectoryEntry deBase, string defaultNamingContext, string serverName, byte[] wellKnownContainerGuid)
+        internal static string RetrieveWkDn(DirectoryEntry deBase, string defaultNamingContext, string serverName, byte[] wellKnownContainerGuid)
         {
             /*
                             bool w2k3Supported  = false;

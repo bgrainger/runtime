@@ -7,7 +7,8 @@ internal static partial class Interop
 {
     internal static partial class Pdh
     {
-        [GeneratedDllImport(Libraries.Pdh, CharSet = CharSet.Unicode)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.Pdh)]
         public static partial int PdhFormatFromRawValue(
             uint dwCounterType,
             uint dwFormat,

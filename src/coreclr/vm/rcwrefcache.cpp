@@ -125,7 +125,7 @@ void RCWRefCache::ShrinkDependentHandles()
         {
 
             LOG((LF_INTEROP, LL_INFO100,
-                "\t[RCWRefCache 0x%p] Shrinking dependent handle cache. Total SLOTS = %d\n",
+                "\t[RCWRefCache 0x%p] Shrinking dependent handle cache. Total SLOTS = %zu\n",
                 this, m_depHndList.Size()
                 ));
 
@@ -150,7 +150,7 @@ void RCWRefCache::ShrinkDependentHandles()
             m_depHndList.ReSizeNoThrow(newSize);
 
             //
-            // Reset shrink hint as we've just shrinked
+            // Reset shrink hint as we've just shrunk
             //
             m_dwShrinkHint = 0;
             LOG((LF_INTEROP, LL_INFO100, "\t[RCWRefCache 0x%p] Reset m_dwShrinkHint = 0\n", this));
@@ -251,7 +251,7 @@ HRESULT RCWRefCache::AddReferenceUsingDependentHandle(OBJECTREF obj1, OBJECTREF 
         {
             hr = GET_EXCEPTION()->GetHR();
         }
-        EX_END_CATCH(SwallowAllExceptions)
+        EX_END_CATCH
     }
     else
     {

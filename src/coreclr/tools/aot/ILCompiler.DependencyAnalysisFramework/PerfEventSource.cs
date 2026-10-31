@@ -10,10 +10,8 @@ using System.Diagnostics.Tracing;
 namespace ILCompiler.DependencyAnalysisFramework
 {
     [EventSource(Name = "Microsoft-ILCompiler-Graph-Perf")]
-    public class PerfEventSource : EventSource
+    public partial class PerfEventSource : EventSource
     {
-        private PerfEventSource() { }
-
         public static PerfEventSource Log = new PerfEventSource();
 
         public struct StartStopEvents : IDisposable
@@ -33,7 +31,7 @@ namespace ILCompiler.DependencyAnalysisFramework
             public static StartStopEvents GraphProcessingEvents()
             {
                 if (!Log.IsEnabled())
-                    return new StartStopEvents();
+                    return default(StartStopEvents);
 
                 Log.GraphProcessingStart();
                 return new StartStopEvents(Log.GraphProcessingStop);
@@ -42,7 +40,7 @@ namespace ILCompiler.DependencyAnalysisFramework
             public static StartStopEvents DependencyAnalysisEvents()
             {
                 if (!Log.IsEnabled())
-                    return new StartStopEvents();
+                    return default(StartStopEvents);
 
                 Log.DependencyAnalysisStart();
                 return new StartStopEvents(Log.DependencyAnalysisStop);

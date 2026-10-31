@@ -10,7 +10,7 @@
 #define __stacking_allocator_h__
 
 #include "util.hpp"
-#include "eecontract.h"
+#include <contract.h>
 
 
 // We use zero sized arrays, disable the non-standard extension warning.
@@ -20,13 +20,13 @@
 #endif
 
 #ifdef _DEBUG
-    struct Sentinal
+    struct Sentinel
     {
         enum { marker1Val = 0xBAD00BAD };
-        Sentinal(Sentinal* next) : m_Marker1(marker1Val), m_Next(next) { LIMITED_METHOD_CONTRACT; }
+        Sentinel(Sentinel* next) : m_Marker1(marker1Val), m_Next(next) { LIMITED_METHOD_CONTRACT; }
 
         unsigned  m_Marker1;        // just some data bytes
-        Sentinal* m_Next;           // linked list of these
+        Sentinel* m_Next;           // linked list of these
     };
 #endif
 
@@ -38,7 +38,7 @@
     {
         StackBlock     *m_Next;         // Next oldest block in list
         DWORD_PTR   m_Length;       // Length of block excluding header  (needs to be pointer-sized for alignment on IA64)
-        INDEBUG(Sentinal*   m_Sentinal;)    // insure that we don't fall of the end of the buffer
+        INDEBUG(Sentinel*   m_Sentinel;)    // ensure that we don't fall of the end of the buffer
         INDEBUG(void**      m_Pad;)    		// keep the size a multiple of 8
         char *GetData() { return (char *)(this + 1);}
     };
@@ -106,16 +106,14 @@ public:
     // @todo move this into a .inl file as many class users of this class don't need to include this body
     FORCEINLINE void * UnsafeAllocNoThrow(unsigned Size)
     {
-        CONTRACT (void*)
+        CONTRACTL
         {
             NOTHROW;
             GC_NOTRIGGER;
             MODE_ANY;
-            INJECT_FAULT(CONTRACT_RETURN NULL;);
             PRECONDITION(m_CheckpointDepth > 0);
-            POSTCONDITION(CheckPointer(RETVAL, NULL_OK));
         }
-        CONTRACT_END;
+        CONTRACTL_END;
 
 #ifdef _DEBUG
         m_Allocs++;
@@ -125,7 +123,7 @@ public:
         //special case, 0 size alloc, return non-null but invalid pointer
         if (Size == 0)
         {
-            RETURN (void*)-1;
+            return (void*)-1;
         }
 
         // Round size up to ensure alignment.
@@ -135,15 +133,15 @@ public:
             return NULL;
         }
 
-        // leave room for sentinal
-        INDEBUG(n += sizeof(Sentinal));
+        // leave room for sentinel
+        INDEBUG(n += sizeof(Sentinel));
 
         // Is the request too large for the current block?
         if (n > m_BytesLeft)
         {
             if (!AllocNewBlockForBytes(n))
             {
-                RETURN NULL;
+                return NULL;
             }
         }
 
@@ -156,11 +154,11 @@ public:
         m_BytesLeft -= n;
 
 #ifdef _DEBUG
-        // Add sentinal to the end
-        m_FirstBlock->m_Sentinal = new(m_FirstFree - sizeof(Sentinal)) Sentinal(m_FirstBlock->m_Sentinal);
+        // Add sentinel to the end
+        m_FirstBlock->m_Sentinel = new(m_FirstFree - sizeof(Sentinel)) Sentinel(m_FirstBlock->m_Sentinel);
 #endif
 
-        RETURN ret;
+        return ret;
     }
 
     FORCEINLINE void * AllocNoThrow(S_UINT32 size)
@@ -224,48 +222,55 @@ private :
 };
 
 #define ACQUIRE_STACKING_ALLOCATOR(stackingAllocatorName)  \
-  Thread *pThread__ACQUIRE_STACKING_ALLOCATOR = GetThread(); \
-  StackingAllocator *stackingAllocatorName = pThread__ACQUIRE_STACKING_ALLOCATOR->m_stackLocalAllocator; \
+  StackingAllocator *stackingAllocatorName = StackingAllocatorHolder::GetCurrentThreadStackingAllocator(); \
   bool allocatorOwner__ACQUIRE_STACKING_ALLOCATOR = false; \
-  NewHolder<StackingAllocator> heapAllocatedStackingBuffer__ACQUIRE_STACKING_ALLOCATOR; \
+  NewArrayHolder<char> heapAllocatedStackingBuffer__ACQUIRE_STACKING_ALLOCATOR; \
 \
   if (stackingAllocatorName == NULL) \
   { \
-      if (pThread__ACQUIRE_STACKING_ALLOCATOR->CheckCanUseStackAlloc()) \
+      if (GetThread()->CheckCanUseStackAlloc()) \
       { \
           stackingAllocatorName = new (_alloca(sizeof(StackingAllocator))) StackingAllocator; \
       } \
       else \
       {\
-          stackingAllocatorName = new (nothrow) StackingAllocator; \
-          if (stackingAllocatorName == NULL) \
+          char *pBuffer__ACQUIRE_STACKING_ALLOCATOR = new (nothrow) char[sizeof(StackingAllocator)]; \
+          if (pBuffer__ACQUIRE_STACKING_ALLOCATOR == NULL) \
               ThrowOutOfMemory(); \
-          heapAllocatedStackingBuffer__ACQUIRE_STACKING_ALLOCATOR = stackingAllocatorName; \
+          heapAllocatedStackingBuffer__ACQUIRE_STACKING_ALLOCATOR = pBuffer__ACQUIRE_STACKING_ALLOCATOR; \
+          stackingAllocatorName = new (pBuffer__ACQUIRE_STACKING_ALLOCATOR) StackingAllocator; \
       }\
       allocatorOwner__ACQUIRE_STACKING_ALLOCATOR = true; \
   } \
-  StackingAllocatorHolder sah_ACQUIRE_STACKING_ALLOCATOR(stackingAllocatorName, pThread__ACQUIRE_STACKING_ALLOCATOR, allocatorOwner__ACQUIRE_STACKING_ALLOCATOR)
+  StackingAllocatorHolder sah_ACQUIRE_STACKING_ALLOCATOR(stackingAllocatorName, allocatorOwner__ACQUIRE_STACKING_ALLOCATOR)
 
-class Thread;
 class StackingAllocatorHolder
 {
+    // Allocator used during marshaling for temporary buffers, much faster than
+    // heap allocation.
+    //
+    // Uses of this allocator should be effectively statically scoped, i.e. a "region"
+    // is started using a CheckPointHolder and GetCheckpoint, and this region can then be used for allocations
+    // from that point onwards, and then all memory is reclaimed when the static scope for the
+    // checkpoint is exited by the running thread.
+    static thread_local StackingAllocator* t_currentStackingAllocator;
     StackingAllocator *m_pStackingAllocator;
     void* m_checkpointMarker;
-    Thread* m_thread;
     bool m_owner;
 
     public:
     ~StackingAllocatorHolder();
-    StackingAllocatorHolder(StackingAllocator *pStackingAllocator, Thread *pThread, bool owner);
+    StackingAllocatorHolder(StackingAllocator *pStackingAllocator, bool owner);
     StackingAllocator *GetStackingAllocator() { return m_pStackingAllocator; }
     StackingAllocator &operator->() { return *m_pStackingAllocator; }
+    static StackingAllocator* GetCurrentThreadStackingAllocator();
 };
 
 
 void * __cdecl operator new(size_t n, StackingAllocator *alloc);
 void * __cdecl operator new[](size_t n, StackingAllocator *alloc);
-void * __cdecl operator new(size_t n, StackingAllocator *alloc, const NoThrow&) throw();
-void * __cdecl operator new[](size_t n, StackingAllocator *alloc, const NoThrow&) throw();
+void * __cdecl operator new(size_t n, StackingAllocator *alloc, const std::nothrow_t&) noexcept;
+void * __cdecl operator new[](size_t n, StackingAllocator *alloc, const std::nothrow_t&) noexcept;
 
 #ifdef _MSC_VER
 #pragma warning(pop)

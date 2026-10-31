@@ -2,7 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 //
 
+
+namespace Dev11_457559;
+
 using System;
+using Xunit;
 
 /// <summary>
 /// InvalidCastException is thrown when 'ngen /profile' image doesn't restore System.Enum TypeRef
@@ -11,7 +15,9 @@ using System;
 /// </summary>
 public class Test_Dev11_457559
 {
-    public static int Main()
+    [OuterLoop]
+    [Fact]
+    public static int TestEntryPoint()
     {
         if (RunTest(1))
         {

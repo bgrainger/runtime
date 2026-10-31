@@ -2,6 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using Xunit;
+using TestLibrary;
 
 public struct ValX0 {}
 public struct ValY0 {}
@@ -78,7 +80,9 @@ public class Test_AbstractBase03
 	
 	}
 	
-	public static int Main()
+ [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+	[Fact]
+	public static int TestEntryPoint()
 	{
 		Eval((new Gen<int>(new int())).InstVerify(typeof(int))); 	
 		Eval((new Gen<double>(new double())).InstVerify(typeof(double))); 

@@ -11,15 +11,17 @@
 
 using System;
 using System.Runtime.CompilerServices;
+using Xunit;
 
-namespace Test
+namespace JitTest_Directed_CheckedCtor_Test_CSharp_Peer_4
 {
-    static class App
+    public static class App
     {
-        static int Main()
+        [OuterLoop]
+        [Fact]
+        public static void TestEntryPoint()
         {
             new DerivedClass(7);
-            return 100;
         }
     }
 
@@ -52,4 +54,3 @@ namespace Test
         private DerivedClass(int arg, int marker) : base(arg) { }
     }
 }
-

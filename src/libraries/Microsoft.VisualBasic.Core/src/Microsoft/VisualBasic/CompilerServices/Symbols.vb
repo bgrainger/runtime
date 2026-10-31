@@ -524,7 +524,7 @@ Namespace Microsoft.VisualBasic.CompilerServices
             Return System.Linq.Enumerable.ToArray(genericParameter.GetInterfaces)
         End Function
 
-        Friend Shared Function GetClassConstraint(ByVal genericParameter As Type) As Type
+        Friend Shared Function GetClassConstraint(<DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)> ByVal genericParameter As Type) As <DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)> Type
             'Returns the class constraint for the type parameter, Nothing if it has
             'no class constraint.
             Debug.Assert(IsGenericParameter(genericParameter), "expected type parameter")
@@ -597,7 +597,7 @@ Namespace Microsoft.VisualBasic.CompilerServices
 
             If IsGenericParameter(referringType) Then
                 'Is T a generic parameter of Type. Note that the clr way of representing type params will
-                'return true for the copies of the type params of all the parent types that are on the 
+                'return true for the copies of the type params of all the parent types that are on the
                 'passed in Typ.
 
                 If referringType.DeclaringType Is typ Then
@@ -731,7 +731,7 @@ Namespace Microsoft.VisualBasic.CompilerServices
             Dim declaringType As System.Type = member.DeclaringType
 
             ' For nested types IsNotPublic doesn't return the right value so
-            ' we need to use Not IsPublic. 
+            ' we need to use Not IsPublic.
             '
             ' The following code will only allow calls to members of top level public types
             ' in the runtime library. Read the reflection documentation and test with
@@ -820,6 +820,12 @@ Namespace Microsoft.VisualBasic.CompilerServices
                     End While
                     Return False
 
+                End Get
+            End Property
+
+            Friend ReadOnly Property IsCOMObject() As Boolean
+                Get
+                    Return _type.IsCOMObject
                 End Get
             End Property
 
@@ -922,12 +928,12 @@ Namespace Microsoft.VisualBasic.CompilerServices
                 Return Nothing
             End Function
 
-            ' For a WinRT object, we want to treat members of it's collection interfaces as members of the object 
-            ' itself. So GetMembers calls here to find the member in all the collection interfaces that this object 
+            ' For a WinRT object, we want to treat members of it's collection interfaces as members of the object
+            ' itself. So GetMembers calls here to find the member in all the collection interfaces that this object
             ' implements.
-            <UnconditionalSuppressMessage("ReflectionAnalysis", "IL2065:UnrecognizedReflectionPattern",
+            <SuppressMessage("ReflectionAnalysis", "IL2065:UnrecognizedReflectionPattern",
                 Justification:="_type is annotated with .All, so it's Interfaces will be annotated as well and it is safe to call GetMember on the Interfaces.
-                    We should be able to remove once https://github.com/mono/linker/issues/1731 is fixed.")>
+                    We should be able to remove once https://github.com/dotnet/runtime/issues/114425 is fixed.")>
             Friend Function LookupWinRTCollectionInterfaceMembers(ByVal memberName As String) As List(Of MemberInfo)
                 Debug.Assert(Me.IsWindowsRuntimeObject(), "Expected a Windows Runtime Object")
 
@@ -944,9 +950,6 @@ Namespace Microsoft.VisualBasic.CompilerServices
                 Return result
             End Function
 
-            <UnconditionalSuppressMessage("ReflectionAnalysis", "IL2075:UnrecognizedReflectionPattern",
-                Justification:="_type is annotated with .All, so it's BaseType will be annotated as well and it is safe to call GetMember on the BaseType.
-                    We should be able to remove once https://github.com/mono/linker/issues/1731 is fixed.")>
             Friend Function LookupNamedMembers(ByVal memberName As String) As MemberInfo()
                 'Returns an array of members matching MemberName sorted by inheritance (most derived first).
                 'If no members match MemberName, returns an empty array.
@@ -989,7 +992,7 @@ Namespace Microsoft.VisualBasic.CompilerServices
                 Return result
             End Function
 
-            ' For a WinRT object, we want to treat members of it's collection interfaces as members of the object 
+            ' For a WinRT object, we want to treat members of it's collection interfaces as members of the object
             ' itself. Search through all the collection interfaces for default members.
             <RequiresUnreferencedCode("Calls Container.LookupDefaultMembers")>
             Private Function LookupWinRTCollectionDefaultMembers(ByRef defaultMemberName As String) As List(Of MemberInfo)
@@ -1376,7 +1379,7 @@ Namespace Microsoft.VisualBasic.CompilerServices
                             If declaringType.IsConstructedGenericType Then
                                 declaringType = declaringType.GetGenericTypeDefinition
                             End If
-                            Dim rawMethod As MethodBase = Nothing
+                            Dim rawMethod As MethodInfo = Nothing
                             For Each candidate As MethodInfo In declaringType.GetTypeInfo.GetDeclaredMethods(item.Name)
                                 If candidate.HasSameMetadataDefinitionAs(item) Then
                                     rawMethod = candidate
@@ -1462,12 +1465,12 @@ Namespace Microsoft.VisualBasic.CompilerServices
                 'This function instantiates a generic method with the type arguments supplied or inferred
                 'for this method.
                 '
-                ' Constructing the generic binding using Reflection peforms
+                ' Constructing the generic binding using Reflection performs
                 ' constraint checking. This is bad if the binding will be used
                 ' to resolve overloaded calls since constraints should not participate
                 ' in the selection process. Instead, constraints should be checked
                 ' after overload resolution has selected a method. For now, there is
-                ' nothing reasonble we can do since Reflection does not allow the 
+                ' nothing reasonble we can do since Reflection does not allow the
                 ' instantiation of generic methods with arguments that violate the
                 ' constraints. If a violation occurs, catch the exception and return
                 ' false signifying that the binding failed.

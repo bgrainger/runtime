@@ -3,10 +3,13 @@
 using System;
 using System.Reflection;
 using System.Security;
+using Xunit;
 
 [SecuritySafeCritical]
-class Program {
-    static int Main() {
+public class DDB113347 {
+    [OuterLoop]
+    [ConditionalFact(typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsNotNativeAot))]
+    public static int TestEntryPoint() {
         Console.WriteLine("Attempting delegate construction with null method pointer.");
         Console.WriteLine("Expecting: ArgumentNullException wrapped in TargetInvocationException.");
         try {

@@ -3,6 +3,8 @@
 
 using System;
 
+using Internal.Text;
+
 namespace Internal.TypeSystem
 {
     public struct MethodImplRecord
@@ -35,10 +37,7 @@ namespace Internal.TypeSystem
         {
             get
             {
-                if (_allVirtualMethodImplsForType == null)
-                {
-                    _allVirtualMethodImplsForType = ComputeVirtualMethodImplsForType();
-                }
+                _allVirtualMethodImplsForType ??= ComputeVirtualMethodImplsForType();
 
                 return _allVirtualMethodImplsForType;
             }
@@ -49,6 +48,6 @@ namespace Internal.TypeSystem
         /// </summary>
         /// <param name="name"></param>
         /// <returns></returns>
-        public abstract MethodImplRecord[] FindMethodsImplWithMatchingDeclName(string name);
+        public abstract MethodImplRecord[] FindMethodsImplWithMatchingDeclName(Utf8Span name);
     }
 }

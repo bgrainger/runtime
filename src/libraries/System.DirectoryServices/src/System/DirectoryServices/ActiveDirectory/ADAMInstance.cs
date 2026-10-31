@@ -1,9 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Net;
 using System.Collections;
 using System.ComponentModel;
+using System.Net;
 using System.Runtime.InteropServices;
 
 namespace System.DirectoryServices.ActiveDirectory
@@ -27,6 +27,7 @@ namespace System.DirectoryServices.ActiveDirectory
         private IntPtr _authIdentity = IntPtr.Zero;
         private SyncUpdateCallback? _userDelegate;
         private readonly SyncReplicaFromAllServersCallback _syncAllFunctionPointer;
+        private static readonly char[] s_comma = new char[] { ',' };
 
         #region constructors
         internal AdamInstance(DirectoryContext context, string adamInstanceName)
@@ -113,10 +114,7 @@ namespace System.DirectoryServices.ActiveDirectory
             string? dnsHostName = null;
 
             // check that the context is not null
-            if (context == null)
-            {
-                throw new ArgumentNullException(nameof(context));
-            }
+            ArgumentNullException.ThrowIfNull(context);
 
             // contexttype should be DirectoryServer
             if (context.ContextType != DirectoryContextType.DirectoryServer)
@@ -166,10 +164,7 @@ namespace System.DirectoryServices.ActiveDirectory
         public static AdamInstance FindOne(DirectoryContext context, string partitionName)
         {
             // validate parameters (partitionName validated by the call to ConfigSet)
-            if (context == null)
-            {
-                throw new ArgumentNullException(nameof(context));
-            }
+            ArgumentNullException.ThrowIfNull(context);
 
             // contexttype should be ConfigurationSet
             if (context.ContextType != DirectoryContextType.ConfigurationSet)
@@ -177,10 +172,7 @@ namespace System.DirectoryServices.ActiveDirectory
                 throw new ArgumentException(SR.TargetShouldBeConfigSet, nameof(context));
             }
 
-            if (partitionName == null)
-            {
-                throw new ArgumentNullException(nameof(partitionName));
-            }
+            ArgumentNullException.ThrowIfNull(partitionName);
 
             if (partitionName.Length == 0)
             {
@@ -198,10 +190,7 @@ namespace System.DirectoryServices.ActiveDirectory
             AdamInstanceCollection? adamInstanceCollection = null;
 
             // validate parameters (partitionName validated by the call to ConfigSet)
-            if (context == null)
-            {
-                throw new ArgumentNullException(nameof(context));
-            }
+            ArgumentNullException.ThrowIfNull(context);
 
             // contexttype should be ConfigurationSet
             if (context.ContextType != DirectoryContextType.ConfigurationSet)
@@ -209,10 +198,7 @@ namespace System.DirectoryServices.ActiveDirectory
                 throw new ArgumentException(SR.TargetShouldBeConfigSet, nameof(context));
             }
 
-            if (partitionName == null)
-            {
-                throw new ArgumentNullException(nameof(partitionName));
-            }
+            ArgumentNullException.ThrowIfNull(partitionName);
 
             if (partitionName.Length == 0)
             {
@@ -299,10 +285,7 @@ namespace System.DirectoryServices.ActiveDirectory
             }
             finally
             {
-                if (roleObjectEntry != null)
-                {
-                    roleObjectEntry.Dispose();
-                }
+                roleObjectEntry?.Dispose();
             }
 
             // invalidate the role collection so that it gets loaded again next time
@@ -591,14 +574,8 @@ namespace System.DirectoryServices.ActiveDirectory
                 }
                 finally
                 {
-                    if (schemaEntry != null)
-                    {
-                        schemaEntry.Dispose();
-                    }
-                    if (partitionsEntry != null)
-                    {
-                        partitionsEntry.Dispose();
-                    }
+                    schemaEntry?.Dispose();
+                    partitionsEntry?.Dispose();
                 }
                 return _cachedRoles;
             }
@@ -659,7 +636,7 @@ namespace System.DirectoryServices.ActiveDirectory
                     // this adam instance
                     if (!Partitions.Contains(value))
                     {
-                        throw new ArgumentException(SR.Format(SR.ServerNotAReplica, value), nameof(value));
+                        throw new ArgumentException(SR.ServerNotAReplica, nameof(value));
                     }
                     ntdsaEntry.Properties[PropertyManager.MsDSDefaultNamingContext].Value = value;
                 }
@@ -716,7 +693,7 @@ namespace System.DirectoryServices.ActiveDirectory
                     // get the site object name from the server object name
                     // CN=server1,CN=Servers,CN=Site1,CN=Sites
                     // the site object name is the third component onwards
-                    string[] components = ServerObjectName.Split(new char[] { ',' });
+                    string[] components = ServerObjectName.Split(s_comma);
                     if (components.GetLength(0) < 3)
                     {
                         // should not happen

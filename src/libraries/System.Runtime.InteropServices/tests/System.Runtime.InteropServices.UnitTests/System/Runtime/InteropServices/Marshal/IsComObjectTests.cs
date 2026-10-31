@@ -48,12 +48,13 @@ namespace System.Runtime.InteropServices.Tests
             ModuleBuilder comImportModuleBuilder = comImportAssemblyBuilder.DefineDynamicModule("Module");
             TypeBuilder comImportTypeBuilder = comImportModuleBuilder.DefineType("Type");
             comImportTypeBuilder.SetCustomAttribute(comImportAttributeBuilder);
+            comImportTypeBuilder.DefineMethod(".ctor", MethodAttributes.SpecialName, null, null);
 
             Type collectibleComImportObject = comImportTypeBuilder.CreateType();
             yield return new object[] { collectibleComImportObject };
         }
 
-        [Theory]
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsBuiltInComEnabled))]
         [MemberData(nameof(IsComObject_TestData))]
         public void IsComObject_NonComObject_ReturnsFalse(object value)
         {

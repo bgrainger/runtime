@@ -15,7 +15,7 @@
 #define FAIL_UNLESS(x, y) if (!(x)) { report->error y; return; }
 
 /**************************************************************************/
-void Assembler::StartNameSpace(__in __nullterminated char* name)
+void Assembler::StartNameSpace(_In_ __nullterminated char* name)
 {
     m_NSstack.PUSH(m_szNamespace);
     m_szNamespace = name;
@@ -57,11 +57,8 @@ void    Assembler::ClearImplList(void)
 {
     while(m_nImplList) m_crImplList[--m_nImplList] = mdTypeRefNil;
 }
+
 /**************************************************************************/
-#ifdef _PREFAST_
-#pragma warning(push)
-#pragma warning(disable:22008) // "Suppress PREfast warnings about integer overflow"
-#endif
 void    Assembler::AddToImplList(mdToken tk)
 {
     if(m_nImplList+1 >= m_nImplListSize)
@@ -82,16 +79,13 @@ void    Assembler::AddToImplList(mdToken tk)
     m_crImplList[m_nImplList++] = tk;
     m_crImplList[m_nImplList] = mdTypeRefNil;
 }
-#ifdef _PREFAST_
-#pragma warning(pop)
-#endif
 
 void    Assembler::ClearBoundList(void)
 {
     m_TyParList = NULL;
 }
 /**************************************************************************/
-mdToken Assembler::ResolveClassRef(mdToken tkResScope, __in __nullterminated const char *pszFullClassName, Class** ppClass)
+mdToken Assembler::ResolveClassRef(mdToken tkResScope, _In_ __nullterminated const char *pszFullClassName, Class** ppClass)
 {
     Class *pClass = NULL;
     mdToken tkRet = mdTokenNil;
@@ -146,7 +140,7 @@ class TypeSpecContainer
 {
 private:
     // Contain a BinStr
-    unsigned __int8 *ptr_;
+    uint8_t *ptr_;
     unsigned len_;
     // Hash the BinStr, just for speed of lookup
     unsigned hash_;
@@ -166,7 +160,7 @@ public:
     // Constructor for a 'permanent' object
     // Don't bother re-hashing, since we will always have already constructed the lookup object
     TypeSpecContainer(const TypeSpecContainer &t, mdToken tk) :
-        ptr_(new unsigned __int8[t.len_]),
+        ptr_(new uint8_t[t.len_]),
         len_(t.len_),
         hash_(t.hash_),
         token_(tk)
@@ -239,7 +233,7 @@ mdToken Assembler::ResolveTypeSpec(BinStr* typeSpec)
 }
 
 /**************************************************************************/
-mdToken Assembler::GetAsmRef(__in __nullterminated const char* szName)
+mdToken Assembler::GetAsmRef(_In_ __nullterminated const char* szName)
 {
     mdToken tkResScope = 0;
     if(strcmp(szName,"*")==0) tkResScope = mdTokenNil;
@@ -250,7 +244,7 @@ mdToken Assembler::GetAsmRef(__in __nullterminated const char* szName)
         {
             // emit the AssemblyRef
             // if it's not self, try to get attributes with Autodetect
-            unsigned L = (unsigned)strlen(szName)+1;
+            size_t L = strlen(szName)+1;
             char *sz = new char[L];
             if(sz)
             {
@@ -330,7 +324,7 @@ mdToken Assembler::GetInterfaceImpl(mdToken tsClass, mdToken tsInterface)
 }
 
 /**************************************************************************/
-mdToken Assembler::GetModRef(__in __nullterminated char* szName)
+mdToken Assembler::GetModRef(_In_ __nullterminated char* szName)
 {
     mdToken tkResScope = 0;
     if(!strcmp(szName,m_szScopeName))
@@ -379,7 +373,7 @@ mdToken Assembler::MakeTypeRef(mdToken tkResScope, LPCUTF8 pszFullClassName)
         if(*pc)
         {
             // convert name to widechar
-            WszMultiByteToWideChar(g_uCodePage,0,pc,-1,wzUniBuf,dwUniBuf);
+            MultiByteToWideChar(g_uCodePage,0,pc,-1,wzUniBuf,dwUniBuf);
             if(FAILED(m_pEmitter->DefineTypeRefByName(tkResScope, wzUniBuf, &tkRet))) tkRet = mdTokenNil;
         }
     }
@@ -392,9 +386,7 @@ DWORD Assembler::CheckClassFlagsIfNested(Class* pEncloser, DWORD attr)
     DWORD wasAttr = attr;
     if(pEncloser && (!IsTdNested(attr)))
     {
-        if(OnErrGo)
-            report->error("Nested class has non-nested visibility (0x%08X)\n",attr);
-        else
+        if(!OnErrGo)
         {
             attr &= ~tdVisibilityMask;
             attr |= (IsTdPublic(wasAttr) ? tdNestedPublic : tdNestedPrivate);
@@ -403,9 +395,7 @@ DWORD Assembler::CheckClassFlagsIfNested(Class* pEncloser, DWORD attr)
     }
     else if((pEncloser==NULL) && IsTdNested(attr))
     {
-        if(OnErrGo)
-            report->error("Non-nested class has nested visibility (0x%08X)\n",attr);
-        else
+        if(!OnErrGo)
         {
             attr &= ~tdVisibilityMask;
             attr |= (IsTdNestedPublic(wasAttr) ? tdPublic : tdNotPublic);
@@ -417,11 +407,11 @@ DWORD Assembler::CheckClassFlagsIfNested(Class* pEncloser, DWORD attr)
 
 /**************************************************************************/
 
-void Assembler::StartClass(__in __nullterminated char* name, DWORD attr, TyParList *typars)
+void Assembler::StartClass(_In_ __nullterminated char* name, DWORD attr, TyParList *typars)
 {
     Class *pEnclosingClass = m_pCurClass;
     char *szFQN;
-    ULONG LL;
+    size_t LL;
 
     m_TyParList = typars;
 
@@ -431,24 +421,24 @@ void Assembler::StartClass(__in __nullterminated char* name, DWORD attr, TyParLi
     }
     if(pEnclosingClass)
     {
-        LL = pEnclosingClass->m_dwFQN+(ULONG)strlen(name)+2;
-        if((szFQN = new char[LL]))
+        LL = pEnclosingClass->m_dwFQN+strlen(name)+2;
+        if((szFQN = new char[LL]) != nullptr)
             sprintf_s(szFQN,LL,"%s%c%s",pEnclosingClass->m_szFQN,NESTING_SEP,name);
         else
             report->error("\nOut of memory!\n");
     }
     else
     {
-        unsigned L = (unsigned)strlen(m_szFullNS);
-        unsigned LLL = (unsigned)strlen(name);
+        size_t L = strlen(m_szFullNS);
+        size_t LLL = strlen(name);
         LL = L + LLL + (L ? 2 : 1);
-        if((szFQN = new char[LL]))
+        if((szFQN = new char[LL]) != nullptr)
         {
             if(L) sprintf_s(szFQN,LL,"%s.%s",m_szFullNS,name);
             else memcpy(szFQN,name,LL);
             if(LL > MAX_CLASSNAME_LENGTH)
             {
-                report->error("Full class name too long (%d characters, %d allowed).\n",LL-1,MAX_CLASSNAME_LENGTH-1);
+                report->error("Full class name too long (%zd characters, %d allowed).\n",LL-1,MAX_CLASSNAME_LENGTH-1);
             }
         }
         else
@@ -523,7 +513,7 @@ void Assembler::AddClass()
         m_pCurClass->m_Attr = attr;
         m_pCurClass->m_crExtends = (m_pCurClass->m_cl == m_tkSysObject)? mdTypeRefNil : crExtends;
 
-        if ((m_pCurClass->m_dwNumInterfaces = m_nImplList) != NULL)
+        if ((m_pCurClass->m_dwNumInterfaces = m_nImplList) != 0)
         {
             if(bIsEnum) report->error("Enum implementing interface(s)\n");
             if((m_pCurClass->m_crImplements = new mdTypeRef[m_nImplList+1]) != NULL)
@@ -539,8 +529,7 @@ void Assembler::AddClass()
         {
             if(!IsTdSealed(attr))
             {
-                if(OnErrGo) report->error("Non-sealed value class\n");
-                else
+                if(!OnErrGo)
                 {
                     report->warn("Non-sealed value class, made sealed\n");
                     m_pCurClass->m_Attr |= tdSealed;
@@ -607,7 +596,7 @@ void Assembler::SetPinvoke(BinStr* DllName, int Ordinal, BinStr* Alias, int Attr
 }
 
 /**************************************************************************/
-void Assembler::StartMethod(__in __nullterminated char* name, BinStr* sig, CorMethodAttr flags, BinStr* retMarshal, DWORD retAttr, TyParList *typars)
+void Assembler::StartMethod(_In_ __nullterminated char* name, BinStr* sig, CorMethodAttr flags, BinStr* retMarshal, DWORD retAttr, TyParList *typars)
 {
     if (m_pCurMethod != NULL)
     {
@@ -625,15 +614,14 @@ void Assembler::StartMethod(__in __nullterminated char* name, BinStr* sig, CorMe
     {
         char c = name[MAX_CLASSNAME_LENGTH-1];
         name[MAX_CLASSNAME_LENGTH-1] = 0;
-        report->error("Method '%s...' -- name too long (%d characters).\n",name,namelen);
+        report->error("Method '%s...' -- name too long (%zd characters).\n",name,namelen);
         name[MAX_CLASSNAME_LENGTH-1] = c;
     }
     if (!(flags & mdStatic))
         *(sig->ptr()) |= IMAGE_CEE_CS_CALLCONV_HASTHIS;
     else if(*(sig->ptr()) & (IMAGE_CEE_CS_CALLCONV_HASTHIS | IMAGE_CEE_CS_CALLCONV_EXPLICITTHIS))
     {
-        if(OnErrGo) report->error("Method '%s' -- both static and instance\n", name);
-        else
+        if(!OnErrGo)
         {
             report->warn("Method '%s' -- both static and instance, set to static\n", name);
             *(sig->ptr()) &= ~(IMAGE_CEE_CS_CALLCONV_HASTHIS | IMAGE_CEE_CS_CALLCONV_EXPLICITTHIS);
@@ -719,8 +707,7 @@ void Assembler::StartMethod(__in __nullterminated char* name, BinStr* sig, CorMe
         {
             if(IsMdAbstract(flags))
             {
-                if(OnErrGo) report->error("Global method '%s' can't be abstract\n",name);
-                else
+                if(!OnErrGo)
                 {
                     report->warn("Global method '%s' can't be abstract, flag removed\n",name);
                     flags = (CorMethodAttr)(((int) flags) &~mdAbstract);
@@ -728,8 +715,7 @@ void Assembler::StartMethod(__in __nullterminated char* name, BinStr* sig, CorMe
             }
             if(!IsMdStatic(flags))
             {
-                if(OnErrGo) report->error("Non-static global method '%s'\n",name);
-                else
+                if(!OnErrGo)
                 {
                     report->warn("Non-static global method '%s', made static\n",name);
                     flags = (CorMethodAttr)(flags | mdStatic);
@@ -801,7 +787,7 @@ void Assembler::EndMethod()
 }
 /**************************************************************************/
 /* rvaLabel is the optional label that indicates this field points at a particular RVA */
-void Assembler::AddField(__inout_z __inout char* name, BinStr* sig, CorFieldAttr flags, __in __nullterminated char* rvaLabel, BinStr* pVal, ULONG ulOffset)
+void Assembler::AddField(__inout_z __inout char* name, BinStr* sig, CorFieldAttr flags, _In_ __nullterminated char* rvaLabel, BinStr* pVal, ULONG ulOffset)
 {
     FieldDescriptor*    pFD;
     ULONG   i,n;
@@ -811,11 +797,12 @@ void Assembler::AddField(__inout_z __inout char* name, BinStr* sig, CorFieldAttr
     if (m_pCurMethod)
         report->error("Field cannot be declared within a method\n");
 
-    if(strlen(name) >= MAX_CLASSNAME_LENGTH)
+    size_t namelen = strlen(name);
+    if(namelen >= MAX_CLASSNAME_LENGTH)
     {
         char c = name[MAX_CLASSNAME_LENGTH-1];
         name[MAX_CLASSNAME_LENGTH-1] = 0;
-        report->error("Field '%s...' -- name too long (%d characters).\n",name,strlen(name));
+        report->error("Field '%s...' -- name too long (%zd characters).\n",name,namelen);
         name[MAX_CLASSNAME_LENGTH-1] = c;
     }
 
@@ -847,8 +834,7 @@ void Assembler::AddField(__inout_z __inout char* name, BinStr* sig, CorFieldAttr
         }
         if(!IsFdStatic(flags))
         {
-            if(OnErrGo) report->error("Non-static global field\n");
-            else
+            if(!OnErrGo)
             {
                 report->warn("Non-static global field, made static\n");
                 flags = (CorFieldAttr)(flags | fdStatic);
@@ -924,11 +910,11 @@ BOOL Assembler::EmitField(FieldDescriptor* pFD)
     cSig = pFD->m_pbsSig->length();
     mySig = (COR_SIGNATURE*)(pFD->m_pbsSig->ptr());
 
-    WszMultiByteToWideChar(g_uCodePage,0,pFD->m_szName,-1,wzFieldName,dwUniBuf); //int)cFieldNameLength);
+    MultiByteToWideChar(g_uCodePage,0,pFD->m_szName,-1,wzFieldName,dwUniBuf); //int)cFieldNameLength);
     if(IsFdPrivateScope(pFD->m_dwAttr))
     {
-        WCHAR* p = wcsstr(wzFieldName,W("$PST04"));
-        if(p) *p = 0;
+        WCHAR* p = (WCHAR*)u16_strstr(wzFieldName,W("$PST04"));
+        if(p) *p = W('\0');
     }
 
     if(pFD->m_pbsValue && pFD->m_pbsValue->length())
@@ -992,7 +978,7 @@ BOOL Assembler::EmitField(FieldDescriptor* pFD)
             }
         }
         //--------------------------------------------------------------------------------
-        // Set the the RVA to a dummy value.  later it will be fixed
+        // Set the RVA to a dummy value.  later it will be fixed
         // up to be something correct, but if we don't emit something
         // the size of the meta-data will not be correct
         if (pFD->m_rvaLabel)
@@ -1026,11 +1012,11 @@ void Assembler::EmitByte(int val)
 void Assembler::NewSEHDescriptor(void) //sets m_SEHD
 {
     m_SEHDstack.PUSH(m_SEHD);
-    m_SEHD = new SEH_Descriptor;
+    m_SEHD = new (nothrow) SEH_Descriptor();
     if(m_SEHD == NULL) report->error("Failed to allocate SEH descriptor\n");
 }
 /**************************************************************************/
-void Assembler::SetTryLabels(__in __nullterminated char * szFrom, __in __nullterminated char *szTo)
+void Assembler::SetTryLabels(_In_ __nullterminated char * szFrom, _In_ __nullterminated char *szTo)
 {
     if(!m_SEHD) return;
     Label *pLbl = m_pCurMethod->FindLabel(szFrom);
@@ -1043,7 +1029,7 @@ void Assembler::SetTryLabels(__in __nullterminated char * szFrom, __in __nullter
     else report->error("Undefined 1st label in 'try <label> to <label>'\n");
 }
 /**************************************************************************/
-void Assembler::SetFilterLabel(__in __nullterminated char *szFilter)
+void Assembler::SetFilterLabel(_In_ __nullterminated char *szFilter)
 {
     if(!m_SEHD) return;
     Label *pLbl = m_pCurMethod->FindLabel(szFilter);
@@ -1058,7 +1044,7 @@ void Assembler::SetCatchClass(mdToken catchClass)
 
 }
 /**************************************************************************/
-void Assembler::SetHandlerLabels(__in __nullterminated char *szHandlerFrom, __in __nullterminated char *szHandlerTo)
+void Assembler::SetHandlerLabels(_In_ __nullterminated char *szHandlerFrom, _In_ __nullterminated char *szHandlerTo)
 {
     if(!m_SEHD) return;
     Label *pLbl = m_pCurMethod->FindLabel(szHandlerFrom);
@@ -1128,7 +1114,7 @@ void Assembler::AddException(DWORD pcStart, DWORD pcEnd, DWORD pcHandler, DWORD 
     clause->SetHandlerLength(pcHandlerTo - pcHandler);
     clause->SetClassToken(crException);
 
-    int flags = COR_ILEXCEPTION_CLAUSE_OFFSETLEN;
+    int flags = 0;
     if (isFilter) {
         flags |= COR_ILEXCEPTION_CLAUSE_FILTER;
     }
@@ -1161,7 +1147,7 @@ void Assembler::EmitLocals(BinStr* sig)
             ARG_NAME_LIST   *pAN, *pList= getArgNameList();
             if(pList)
             {
-                VarDescr*       pVD;
+                VarDescr* pVD = NULL;
                 for(pAN=pList; pAN; pAN = pAN->pNext)
                 {
                     if(pAN->dwAttr == 0) pAN->dwAttr = m_pCurMethod->m_Locals.COUNT() +1;
@@ -1249,7 +1235,7 @@ void Assembler::SetImplAttr(unsigned short attrval)
 }
 
 /**************************************************************************/
-void Assembler::EmitData(__in_opt void *buffer, unsigned len)
+void Assembler::EmitData(_In_opt_ void *buffer, unsigned len)
 {
     if (len != 0)
     {
@@ -1273,7 +1259,7 @@ void Assembler::EmitData(__in_opt void *buffer, unsigned len)
 }
 
 /**************************************************************************/
-void Assembler::EmitDD(__in __nullterminated char *str)
+void Assembler::EmitDD(_In_ __nullterminated char *str)
 {
     DWORD       dwAddr = 0;
     GlobalLabel *pLabel = FindGlobalLabel(str);
@@ -1283,7 +1269,7 @@ void Assembler::EmitDD(__in __nullterminated char *str)
     _ASSERTE(SUCCEEDED(hr));
 
     DWORD* ptr;
-    DWORD sizeofptr = (DWORD)((m_dwCeeFileFlags & ICEE_CREATE_FILE_PE32) ? sizeof(DWORD) : sizeof(__int64));
+    DWORD sizeofptr = (DWORD)((m_dwCeeFileFlags & ICEE_CREATE_FILE_PE32) ? sizeof(DWORD) : sizeof(int64_t));
     hr = m_pCeeFileGen->GetSectionBlock(m_pCurSection, sizeofptr, 1, (void**) &ptr);
     if (FAILED(hr))
     {
@@ -1317,7 +1303,7 @@ void Assembler::EmitDD(__in __nullterminated char *str)
     else
     {
         m_dwComImageFlags &= ~COMIMAGE_FLAGS_ILONLY;
-        *((__int64*)ptr) = (__int64)dwAddr;
+        *((int64_t*)ptr) = (int64_t)dwAddr;
     }
 }
 
@@ -1333,7 +1319,7 @@ GlobalLabel *Assembler::FindGlobalLabel(LPCUTF8 pszName)
 
 /**************************************************************************/
 
-GlobalFixup *Assembler::AddDeferredGlobalFixup(__in __nullterminated char *pszLabel, BYTE* pReference)
+GlobalFixup *Assembler::AddDeferredGlobalFixup(_In_ __nullterminated char *pszLabel, BYTE* pReference)
 {
     GlobalFixup *pNew = new GlobalFixup(pszLabel, (BYTE*) pReference);
     if (pNew == NULL)
@@ -1382,7 +1368,7 @@ void Assembler::EmitDataString(BinStr* str)
 
         if(UnicodeString)
         {
-            WszMultiByteToWideChar(g_uCodePage,0,pb,-1,UnicodeString,DataLen);
+            MultiByteToWideChar(g_uCodePage,0,pb,-1,UnicodeString,DataLen);
             EmitData(UnicodeString,DataLen*sizeof(WCHAR));
             if(DataLen >= dwUniBuf) delete [] UnicodeString;
         }
@@ -1419,6 +1405,15 @@ void Assembler::EmitOpcode(Instr* instr)
                 pLPC->PC = m_CurPC;
 
                 pLPC->pOwnerDocument = instr->pOwnerDocument;
+                if(m_pCurMethod->m_FirstDocument == NULL)
+                {
+                    m_pCurMethod->m_FirstDocument = instr->pOwnerDocument;
+                }
+                else if (instr->pOwnerDocument != NULL && m_pCurMethod->m_FirstDocument != instr->pOwnerDocument)
+                {
+                    m_pCurMethod->m_HasMultipleDocuments = TRUE;
+                }
+
                 if (0xfeefee == instr->linenum &&
                     0xfeefee == instr->linenum_end &&
                     0 == instr->column &&
@@ -1565,7 +1560,7 @@ void Assembler::EmitInstrVar(Instr* instr, int var)
 }
 
 /**************************************************************************/
-void Assembler::EmitInstrVarByName(Instr* instr, __in __nullterminated char* label)
+void Assembler::EmitInstrVarByName(Instr* instr, _In_ __nullterminated char* label)
 {
     int idx = -1, nArgVarFlag=0;
     switch(instr->opcode)
@@ -1653,10 +1648,10 @@ void Assembler::EmitInstrI(Instr* instr, int val)
 }
 
 /**************************************************************************/
-void Assembler::EmitInstrI8(Instr* instr, __int64* val)
+void Assembler::EmitInstrI8(Instr* instr, int64_t* val)
 {
     EmitOpcode(instr);
-    EmitBytes((BYTE *)val, sizeof(__int64));
+    EmitBytes((BYTE *)val, sizeof(int64_t));
     delete val;
 }
 
@@ -1675,13 +1670,13 @@ void Assembler::EmitInstrR(Instr* instr, double* pval)
 }
 
 /**************************************************************************/
-void Assembler::EmitInstrBrTarget(Instr* instr, __in __nullterminated char* label)
+void Assembler::EmitInstrBrTarget(Instr* instr, _In_ __nullterminated char* label)
 {
     Label * pLabel = m_pCurMethod->FindLabel(label);
     int offset=0;
     if (pLabel == NULL) // branching forward -- no optimization
     {
-        int pcrelsize = 1+(isShort(instr->opcode) ? 1 : 4); //size of the instruction plus argument
+        BYTE pcrelsize = 1+(isShort(instr->opcode) ? 1 : 4); //size of the instruction plus argument
         AddDeferredFixup(label, m_pCurOutputPos+1,
                                        (m_CurPC + pcrelsize), pcrelsize-1);
     }
@@ -1711,7 +1706,7 @@ void Assembler::EmitInstrBrTarget(Instr* instr, __in __nullterminated char* labe
     else              EmitBytes((BYTE *)&offset,4);
 }
 /**************************************************************************/
-void Assembler::AddDeferredFixup(__in __nullterminated char *pszLabel, BYTE *pBytes, DWORD RelativeToPC, BYTE FixupSize)
+void Assembler::AddDeferredFixup(_In_ __nullterminated char *pszLabel, BYTE *pBytes, DWORD RelativeToPC, BYTE FixupSize)
 {
     Fixup *pNew = new Fixup(pszLabel, pBytes, RelativeToPC, FixupSize);
 
@@ -1744,7 +1739,7 @@ void Assembler::EmitInstrBrOffset(Instr* instr, int offset)
 }
 
 /**************************************************************************/
-mdToken Assembler::MakeMemberRef(mdToken cr, __in __nullterminated char* pszMemberName, BinStr* sig)
+mdToken Assembler::MakeMemberRef(mdToken cr, _In_ __nullterminated char* pszMemberName, BinStr* sig)
 {
     DWORD           cSig = sig->length();
     COR_SIGNATURE*  mySig = (COR_SIGNATURE *)(sig->ptr());
@@ -1782,7 +1777,7 @@ mdToken Assembler::MakeMemberRef(mdToken cr, __in __nullterminated char* pszMemb
     }
     else
     {
-        WszMultiByteToWideChar(g_uCodePage,0,pszMemberName,-1,wzUniBuf,dwUniBuf);
+        MultiByteToWideChar(g_uCodePage,0,pszMemberName,-1,wzUniBuf,dwUniBuf);
 
         if(cr == mdTokenNil) cr = mdTypeRefNil;
         if(TypeFromToken(cr) == mdtAssemblyRef)
@@ -1879,16 +1874,16 @@ void Assembler::EndEvent(void)
 
 void Assembler::ResetEvent(__inout_z __inout char* szName, mdToken typeSpec, DWORD dwAttr)
 {
-    if(strlen(szName) >= MAX_CLASSNAME_LENGTH)
+    size_t namelen = strlen(szName);
+    if(namelen >= MAX_CLASSNAME_LENGTH)
     {
         char c = szName[MAX_CLASSNAME_LENGTH-1];
         szName[MAX_CLASSNAME_LENGTH-1] = 0;
-        report->error("Event '%s...' -- name too long (%d characters).\n",szName,strlen(szName));
+        report->error("Event '%s...' -- name too long (%zd characters).\n",szName,namelen);
         szName[MAX_CLASSNAME_LENGTH-1] = c;
     }
-    if((m_pCurEvent = new EventDescriptor))
+    if((m_pCurEvent = new (nothrow) EventDescriptor()))
     {
-        memset(m_pCurEvent,0,sizeof(EventDescriptor));
         m_pCurEvent->m_tdClass = m_pCurClass->m_cl;
         m_pCurEvent->m_szName = szName;
         m_pCurEvent->m_dwAttr = dwAttr;
@@ -1936,20 +1931,20 @@ void Assembler::ResetProp(__inout_z __inout char * szName, BinStr* bsType, DWORD
     DWORD           cSig = bsType->length();
     COR_SIGNATURE*  mySig = (COR_SIGNATURE *)(bsType->ptr());
 
-    if(strlen(szName) >= MAX_CLASSNAME_LENGTH)
+    size_t namelen = strlen(szName);
+    if(namelen >= MAX_CLASSNAME_LENGTH)
     {
         char c = szName[MAX_CLASSNAME_LENGTH-1];
         szName[MAX_CLASSNAME_LENGTH-1] = 0;
-        report->error("Property '%s...' -- name too long (%d characters).\n",szName,strlen(szName));
+        report->error("Property '%s...' -- name too long (%zd characters).\n",szName,namelen);
         szName[MAX_CLASSNAME_LENGTH-1] = c;
     }
-    m_pCurProp = new PropDescriptor;
+    m_pCurProp = new (nothrow) PropDescriptor();
     if(m_pCurProp == NULL)
     {
         report->error("Failed to allocate Property Descriptor\n");
         return;
     }
-    memset(m_pCurProp,0,sizeof(PropDescriptor));
     m_pCurProp->m_tdClass = m_pCurClass->m_cl;
     m_pCurProp->m_szName = szName;
     m_pCurProp->m_dwAttr = dwAttr;
@@ -2004,7 +1999,7 @@ void Assembler::SetPropMethod(int MethodCode, mdToken tk)
 void Assembler::EmitInstrStringLiteral(Instr* instr, BinStr* literal, BOOL ConvertToUnicode, BOOL Swap /*=FALSE*/)
 {
     DWORD   DataLen = literal->length(),L;
-    unsigned __int8 *pb = literal->ptr();
+    uint8_t *pb = literal->ptr();
     HRESULT hr = S_OK;
     mdToken tk;
     WCHAR   *UnicodeString;
@@ -2019,7 +2014,7 @@ void Assembler::EmitInstrStringLiteral(Instr* instr, BinStr* literal, BOOL Conve
         literal->appendInt8(0);
         pb = literal->ptr();
         // convert string to Unicode
-        L = UnicodeString ? WszMultiByteToWideChar(g_uCodePage,0,(char*)pb,-1,UnicodeString,DataLen+1) : 0;
+        L = UnicodeString ? MultiByteToWideChar(g_uCodePage,0,(char*)pb,-1,UnicodeString,DataLen+1) : 0;
         if(L == 0)
         {
             const char* sz=NULL;
@@ -2061,8 +2056,8 @@ void Assembler::EmitInstrStringLiteral(Instr* instr, BinStr* literal, BOOL Conve
     );
     if (FAILED(hr))
     {
-        report->error("Failed to add user string using DefineUserString, hr=0x%08x, data: '%S'\n",
-               hr, UnicodeString);
+        report->error("Failed to add user string using DefineUserString, hr=0x%08x, data: '%s'\n",
+               hr, pb);
     }
     else
     {
@@ -2140,13 +2135,13 @@ void Assembler::EmitInstrSwitch(Instr* instr, Labels* targets)
 }
 
 /**************************************************************************/
-void Assembler::EmitLabel(__in __nullterminated char* label)
+void Assembler::EmitLabel(_In_ __nullterminated char* label)
 {
     _ASSERTE(m_pCurMethod);
     AddLabel(m_CurPC, label);
 }
 /**************************************************************************/
-void Assembler::EmitDataLabel(__in __nullterminated char* label)
+void Assembler::EmitDataLabel(_In_ __nullterminated char* label)
 {
     AddGlobalLabel(label, m_pCurSection);
 }
@@ -2208,7 +2203,7 @@ void Assembler::EmitBytes(BYTE *p, unsigned len)
     m_CurPC += len;
 }
 /**************************************************************************/
-BinStr* Assembler::EncodeSecAttr(__in __nullterminated char* szReflName, BinStr* pbsSecAttrBlob, unsigned nProps)
+BinStr* Assembler::EncodeSecAttr(_In_ __nullterminated char* szReflName, BinStr* pbsSecAttrBlob, unsigned nProps)
 {
     unsigned cnt;
 
@@ -2281,10 +2276,10 @@ void Assembler::EmitSecurityInfo(mdToken            token,
                 uLength = CorSigCompressToken(tkTypeRef, pSig->getBuff(5));
                 pSig->remove(5 - uLength);
 
-                uLength = (unsigned)strlen(COR_CTOR_METHOD_NAME) + 1;
-                if((szMemberName = new char[uLength]))
+                size_t ctorNameLength = strlen(COR_CTOR_METHOD_NAME) + 1;
+                if((szMemberName = new char[ctorNameLength]) != nullptr)
                 {
-                    memcpy(szMemberName, COR_CTOR_METHOD_NAME, uLength);
+                    memcpy(szMemberName, COR_CTOR_METHOD_NAME, ctorNameLength);
                     pAttrs[i].tkCtor = MakeMemberRef(pPerm->m_TypeSpec, szMemberName, pSig);
                     pAttrs[i].pCustomAttribute = (const void *)pPerm->m_Blob;
                     pAttrs[i].cbCustomAttribute = pPerm->m_BlobLength;
@@ -2328,8 +2323,8 @@ void Assembler::EmitSecurityInfo(mdToken            token,
     }
 }
 
-void Assembler::AddMethodImpl(mdToken tkImplementedTypeSpec, __in __nullterminated char* szImplementedName, BinStr* pImplementedSig,
-                  mdToken tkImplementingTypeSpec, __in_opt __nullterminated char* szImplementingName, BinStr* pImplementingSig)
+void Assembler::AddMethodImpl(mdToken tkImplementedTypeSpec, _In_ __nullterminated char* szImplementedName, BinStr* pImplementedSig,
+                  mdToken tkImplementingTypeSpec, _In_opt_z_ char* szImplementingName, BinStr* pImplementingSig)
 {
     if(m_pCurClass)
     {
@@ -2373,7 +2368,7 @@ void Assembler::AddMethodImpl(mdToken tkImplementedTypeSpec, __in __nullterminat
         report->error(".override directive outside class scope");
 }
 // source file name paraphernalia
-void Assembler::SetSourceFileName(__in __nullterminated char* szName)
+void Assembler::SetSourceFileName(_In_ __nullterminated char* szName)
 {
     if(szName)
     {
@@ -2382,7 +2377,6 @@ void Assembler::SetSourceFileName(__in __nullterminated char* szName)
             if(strcmp(m_szSourceFileName,szName))
             {
                 strcpy_s(m_szSourceFileName,MAX_FILENAME_LENGTH*3+1,szName);
-                WszMultiByteToWideChar(g_uCodePage,0,szName,-1,m_wzSourceFileName,MAX_FILENAME_LENGTH);
             }
             if(m_fGeneratePDB)
             {
@@ -2411,27 +2405,24 @@ void Assembler::SetSourceFileName(BinStr* pbsName)
 }
 
 // Portable PDB paraphernalia
-void Assembler::SetPdbFileName(__in __nullterminated char* szName)
+void Assembler::SetPdbFileName(_In_ __nullterminated char* szName)
 {
     if (szName)
     {
         if (*szName)
         {
             strcpy_s(m_szPdbFileName, MAX_FILENAME_LENGTH * 3 + 1, szName);
-            WszMultiByteToWideChar(g_uCodePage, 0, szName, -1, m_wzPdbFileName, MAX_FILENAME_LENGTH);
+            MultiByteToWideChar(g_uCodePage, 0, szName, -1, m_wzPdbFileName, MAX_FILENAME_LENGTH);
         }
     }
 }
 HRESULT Assembler::SavePdbFile()
 {
     HRESULT hr = S_OK;
-    mdMethodDef entryPoint;
 
     if (FAILED(hr = (m_pPortablePdbWriter == NULL ? E_FAIL : S_OK))) goto exit;
     if (FAILED(hr = (m_pPortablePdbWriter->GetEmitter() == NULL ? E_FAIL : S_OK))) goto exit;
-    if (FAILED(hr = m_pCeeFileGen->GetEntryPoint(m_pCeeFile, &entryPoint))) goto exit;
-    if (FAILED(hr = m_pPortablePdbWriter->BuildPdbStream(m_pEmitter, entryPoint))) goto exit;
-    if (FAILED(hr = m_pPortablePdbWriter->GetEmitter()->Save(m_wzPdbFileName, NULL))) goto exit;
+    if (FAILED(hr = m_pPortablePdbWriter->GetEmitter()->Save(m_wzPdbFileName, 0))) goto exit;
 
 exit:
     return hr;
@@ -2468,7 +2459,7 @@ void Assembler::RecordTypeConstraints(GenericParamConstraintList* pGPCList, int 
 }
 
 // AddGenericParamConstraint is called when we have a .param constraint directive after a class definition
-// 
+//
 void Assembler::AddGenericParamConstraint(int index, char * pStrGenericParam, mdToken tkTypeConstraint)
 {
     if (!m_pCurClass)
@@ -2539,6 +2530,22 @@ void Assembler::CheckAddGenericParamConstraint(GenericParamConstraintList* pGPCL
                 match = true;
                 break;
             }
+            else if (isParamDirective && TypeFromToken(curTypeConstraint) == mdtTypeSpec && TypeFromToken(tkTypeConstraint) == mdtTypeSpec)
+            {
+                // When isParamDirective is true, typespecs created without the cache due to TyParFixups
+                // may not be unique, so we need to compare the signature bytes as well
+                PCCOR_SIGNATURE pSig1, pSig2;
+                ULONG cSig1, cSig2;
+                if (SUCCEEDED(m_pImporter->GetTypeSpecFromToken(curTypeConstraint, &pSig1, &cSig1)) &&
+                    SUCCEEDED(m_pImporter->GetTypeSpecFromToken(tkTypeConstraint, &pSig2, &cSig2)))
+                {
+                    if (cSig1 == cSig2 && memcmp(pSig1, pSig2, cSig1) == 0)
+                    {
+                        match = true;
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -2549,7 +2556,7 @@ void Assembler::CheckAddGenericParamConstraint(GenericParamConstraintList* pGPCL
         if (isParamDirective)
         {
             // Setup the custom descr list so that we can record
-            // custom attributes on this generic param contraint
+            // custom attributes on this generic param constraint
             //
             m_pCustomDescrList = pGPC->CAList();
         }
@@ -2564,7 +2571,7 @@ void Assembler::CheckAddGenericParamConstraint(GenericParamConstraintList* pGPCL
         if (isParamDirective)
         {
             // Setup the custom descr list so that we can record
-            // custom attributes on this generic param contraint
+            // custom attributes on this generic param constraint
             //
             m_pCustomDescrList = pNewGPCDescr->CAList();
         }
@@ -2739,4 +2746,15 @@ void Assembler::EmitGenericParamConstraints(int numTyPars, TyParDescr* pTyPars, 
         pGPC->Token(tkOwnerOfCA);
         EmitCustomAttributes(tkOwnerOfCA, pGPC->CAList());
     }
+
+    for (paramIndex = 0; paramIndex < numTyPars; paramIndex++)
+    {
+        delete[] pConstraintsArr[paramIndex];
+        delete[] pGPConstraintsArr[paramIndex];
+    }
+    
+    delete[] nConstraintsArr;
+    delete[] nConstraintIndexArr;
+    delete[] pConstraintsArr;
+    delete[] pGPConstraintsArr;
 }

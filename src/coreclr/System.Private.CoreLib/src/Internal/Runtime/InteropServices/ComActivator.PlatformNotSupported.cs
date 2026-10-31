@@ -2,11 +2,14 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 
 namespace Internal.Runtime.InteropServices
 {
-    public static class ComActivator
+    [SupportedOSPlatform("windows")]
+    internal static class ComActivator
     {
         /// <summary>
         /// Internal entry point for unmanaged COM activation API from native code

@@ -11,8 +11,12 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <assert.h>
+#if HAVE_GETIFADDRS
 #include <ifaddrs.h>
+#endif
+#if HAVE_NET_IF_H
 #include <net/if.h>
+#endif
 #include <netinet/in.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -33,6 +37,13 @@
 #include "ios/net/if_media.h"
 #endif
 
+// SunOS defines both AF_LINK and AF_PACKET but AF_LINK is preferred.
+// Using AF_PACKET on SunOS requires access to system-private headers.
+// Use undef to keep all the changes here.
+#if defined(TARGET_SUNOS)
+#undef AF_PACKET
+#endif
+
 #if defined(AF_PACKET)
 #include <sys/ioctl.h>
 #if HAVE_NETPACKET_PACKET_H
@@ -43,6 +54,7 @@
 #elif defined(AF_LINK)
 #include <net/if_dl.h>
 #include <net/if_types.h>
+#elif defined(TARGET_WASI)
 #else
 #error System must have AF_PACKET or AF_LINK.
 #endif
@@ -55,11 +67,11 @@
 #endif
 #endif
 
-#if HAVE_GETIFADDRS
 // Convert mask to prefix length e.g. 255.255.255.0 -> 24
 // mask parameter is pointer to buffer where address starts and length is
 // buffer length e.g. 4 for IPv4 and 16 for IPv6.
 // Code bellow counts consecutive number of 1 bits.
+#if !defined(TARGET_WASI)
 static inline uint8_t mask2prefix(uint8_t* mask, int length)
 {
     uint8_t len = 0;
@@ -95,6 +107,31 @@ static inline uint8_t mask2prefix(uint8_t* mask, int length)
 
     return len;
 }
+#endif /* TARGET_WASI */
+
+#if defined(AF_LINK)
+static uint8_t GetLinkLayerAddressLength(const struct sockaddr_dl* address, size_t destinationLength)
+{
+#if defined(TARGET_SUNOS)
+    size_t availableLength = sizeof(address->sdl_data) > address->sdl_nlen ? sizeof(address->sdl_data) - address->sdl_nlen : 0;
+#else
+    size_t addressOffset = offsetof(struct sockaddr_dl, sdl_data) + address->sdl_nlen;
+    size_t availableLength = address->sdl_len > addressOffset ? address->sdl_len - addressOffset : 0;
+#endif
+    size_t addressLength = address->sdl_alen;
+
+    if (addressLength > availableLength)
+    {
+        addressLength = availableLength;
+    }
+
+    if (addressLength > destinationLength)
+    {
+        addressLength = destinationLength;
+    }
+
+    return (uint8_t)addressLength;
+}
 #endif
 
 int32_t SystemNative_EnumerateInterfaceAddresses(void* context,
@@ -111,11 +148,27 @@ int32_t SystemNative_EnumerateInterfaceAddresses(void* context,
 
     for (struct ifaddrs* current = headAddr; current != NULL; current = current->ifa_next)
     {
-        if (current->ifa_addr == NULL)
+        char *ifa_name = current->ifa_name;
+        if (current->ifa_addr == NULL || ifa_name == NULL)
         {
             continue;
         }
-        uint32_t interfaceIndex = if_nametoindex(current->ifa_name);
+        uint32_t interfaceIndex = if_nametoindex(ifa_name);
+        if (interfaceIndex == 0)
+        {
+            int savedErrno = errno;
+
+            // If the device was removed or not a real device (like an 'ip address add' label) errno is ENODEV.
+            if (savedErrno == ENODEV)
+            {
+                continue;
+            }
+
+            freeifaddrs(headAddr);
+            errno = savedErrno;
+            return -1;
+        }
+
         // ifa_name may be an aliased interface name.
         // Use if_indextoname to map back to the true device name.
         char actualName[IF_NAMESIZE];
@@ -161,6 +214,18 @@ int32_t SystemNative_EnumerateInterfaceAddresses(void* context,
                 memcpy_s(iai.AddressBytes, sizeof_member(IpAddressInfo, AddressBytes), sain6->sin6_addr.s6_addr, sizeof(sain6->sin6_addr.s6_addr));
                 uint32_t scopeId = sain6->sin6_scope_id;
 
+#ifdef TARGET_OPENBSD
+                // OpenBSD's KAME-derived stack embeds the scope id (interface index) in the second
+                // 16-bit word of a link-local address and leaves sin6_scope_id set to 0. Recover the
+                // scope id from the address bytes and restore the canonical link-local form.
+                if (scopeId == 0 && iai.AddressBytes[0] == 0xFE && (iai.AddressBytes[1] & 0xC0) == 0x80)
+                {
+                    scopeId = (uint32_t)((iai.AddressBytes[2] << 8) | iai.AddressBytes[3]);
+                    iai.AddressBytes[2] = 0;
+                    iai.AddressBytes[3] = 0;
+                }
+#endif
+
                 struct sockaddr_in6* mask_sain6 = (struct sockaddr_in6*)current->ifa_netmask;
                 iai.PrefixLength = mask_sain6 != NULL ? mask2prefix((uint8_t*)&mask_sain6->sin6_addr.s6_addr, NUM_BYTES_IN_IPV6_ADDRESS) : NUM_BYTES_IN_IPV6_ADDRESS * 8;
                 onIpv6Found(context, actualName, &iai, &scopeId);
@@ -202,7 +267,7 @@ int32_t SystemNative_EnumerateInterfaceAddresses(void* context,
                 LinkLayerAddressInfo lla;
                 memset(&lla, 0, sizeof(LinkLayerAddressInfo));
                 lla.InterfaceIndex = interfaceIndex;
-                lla.NumAddressBytes = sadl->sdl_alen;
+                lla.NumAddressBytes = GetLinkLayerAddressLength(sadl, sizeof(lla.AddressBytes));
                 lla.HardwareType = MapHardwareType(sadl->sdl_type);
 
 #if HAVE_NET_IFMEDIA_H || HAVE_IOS_NET_IFMEDIA_H
@@ -225,7 +290,10 @@ int32_t SystemNative_EnumerateInterfaceAddresses(void* context,
                     }
                 }
 #endif
-                memcpy_s(&lla.AddressBytes, sizeof_member(LinkLayerAddressInfo, AddressBytes), (uint8_t*)LLADDR(sadl), sadl->sdl_alen);
+                if (lla.NumAddressBytes != 0)
+                {
+                    memcpy_s(&lla.AddressBytes, sizeof_member(LinkLayerAddressInfo, AddressBytes), (uint8_t*)LLADDR(sadl), lla.NumAddressBytes);
+                }
                 onLinkLayerFound(context, current->ifa_name, &lla);
             }
         }
@@ -235,7 +303,7 @@ int32_t SystemNative_EnumerateInterfaceAddresses(void* context,
     freeifaddrs(headAddr);
     return 0;
 #else
-    // Not supported on e.g. Android. Also, prevent a compiler error because parameters are unused
+    // Not supported. Also, prevent a compiler error because parameters are unused
     (void)context;
     (void)onIpv4Found;
     (void)onIpv6Found;
@@ -244,6 +312,12 @@ int32_t SystemNative_EnumerateInterfaceAddresses(void* context,
     return -1;
 #endif
 }
+
+// See entriesCount, calloc() below.
+c_static_assert(sizeof(LinkLayerAddressInfo) == 20);
+c_static_assert(sizeof_member(LinkLayerAddressInfo, AddressBytes) == 12);
+c_static_assert(sizeof_member(NetworkInterfaceInfo, AddressBytes) == 12);
+c_static_assert(sizeof(NetworkInterfaceInfo) >= sizeof(IpAddressInfo));
 
 int32_t SystemNative_GetNetworkInterfaces(int32_t * interfaceCount, NetworkInterfaceInfo **interfaceList, int32_t * addressCount, IpAddressInfo **addressList )
 {
@@ -285,10 +359,17 @@ int32_t SystemNative_GetNetworkInterfaces(int32_t * interfaceCount, NetworkInter
     // Allocate estimated space. It can be little bit more than we need.
     // To save allocation need for separate free() we will allocate one memory chunk
     // where we first write out NetworkInterfaceInfo entries immediately followed by
-    // IpAddressInfo list.
-    void * memoryBlock = calloc((size_t)count, sizeof(NetworkInterfaceInfo));
+    // IpAddressInfo list.   Make sure we get enough space for both the list of
+    // NetworkInterfaceInfo[count] and IpAddressInfo[ip4count + ip6count]
+    // Make no assumptions about how many ip4count + ip6count there may be.
+    // This does assume sizeof(NetworkInterfaceInfo) >= sizeof(IpAddressInfo)
+    // which is checked in an assert above this function.
+
+    int entriesCount = count + ip4count + ip6count;
+    void * memoryBlock = calloc((size_t)entriesCount, sizeof(NetworkInterfaceInfo));
     if (memoryBlock == NULL)
     {
+        freeifaddrs(head);
         errno = ENOMEM;
         return -1;
     }
@@ -297,13 +378,40 @@ int32_t SystemNative_GetNetworkInterfaces(int32_t * interfaceCount, NetworkInter
     ifaddrsEntry = head;
     *interfaceList = nii = (NetworkInterfaceInfo*)memoryBlock;
     // address of first IpAddressInfo after all NetworkInterfaceInfo entries.
-    *addressList = ai = (IpAddressInfo*)(nii + (count - ip4count - ip6count));
+    *addressList = ai = (IpAddressInfo*)(nii + count);
 
     while (ifaddrsEntry != NULL)
     {
+        char *ifa_name = ifaddrsEntry->ifa_name;
+
+        if (ifa_name == NULL)
+        {
+            ifaddrsEntry = ifaddrsEntry->ifa_next;
+            continue;
+        }
+
         //current = NULL;
         nii = NULL;
-        uint ifindex = if_nametoindex(ifaddrsEntry->ifa_name);
+        uint ifindex = if_nametoindex(ifa_name);
+        if (ifindex == 0)
+        {
+            int savedErrno = errno;
+
+            // If the device was removed or not a real device (like an 'ip address add' label) errno is ENODEV.
+            if (savedErrno == ENODEV)
+            {
+                ifaddrsEntry = ifaddrsEntry->ifa_next;
+                continue;
+            }
+
+            freeifaddrs(head);
+            free(memoryBlock);
+            if (socketfd != -1)
+                close(socketfd);
+            errno = savedErrno;
+            return -1;
+        }
+
         for (index = 0; index < (int)ifcount; index ++)
         {
             if (((NetworkInterfaceInfo*)memoryBlock)[index].InterfaceIndex == ifindex)
@@ -318,10 +426,10 @@ int32_t SystemNative_GetNetworkInterfaces(int32_t * interfaceCount, NetworkInter
             // We git new interface.
             nii = &((NetworkInterfaceInfo*)memoryBlock)[ifcount++];
 
-            memcpy(nii->Name, ifaddrsEntry->ifa_name, sizeof(nii->Name));
-            nii->InterfaceIndex = if_nametoindex(ifaddrsEntry->ifa_name);
+            memcpy(nii->Name, ifa_name, sizeof(nii->Name));
+            nii->InterfaceIndex = ifindex;
             nii->Speed = -1;
-            nii->HardwareType = NetworkInterfaceType_Unknown;
+            nii->HardwareType = ((ifaddrsEntry->ifa_flags & IFF_LOOPBACK) == IFF_LOOPBACK) ? NetworkInterfaceType_Loopback : NetworkInterfaceType_Unknown;
 
             // Get operational state and multicast support.
             if ((ifaddrsEntry->ifa_flags & (IFF_MULTICAST|IFF_ALLMULTI)) != 0)
@@ -362,8 +470,29 @@ int32_t SystemNative_GetNetworkInterfaces(int32_t * interfaceCount, NetworkInter
             struct sockaddr_dl* sadl = (struct sockaddr_dl*)ifaddrsEntry->ifa_addr;
 
             nii->HardwareType = MapHardwareType(sadl->sdl_type);
-            nii->NumAddressBytes =  sadl->sdl_alen;
-            memcpy_s(&nii->AddressBytes, sizeof_member(NetworkInterfaceInfo, AddressBytes), (uint8_t*)LLADDR(sadl), sadl->sdl_alen);
+            nii->NumAddressBytes = GetLinkLayerAddressLength(sadl, sizeof(nii->AddressBytes));
+            if (nii->NumAddressBytes != 0)
+            {
+                memcpy_s(&nii->AddressBytes, sizeof_member(NetworkInterfaceInfo, AddressBytes), (uint8_t*)LLADDR(sadl), nii->NumAddressBytes);
+            }
+
+#if defined(SIOCGIFMTU)
+            struct ifreq ifr;
+            strncpy(ifr.ifr_name, nii->Name, sizeof(ifr.ifr_name));
+            ifr.ifr_name[sizeof(ifr.ifr_name) - 1] = '\0';
+            if (socketfd == -1)
+            {
+                socketfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+            }
+
+            if (socketfd > -1)
+            {
+                if (ioctl(socketfd, SIOCGIFMTU, &ifr) == 0)
+                {
+                    nii->Mtu = ifr.ifr_mtu;
+                }
+            }
+#endif // SIOCGIFMTU
         }
 #endif
 #if defined(AF_PACKET)
@@ -454,7 +583,7 @@ int32_t SystemNative_GetNetworkInterfaces(int32_t * interfaceCount, NetworkInter
 
     return 0;
 #else
-    // Not supported on e.g. Android. Also, prevent a compiler error because parameters are unused
+    // Not supported. Also, prevent a compiler error because parameters are unused
     (void)interfaceCount;
     (void)interfaceList;
     (void)addressCount;
@@ -477,7 +606,7 @@ int32_t SystemNative_EnumerateGatewayAddressesForInterface(void* context, uint32
         return -1;
     }
 
-    uint8_t* buffer = malloc(byteCount);
+    uint8_t* buffer = (uint8_t*)malloc(byteCount);
     if (buffer == NULL)
     {
         errno = ENOMEM;
@@ -503,7 +632,7 @@ int32_t SystemNative_EnumerateGatewayAddressesForInterface(void* context, uint32
 
         byteCount = tmpEstimatedSize;
         free(buffer);
-        buffer = malloc(byteCount);
+        buffer = (uint8_t*)malloc(byteCount);
         if (buffer == NULL)
         {
             errno = ENOMEM;

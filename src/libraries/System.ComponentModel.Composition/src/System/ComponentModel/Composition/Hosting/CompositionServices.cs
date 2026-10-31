@@ -13,11 +13,6 @@ namespace System.ComponentModel.Composition.Hosting
 {
     internal static class CompositionServices
     {
-        internal static readonly Type InheritedExportAttributeType = typeof(InheritedExportAttribute);
-        internal static readonly Type ExportAttributeType = typeof(ExportAttribute);
-        internal static readonly Type AttributeType = typeof(Attribute);
-        internal static readonly Type ObjectType = typeof(object);
-
         private static readonly string[] reservedMetadataNames = new string[]
         {
             CompositionConstants.PartCreationPolicyMetadataName
@@ -25,10 +20,7 @@ namespace System.ComponentModel.Composition.Hosting
 
         internal static Type GetDefaultTypeFromMember(this MemberInfo member)
         {
-            if (member == null)
-            {
-                throw new ArgumentNullException(nameof(member));
-            }
+            ArgumentNullException.ThrowIfNull(member);
 
             switch (member.MemberType)
             {
@@ -63,15 +55,12 @@ namespace System.ComponentModel.Composition.Hosting
 
         internal static Type AdjustSpecifiedTypeIdentityType(this Type specifiedContractType, Type? memberType)
         {
-            if (specifiedContractType == null)
-            {
-                throw new ArgumentNullException(nameof(specifiedContractType));
-            }
+            ArgumentNullException.ThrowIfNull(specifiedContractType);
 
             if ((memberType != null) && memberType.IsGenericType && specifiedContractType.IsGenericType)
             {
-                // if the memeber type is closed and the specified contract type is open and they have exatly the same number of parameters
-                // we will close the specfied contract type
+                // if the member type is closed and the specified contract type is open and they have exatly the same number of parameters
+                // we will close the specified contract type
                 if (specifiedContractType.ContainsGenericParameters && !memberType.ContainsGenericParameters)
                 {
                     var typeGenericArguments = memberType.GetGenericArguments();
@@ -180,7 +169,7 @@ namespace System.ComponentModel.Composition.Hosting
             Type contractType = import.GetContractTypeFromImport(importType);
 
             // For our importers we treat object as not having a type identity
-            if (contractType == CompositionServices.ObjectType)
+            if (contractType == typeof(object))
             {
                 return null;
             }
@@ -190,7 +179,7 @@ namespace System.ComponentModel.Composition.Hosting
 
         internal static IDictionary<string, object?> GetPartMetadataForType(this Type type, CreationPolicy creationPolicy)
         {
-            IDictionary<string, object?> dictionary = new Dictionary<string, object?>(StringComparers.MetadataKeyNames);
+            var dictionary = new Dictionary<string, object?>(StringComparers.MetadataKeyNames);
 
             if (creationPolicy != CreationPolicy.Any)
             {
@@ -286,7 +275,7 @@ namespace System.ComponentModel.Composition.Hosting
                 {
                     Type attrType = attr.GetType();
                     // Perf optimization, relies on short circuit evaluation, often a property attribute is an ExportAttribute
-                    if ((attrType != CompositionServices.ExportAttributeType) && attrType.IsAttributeDefined<MetadataAttributeAttribute>(true))
+                    if ((attrType != typeof(ExportAttribute)) && attrType.IsAttributeDefined<MetadataAttributeAttribute>(true))
                     {
                         bool allowsMultiple = false;
                         AttributeUsageAttribute? usage = attrType.GetFirstAttribute<AttributeUsageAttribute>(true);
@@ -298,7 +287,7 @@ namespace System.ComponentModel.Composition.Hosting
 
                         foreach (PropertyInfo pi in attrType.GetProperties())
                         {
-                            if (pi.DeclaringType == CompositionServices.ExportAttributeType || pi.DeclaringType == CompositionServices.AttributeType)
+                            if (pi.DeclaringType == typeof(ExportAttribute) || pi.DeclaringType == typeof(Attribute))
                             {
                                 // Don't contribute metadata properies from the base attribute types.
                                 continue;
@@ -371,8 +360,6 @@ namespace System.ComponentModel.Composition.Hosting
         {
             private Type? _arrayType;
             private bool _containsNulls;
-            private static readonly Type ObjectType = typeof(object);
-            private static readonly Type TypeType = typeof(Type);
             private readonly Collection<object?> _innerList = new Collection<object?>();
 
             public void Add(object? item, Type? itemType)
@@ -380,7 +367,7 @@ namespace System.ComponentModel.Composition.Hosting
                 _containsNulls |= (item == null);
 
                 // if we've been passed typeof(object), we basically have no type inmformation
-                if (itemType == ObjectType)
+                if (itemType == typeof(object))
                 {
                     itemType = null;
                 }
@@ -394,7 +381,7 @@ namespace System.ComponentModel.Composition.Hosting
                 // Types are special, because the are abstract classes, so if the item casts to Type, we assume System.Type
                 if (item is Type)
                 {
-                    itemType = TypeType;
+                    itemType = typeof(Type);
                 }
 
                 // only try to call this if we got a meaningful type
@@ -408,10 +395,7 @@ namespace System.ComponentModel.Composition.Hosting
 
             private void InferArrayType(Type itemType)
             {
-                if (itemType == null)
-                {
-                    throw new ArgumentNullException(nameof(itemType));
-                }
+                ArgumentNullException.ThrowIfNull(itemType);
 
                 if (_arrayType == null)
                 {
@@ -425,7 +409,7 @@ namespace System.ComponentModel.Composition.Hosting
                     // in metadata right now, it's a moot point
                     if (_arrayType != itemType)
                     {
-                        _arrayType = ObjectType;
+                        _arrayType = typeof(object);
                     }
                 }
             }
@@ -435,12 +419,12 @@ namespace System.ComponentModel.Composition.Hosting
                 if (_arrayType == null)
                 {
                     // if the array type has not been set, assume Object
-                    _arrayType = ObjectType;
+                    _arrayType = typeof(object);
                 }
                 else if (_containsNulls && _arrayType.IsValueType)
                 {
                     // if the array type is a value type and we have seen nulls, then assume Object
-                    _arrayType = ObjectType;
+                    _arrayType = typeof(object);
                 }
 
                 Array array = Array.CreateInstance(_arrayType, _innerList.Count);
@@ -485,7 +469,7 @@ namespace System.ComponentModel.Composition.Hosting
                 return Enumerable.Empty<KeyValuePair<string, Type>>();
             }
 
-            // A metadata view is required to be an Intrerface, and therefore only properties are allowed
+            // A metadata view is required to be an Interface, and therefore only properties are allowed
             List<PropertyInfo> properties = metadataViewType.GetAllProperties().
                 Where(property => property.GetFirstAttribute<DefaultValueAttribute>() == null).
                 ToList();
@@ -524,10 +508,7 @@ namespace System.ComponentModel.Composition.Hosting
             // Default value is ImportSource.Any
             if (attributedImport != null && attributedImport.Source != ImportSource.Any)
             {
-                if (metadata == null)
-                {
-                    metadata = new Dictionary<string, object?>();
-                }
+                metadata ??= new Dictionary<string, object?>();
                 metadata[CompositionConstants.ImportSourceMetadataName] = attributedImport.Source;
             }
 
@@ -629,10 +610,7 @@ namespace System.ComponentModel.Composition.Hosting
 
         private static bool IsValidAttributeType(Type type, bool arrayAllowed)
         {
-            if (type == null)
-            {
-                throw new ArgumentNullException(nameof(type));
-            }
+            ArgumentNullException.ThrowIfNull(type);
 
             // Definitions of valid attribute type taken from C# 3.0 Specification section 17.1.3.
 

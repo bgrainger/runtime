@@ -5,13 +5,14 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 #pragma warning disable CA1823 // analyzer incorrectly flags fixed buffer length const (https://github.com/dotnet/roslyn/issues/37593)
 
 internal static partial class Interop
 {
-    internal static partial class libproc
+    internal static partial class @libproc
     {
         // Constants from sys\param.h
         private const int MAXPATHLEN = 1024;
@@ -24,6 +25,9 @@ internal static partial class Interop
 
         // Constants from sys\resource.h
         private const int RUSAGE_INFO_V3 = 3;
+
+        // Constants from sys/errno.h
+        private const int EPERM = 1;
 
         // Defines from proc_info.h
         internal enum ThreadRunState
@@ -45,9 +49,9 @@ internal static partial class Interop
 
         // from sys\resource.h
         [StructLayout(LayoutKind.Sequential)]
-        internal unsafe struct rusage_info_v3
+        internal struct rusage_info_v3
         {
-            internal fixed byte     ri_uuid[16];
+            internal InlineArray16<byte> ri_uuid;
             internal ulong          ri_user_time;
             internal ulong          ri_system_time;
             internal ulong          ri_pkg_idle_wkups;
@@ -79,7 +83,7 @@ internal static partial class Interop
 
         // From proc_info.h
         [StructLayout(LayoutKind.Sequential)]
-        internal unsafe struct proc_threadinfo
+        internal struct proc_threadinfo
         {
             internal ulong      pth_user_time;
             internal ulong      pth_system_time;
@@ -91,7 +95,13 @@ internal static partial class Interop
             internal int        pth_curpri;
             internal int        pth_priority;
             internal int        pth_maxpriority;
-            internal fixed byte pth_name[MAXTHREADNAMESIZE];
+            internal ThreadNameBuffer pth_name;
+
+            [InlineArray(MAXTHREADNAMESIZE)]
+            internal struct ThreadNameBuffer
+            {
+                private byte _element0;
+            }
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -107,7 +117,7 @@ internal static partial class Interop
         /// <param name="pBuffer">A pointer to the memory block where the PID array will start</param>
         /// <param name="buffersize">The length of the block of memory allocated for the PID array</param>
         /// <returns>Returns the number of elements (PIDs) in the buffer</returns>
-        [GeneratedDllImport(Interop.Libraries.libproc, SetLastError = true)]
+        [LibraryImport(Interop.Libraries.libproc, SetLastError = true)]
         private static unsafe partial int proc_listallpids(
             int*    pBuffer,
             int     buffersize);
@@ -120,7 +130,14 @@ internal static partial class Interop
         {
             // Get the number of processes currently running to know how much data to allocate
             int numProcesses = proc_listallpids(null, 0);
-            if (numProcesses <= 0)
+            if (numProcesses == 0 && Marshal.GetLastPInvokeError() == EPERM)
+            {
+                // An app running in App Sandbox does not have permissions to list other running processes
+                // and so the `proc_listallpids` function returns 0 and sets errno to 1. As a fallback
+                // we return at least an array with the PID of the current process which we always know.
+                return new[] { Environment.ProcessId };
+            }
+            else if (numProcesses <= 0)
             {
                 throw new Win32Exception(SR.CantGetAllPids);
             }
@@ -166,7 +183,7 @@ internal static partial class Interop
         /// the data is valid. If the sizes do not match then the data is invalid, most likely due
         /// to not having enough permissions to query for the data of that specific process
         /// </returns>
-        [GeneratedDllImport(Interop.Libraries.libproc, SetLastError = true)]
+        [LibraryImport(Interop.Libraries.libproc, SetLastError = true)]
         private static unsafe partial int proc_pidinfo(
             int pid,
             int flavor,
@@ -187,7 +204,7 @@ internal static partial class Interop
         /// the data is valid. If the sizes do not match then the data is invalid, most likely due
         /// to not having enough permissions to query for the data of that specific process
         /// </returns>
-        [GeneratedDllImport(Interop.Libraries.libproc, SetLastError = true)]
+        [LibraryImport(Interop.Libraries.libproc, SetLastError = true)]
         private static unsafe partial int proc_pidinfo(
             int pid,
             int flavor,
@@ -208,7 +225,7 @@ internal static partial class Interop
         /// the data is valid. If the sizes do not match then the data is invalid, most likely due
         /// to not having enough permissions to query for the data of that specific process
         /// </returns>
-        [GeneratedDllImport(Interop.Libraries.libproc, SetLastError = true)]
+        [LibraryImport(Interop.Libraries.libproc, SetLastError = true)]
         private static unsafe partial int proc_pidinfo(
             int pid,
             int flavor,
@@ -228,16 +245,10 @@ internal static partial class Interop
         internal static unsafe proc_threadinfo? GetThreadInfoById(int pid, ulong thread)
         {
             // Negative PIDs are invalid
-            if (pid < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(pid));
-            }
+            ArgumentOutOfRangeException.ThrowIfNegative(pid);
 
             // Negative TIDs are invalid
-            if (thread < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(thread));
-            }
+            ArgumentOutOfRangeException.ThrowIfNegative(thread);
 
             // Get the thread information for the specified thread in the specified process
             int size = sizeof(proc_threadinfo);
@@ -249,10 +260,7 @@ internal static partial class Interop
         internal static unsafe List<KeyValuePair<ulong, proc_threadinfo?>> GetAllThreadsInProcess(int pid)
         {
             // Negative PIDs are invalid
-            if (pid < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(pid));
-            }
+            ArgumentOutOfRangeException.ThrowIfNegative(pid);
 
             int result = 0;
             int size = 20; // start assuming 20 threads is enough
@@ -307,7 +315,7 @@ internal static partial class Interop
         /// <param name="buffer">A pointer to an allocated block of memory that will be filled with the process path</param>
         /// <param name="bufferSize">The size of the buffer, should be PROC_PIDPATHINFO_MAXSIZE</param>
         /// <returns>Returns the length of the path returned on success</returns>
-        [GeneratedDllImport(Interop.Libraries.libproc, SetLastError = true)]
+        [LibraryImport(Interop.Libraries.libproc, SetLastError = true)]
         private static unsafe partial int proc_pidpath(
             int pid,
             byte* buffer,
@@ -321,14 +329,11 @@ internal static partial class Interop
         internal static unsafe string proc_pidpath(int pid)
         {
             // Negative PIDs are invalid
-            if (pid < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(pid), SR.NegativePidNotSupported);
-            }
+            ArgumentOutOfRangeException.ThrowIfNegative(pid);
 
             // The path is a fixed buffer size, so use that and trim it after
             int result = 0;
-            byte* pBuffer = stackalloc byte[PROC_PIDPATHINFO_MAXSIZE];
+            byte* pBuffer = stackalloc byte[PROC_PIDPATHINFO_MAXSIZE]; // 4KB
             result = proc_pidpath(pid, pBuffer, (uint)(PROC_PIDPATHINFO_MAXSIZE * sizeof(byte)));
             if (result <= 0)
             {
@@ -346,7 +351,7 @@ internal static partial class Interop
         /// <param name="flavor">Specifies the type of struct that is passed in to <paramref>buffer</paramref>. Should be RUSAGE_INFO_V3 to specify a rusage_info_v3 struct.</param>
         /// <param name="buffer">A buffer to be filled with rusage_info data</param>
         /// <returns>Returns 0 on success; on fail, -1 and errno is set with the error code</returns>
-        [GeneratedDllImport(Interop.Libraries.libproc, SetLastError = true)]
+        [LibraryImport(Interop.Libraries.libproc, SetLastError = true)]
         private static unsafe partial int proc_pid_rusage(
             int pid,
             int flavor,
@@ -362,10 +367,7 @@ internal static partial class Interop
         internal static unsafe rusage_info_v3 proc_pid_rusage(int pid)
         {
             // Negative PIDs are invalid
-            if (pid < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(pid), SR.NegativePidNotSupported);
-            }
+            ArgumentOutOfRangeException.ThrowIfNegative(pid);
 
             rusage_info_v3 info = default;
 
@@ -377,6 +379,34 @@ internal static partial class Interop
             }
 
             return info;
+        }
+
+        /// <summary>
+        /// Attempts to get the physical memory footprint for the process identified by the PID. This is an
+        /// accounting-based measurement of the process's memory usage - the same value shown in Activity
+        /// Monitor's Memory column - not a strict count of pages unique/private to the process.
+        /// </summary>
+        /// <param name="pid">The process to retrieve the physical footprint for</param>
+        /// <param name="physicalFootprint">When this method returns true, contains the process's physical footprint in bytes</param>
+        /// <returns>
+        /// true if the physical footprint could be retrieved; false if it could not - for example, if the
+        /// caller lacks permission to query a process owned by another user, or the process has since exited
+        /// </returns>
+        internal static unsafe bool TryGetProcessPhysicalFootprint(int pid, out ulong physicalFootprint)
+        {
+            // Negative PIDs are invalid
+            ArgumentOutOfRangeException.ThrowIfNegative(pid);
+
+            rusage_info_v3 info = default;
+            int result = proc_pid_rusage(pid, RUSAGE_INFO_V3, &info);
+            if (result < 0)
+            {
+                physicalFootprint = 0;
+                return false;
+            }
+
+            physicalFootprint = info.ri_phys_footprint;
+            return true;
         }
     }
 }

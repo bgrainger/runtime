@@ -23,7 +23,7 @@ namespace System.Configuration
         private const string UrlDesc = "Url";
         private const string PathDesc = "Path";
 
-        private static volatile ClientConfigPaths s_current;
+        private static ClientConfigPaths s_current;
         private static volatile bool s_currentIncludesUserConfig;
 
         private readonly bool _includesUserConfig;
@@ -248,7 +248,6 @@ namespace System.Configuration
             if (assembly != null && !isSingleFile)
             {
                 AssemblyName assemblyName = assembly.GetName();
-                Uri codeBase = new Uri(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, assembly.ManifestModule.Name));
 
                 try
                 {
@@ -261,7 +260,7 @@ namespace System.Configuration
                 {
                     typeName = StrongNameDesc;
                 }
-                else
+                else if (Uri.TryCreate(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, assembly.ManifestModule.Name), UriKind.Absolute, out Uri codeBase))
                 {
                     try
                     {
@@ -344,7 +343,7 @@ namespace System.Configuration
                     if (string.IsNullOrEmpty(ProductName) && (mainType != null)) ProductName = mainType.Name.Trim();
 
                     // give up, return empty string
-                    if (ProductName == null) ProductName = string.Empty;
+                    ProductName ??= string.Empty;
                 }
 
                 if (string.IsNullOrEmpty(_companyName))

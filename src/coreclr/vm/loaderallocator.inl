@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-
 #ifndef _LOADER_ALLOCATOR_I
 #define _LOADER_ALLOCATOR_I
 
@@ -16,9 +15,17 @@ inline LOADERALLOCATORREF LoaderAllocator::GetExposedObject()
 }
 #endif
 
-inline void GlobalLoaderAllocator::Init(BaseDomain *pDomain)
+inline bool LoaderAllocator::IsExposedObjectLive()
 {
-    LoaderAllocator::Init(pDomain, m_ExecutableHeapInstance);
+    LIMITED_METHOD_CONTRACT;
+    if (m_hLoaderAllocatorObjectHandle == 0)
+        return false;
+    return !ObjectHandleIsNull(m_hLoaderAllocatorObjectHandle);
+}
+
+inline void GlobalLoaderAllocator::Init()
+{
+    LoaderAllocator::Init(m_ExecutableHeapInstance);
 }
 
 inline BOOL LoaderAllocatorID::Equals(LoaderAllocatorID *pId)
@@ -36,17 +43,17 @@ inline void LoaderAllocatorID::Init()
     m_type = LAT_Assembly;
 };
 
-inline void LoaderAllocatorID::AddDomainAssembly(DomainAssembly* pAssembly)
+inline void LoaderAllocatorID::AddAssembly(Assembly* pAssembly)
 {
     LIMITED_METHOD_CONTRACT;
     _ASSERTE(m_type == LAT_Assembly);
 
-    // Link domain assembly together
-    if (m_pDomainAssembly != NULL)
+    // Link assemblies together in the same ALC
+    if (m_pAssembly != NULL)
     {
-        pAssembly->SetNextDomainAssemblyInSameALC(m_pDomainAssembly);
+        pAssembly->SetNextAssemblyInSameALC(m_pAssembly);
     }
-    m_pDomainAssembly = pAssembly;
+    m_pAssembly = pAssembly;
 }
 
 inline VOID* LoaderAllocatorID::GetValue()
@@ -67,11 +74,11 @@ inline LoaderAllocatorType LoaderAllocatorID::GetType()
     return m_type;
 }
 
-inline DomainAssemblyIterator LoaderAllocatorID::GetDomainAssemblyIterator()
+inline AssemblyIterator LoaderAllocatorID::GetAssemblyIterator()
 {
     LIMITED_METHOD_DAC_CONTRACT;
     _ASSERTE(m_type == LAT_Assembly);
-    return DomainAssemblyIterator(m_pDomainAssembly);
+    return AssemblyIterator(m_pAssembly);
 }
 
 inline LoaderAllocatorID* AssemblyLoaderAllocator::Id()
@@ -123,28 +130,11 @@ FORCEINLINE BOOL LoaderAllocator::GetHandleValueFastPhase2(LOADERHANDLE handle, 
         return FALSE;
 
     LOADERALLOCATORREF loaderAllocator = dac_cast<LOADERALLOCATORREF>(loaderAllocatorAsObjectRef);
-    PTRARRAYREF handleTable = loaderAllocator->GetHandleTable();
+    PTRARRAYREF handleTable = loaderAllocator->DangerousGetHandleTable();
     UINT_PTR index = (((UINT_PTR)handle) >> 1) - 1;
     *pValue = handleTable->GetAt(index);
 
     return TRUE;
-}
-
-FORCEINLINE OBJECTREF LoaderAllocator::GetHandleValueFastCannotFailType2(LOADERHANDLE handle)
-{
-    SUPPORTS_DAC;
-    STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_MODE_COOPERATIVE;
-    STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_GC_NOTRIGGER;
-
-    /* This is lockless access to the handle table, be careful */
-    OBJECTREF loaderAllocatorAsObjectRef = ObjectFromHandle(m_hLoaderAllocatorObjectHandle);
-    LOADERALLOCATORREF loaderAllocator = dac_cast<LOADERALLOCATORREF>(loaderAllocatorAsObjectRef);
-    PTRARRAYREF handleTable = loaderAllocator->GetHandleTable();
-    UINT_PTR index = (((UINT_PTR)handle) >> 1) - 1;
-
-    return handleTable->GetAt(index);
 }
 
 inline bool SegmentedHandleIndexStack::Push(DWORD value)
@@ -200,6 +190,19 @@ inline DWORD SegmentedHandleIndexStack::Pop()
     return m_TOSSegment->m_data[--m_TOSIndex];
 }
 
+inline SegmentedHandleIndexStack::~SegmentedHandleIndexStack()
+{
+    LIMITED_METHOD_CONTRACT;
+
+    while (m_TOSSegment != NULL)
+    {
+        Segment* prevSegment = m_TOSSegment->m_prev;
+        delete m_TOSSegment;
+        m_TOSSegment = prevSegment;
+    }
+    m_freeSegment = NULL;
+}
+
 inline bool SegmentedHandleIndexStack::IsEmpty()
 {
     LIMITED_METHOD_CONTRACT;
@@ -208,4 +211,3 @@ inline bool SegmentedHandleIndexStack::IsEmpty()
 }
 
 #endif //  _LOADER_ALLOCATOR_I
-

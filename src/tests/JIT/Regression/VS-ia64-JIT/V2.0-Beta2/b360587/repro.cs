@@ -2,7 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 //
 
+
+namespace b360587;
+
 using System;
+using Xunit;
 
 public class MyDispose : IDisposable
 {
@@ -283,7 +287,9 @@ public class Test_repro
         return 0;
     }
 
-    public static int Main()
+    [OuterLoop]
+    [Fact]
+    public static int TestEntryPoint()
     {
         Test_repro t = new Test_repro();
         int retVal = 0;

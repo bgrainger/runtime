@@ -13,6 +13,7 @@
 **=========================================================*/
 
 #include <palsuite.h>
+#include <inttypes.h>
 
 PALTEST(threading_QueryThreadCycleTime_test1_paltest_querythreadcycletime_test1, "threading/QueryThreadCycleTime/test1/paltest_querythreadcycletime_test1")
 {
@@ -46,7 +47,7 @@ PALTEST(threading_QueryThreadCycleTime_test1_paltest_querythreadcycletime_test1,
         ULONG64 FirstCount, SecondCount;
         LONG64 Init;
         
-        Sleep(1);
+        minipal_sleep(1);
 
         /* Grab a FirstCount, then loop for a bit to make the clock increase */
         if (!QueryThreadCycleTime(cThread, (PULONG64)&FirstCount))
@@ -56,7 +57,7 @@ PALTEST(threading_QueryThreadCycleTime_test1_paltest_querythreadcycletime_test1,
         
         LONG64 x;
         /* Init is in milliseconds, so we will convert later */
-        Init = (LONG64)GetTickCount();
+        Init = minipal_lowres_ticks();
         x = Init + 3;
         volatile int counter;
         do {
@@ -65,8 +66,8 @@ PALTEST(threading_QueryThreadCycleTime_test1_paltest_querythreadcycletime_test1,
                 // spin to consume CPU time
             }
 
-        } while (x > GetTickCount());
-        Expected += (GetTickCount() - Init) * MSEC_TO_NSEC;
+        } while (x > minipal_lowres_ticks());
+        Expected += (minipal_lowres_ticks() - Init) * MSEC_TO_NSEC;
         /* Get a second count */
         if (!QueryThreadCycleTime(cThread, (PULONG64)&SecondCount))
         {
@@ -75,21 +76,19 @@ PALTEST(threading_QueryThreadCycleTime_test1_paltest_querythreadcycletime_test1,
 
         LONG64 trial = (LONG64)SecondCount - (LONG64)FirstCount;
         if (trial < 0){
-            printf("Negative value %llu measured", trial);
+            printf("Negative value %" PRIu64 " measured", trial);
         }
         Actual += (trial);
 
     }
 
-
-
     if(llabs(Expected - Actual) > Delta)
     {
-        Fail("ERROR: The measured time (%llu millisecs) was not within Delta %llu "
-            "of the expected time (%llu millisecs).\n",
+        Fail("ERROR: The measured time (%" PRIu64 " millisecs) was not within Delta %" PRIu64 " "
+            "of the expected time (%" PRIu64 " millisecs).\n",
              (Actual / MSEC_TO_NSEC), (Delta / MSEC_TO_NSEC), (Expected / MSEC_TO_NSEC));
     }
-    //printf("%llu, %llu\n", Expected, Actual);
+    //printf("%" PRIu64 ", %" PRIu64 "\n", Expected, Actual);
     PAL_Terminate();
     ret = PASS;
     }

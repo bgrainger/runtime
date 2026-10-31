@@ -126,8 +126,8 @@ namespace System.Reflection.Metadata.Tests
             PEHeaders headers = new PEHeaders(new MemoryStream(peImage));
 
             //find index for mscorlib
-            int mscorlibIndex = IndexOf(peImage, Encoding.ASCII.GetBytes("mscorlib"), headers.MetadataStartOffset);
-            Assert.NotEqual(mscorlibIndex, -1);
+            int mscorlibIndex = IndexOf(peImage, "mscorlib"u8.ToArray(), headers.MetadataStartOffset);
+            Assert.NotEqual(-1, mscorlibIndex);
             //mutate mscorlib
             peImage[mscorlibIndex + headers.MetadataStartOffset] = 0xFF;
 
@@ -145,11 +145,11 @@ namespace System.Reflection.Metadata.Tests
 
             // mutate CLR to reach MetadataKind.WindowsMetadata
             // find CLR
-            int clrIndex = IndexOf(peImage, Encoding.ASCII.GetBytes("CLR"), headers.MetadataStartOffset);
-            Assert.NotEqual(clrIndex, -1);
+            int clrIndex = IndexOf(peImage, "CLR"u8.ToArray(), headers.MetadataStartOffset);
+            Assert.NotEqual(-1, clrIndex);
             //find 5, This is the streamcount and is the last thing that should be read befor the test.
             int fiveIndex = IndexOf(peImage, new byte[] {5}, headers.MetadataStartOffset + clrIndex);
-            Assert.NotEqual(fiveIndex, -1);
+            Assert.NotEqual(-1, fiveIndex);
 
             peImage[clrIndex + headers.MetadataStartOffset] = 0xFF;
 
@@ -173,7 +173,7 @@ namespace System.Reflection.Metadata.Tests
 
             //find 5, This is the streamcount we'll change to one to leave out loops.
             int fiveIndex = IndexOf(peImage, new byte[] { 5 }, headers.MetadataStartOffset);
-            Assert.NotEqual(fiveIndex, -1);
+            Assert.NotEqual(-1, fiveIndex);
             Array.Copy(BitConverter.GetBytes((ushort)1), 0, peImage, fiveIndex + headers.MetadataStartOffset, BitConverter.GetBytes((ushort)1).Length);
 
             string[] streamNames= new string[]
@@ -198,6 +198,27 @@ namespace System.Reflection.Metadata.Tests
 
         }
 
+        [Theory]
+        [InlineData(0x8000)]
+        [InlineData(0xFFFF)]
+        public unsafe void StreamCountLargerThanInt16MaxValue(int streamCount)
+        {
+            // Metadata root with an empty version string. The stream count is not followed by any stream headers.
+            byte[] metadata = new byte[]
+            {
+                0x42, 0x53, 0x4A, 0x42, // signature
+                0x01, 0x00, // major version
+                0x01, 0x00, // minor version
+                0x00, 0x00, 0x00, 0x00, // reserved
+                0x00, 0x00, 0x00, 0x00, // version string length
+                0x00, 0x00, // flags
+                (byte)streamCount, (byte)(streamCount >> 8), // stream count
+            };
+
+            GCHandle pinned = GetPinnedPEImage(metadata);
+            Assert.Throws<BadImageFormatException>(() => new MetadataReader((byte*)pinned.AddrOfPinnedObject(), metadata.Length));
+        }
+
         [Fact]
         public unsafe void InvalidExternalTableMask()
         {
@@ -206,7 +227,7 @@ namespace System.Reflection.Metadata.Tests
 
             //0x900001447 is the external table mask from PortablePdbs.DocumentsPdb
             int externalTableMaskIndex = IndexOf(peImage, new byte[] { 0x47, 0x14, 0, 0, 9, 0, 0, 0 }, 0);
-            Assert.NotEqual(externalTableMaskIndex, -1);
+            Assert.NotEqual(-1, externalTableMaskIndex);
 
             Array.Copy(new byte[] { 0x48, 0x14, 0, 0, 9, 0, 0, 0 }, 0, peImage, externalTableMaskIndex, 8);
             Assert.Throws<BadImageFormatException>(() => new MetadataReader((byte*)pinned.AddrOfPinnedObject(), peImage.Length));
@@ -219,13 +240,13 @@ namespace System.Reflection.Metadata.Tests
             GCHandle pinned = GetPinnedPEImage(peImage);
             //Find COR20Constants.StringStreamName to be changed to COR20Constants.MinimalDeltaMetadataTableStreamName
             int stringIndex = IndexOf(peImage, Encoding.ASCII.GetBytes(COR20Constants.StringStreamName), 0);
-            Assert.NotEqual(stringIndex, -1);
+            Assert.NotEqual(-1, stringIndex);
             //find remainingBytes to be increased because we are changing to uncompressed
             int remainingBytesIndex = IndexOf(peImage, BitConverter.GetBytes(180), 0);
-            Assert.NotEqual(remainingBytesIndex, -1);
+            Assert.NotEqual(-1, remainingBytesIndex);
             //find compressed to change to uncompressed
             int compressedIndex = IndexOf(peImage, Encoding.ASCII.GetBytes(COR20Constants.CompressedMetadataTableStreamName), 0);
-            Assert.NotEqual(compressedIndex, -1);
+            Assert.NotEqual(-1, compressedIndex);
 
             Array.Copy(Encoding.ASCII.GetBytes(COR20Constants.MinimalDeltaMetadataTableStreamName), 0, peImage, stringIndex, Encoding.ASCII.GetBytes(COR20Constants.MinimalDeltaMetadataTableStreamName).Length);
             peImage[stringIndex + COR20Constants.MinimalDeltaMetadataTableStreamName.Length] = (byte)0;
@@ -248,10 +269,10 @@ namespace System.Reflection.Metadata.Tests
 
             //0x0570 is the remaining bytes from NetModule.AppCS
             int remainingBytesIndex = IndexOf(peImage, new byte[] { 0x70, 0x05, 0, 0 }, headers.MetadataStartOffset);
-            Assert.NotEqual(remainingBytesIndex, -1);
+            Assert.NotEqual(-1, remainingBytesIndex);
             //0xcc90da21757 is the presentTables from NetModule.AppCS, must be after remainingBytesIndex
             int presentTablesIndex = IndexOf(peImage, new byte[] { 0x57, 0x17, 0xa2, 0x0d, 0xc9, 0x0c, 0, 0 }, headers.MetadataStartOffset + remainingBytesIndex);
-            Assert.NotEqual(presentTablesIndex, -1);
+            Assert.NotEqual(-1, presentTablesIndex);
 
             //Set this.ModuleTable.NumberOfRows to 0
             Array.Copy(new byte[] { 0, 0, 0, 0, 0, 0, 0, 0 }, 0, peImage, presentTablesIndex + remainingBytesIndex + headers.MetadataStartOffset + 16, 8);
@@ -435,7 +456,7 @@ namespace System.Reflection.Metadata.Tests
                 winrtDef.Attributes);
 
             var strReader = reader.GetBlobReader(winrtDef.Name);
-            Assert.Equal(Encoding.UTF8.GetBytes("Class1"), strReader.ReadBytes("Class1".Length));
+            Assert.Equal("Class1"u8.ToArray(), strReader.ReadBytes("Class1".Length));
             Assert.Equal(0, strReader.RemainingBytes);
 
             // .class /*02000003*/ private auto ansi import windowsruntime sealed beforefieldinit Lib.'<WinRT>Class1'
@@ -449,7 +470,7 @@ namespace System.Reflection.Metadata.Tests
                 clrDef.Attributes);
 
             strReader = reader.GetBlobReader(clrDef.Name);
-            Assert.Equal(Encoding.UTF8.GetBytes("<WinRT>Class1"), strReader.ReadBytes("<WinRT>Class1".Length));
+            Assert.Equal("<WinRT>Class1"u8.ToArray(), strReader.ReadBytes("<WinRT>Class1".Length));
             Assert.Equal(0, strReader.RemainingBytes);
         }
 
@@ -469,7 +490,7 @@ namespace System.Reflection.Metadata.Tests
                 winrtDef.Attributes);
 
             var strReader = reader.GetBlobReader(winrtDef.Name);
-            Assert.Equal(Encoding.UTF8.GetBytes("<CLR>Class1"), strReader.ReadBytes("<CLR>Class1".Length));
+            Assert.Equal("<CLR>Class1"u8.ToArray(), strReader.ReadBytes("<CLR>Class1".Length));
             Assert.Equal(0, strReader.RemainingBytes);
 
             // .class /*02000003*/ public auto ansi windowsruntime sealed beforefieldinit Lib.Class1
@@ -483,7 +504,7 @@ namespace System.Reflection.Metadata.Tests
                 clrDef.Attributes);
 
             strReader = reader.GetBlobReader(clrDef.Name);
-            Assert.Equal(Encoding.UTF8.GetBytes("Class1"), strReader.ReadBytes("Class1".Length));
+            Assert.Equal("Class1"u8.ToArray(), strReader.ReadBytes("Class1".Length));
             Assert.Equal(0, strReader.RemainingBytes);
         }
 
@@ -497,14 +518,14 @@ namespace System.Reflection.Metadata.Tests
             Assert.Equal("System.Runtime.CompilerServices", reader.GetString(typeRef.Namespace));
 
             var strReader = reader.GetBlobReader(typeRef.Namespace);
-            Assert.Equal(Encoding.UTF8.GetBytes("System.Runtime.CompilerServices"), strReader.ReadBytes("System.Runtime.CompilerServices".Length));
+            Assert.Equal("System.Runtime.CompilerServices"u8.ToArray(), strReader.ReadBytes("System.Runtime.CompilerServices".Length));
             Assert.Equal(0, strReader.RemainingBytes);
 
             var dotTerminated = typeRef.Namespace.WithDotTermination();
             Assert.Equal("System", reader.GetString(dotTerminated));
 
             strReader = reader.GetBlobReader(dotTerminated);
-            Assert.Equal(Encoding.UTF8.GetBytes("System"), strReader.ReadBytes("System".Length));
+            Assert.Equal("System"u8.ToArray(), strReader.ReadBytes("System".Length));
             Assert.Equal(0, strReader.RemainingBytes);
         }
 
@@ -652,7 +673,7 @@ namespace System.Reflection.Metadata.Tests
         {
             // AppCS has 2 modules
             var expMods = new string[] { "ModuleCS01.mod", "ModuleVB01.mod" };
-            var expHashs = new byte[][]
+            var expHashes = new byte[][]
             {
                 // ModuleCS01.mod - 2B 56 10 8B 34 A1 DC CD CC B5 CF 66 5E 43 94 5E 09 9F 34 A3
                 new byte[] { 0x2B, 0x56, 0x10, 0x8B, 0x34, 0xA1, 0xDC, 0xCD, 0xCC, 0xB5, 0xCF, 0x66, 0x5E, 0x43, 0x94, 0x5E, 0x09, 0x9F, 0x34, 0xA3 },
@@ -686,10 +707,10 @@ namespace System.Reflection.Metadata.Tests
                 Assert.True(file.ContainsMetadata);
 
                 var hv = reader.GetBlobBytes(file.HashValue);
-                Assert.Equal(hv.Length, expHashs[i].Length);
+                Assert.Equal(hv.Length, expHashes[i].Length);
                 for (int j = 0; j < hv.Length; j++)
                 {
-                    Assert.Equal(hv[j], expHashs[i][j]);
+                    Assert.Equal(hv[j], expHashes[i][j]);
                 }
 
                 i++;
@@ -710,7 +731,7 @@ namespace System.Reflection.Metadata.Tests
         {
             // AppCS has 2 modules
             var expMods = new string[] { "ModuleCS00.mod" };
-            var expHashs = new byte[][]
+            var expHashes = new byte[][]
             {
                 // ModuleCS00.mod
                 // new byte [] { 0xd4, 0x6b, 0xec, 0x25, 0x47, 0x01, 0x20, 0x30, 0x05, 0x42, 0x34, 0x4b, 0x31, 0x22, 0x44, 0xd8, 0x1c, 0x87, 0xd0, 0x98 },
@@ -2676,6 +2697,344 @@ namespace System.Reflection.Metadata.Tests
         }
 
         [Fact]
+        public void GetDocument_InvalidHandle()
+        {
+            using (var provider = MetadataReaderProvider.FromPortablePdbStream(new MemoryStream(PortablePdbs.DocumentsPdb)))
+            {
+                var reader = provider.GetMetadataReader();
+                var doc = reader.GetDocument(default(DocumentHandle));
+
+                Assert.Throws<BadImageFormatException>(() => doc.Name);
+                Assert.Throws<BadImageFormatException>(() => doc.Language);
+                Assert.Throws<BadImageFormatException>(() => doc.HashAlgorithm);
+                Assert.Throws<BadImageFormatException>(() => doc.Hash);
+            }
+        }
+
+        [Fact]
+        public void GetLocalScope_InvalidHandle()
+        {
+            using (var provider = MetadataReaderProvider.FromPortablePdbStream(new MemoryStream(PortablePdbs.DocumentsPdb)))
+            {
+                var reader = provider.GetMetadataReader();
+                var scope = reader.GetLocalScope(default(LocalScopeHandle));
+
+                Assert.Throws<BadImageFormatException>(() => scope.Method);
+                Assert.Throws<BadImageFormatException>(() => scope.ImportScope);
+                Assert.Throws<BadImageFormatException>(() => scope.StartOffset);
+                Assert.Throws<BadImageFormatException>(() => scope.Length);
+            }
+        }
+
+        [Fact]
+        public void GetCustomDebugInformation_InvalidHandle()
+        {
+            using (var provider = MetadataReaderProvider.FromPortablePdbStream(new MemoryStream(PortablePdbs.DocumentsPdb)))
+            {
+                var reader = provider.GetMetadataReader();
+                var cdi = reader.GetCustomDebugInformation(default(CustomDebugInformationHandle));
+
+                Assert.Throws<BadImageFormatException>(() => cdi.Parent);
+                Assert.Throws<BadImageFormatException>(() => cdi.Kind);
+                Assert.Throws<BadImageFormatException>(() => cdi.Value);
+            }
+        }
+
+        [Fact]
+        public void GetLocalVariable_InvalidHandle()
+        {
+            using (var provider = MetadataReaderProvider.FromPortablePdbStream(new MemoryStream(PortablePdbs.DocumentsPdb)))
+            {
+                var reader = provider.GetMetadataReader();
+                var localVar = reader.GetLocalVariable(default(LocalVariableHandle));
+
+                Assert.Throws<BadImageFormatException>(() => localVar.Attributes);
+                Assert.Throws<BadImageFormatException>(() => localVar.Index);
+                Assert.Throws<BadImageFormatException>(() => localVar.Name);
+            }
+        }
+
+        [Fact]
+        public void GetLocalConstant_InvalidHandle()
+        {
+            using (var provider = MetadataReaderProvider.FromPortablePdbStream(new MemoryStream(PortablePdbs.DocumentsPdb)))
+            {
+                var reader = provider.GetMetadataReader();
+                var localConst = reader.GetLocalConstant(default(LocalConstantHandle));
+
+                Assert.Throws<BadImageFormatException>(() => localConst.Name);
+                Assert.Throws<BadImageFormatException>(() => localConst.Signature);
+            }
+        }
+
+        [Fact]
+        public void GetImportScope_InvalidHandle()
+        {
+            using (var provider = MetadataReaderProvider.FromPortablePdbStream(new MemoryStream(PortablePdbs.DocumentsPdb)))
+            {
+                var reader = provider.GetMetadataReader();
+                var importScope = reader.GetImportScope(default(ImportScopeHandle));
+
+                Assert.Throws<BadImageFormatException>(() => importScope.Parent);
+                Assert.Throws<BadImageFormatException>(() => importScope.ImportsBlob);
+            }
+        }
+
+        [Fact]
+        public void GetAssemblyFile_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetAssemblyFile(default(AssemblyFileHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.ContainsMetadata);
+            Assert.Throws<BadImageFormatException>(() => entity.Name);
+            Assert.Throws<BadImageFormatException>(() => entity.HashValue);
+        }
+
+        [Fact]
+        public void GetAssemblyReference_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetAssemblyReference(default(AssemblyReferenceHandle));
+
+            // Version has special handling - when RowId == WinMDMscorlibRef (both 0 for regular assemblies),
+            // it returns a static version without accessing the table.
+            Assert.Equal(new Version(4, 0, 0, 0), entity.Version);
+
+            Assert.Throws<BadImageFormatException>(() => entity.Flags);
+            Assert.Throws<BadImageFormatException>(() => entity.Name);
+            Assert.Throws<BadImageFormatException>(() => entity.Culture);
+            Assert.Throws<BadImageFormatException>(() => entity.PublicKeyOrToken);
+            Assert.Throws<BadImageFormatException>(() => entity.HashValue);
+        }
+
+        [Fact]
+        public void GetConstant_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetConstant(default(ConstantHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.TypeCode);
+            Assert.Throws<BadImageFormatException>(() => entity.Value);
+            Assert.Throws<BadImageFormatException>(() => entity.Parent);
+        }
+
+        [Fact]
+        public void GetCustomAttribute_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetCustomAttribute(default(CustomAttributeHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Constructor);
+            Assert.Throws<BadImageFormatException>(() => entity.Parent);
+            Assert.Throws<BadImageFormatException>(() => entity.Value);
+        }
+
+        [Fact]
+        public void GetDeclarativeSecurityAttribute_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetDeclarativeSecurityAttribute(default(DeclarativeSecurityAttributeHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Action);
+            Assert.Throws<BadImageFormatException>(() => entity.Parent);
+            Assert.Throws<BadImageFormatException>(() => entity.PermissionSet);
+        }
+
+        [Fact]
+        public void GetEventDefinition_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetEventDefinition(default(EventDefinitionHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Name);
+            Assert.Throws<BadImageFormatException>(() => entity.Attributes);
+            Assert.Throws<BadImageFormatException>(() => entity.Type);
+        }
+
+        [Fact]
+        public void GetExportedType_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetExportedType(default(ExportedTypeHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Attributes);
+            Assert.Throws<BadImageFormatException>(() => entity.Name);
+            Assert.Throws<BadImageFormatException>(() => entity.Namespace);
+            Assert.Throws<BadImageFormatException>(() => entity.Implementation);
+        }
+
+        [Fact]
+        public void GetFieldDefinition_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetFieldDefinition(default(FieldDefinitionHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Name);
+            Assert.Throws<BadImageFormatException>(() => entity.Attributes);
+            Assert.Throws<BadImageFormatException>(() => entity.Signature);
+        }
+
+        [Fact]
+        public void GetGenericParameter_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetGenericParameter(default(GenericParameterHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Parent);
+            Assert.Throws<BadImageFormatException>(() => entity.Attributes);
+            Assert.Throws<BadImageFormatException>(() => entity.Index);
+            Assert.Throws<BadImageFormatException>(() => entity.Name);
+        }
+
+        [Fact]
+        public void GetGenericParameterConstraint_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetGenericParameterConstraint(default(GenericParameterConstraintHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Parameter);
+            Assert.Throws<BadImageFormatException>(() => entity.Type);
+        }
+
+        [Fact]
+        public void GetInterfaceImplementation_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetInterfaceImplementation(default(InterfaceImplementationHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Interface);
+        }
+
+        [Fact]
+        public void GetManifestResource_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetManifestResource(default(ManifestResourceHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Offset);
+            Assert.Throws<BadImageFormatException>(() => entity.Attributes);
+            Assert.Throws<BadImageFormatException>(() => entity.Name);
+            Assert.Throws<BadImageFormatException>(() => entity.Implementation);
+        }
+
+        [Fact]
+        public void GetMemberReference_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetMemberReference(default(MemberReferenceHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Parent);
+            Assert.Throws<BadImageFormatException>(() => entity.Name);
+            Assert.Throws<BadImageFormatException>(() => entity.Signature);
+        }
+
+        [Fact]
+        public void GetMethodDefinition_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetMethodDefinition(default(MethodDefinitionHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Name);
+            Assert.Throws<BadImageFormatException>(() => entity.Signature);
+            Assert.Throws<BadImageFormatException>(() => entity.RelativeVirtualAddress);
+            Assert.Throws<BadImageFormatException>(() => entity.Attributes);
+        }
+
+        [Fact]
+        public void GetMethodImplementation_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetMethodImplementation(default(MethodImplementationHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Type);
+            Assert.Throws<BadImageFormatException>(() => entity.MethodBody);
+            Assert.Throws<BadImageFormatException>(() => entity.MethodDeclaration);
+        }
+
+        [Fact]
+        public void GetMethodSpecification_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetMethodSpecification(default(MethodSpecificationHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Method);
+            Assert.Throws<BadImageFormatException>(() => entity.Signature);
+        }
+
+        [Fact]
+        public void GetModuleReference_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetModuleReference(default(ModuleReferenceHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Name);
+        }
+
+        [Fact]
+        public void GetParameter_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetParameter(default(ParameterHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Attributes);
+            Assert.Throws<BadImageFormatException>(() => entity.SequenceNumber);
+            Assert.Throws<BadImageFormatException>(() => entity.Name);
+        }
+
+        [Fact]
+        public void GetPropertyDefinition_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetPropertyDefinition(default(PropertyDefinitionHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Name);
+            Assert.Throws<BadImageFormatException>(() => entity.Attributes);
+            Assert.Throws<BadImageFormatException>(() => entity.Signature);
+        }
+
+        [Fact]
+        public void GetStandaloneSignature_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetStandaloneSignature(default(StandaloneSignatureHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Signature);
+        }
+
+        [Fact]
+        public void GetTypeDefinition_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetTypeDefinition(default(TypeDefinitionHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Attributes);
+            Assert.Throws<BadImageFormatException>(() => entity.Name);
+            Assert.Throws<BadImageFormatException>(() => entity.Namespace);
+            Assert.Throws<BadImageFormatException>(() => entity.BaseType);
+        }
+
+        [Fact]
+        public void GetTypeReference_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetTypeReference(default(TypeReferenceHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.ResolutionScope);
+            Assert.Throws<BadImageFormatException>(() => entity.Name);
+            Assert.Throws<BadImageFormatException>(() => entity.Namespace);
+        }
+
+        [Fact]
+        public void GetTypeSpecification_InvalidHandle()
+        {
+            var reader = GetMetadataReader(Misc.Members);
+            var entity = reader.GetTypeSpecification(default(TypeSpecificationHandle));
+
+            Assert.Throws<BadImageFormatException>(() => entity.Signature);
+        }
+
+        [Fact]
         public void GetCustomDebugInformation()
         {
             using (var provider = MetadataReaderProvider.FromPortablePdbStream(new MemoryStream(PortablePdbs.DocumentsPdb)))
@@ -2722,6 +3081,7 @@ namespace System.Reflection.Metadata.Tests
                     "set_PE1",
                     "add_ED1",
                     "remove_ED1",
+                    ".ctor",
                     ".ctor",
                     "get_PE1",
                     "set_PE1",
@@ -2879,7 +3239,7 @@ namespace System.Reflection.Metadata.Tests
             Assert.Equal(handle.RowId, assemblyRef.RowId);
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public void CanReadFromSameMemoryMappedPEReaderInParallel()
         {
             // See http://roslyn.codeplex.com/workitem/299
@@ -3004,7 +3364,7 @@ namespace System.Reflection.Metadata.Tests
 
                     // read stream headers to collect offsets and sizes to adjust later
                     blobReader.ReadUInt16(); // reserved
-                    int streamCount = blobReader.ReadInt16();
+                    int streamCount = blobReader.ReadUInt16();
                     streamHeaders = new StreamHeaderInfo[streamCount];
 
                     for (int i = 0; i < streamCount; i++)
@@ -3069,6 +3429,35 @@ namespace System.Reflection.Metadata.Tests
             }
 
             return obfuscated;
+        }
+
+        [Fact]
+        public void GetAssemblyName()
+        {
+            AssertExtensions.Throws<ArgumentNullException>("assemblyFile", () => MetadataReader.GetAssemblyName(null));
+            AssertExtensions.Throws<ArgumentException>("path", null, () => MetadataReader.GetAssemblyName(string.Empty));
+            Assert.Throws<FileNotFoundException>(() => MetadataReader.GetAssemblyName("IDontExist"));
+
+            using (var tempFile = new TempFile(Path.GetTempFileName(), 0)) // Zero-size file
+            {
+                Assert.Throws<BadImageFormatException>(() => MetadataReader.GetAssemblyName(tempFile.Path));
+            }
+
+            using (var tempFile = new TempFile(Path.GetTempFileName(), 42))
+            {
+                Assert.Throws<BadImageFormatException>(() => MetadataReader.GetAssemblyName(tempFile.Path));
+            }
+
+            if (PlatformDetection.HasAssemblyFiles)
+            {
+                Assembly a = typeof(MetadataReader).Assembly;
+                AssemblyName name = MetadataReader.GetAssemblyName(AssemblyPathHelper.GetAssemblyLocation(a));
+                Assert.Equal(new AssemblyName(a.FullName).ToString(), name.ToString());
+
+#pragma warning disable SYSLIB0037 // AssemblyName.ProcessorArchitecture is obsolete
+                Assert.Equal(ProcessorArchitecture.None, name.ProcessorArchitecture);
+#pragma warning restore SYSLIB0037
+            }
         }
     }
 }

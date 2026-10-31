@@ -2,7 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 //
 
-namespace DefaultNamespace
+using Xunit;
+namespace b16294
 {
     //@BEGINRENAME; Verify this renames
     //@ENDRENAME; Verify this renames
@@ -18,16 +19,16 @@ namespace DefaultNamespace
             _ => DefaultSeed
         };
 
-        public virtual void runTest()
+        internal virtual void runTest()
         {
             Random rand = new Random(Seed);
             Object o = ((UInt64)rand.Next((int)UInt64.MinValue, Int32.MaxValue));
         }
 
-        public static int Main(String[] args)
+        [Fact]
+        public static void TestEntryPoint()
         {
             new Bug().runTest();
-            return 100;
         }
     }
 }

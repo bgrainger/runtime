@@ -7,9 +7,6 @@ parameters:
   helixQueues: ''
   runtimeVariant: ''
   crossBuild: false
-  crossrootfsDir: ''
-  dependOnEvaluatePaths: false
-  stagedBuild: false
   variables: {}
   pool: ''
 
@@ -26,25 +23,22 @@ parameters:
 ### crossgen matches that of native, e.g. arm-hosted-arm-targeting, crossgen.
 
 jobs:
-- template: xplat-pipeline-job.yml
+- template: /eng/pipelines/common/templates/runtimes/xplat-job.yml
   parameters:
     buildConfig: ${{ parameters.buildConfig }}
     archType: ${{ parameters.archType }}
     osGroup: ${{ parameters.osGroup }}
     osSubgroup: ${{ parameters.osSubgroup }}
-    stagedBuild: ${{ parameters.stagedBuild }}
     runtimeVariant: ${{ parameters.runtimeVariant }}
     liveLibrariesBuildConfig: ${{ parameters.liveLibrariesBuildConfig }}
     helixType: 'test/crossgen-comparison/'
     pool: ${{ parameters.pool }}
-    dependOnEvaluatePaths: ${{ parameters.dependOnEvaluatePaths }}
 
     # Compute job name from template parameters
     name: ${{ format('test_crossgen2_comparison_build_{0}{1}_{2}_{3}', parameters.osGroup, parameters.osSubgroup, parameters.archType, parameters.buildConfig) }}
     displayName: ${{ format('Test crossgen2-comparison build {0}{1} {2} {3}', parameters.osGroup, parameters.osSubgroup, parameters.archType, parameters.buildConfig) }}
 
     crossBuild: ${{ parameters.crossBuild }}
-    crossrootfsDir: ${{ parameters.crossrootfsDir }}
 
     variables:
     - ${{ if eq(variables['System.TeamProject'], 'internal') }}:
@@ -68,27 +62,26 @@ jobs:
     - ${{ if eq(parameters.osGroup, 'windows') }}:
       - name: target_crossgen2_os
         value: windows
-    - ${{ if eq(parameters.osGroup, 'Linux') }}:
+    - ${{ if eq(parameters.osGroup, 'linux') }}:
       - name: target_crossgen2_os
         value: linux
-    - ${{ if eq(parameters.osGroup, 'OSX') }}:
+    - ${{ if eq(parameters.osGroup, 'osx') }}:
       - name: target_crossgen2_os
         value: osx
     - name: crossgen2location
-      value: $(productDirectory)$(dir)$(targetFlavor)$(dir)crossgen2$(dir)crossgen2.dll
-    - ${{ if ne(parameters.archType, 'x64') }}:
-      - name: crossgen2location
-        value: $(productDirectory)$(dir)$(targetFlavor)$(dir)x64$(dir)crossgen2$(dir)crossgen2.dll
+      value: $(binDirectory)$(dir)crossgen2_inbuild$(dir)$(archType)$(dir)$(buildConfigUpper)$(dir)crossgen2.dll
+    - name: crossgenComparisonBuildHostRid
+      value: ${{ format('{0}-x64', replace(parameters.osGroup, 'windows', 'win')) }}
+    - name: crossgenComparisonRunnerDirectory
+      value: $(artifactsDirectory)$(dir)crossgen2_comparison_runner
     - name: librariesProductDllDir
-      value: $(Build.SourcesDirectory)$(dir)artifacts$(dir)bin$(dir)runtime$(dir)net7.0-$(osGroup)$(osSubgroup)-$(buildConfig)-$(archType)
+      value: $(Build.SourcesDirectory)$(dir)artifacts$(dir)bin$(dir)runtime$(dir)net12.0-$(osGroup)$(osSubgroup)-$(buildConfig)-$(archType)
 
     - ${{ parameters.variables }}
 
     # Test job depends on the corresponding build job
     dependsOn:
-    - ${{ format('coreclr_{0}_product_build_{1}{2}_{3}_{4}', parameters.runtimeVariant, parameters.osGroup, parameters.osSubgroup, parameters.archType, parameters.buildConfig) }}
-    - ${{ if ne(parameters.liveLibrariesBuildConfig, '') }}:
-      - ${{ format('libraries_build_{0}{1}_{2}_{3}', parameters.osGroup, parameters.osSubgroup, parameters.archType, parameters.liveLibrariesBuildConfig) }}
+    - build_${{ parameters.osGroup }}${{ parameters.osSubgroup }}_${{ parameters.archType }}_${{ parameters.buildConfig }}_
 
     # Run all steps in the container.
     # Note that the containers are defined in platform-matrix.yml
@@ -100,23 +93,13 @@ jobs:
     # Download product build
     - template: /eng/pipelines/common/download-artifact-step.yml
       parameters:
-        unpackFolder: $(buildProductRootFolderPath)
-        artifactFileName: '$(buildProductArtifactName)$(archiveExtension)'
-        artifactName: '$(buildProductArtifactName)'
+        unpackFolder: $(Build.SourcesDirectory)/artifacts/bin
+        artifactFileName: 'Release_CoreCLR_$(osGroup)$(osSubgroup)_$(archType)_$(_BuildConfig)$(archiveExtension)'
+        artifactName: 'Release_CoreCLR_$(osGroup)$(osSubgroup)_$(archType)_$(_BuildConfig)'
         displayName: 'product build'
 
-    # Optionally download live-built libraries
-    - ${{ if ne(parameters.liveLibrariesBuildConfig, '') }}:
-      - template: /eng/pipelines/common/download-artifact-step.yml
-        parameters:
-          unpackFolder: $(librariesDownloadDir)
-          cleanUnpackFolder: false
-          artifactFileName: '$(librariesBuildArtifactName)$(archiveExtension)'
-          artifactName: '$(librariesBuildArtifactName)'
-          displayName: 'live-built libraries'
-
     # Populate Core_Root
-    - script: $(Build.SourcesDirectory)/src/tests/build$(scriptExt) $(buildConfig) $(archType) $(crossArg) generatelayoutonly
+    - script: $(Build.SourcesDirectory)/src/tests/build$(scriptExt) $(buildConfig) -arch $(archType) $(crossArg) generatelayoutonly
       displayName: Populate Core_Root
 
     # Create work item directory and populate with assemblies
@@ -140,33 +123,47 @@ jobs:
         displayName: Create directories
         failOnStderr: true
 
+    # Publish the runner used to create the baseline on this x64 build machine.
+    - ${{ if ne(parameters.osGroup, 'windows') }}:
+      - script: |
+          mkdir -p "$(crossgenComparisonRunnerDirectory)"
+          "$(Build.SourcesDirectory)/dotnet.sh" publish "$(Build.SourcesDirectory)/src/tests/Common/scripts/crossgen2_comparison.cs" \
+            -c Release \
+            -r "$(crossgenComparisonBuildHostRid)" \
+            -o "$(crossgenComparisonRunnerDirectory)"
+        displayName: Publish crossgen comparison runner
+    - ${{ if eq(parameters.osGroup, 'windows') }}:
+      - script: |
+          md "$(crossgenComparisonRunnerDirectory)"
+          "$(Build.SourcesDirectory)\eng\common\dotnet.cmd" publish "$(Build.SourcesDirectory)\src\tests\Common\scripts\crossgen2_comparison.cs" ^
+            -c Release ^
+            -r "$(crossgenComparisonBuildHostRid)" ^
+            -o "$(crossgenComparisonRunnerDirectory)"
+        displayName: Publish crossgen comparison runner
+
     # Create baseline output on the host (x64) machine
-    - task: PythonScript@0
-      displayName: Create cross-platform crossgen baseline
-      inputs:
-        scriptSource: 'filePath'
-        scriptPath: $(Build.SourcesDirectory)/src/tests/Common/scripts/crossgen2_comparison.py
-        ${{ if ne(parameters.osGroup, 'windows') }}:
-          pythonInterpreter: /usr/bin/python3
-          arguments:
-            crossgen_framework
-            --crossgen    $(crossgen2location)
-            --dotnet      $(Build.SourcesDirectory)/dotnet.sh
-            --core_root   $(workItemDirectory)/dlls
-            --result_dir  $(workItemDirectory)/log
-            --target_os   $(target_crossgen2_os)
-            --target_arch $(archType)
+    - ${{ if ne(parameters.osGroup, 'windows') }}:
+      - script: |
+          "$(crossgenComparisonRunnerDirectory)/crossgen2_comparison" crossgen_framework \
+            --crossgen    "$(crossgen2location)" \
+            --dotnet      "$(Build.SourcesDirectory)/.dotnet/dotnet" \
+            --core_root   "$(workItemDirectory)/dlls" \
+            --result_dir  "$(workItemDirectory)/log" \
+            --target_os   $(target_crossgen2_os) \
+            --target_arch $(archType) \
             --compiler_arch_os $(target_crossgen2_os)_x64
-        ${{ if eq(parameters.osGroup, 'windows') }}:
-          arguments:
-            crossgen_framework
-            --crossgen    $(crossgen2location)
-            --dotnet      $(Build.SourcesDirectory)\dotnet.cmd
-            --core_root   $(workItemDirectory)\dlls
-            --result_dir  $(workItemDirectory)\log
-            --target_os   $(target_crossgen2_os)
-            --target_arch $(archType)
+        displayName: Create cross-platform crossgen baseline
+    - ${{ if eq(parameters.osGroup, 'windows') }}:
+      - script: |
+          "$(crossgenComparisonRunnerDirectory)\crossgen2_comparison.exe" crossgen_framework ^
+            --crossgen    "$(crossgen2location)" ^
+            --dotnet      "$(Build.SourcesDirectory)\.dotnet\dotnet.exe" ^
+            --core_root   "$(workItemDirectory)\dlls" ^
+            --result_dir  "$(workItemDirectory)\log" ^
+            --target_os   $(target_crossgen2_os) ^
+            --target_arch $(archType) ^
             --compiler_arch_os $(target_crossgen2_os)_x64
+        displayName: Create cross-platform crossgen baseline
 
     - task: PublishPipelineArtifact@1
       displayName: Publish cross compiled component

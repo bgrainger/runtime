@@ -8,7 +8,8 @@ internal static partial class Interop
 {
     internal static partial class User32
     {
-        [GeneratedDllImport(Libraries.User32, EntryPoint = "LoadStringW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.User32, EntryPoint = "LoadStringW", SetLastError = true)]
         internal static unsafe partial int LoadString(IntPtr hInstance, uint uID, char* lpBuffer, int cchBufferMax);
     }
 }

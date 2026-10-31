@@ -112,7 +112,7 @@ namespace System.IO.Packaging
                 packUri = new Uri(string.Concat(packUri.GetComponents(UriComponents.AbsoluteUri, UriFormat.UriEscaped), fragment));
 
             // We want to ensure that internal content of resulting Uri has canonical form
-            // i.e.  result.OrignalString would appear as perfectly formatted Uri string
+            // i.e.  result.OriginalString would appear as perfectly formatted Uri string
             // so we roundtrip the result.
 
             return new Uri(packUri.GetComponents(UriComponents.AbsoluteUri, UriFormat.UriEscaped));
@@ -248,8 +248,7 @@ namespace System.IO.Packaging
         /// <returns></returns>
         private static Uri ValidatePackageUri(Uri packageUri)
         {
-            if (packageUri == null)
-                throw new ArgumentNullException(nameof(packageUri));
+            ArgumentNullException.ThrowIfNull(packageUri);
 
             if (!packageUri.IsAbsoluteUri)
                 throw new ArgumentException(SR.UriShouldBeAbsolute, nameof(packageUri));
@@ -260,8 +259,7 @@ namespace System.IO.Packaging
         //validates is a given uri has pack:// scheme
         private static Uri ValidatePackUri(Uri packUri)
         {
-            if (packUri == null)
-                throw new ArgumentNullException(nameof(packUri));
+            ArgumentNullException.ThrowIfNull(packUri);
 
             if (!packUri.IsAbsoluteUri)
                 throw new ArgumentException(SR.UriShouldBeAbsolute, nameof(packUri));
@@ -285,7 +283,7 @@ namespace System.IO.Packaging
             // This is currently enforced by the order of characters in the s_specialCharacterChars array
             foreach (char c in s_specialCharacterChars)
             {
-                if (path.IndexOf(c) != -1)
+                if (path.Contains(c))
                 {
                     path = path.Replace(c.ToString(), Uri.HexEscape(c));
                 }

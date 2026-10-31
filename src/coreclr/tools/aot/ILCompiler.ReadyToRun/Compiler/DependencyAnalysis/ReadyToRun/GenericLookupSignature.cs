@@ -9,6 +9,7 @@ using Internal.Text;
 using Internal.TypeSystem;
 using Internal.TypeSystem.Ecma;
 using Internal.ReadyToRunConstants;
+using ILCompiler.DependencyAnalysisFramework;
 
 namespace ILCompiler.DependencyAnalysis.ReadyToRun
 {
@@ -22,7 +23,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
         private readonly MethodWithToken _methodArgument;
 
-        private readonly FieldDesc _fieldArgument;
+        private readonly FieldWithToken _fieldArgument;
 
         private readonly GenericContext _methodContext;
 
@@ -31,7 +32,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             ReadyToRunFixupKind fixupKind,
             TypeDesc typeArgument,
             MethodWithToken methodArgument,
-            FieldDesc fieldArgument,
+            FieldWithToken fieldArgument,
             GenericContext methodContext)
         {
             Debug.Assert(typeArgument != null || methodArgument != null || fieldArgument != null);
@@ -53,7 +54,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             }
 
             // Determine the need for module override
-            EcmaModule targetModule;
+            IEcmaModule targetModule;
             if (_methodArgument != null)
             {
                 targetModule = _methodArgument.Token.Module;
@@ -64,7 +65,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             }
             else if (_fieldArgument != null)
             {
-                targetModule = factory.SignatureContext.GetTargetModule(_fieldArgument);
+                targetModule = _fieldArgument.Token.Module;
             }
             else
             {
@@ -93,7 +94,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                     throw new NotImplementedException();
             }
 
-            ObjectDataSignatureBuilder dataBuilder = new ObjectDataSignatureBuilder();
+            ObjectDataSignatureBuilder dataBuilder = new ObjectDataSignatureBuilder(factory, relocsOnly);
             dataBuilder.AddSymbol(this);
 
             SignatureContext innerContext = dataBuilder.EmitFixup(factory, fixupToEmit, targetModule, factory.SignatureContext);
@@ -130,31 +131,46 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             return dataBuilder.ToObjectData();
         }
 
+        protected override void ComputeNonRelocationBasedDependencies(DependencySink sink, NodeFactory factory)
+        {
+            if (_fixupKind == ReadyToRunFixupKind.TypeHandle)
+            {
+                TypeFixupSignature.AddDependenciesForAsyncStateMachineBox(sink, factory, _typeArgument);
+
+                // In shared generic code, newobj uses a generic dictionary lookup for the type handle
+                // rather than a direct READYTORUN_FIXUP_TypeHandle (TypeFixupSignature). Mirror the
+                // creation of InheritedVirtualMethodsNode as it is done in TypeFixupSignature, so we
+                // scan the virtual methods on this type for dependency analysis.
+                if (_typeArgument != null)
+                    factory.AddVirtualMethodDiscoveryDependencies(sink, _typeArgument);
+            }
+        }
+
         public override void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
         {
             sb.Append(nameMangler.CompilationUnitPrefix);
-            sb.Append("GenericLookupSignature(");
+            sb.Append("GenericLookupSignature("u8);
             sb.Append(_runtimeLookupKind.ToString());
-            sb.Append(" / ");
+            sb.Append(" / "u8);
             sb.Append(_fixupKind.ToString());
-            sb.Append(": ");
+            sb.Append(": "u8);
             if (_methodArgument != null)
             {
                 sb.Append(nameMangler.GetMangledTypeName(_methodArgument.OwningType));
-                sb.Append("::");
+                sb.Append("::"u8);
                 sb.Append(nameMangler.GetMangledMethodName(_methodArgument.Method));
                 if (_methodArgument.ConstrainedType != null)
                 {
-                    sb.Append("@");
+                    sb.Append("@"u8);
                     sb.Append(nameMangler.GetMangledTypeName(_methodArgument.ConstrainedType));
                 }
                 if (!_methodArgument.Token.IsNull)
                 {
-                    sb.Append(" [");
+                    sb.Append(" ["u8);
                     sb.Append(_methodArgument.Token.MetadataReader.GetString(_methodArgument.Token.MetadataReader.GetAssemblyDefinition().Name));
-                    sb.Append(":");
+                    sb.Append(":"u8);
                     sb.Append(((uint)_methodArgument.Token.Token).ToString("X8"));
-                    sb.Append("]");
+                    sb.Append("]"u8);
                 }
             }
             if (_typeArgument != null)
@@ -163,11 +179,11 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             }
             if (_fieldArgument != null)
             {
-                sb.Append(nameMangler.GetMangledFieldName(_fieldArgument));
+                _fieldArgument.AppendMangledName(nameMangler, sb);
             }
-            sb.Append(" (");
+            sb.Append(" ("u8);
             _methodContext.AppendMangledName(nameMangler, sb);
-            sb.Append(")");
+            sb.Append(")"u8);
         }
 
         public override int CompareToImpl(ISortableNode other, CompilerComparer comparer)
@@ -200,7 +216,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                 if (otherNode._fieldArgument == null)
                     return 1;
 
-                result = comparer.Compare(_fieldArgument, otherNode._fieldArgument);
+                result = _fieldArgument.CompareTo(otherNode._fieldArgument, comparer);
                 if (result != 0)
                     return result;
             }

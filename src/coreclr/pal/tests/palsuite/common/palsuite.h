@@ -2,15 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 /*============================================================================
-**
 ** Source:  palsuite.h
 **
 ** Purpose: Define constants and implement functions that are useful to
 **          multiple function categories. If common functions are useful
 **          only amongst the test cases for a particular function, a separate
 **          header file is placed in the root of those test cases.
-**
-**
 **==========================================================================*/
 
 #ifndef __PALSUITE_H__
@@ -24,6 +21,10 @@ typedef unsigned short char16_t;
 #include <pal.h>
 #include <palprivate.h>
 #include <minipal/utils.h>
+#include <minipal/types.h>
+#include <minipal/time.h>
+#include "CLREventBase.h"
+#include <errno.h>
 
 #define PALTEST(testfunc, testname) \
  int __cdecl testfunc(int argc, char* argv[]); \
@@ -62,6 +63,21 @@ inline void Fail(const char *format, ...)
     PAL_TerminateEx(FAIL);
 }
 
+inline void WaitForThreadCompletion(LONG volatile* completedThreadCount, LONG expectedThreadCount)
+{
+    for (DWORD elapsed = 0; elapsed < 60000; elapsed++)
+    {
+        if (InterlockedCompareExchange(completedThreadCount, 0, 0) == expectedThreadCount)
+        {
+            return;
+        }
+
+        minipal_sleep(1);
+    }
+
+    Fail("Timed out waiting for %d threads to complete\n", expectedThreadCount);
+}
+
 typedef int __cdecl(*PALTestEntrypoint)(int argc, char*[]);
 
 struct PALTest
@@ -79,71 +95,6 @@ struct PALTest
     }
 };
 
-#ifdef PAL_PERF
-
-int __cdecl Test_Main(int argc, char **argv);
-int PAL_InitializeResult = 0;
-static const char PALTEST_LOOP_ENV[]="PALTEST_LOOP_COUNT";
-
-int __cdecl main(int argc, char **argv)
-{
-  int lastMainResult=0;
-
-  int loopCount=1; // default: run the test's main once
-  int loopIndex=0;
-  char *szPerfLoopEnv = NULL;
-
-  // Run PAL_Initialize once, save off the result. Any failures here
-  // will be detected later by calls to PAL_Initialize in the test's main.
-  PAL_InitializeResult = PAL_Initialize(argc, argv);
-
-  // Check the environment to see if we need to run the test's main
-  // multiple times. Ideally, we want to do this before PAL_Initialize so
-  // that the overhead of checking the environment is not included in the
-  // time between PAL_Initialize and PAL_Terminate. However, getenv in PAL
-  // can be run only after PAL_Initialize.
-  szPerfLoopEnv = getenv(PALTEST_LOOP_ENV);
-  if (szPerfLoopEnv != NULL)
-  {
-     loopCount = atoi(szPerfLoopEnv);
-     if (loopCount <= 0) loopCount = 1;
-  }
-
-  // call the test's actual main in a loop
-  for(loopIndex=0; loopIndex<loopCount; loopIndex++) {
-      lastMainResult = Test_Main(argc, argv);
-  }
-
-  // call PAL_Terminate for real
-  PAL_TerminateEx(lastMainResult);
-
-  return lastMainResult;
-}
-
-// Test's calls to PAL_Initialize and PAL_Terminate are redirected
-// to these bogus functions. These rely on PAL_Initialize and PAL_Terminate
-// being called by the 'main' above.
-#define PAL_Initialize(a, b) Bogus_PAL_Initialize(a, b)
-#define PAL_Terminate()  Bogus_PAL_Terminate()
-int Bogus_PAL_Initialize(int argc, char* argv[])
-{
-  // PAL_Initialize has already been called by the real main.
-  // Just return the result.
-  return PAL_InitializeResult;
-}
-
-void Bogus_PAL_Terminate()
-{
-  // Don't call PAL_Terminate. It will be called later by the
-  // real main.
-  return;
-}
-
-// Rename the main provided by the test case
-#define main Test_Main
-
-#endif // PAL_PERF
-
 #ifdef BIGENDIAN
 inline ULONG   VAL32(ULONG x)
 {
@@ -160,7 +111,6 @@ inline ULONG   VAL32(ULONG x)
 
 WCHAR* convert(const char * aString);
 char* convertC(const WCHAR * wString);
-UINT64 GetHighPrecisionTimeStamp(LARGE_INTEGER performanceFrequency);
 
 extern const char* szTextFile;
 
@@ -181,7 +131,6 @@ BOOL Cleanup(HANDLE *hArray, DWORD dwIndex);
 #define NUM_TOKENS 3
 
 extern HANDLE hToken[NUM_TOKENS];
-extern CRITICAL_SECTION CriticalSection;
 
 /*
  * Take two wide strings representing file and directory names
@@ -217,7 +166,27 @@ mkAbsoluteFilenameA (
     DWORD dwFileLength,
     LPSTR absPathName );
 
+BOOL
+CreatePipe(
+        OUT PHANDLE hReadPipe,
+        OUT PHANDLE hWritePipe,
+        IN LPSECURITY_ATTRIBUTES lpPipeAttributes,
+        IN DWORD nSize);
+
+BOOL
+DeleteFileW(
+        IN LPCWSTR lpFileName);
+
+#define wcstod        PAL_wcstod
+#define wcstoul       PAL_wcstoul
+#define wcscat        PAL_wcscat
+#define wcscpy        PAL_wcscpy
+#define wcslen        PAL_wcslen
+#define wcsncmp       PAL_wcsncmp
+#define wcschr        PAL_wcschr
+#define wcsrchr        PAL_wcsrchr
+#define wcsstr        PAL_wcsstr
+#define wcscmp        PAL_wcscmp
+#define wcsncpy       PAL_wcsncpy
+
 #endif
-
-
-

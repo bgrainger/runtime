@@ -19,18 +19,8 @@
 #include "sstring.h"
 #include "peimage.h"
 #include "metadata.h"
-#include "corhlpr.h"
-#include "utilcode.h"
-#include "loaderheap.h"
-#include "sstring.h"
-#include "ex.h"
-#include "assemblyspecbase.h"
-#include "eecontract.h"
-#include "metadatatracker.h"
-#include "stackwalktypes.h"
-#include <specstrings.h>
-#include "slist.h"
-#include "eventtrace.h"
+#include "../binder/inc/assembly.hpp"
+#include <contract.h>
 
 #include "assemblybinderutil.h"
 
@@ -38,56 +28,38 @@
 // Forward declared classes
 // --------------------------------------------------------------------------------
 
-class Module;
-class EditAndContinueModule;
-
 class PEAssembly;
-class SimpleRWLock;
-
-typedef VPTR(PEAssembly) PTR_PEAssembly;
+typedef DPTR(PEAssembly) PTR_PEAssembly;
 
 // --------------------------------------------------------------------------------
-// Types
-// --------------------------------------------------------------------------------
-
-// --------------------------------------------------------------------------------
-// A PEAssembly is an input to the CLR loader.  It is produced as a result of
-// binding, usually through fusion (although there are a few less common methods to
-// obtain one which do not go through fusion, e.g. IJW loads)
+// A PEAssembly is an input to the CLR loader. It is produced as a result of binding.
 //
 // Although a PEAssembly is usually a disk based PE file, it is not
 // always the case. Thus it is a conscious decision to not export access to the PE
 // file directly; rather the specific information required should be provided via
 // individual query API.
 //
-// There are multiple "flavors" of PEAssemblies:
+// A PEAssembly is one of two kinds, distinguished by IsReflectionEmit():
 //
-// 1. HMODULE - these PE Files are loaded in response to "spontaneous" OS callbacks.
-//    These should only occur for .exe main modules and IJW dlls loaded via LoadLibrary
-//    or static imports in umnanaged code.
-//    These get their PEImage loaded directly in PEImage::LoadImage(HMODULE hMod)
+// 1. Bound to a PE image - the result of an AssemblyBinder bind
+//    It holds the BINDER_SPACE::Assembly that the binder produced, and takes
+//    both its PEImage and its metadata from that bind result.
 //
-// 2. Assemblies loaded directly or indirectly by the managed code - these are the most
-//    common case.  A path is obtained from assembly binding and the result is loaded
-//    via PEImage:
-//      a. Display name loads - these are metadata-based binds
-//      b. Path loads - these are loaded from an explicit path
+//    The PEImage may come from:
+//      - File on disk - loaded via binding to an assembly name or an explicit path
+//      - Byte array - via an API such as AssemblyLoadContext.LoadFromStream
+//      - HMODULE - IJW module already loaded into memory by the OS (Windows)
+//    The source of the PEImage does not change the PEAssembly itself.
 //
-// 3. Byte arrays - loaded explicitly by user code.  These also go through PEImage.
-//
-// 4. Dynamic - these are not actual PE images at all, but are placeholders
-//    for reflection-based modules.
+// 2. Dynamic - a reflection emit assembly
+//    It has no PEImage. Its metadata comes from internal import and emit interfaces and it uses the binder
+//    of the assembly that created it.
 //
 // See also file:..\inc\corhdr.h#ManagedHeader for more on the format of managed images.
 // --------------------------------------------------------------------------------
 
 class PEAssembly final
 {
-    // ------------------------------------------------------------
-    // SOS support
-    // ------------------------------------------------------------
-    VPTR_BASE_CONCRETE_VTABLE_CLASS(PEAssembly)
-
 public:
 
     // ------------------------------------------------------------
@@ -98,7 +70,7 @@ public:
     STDMETHOD_(ULONG, Release)();
 
 #ifdef DACCESS_COMPILE
-    virtual void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);
+    void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);
 #endif
 
 #if CHECK_INVARIANTS
@@ -122,16 +94,13 @@ public:
     const SString& GetPath();
     const SString& GetIdentityPath();
 
-#ifdef DACCESS_COMPILE
-    // This is the metadata module name. Used as a hint as file name.
+    // This is the module file name. Used as a hint as file name.
+    // For assemblies loaded from a path or single-file bundle, this is the file name portion of the path
+    // For assemblies loaded from memory, this is the module file name from metadata
+    // For reflection emitted assemblies, this is an empty string
     const SString &GetModuleFileNameHint();
-#endif // DACCESS_COMPILE
 
     LPCWSTR GetPathForErrorMessages();
-
-    // This returns a non-empty path representing the source of the assembly; it may
-    // be the parent assembly for dynamic or memory assemblies
-    const SString& GetEffectivePath();
 
     // Codebase is the fusion codebase or path for the assembly.  It is in URL format.
     // Note this may be obtained from the parent PEAssembly if we don't have a path or fusion
@@ -146,8 +115,8 @@ public:
 
 #ifdef LOGGING
     // This is useful for log messages
-    LPCWSTR GetDebugName();
-#endif
+    LPCUTF8 GetDebugName();
+#endif // LOGGING
 
     // ------------------------------------------------------------
     // Checks
@@ -160,28 +129,33 @@ public:
     // Classification
     // ------------------------------------------------------------
 
-    BOOL IsSystem() const;
-    BOOL IsDynamic() const;
+    bool IsSystem() const;
+    BOOL IsReflectionEmit() const;
 
     // ------------------------------------------------------------
     // Metadata access
     // ------------------------------------------------------------
 
     IMDInternalImport *GetMDImport();
+    IMDInternalEmit *GetMDInternalEmit();
 
-#ifndef DACCESS_COMPILE
+#ifdef DACCESS_COMPILE
+    TADDR GetMDInternalRWAddress();
+    BOOL HasReadWriteMetadata()
+    {
+        LIMITED_METHOD_DAC_CONTRACT;
+        return m_MDImportIsRW_Debugger_Use_Only;
+    }
+#elif defined(PROFILING_SUPPORTED) || defined(FEATURE_METADATA_UPDATER)
     IMetaDataEmit *GetEmitter();
     IMetaDataImport2 *GetRWImporter();
-#else
-    TADDR GetMDInternalRWAddress();
-#endif // DACCESS_COMPILE
+#endif // PROFILING_SUPPORTED || FEATURE_METADATA_UPDATER
 
     void ConvertMDInternalToReadWrite();
 
     void GetMVID(GUID* pMvid);
     ULONG GetHashAlgId();
     HRESULT GetVersion(USHORT* pMajor, USHORT* pMinor, USHORT* pBuild, USHORT* pRevision);
-    BOOL IsStrongNamed();
     LPCUTF8 GetSimpleName();
     HRESULT GetScopeName(LPCUTF8 * pszName);
     const void *GetPublicKey(DWORD *pcbPK);
@@ -214,10 +188,9 @@ public:
     void *GetVTable(RVA rva);
 
     BOOL GetResource(LPCSTR szName, DWORD *cbResource,
-                     PBYTE *pbInMemoryResource, DomainAssembly** pAssemblyRef,
+                     PBYTE *pbInMemoryResource, Assembly** pAssemblyRef,
                      LPCSTR *szFileName, DWORD *dwLocation,
-                     BOOL fSkipRaiseResolveEvent, DomainAssembly* pDomainAssembly,
-                     AppDomain* pAppDomain);
+                     Assembly* pAssembly);
 
 #ifndef DACCESS_COMPILE
     PTR_CVOID GetMetadata(COUNT_T *pSize);
@@ -270,7 +243,7 @@ public:
 
     BOOL IsLoaded()
     {
-        return IsDynamic() || HasLoadedPEImage();
+        return IsReflectionEmit() || HasLoadedPEImage();
     }
 
     BOOL IsPtrInPEImage(PTR_CVOID data);
@@ -319,53 +292,25 @@ public:
 
     // Returns the AssemblyBinder* instance associated with the PEAssembly
     // which owns the context into which the current PEAssembly was loaded.
-    // For Dynamic assemblies this is the fallback binder.
+    // For dynamic assemblies this is the binder of the assembly that created them.
     PTR_AssemblyBinder GetAssemblyBinder();
-
-#ifndef DACCESS_COMPILE
-    void SetFallbackBinder(PTR_AssemblyBinder pFallbackBinder)
-    {
-        LIMITED_METHOD_CONTRACT;
-        m_pFallbackBinder = pFallbackBinder;
-    }
-
-#endif //!DACCESS_COMPILE
-
-    ULONG HashIdentity();
-
-    PTR_AssemblyBinder GetFallbackBinder()
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        return m_pFallbackBinder;
-    }
 
     // ------------------------------------------------------------
     // Creation entry points
     // ------------------------------------------------------------
 
-    // CoreCLR's PrivBinder PEAssembly creation entrypoint
-    static PEAssembly* Open(
-        PEAssembly* pParent,
-        PEImage* pPEImageIL,
-        BINDER_SPACE::Assembly* pHostAssembly);
-
     // This opens the canonical System.Private.CoreLib.dll
     static PEAssembly* OpenSystem();
 
-    static PEAssembly* Open(BINDER_SPACE::Assembly* pBindResult);
+    static PEAssembly* Open(BINDER_SPACE::Assembly* pBoundAssembly);
 
-    static PEAssembly* Create(
-        PEAssembly* pParentAssembly,
-        IMetaDataAssemblyEmit* pEmit);
+    static PEAssembly* Create(IMDInternalEmit* pEmit, AssemblyBinder* pDynamicAssemblyBinder);
 
       // ------------------------------------------------------------
       // Utility functions
       // ------------------------------------------------------------
 
       static void PathToUrl(SString& string);
-      static void UrlToPath(SString& string);
-      static BOOL FindLastPathSeparator(const SString& path, SString::Iterator& i);
 
 private:
     // ------------------------------------------------------------
@@ -381,24 +326,24 @@ private:
 
 #ifdef DACCESS_COMPILE
     // just to make the DAC and GCC happy.
-    virtual ~PEAssembly() {};
+    ~PEAssembly() = default;
     PEAssembly() = default;
 #else
     PEAssembly(
-        BINDER_SPACE::Assembly* pBindResultInfo,
-        IMetaDataEmit* pEmit,
-        PEAssembly* creator,
-        BOOL isSystem,
-        PEImage* pPEImageIL = NULL,
-        BINDER_SPACE::Assembly* pHostAssembly = NULL
+        BINDER_SPACE::Assembly* pBoundAssembly,
+        IMDInternalEmit* pEmit,
+        IMDInternalImport* pImport,
+        AssemblyBinder* pDynamicAssemblyBinder = NULL
     );
 
-    virtual ~PEAssembly();
+    ~PEAssembly();
 #endif
 
     void OpenMDImport();
+#if !defined(DACCESS_COMPILE) && (defined(PROFILING_SUPPORTED) || defined(FEATURE_METADATA_UPDATER))
     void OpenImporter();
     void OpenEmitter();
+#endif // !DACCESS_COMPILE && (PROFILING_SUPPORTED || FEATURE_METADATA_UPDATER)
 
 private:
 
@@ -406,15 +351,14 @@ private:
  // Instance fields
  // ------------------------------------------------------------
 
-#ifdef _DEBUG
-    LPCWSTR                 m_pDebugName;
+#ifdef LOGGING
+    LPCUTF8                 m_pDebugName;
     SString                 m_debugName;
-#endif
+#endif // LOGGING
 
     // IL image, NULL if dynamic
     PTR_PEImage              m_PEImage;
 
-    PTR_PEAssembly           m_creator;
     // This flag is not updated atomically with m_pMDImport. Its fine for debugger usage
     // but don't rely on it in the runtime. In runtime try QI'ing the m_pMDImport for
     // IID_IMDInternalImportENC
@@ -427,7 +371,7 @@ private:
 #else
         // NB: m_pMDImport_UseAccessor appears to be never assigned a value, but its purpose is just
         //     to be a placeholder that has the same type and offset as m_pMDImport.
-        // 
+        //
         //     The field has a different name so it would be an error to use directly.
         //     Only GetMDInternalRWAddress is supposed to use it via (TADDR)m_pMDImport_UseAccessor,
         //     which at that point will match the m_pMDImport on the debuggee side.
@@ -436,25 +380,49 @@ private:
 #endif
     };
 
+#if defined(PROFILING_SUPPORTED_DATA) || defined(FEATURE_METADATA_UPDATER)
     IMetaDataImport2* m_pImporter;
     IMetaDataEmit* m_pEmitter;
+#endif // PROFILING_SUPPORTED_DATA || FEATURE_METADATA_UPDATER
+    IMDInternalEmit* m_pMDInternalEmit;
 
     Volatile<LONG>           m_refCount;
-    bool                     m_isSystem;
 
     PTR_BINDER_SPACE_Assembly m_pHostAssembly;
+    PTR_AssemblyBinder m_pAssemblyBinder;
 
-    // For certain assemblies, we do not have m_pHostAssembly since they are not bound using an actual binder.
-    // An example is Ref-Emitted assemblies. Thus, when such assemblies trigger load of their dependencies,
-    // we need to ensure they are loaded in appropriate load context.
-    //
-    // To enable this, we maintain a concept of "FallbackBinder", which will be set to the Binder of the
-    // assembly that created the dynamic assembly. If the creator assembly is dynamic itself, then its fallback
-    // load context would be propagated to the assembly being dynamically generated.
-    PTR_AssemblyBinder m_pFallbackBinder;
-
+    friend struct cdac_data<PEAssembly>;
 };  // class PEAssembly
 
-typedef ReleaseHolder<PEAssembly> PEAssemblyHolder;
+template<>
+struct cdac_data<PEAssembly>
+{
+    static constexpr size_t PEImage = offsetof(PEAssembly, m_PEImage);
+    static constexpr size_t AssemblyBinder = offsetof(PEAssembly, m_pAssemblyBinder);
+    static constexpr size_t MDImportIsRW = offsetof(PEAssembly, m_MDImportIsRW_Debugger_Use_Only);
+#ifndef DACCESS_COMPILE
+    static constexpr size_t MDImport = offsetof(PEAssembly, m_pMDImport);
+#endif
+};
+
+struct PEAssemblyHolderTraits final
+{
+    using Type = PEAssembly*;
+    static constexpr Type Default() { return NULL; }
+    static void Free(Type value)
+    {
+        CONTRACTL
+        {
+            NOTHROW;
+            GC_TRIGGERS;
+            MODE_ANY;
+        } CONTRACTL_END;
+
+        if (value != NULL)
+            value->Release();
+    }
+};
+
+typedef LifetimeHolder<PEAssemblyHolderTraits> PEAssemblyHolder;
 
 #endif  // PEASSEMBLY_H_

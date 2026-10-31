@@ -4,9 +4,10 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
-using ILCompiler;
 using Internal.TypeSystem;
 using NumberStyles = System.Globalization.NumberStyles;
 
@@ -24,6 +25,21 @@ namespace Internal.JitInterface
                 return s_instance;
             }
         }
+
+        [FixedAddressValueType]
+        private static readonly JitConfigProviderVtbl s_JitConfigProviderVtbl;
+
+        [FixedAddressValueType]
+        private static readonly JitConfigProviderInstance s_JitConfigProvider;
+
+        unsafe static JitConfigProvider()
+        {
+            s_JitConfigProviderVtbl.GetIntConfigValue = &getIntConfigValue;
+            s_JitConfigProviderVtbl.GetStringConfigValue = &getStringConfigValue;
+            s_JitConfigProvider.Vtbl = (JitConfigProviderVtbl*)Unsafe.AsPointer(ref s_JitConfigProviderVtbl);
+        }
+
+        public unsafe static IntPtr UnmanagedInstance => (IntPtr)Unsafe.AsPointer(ref Unsafe.AsRef(in s_JitConfigProvider));
 
         private CorJitFlag[] _jitFlags;
         private Dictionary<string, string> _config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -65,11 +81,6 @@ namespace Internal.JitInterface
             CorInfoImpl.Startup(CorInfoImpl.TargetToOs(target));
         }
 
-        public IntPtr UnmanagedInstance
-        {
-            get;
-        }
-
         public IEnumerable<CorJitFlag> Flags => _jitFlags;
 
         /// <summary>
@@ -79,7 +90,7 @@ namespace Internal.JitInterface
         /// <param name="parameters">A collection of parameter name/value pairs.</param>
         public JitConfigProvider(IEnumerable<CorJitFlag> jitFlags, IEnumerable<KeyValuePair<string, string>> parameters)
         {
-            ArrayBuilder<CorJitFlag> jitFlagBuilder = new ArrayBuilder<CorJitFlag>();
+            ArrayBuilder<CorJitFlag> jitFlagBuilder = default(ArrayBuilder<CorJitFlag>);
             foreach (CorJitFlag jitFlag in jitFlags)
             {
                 jitFlagBuilder.Add(jitFlag);
@@ -91,8 +102,6 @@ namespace Internal.JitInterface
             {
                 _config[param.Key] = param.Value;
             }
-
-            UnmanagedInstance = CreateUnmanagedInstance();
         }
 
         public bool HasFlag(CorJitFlag flag)
@@ -110,7 +119,7 @@ namespace Internal.JitInterface
             string stringValue;
             int intValue;
             if (_config.TryGetValue(name, out stringValue) &&
-                Int32.TryParse(stringValue, NumberStyles.AllowHexSpecifier, null, out intValue))
+                int.TryParse(stringValue, NumberStyles.AllowHexSpecifier, null, out intValue))
             {
                 return intValue;
             }
@@ -126,24 +135,31 @@ namespace Internal.JitInterface
                 return stringValue;
             }
 
-            return String.Empty;
+            return string.Empty;
         }
 
         private static string GetTargetSpec(TargetDetails target)
         {
-            string targetOSComponent = (target.OperatingSystem == TargetOS.Windows ? "win" : "unix");
             string targetArchComponent = target.Architecture switch
             {
                 TargetArchitecture.X86 => "x86",
                 TargetArchitecture.X64 => "x64",
                 TargetArchitecture.ARM => "arm",
                 TargetArchitecture.ARM64 => "arm64",
+                TargetArchitecture.Wasm32 => "wasm",
+                TargetArchitecture.LoongArch64 => "loongarch64",
+                TargetArchitecture.RiscV64 => "riscv64",
                 _ => throw new NotImplementedException(target.Architecture.ToString())
             };
 
-            if ((target.Architecture == TargetArchitecture.ARM64) || (target.Architecture == TargetArchitecture.ARM))
+            string targetOSComponent;
+            if (target.Architecture is TargetArchitecture.ARM64 or TargetArchitecture.ARM || target.IsWasm)
             {
                 targetOSComponent = "universal";
+            }
+            else
+            {
+                targetOSComponent = target.OperatingSystem == TargetOS.Windows ? "win" : "unix";
             }
 
             return targetOSComponent + '_' + targetArchComponent + "_" + RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant();
@@ -151,39 +167,36 @@ namespace Internal.JitInterface
 
         #region Unmanaged instance
 
-        private static unsafe IntPtr CreateUnmanagedInstance()
+        private unsafe struct JitConfigProviderVtbl
         {
-            // This potentially leaks memory, but since we only expect to have one per compilation,
-            // it shouldn't matter...
+            public delegate* unmanaged<IntPtr, byte*, int, int> GetIntConfigValue;
+            public delegate* unmanaged<IntPtr, byte*, byte*, int, int> GetStringConfigValue;
+        }
 
-            const int numCallbacks = 2;
-
-            void** callbacks = (void**)Marshal.AllocCoTaskMem(sizeof(IntPtr) * numCallbacks);
-
-            callbacks[0] = (delegate* unmanaged<IntPtr, char*, int, int>)&getIntConfigValue;
-            callbacks[1] = (delegate* unmanaged<IntPtr, char*, char*, int, int>)&getStringConfigValue;
-
-            IntPtr instance = Marshal.AllocCoTaskMem(sizeof(IntPtr));
-            *(IntPtr*)instance = (IntPtr)callbacks;
-
-            return instance;
+        private unsafe struct JitConfigProviderInstance
+        {
+            public JitConfigProviderVtbl* Vtbl;
         }
 
         [UnmanagedCallersOnly]
-        private static unsafe int getIntConfigValue(IntPtr thisHandle, char* name, int defaultValue)
+        private static unsafe int getIntConfigValue(IntPtr thisHandle, byte* name, int defaultValue)
         {
-            return s_instance.GetIntConfigValue(new string(name), defaultValue);
+            return s_instance.GetIntConfigValue(Marshal.PtrToStringUTF8((IntPtr)name), defaultValue);
         }
 
         [UnmanagedCallersOnly]
-        private static unsafe int getStringConfigValue(IntPtr thisHandle, char* name, char* retBuffer, int retBufferLength)
+        private static unsafe int getStringConfigValue(IntPtr thisHandle, byte* name, byte* retBuffer, int retBufferLength)
         {
-            string result = s_instance.GetStringConfigValue(new string(name));
+            string result = s_instance.GetStringConfigValue(Marshal.PtrToStringUTF8((IntPtr)name));
 
-            for (int i = 0; i < Math.Min(retBufferLength, result.Length); i++)
-                retBuffer[i] = result[i];
+            if (result == "")
+            {
+                return 0;
+            }
 
-            return result.Length;
+            nuint requiredBufferSize;
+            CorInfoImpl.PrintFromUtf16(result, retBuffer, (nuint)retBufferLength, &requiredBufferSize);
+            return (int)requiredBufferSize;
         }
 
         #endregion

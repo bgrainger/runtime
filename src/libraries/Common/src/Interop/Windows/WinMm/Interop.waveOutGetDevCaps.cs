@@ -2,24 +2,85 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+#if NET
+using System.Runtime.InteropServices.Marshalling;
+#endif
 
 internal static partial class Interop
 {
     internal static partial class WinMM
     {
 #pragma warning disable CA1823 // unused fields
+#if NET
+        [NativeMarshalling(typeof(Marshaller))]
+#endif
         internal struct WAVEOUTCAPS
         {
+            private const int szPnameLength = 32;
             private ushort wMid;
             private ushort wPid;
             private uint vDriverVersion;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = szPnameLength)]
             internal string szPname;
             private uint dwFormats;
             private ushort wChannels;
             private ushort wReserved1;
             private ushort dwSupport;
+#if NET
+            [CustomMarshaller(typeof(WAVEOUTCAPS), MarshalMode.Default, typeof(Marshaller))]
+            public static class Marshaller
+            {
+                public static Native ConvertToUnmanaged(WAVEOUTCAPS managed) => new(managed);
+                public static WAVEOUTCAPS ConvertToManaged(Native native) => native.ToManaged();
+
+                internal struct Native
+                {
+                    private ushort wMid;
+                    private ushort wPid;
+                    private uint vDriverVersion;
+                    internal PnameBuffer szPname;
+
+                    [InlineArray(szPnameLength)]
+                    internal struct PnameBuffer
+                    {
+                        private char _element0;
+                    }
+                    private uint dwFormats;
+                    private ushort wChannels;
+                    private ushort wReserved1;
+                    private ushort dwSupport;
+
+                    public Native(WAVEOUTCAPS managed)
+                    {
+                        wMid = managed.wMid;
+                        wPid = managed.wPid;
+                        vDriverVersion = managed.vDriverVersion;
+                        Span<char> szPnameSpan = szPname;
+                        szPnameSpan.Clear();
+                        managed.szPname?.CopyTo(szPnameSpan);
+                        dwFormats = managed.dwFormats;
+                        wChannels = managed.wChannels;
+                        wReserved1 = managed.wReserved1;
+                        dwSupport = managed.dwSupport;
+                    }
+
+                    public WAVEOUTCAPS ToManaged() =>
+                        new WAVEOUTCAPS
+                        {
+                            wMid = wMid,
+                            wPid = wPid,
+                            vDriverVersion = vDriverVersion,
+                            szPname = ((ReadOnlySpan<char>)szPname).ToString(),
+                            dwFormats = dwFormats,
+                            wChannels = wChannels,
+                            wReserved1 = wReserved1,
+                            dwSupport = dwSupport,
+                        };
+                }
+            }
+#endif
         }
 #pragma warning restore CA1823
 
@@ -34,10 +95,8 @@ internal static partial class Interop
         /// information about the capabilities of the device.</param>
         /// <param name="cbwoc">Size, in bytes, of the WAVEOUTCAPS structure.</param>
         /// <returns>MMSYSERR</returns>
-#pragma warning disable DLLIMPORTGENANALYZER015 // Use 'GeneratedDllImportAttribute' instead of 'DllImportAttribute' to generate P/Invoke marshalling code at compile time
-        // TODO: [DllImportGenerator] Switch to use GeneratedDllImport once we support non-blittable types.
-        [DllImport(Libraries.WinMM)]
-        internal static extern MMSYSERR waveOutGetDevCaps(IntPtr uDeviceID, ref WAVEOUTCAPS caps, int cbwoc);
-#pragma warning restore DLLIMPORTGENANALYZER015
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.WinMM, EntryPoint = "waveOutGetDevCapsW")]
+        internal static partial MMSYSERR waveOutGetDevCaps(IntPtr uDeviceID, ref WAVEOUTCAPS caps, int cbwoc);
     }
 }

@@ -4,21 +4,23 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
+using System.Reflection.Metadata;
 using System.Text;
 using System.Threading.Tasks;
+
+using Internal.Text;
 using Internal.TypeSystem;
 
 namespace Microsoft.Diagnostics.Tools.Pgo.TypeRefTypeSystem
 {
     class TypeRefTypeSystemModule : ModuleDesc, IAssemblyDesc
     {
-        AssemblyName _name;
+        AssemblyNameInfo _name;
         List<TypeRefTypeSystemType> _types = new List<TypeRefTypeSystemType>();
         Dictionary<string, TypeRefTypeSystemType> _nonNamespacedTypes = new Dictionary<string, TypeRefTypeSystemType>();
         Dictionary<string, Dictionary<string, TypeRefTypeSystemType>> _namespacedTypes = new Dictionary<string, Dictionary<string, TypeRefTypeSystemType>>();
 
-        public TypeRefTypeSystemModule(TypeSystemContext tsc, AssemblyName name) : base(tsc, null)
+        public TypeRefTypeSystemModule(TypeSystemContext tsc, AssemblyNameInfo name) : base(tsc, null)
         {
             _name = name;
         }
@@ -28,7 +30,7 @@ namespace Microsoft.Diagnostics.Tools.Pgo.TypeRefTypeSystem
             TypeRefTypeSystemType type = GetTypeInternal(nameSpace, name);
             if (type == null)
             {
-                type = new TypeRefTypeSystemType(nameSpace, name, this);
+                type = new TypeRefTypeSystemType(nameSpace == null ? null : System.Text.Encoding.UTF8.GetBytes(nameSpace), name == null ? null : System.Text.Encoding.UTF8.GetBytes(name), this);
 
                 Dictionary<string, TypeRefTypeSystemType> nameToTypeDictionary = _nonNamespacedTypes;
                 if (!String.IsNullOrEmpty(nameSpace))
@@ -49,9 +51,11 @@ namespace Microsoft.Diagnostics.Tools.Pgo.TypeRefTypeSystem
 
         public override IAssemblyDesc Assembly => this;
 
+        public Utf8Span Name => System.Text.Encoding.UTF8.GetBytes(_name.Name);
+
         public override IEnumerable<MetadataType> GetAllTypes() => _types;
         public override MetadataType GetGlobalModuleType() => throw new NotImplementedException();
-        public AssemblyName GetName() => _name;
+        public AssemblyNameInfo GetName() => _name;
         private TypeRefTypeSystemType GetTypeInternal(string nameSpace, string name)
         {
             Dictionary<string, TypeRefTypeSystemType> nameToTypeDictionary = _nonNamespacedTypes;
@@ -71,12 +75,14 @@ namespace Microsoft.Diagnostics.Tools.Pgo.TypeRefTypeSystem
             return type;
         }
 
-        public override object GetType(string nameSpace, string name, NotFoundBehavior notFoundBehavior)
+        public override object GetType(Utf8Span nameSpace, Utf8Span name, NotFoundBehavior notFoundBehavior)
         {
-            MetadataType type = GetTypeInternal(nameSpace, name);
+            string strns = Encoding.UTF8.GetString(nameSpace.AsSpan());
+            string strname = Encoding.UTF8.GetString(name.AsSpan());
+            MetadataType type = GetTypeInternal(strns, strname);
             if ((type == null) && notFoundBehavior != NotFoundBehavior.ReturnNull)
             {
-                ResolutionFailure failure = ResolutionFailure.GetTypeLoadResolutionFailure(nameSpace, name, this);
+                ResolutionFailure failure = ResolutionFailure.GetTypeLoadResolutionFailure(strns, strname, this);
                 if (notFoundBehavior == NotFoundBehavior.Throw)
                     failure.Throw();
                 return failure;

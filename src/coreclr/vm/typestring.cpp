@@ -183,32 +183,8 @@ HRESULT TypeNameBuilder::OpenGenericArgument()
 
 HRESULT TypeNameBuilder::AddName(LPCWSTR szName)
 {
-    CONTRACTL
-    {
-        THROWS;
-        GC_NOTRIGGER;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    if (!szName)
-        return Fail();
-
-    if (!CheckParseState(ParseStateSTART | ParseStateNAME))
-        return Fail();
-
-    HRESULT hr = S_OK;
-
-    m_parseState = ParseStateNAME;
-
-    if (m_bNestedName)
-        Append(W('+'));
-
-    m_bNestedName = TRUE;
-
-    EscapeName(szName);
-
-    return hr;
+    WRAPPER_NO_CONTRACT;
+    return AddName(szName, NULL);
 }
 
 HRESULT TypeNameBuilder::AddName(LPCWSTR szName, LPCWSTR szNamespace)
@@ -243,6 +219,36 @@ HRESULT TypeNameBuilder::AddName(LPCWSTR szName, LPCWSTR szNamespace)
     }
 
     EscapeName(szName);
+
+    return hr;
+}
+
+HRESULT TypeNameBuilder::AddNameNoEscaping(LPCWSTR szName)
+{
+    CONTRACTL
+    {
+        THROWS;
+        GC_NOTRIGGER;
+        MODE_ANY;
+    }
+    CONTRACTL_END;
+
+    if (!szName)
+        return Fail();
+
+    if (!CheckParseState(ParseStateSTART | ParseStateNAME))
+        return Fail();
+
+    HRESULT hr = S_OK;
+
+    m_parseState = ParseStateNAME;
+
+    if (m_bNestedName)
+        Append(W('+'));
+
+    m_bNestedName = TRUE;
+
+    Append(szName);
 
     return hr;
 }
@@ -365,35 +371,28 @@ HRESULT TypeNameBuilder::AddArray(DWORD rank)
         return E_INVALIDARG;
 
     if (rank == 1)
+    {
         Append(W("[*]"));
+    }
     else if (rank > 64)
     {
         // Only taken in an error path, runtime will not load arrays of more than 32 dimensions
-        WCHAR wzDim[128];
-        _snwprintf_s(wzDim, 128, _TRUNCATE, W("[%d]"), rank);
-        Append(wzDim);
+        const UTF8 fmt[] = "[%d]";
+        UTF8 strTmp[ARRAY_SIZE(fmt) + MaxUnsigned32BitDecString];
+        _snprintf_s(strTmp, ARRAY_SIZE(strTmp), _TRUNCATE, fmt, rank);
+        Append(strTmp);
     }
     else
     {
-        WCHAR* wzDim = new (nothrow) WCHAR[rank+3];
+        WCHAR* wzDim = (WCHAR*)_alloca(sizeof(WCHAR) * (rank+3));
 
-        if(wzDim == NULL) // allocation failed, do it the long way (each Append -> memory realloc)
-        {
-            Append(W('['));
-            for(COUNT_T i = 1; i < rank; i ++)
-                Append(W(','));
-            Append(W(']'));
-        }
-        else             // allocation OK, do it the fast way
-        {
-            WCHAR* pwz = wzDim+1;
-            *wzDim = '[';
-            for(COUNT_T i = 1; i < rank; i++, pwz++) *pwz=',';
-            *pwz = ']';
-            *(++pwz) = 0;
-            Append(wzDim);
-            delete [] wzDim;
-        }
+        WCHAR* pwz = wzDim+1;
+        *wzDim = W('[');
+        for(COUNT_T i = 1; i < rank; i++, pwz++)
+            *pwz=',';
+        *pwz = W(']');
+        *(++pwz) = W('\0');
+        Append(wzDim);
     }
 
     return S_OK;
@@ -467,21 +466,6 @@ HRESULT TypeNameBuilder::AddAssemblySpec(LPCWSTR szAssemblySpec)
     return hr;
 }
 
-HRESULT TypeNameBuilder::ToString(BSTR* pszStringRepresentation)
-{
-    WRAPPER_NO_CONTRACT;
-
-    if (!CheckParseState(ParseStateNAME | ParseStateGENARGS | ParseStatePTRARR | ParseStateBYREF | ParseStateASSEMSPEC))
-        return Fail();
-
-    if (m_instNesting)
-        return Fail();
-
-    *pszStringRepresentation = SysAllocString(m_pStr->GetUnicode());
-
-    return S_OK;
-}
-
 HRESULT TypeNameBuilder::Clear()
 {
     CONTRACTL
@@ -513,26 +497,24 @@ HRESULT TypeNameBuilder::Clear()
 // The following flags in the FormatFlags argument are significant: FormatNamespace
 void TypeString::AppendTypeDef(SString& ss, IMDInternalImport *pImport, mdTypeDef td, DWORD format)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         MODE_ANY;
         GC_NOTRIGGER;
         THROWS;
     }
-    CONTRACT_END
+    CONTRACTL_END
 
     {
         TypeNameBuilder tnb(&ss, TypeNameBuilder::ParseStateNAME);
         AppendTypeDef(tnb, pImport, td, format);
     }
-
-    RETURN;
 }
 
 
 void TypeString::AppendTypeDef(TypeNameBuilder& tnb, IMDInternalImport *pImport, mdTypeDef td, DWORD format)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         MODE_ANY;
         GC_NOTRIGGER;
@@ -540,7 +522,7 @@ void TypeString::AppendTypeDef(TypeNameBuilder& tnb, IMDInternalImport *pImport,
         PRECONDITION(CheckPointer(pImport));
         PRECONDITION(TypeFromToken(td) == mdtTypeDef);
     }
-    CONTRACT_END
+    CONTRACTL_END
 
     LPCUTF8 szName;
     LPCUTF8 szNameSpace;
@@ -558,13 +540,11 @@ void TypeString::AppendTypeDef(TypeNameBuilder& tnb, IMDInternalImport *pImport,
     }
 
     tnb.AddName(ssName.GetUnicode(), wszNameSpace);
-
-    RETURN;
 }
 
 void TypeString::AppendNestedTypeDef(TypeNameBuilder& tnb, IMDInternalImport *pImport, mdTypeDef td, DWORD format)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         MODE_ANY;
         GC_NOTRIGGER;
@@ -572,7 +552,7 @@ void TypeString::AppendNestedTypeDef(TypeNameBuilder& tnb, IMDInternalImport *pI
         PRECONDITION(CheckPointer(pImport));
         PRECONDITION(TypeFromToken(td) == mdtTypeDef);
     }
-    CONTRACT_END
+    CONTRACTL_END
 
     DWORD dwAttr;
     IfFailThrow(pImport->GetTypeDefProps(td, &dwAttr, NULL));
@@ -587,22 +567,20 @@ void TypeString::AppendNestedTypeDef(TypeNameBuilder& tnb, IMDInternalImport *pI
 
     for(SCOUNT_T i = arNames.GetCount() - 1; i >= 0; i --)
         AppendTypeDef(tnb, pImport, arNames[i], format);
-
-    RETURN;
 }
 
 // Append a square-bracket-enclosed, comma-separated list of n type parameters in inst to the string s
 // and enclose each parameter in square brackets to disambiguate the commas
-// The following flags in the FormatFlags argument are significant: FormatNamespace FormatFullInst FormatAssembly FormatNoVersion
+// The following flags in the FormatFlags argument are significant: FormatNamespace FormatFullInst FormatAssembly
 void TypeString::AppendInst(SString& ss, Instantiation inst, DWORD format)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         MODE_ANY;
         if (format & (FormatAssembly|FormatFullInst)) GC_TRIGGERS; else GC_NOTRIGGER;
         THROWS;
     }
-    CONTRACT_END
+    CONTRACTL_END
 
     {
         TypeNameBuilder tnb(&ss, TypeNameBuilder::ParseStateNAME);
@@ -610,20 +588,18 @@ void TypeString::AppendInst(SString& ss, Instantiation inst, DWORD format)
             tnb.SetUseAngleBracketsForGenerics(TRUE);
         AppendInst(tnb, inst, format);
     }
-
-    RETURN;
 }
 
 void TypeString::AppendInst(TypeNameBuilder& tnb, Instantiation inst, DWORD format)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         MODE_ANY;
         THROWS;
         if (format & (FormatAssembly|FormatFullInst)) GC_TRIGGERS; else GC_NOTRIGGER;
         PRECONDITION(!inst.IsEmpty());
     }
-    CONTRACT_END
+    CONTRACTL_END
 
     tnb.OpenGenericArguments();
 
@@ -650,8 +626,6 @@ void TypeString::AppendInst(TypeNameBuilder& tnb, Instantiation inst, DWORD form
     }
 
     tnb.CloseGenericArguments();
-
-    RETURN;
 }
 
 void TypeString::AppendParamTypeQualifier(TypeNameBuilder& tnb, CorElementType kind, DWORD rank)
@@ -684,33 +658,30 @@ void TypeString::AppendParamTypeQualifier(TypeNameBuilder& tnb, CorElementType k
     }
 }
 
-// Append a representation of the type t to the string s
-// The following flags in the FormatFlags argument are significant: FormatNamespace FormatFullInst FormatAssembly FormatNoVersion
-
+// Append a representation of the type to the string
+// The following flags in the FormatFlags argument are significant: FormatNamespace FormatFullInst FormatAssembly
 void TypeString::AppendType(SString& ss, TypeHandle ty, DWORD format)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         MODE_ANY;
         if (format & (FormatAssembly|FormatFullInst)) GC_TRIGGERS; else GC_NOTRIGGER;
         THROWS;
     }
-    CONTRACT_END
+    CONTRACTL_END
 
     AppendType(ss, ty, Instantiation(), format);
-
-    RETURN;
 }
 
 void TypeString::AppendType(SString& ss, TypeHandle ty, Instantiation typeInstantiation, DWORD format)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         MODE_ANY;
         if (format & (FormatAssembly|FormatFullInst)) GC_TRIGGERS; else GC_NOTRIGGER;
         THROWS;
     }
-    CONTRACT_END
+    CONTRACTL_END
 
     {
         TypeNameBuilder tnb(&ss);
@@ -718,13 +689,11 @@ void TypeString::AppendType(SString& ss, TypeHandle ty, Instantiation typeInstan
             tnb.SetUseAngleBracketsForGenerics(TRUE);
         AppendType(tnb, ty, typeInstantiation, format);
     }
-
-    RETURN;
 }
 
 void TypeString::AppendType(TypeNameBuilder& tnb, TypeHandle ty, Instantiation typeInstantiation, DWORD format)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         MODE_ANY;
 
@@ -736,7 +705,7 @@ void TypeString::AppendType(TypeNameBuilder& tnb, TypeHandle ty, Instantiation t
         if (format & (FormatAssembly|FormatFullInst)) GC_TRIGGERS; else GC_NOTRIGGER;
         THROWS;
     }
-    CONTRACT_END
+    CONTRACTL_END
 
     BOOL bToString = (format & (FormatNamespace|FormatFullInst|FormatAssembly)) == FormatNamespace;
 
@@ -744,12 +713,6 @@ void TypeString::AppendType(TypeNameBuilder& tnb, TypeHandle ty, Instantiation t
     if (ty.IsNull())
     {
         tnb.AddName(W("(null)"));
-    }
-    else
-    // It's not restored yet!
-    if (ty.IsEncodedFixup())
-    {
-        tnb.AddName(W("(fixup)"));
     }
     else
 
@@ -812,28 +775,77 @@ void TypeString::AppendType(TypeNameBuilder& tnb, TypeHandle ty, Instantiation t
     // ...or function pointer
     else if (ty.IsFnPtrType())
     {
-        // Don't attempt to format this currently, it may trigger GC due to fixups.
-        tnb.AddName(W("(fnptr)"));
+        // Currently function pointers return NULL for FullName and AssemblyQualifiedName and "" for Name.
+        // We need a grammar update in order to support parsing.
+        // See https://learn.microsoft.com/dotnet/framework/reflection-and-codedom/specifying-fully-qualified-type-names
+        if (format & FormatNamespace)
+        {
+            FnPtrTypeDesc* fnPtr = ty.AsFnPtrType();
+            TypeHandle *retAndArgTypes = fnPtr->GetRetAndArgTypesPointer();
+
+            StackSString ss;
+            AppendType(ss, retAndArgTypes[0], format);
+
+            ss.Append(W("("));
+
+            SString ssComma(SString::Literal, ", ");
+            DWORD cArgs = fnPtr->GetNumArgs();
+            for (DWORD i = 1; i <= cArgs; i++)
+            {
+                if (i != 1)
+                    ss.Append(ssComma);
+
+                AppendType(ss, retAndArgTypes[i], format);
+            }
+
+            if ((fnPtr->GetCallConv() & IMAGE_CEE_CS_CALLCONV_MASK) == IMAGE_CEE_CS_CALLCONV_VARARG)
+            {
+                if (cArgs)
+                    ss.Append(ssComma);
+
+                ss.Append(W("..."));
+            }
+
+            ss.Append(W(")"));
+
+            tnb.AddNameNoEscaping(ss);
+        }
+        else
+        {
+            tnb.AddNameNoEscaping(W(""));
+        }
     }
 
     // ...otherwise it's just a plain type def or an instantiated type
     else
     {
         // Get the TypeDef token and attributes
-        IMDInternalImport *pImport = ty.GetMethodTable()->GetMDImport();
         mdTypeDef td = ty.GetCl();
-        if (IsNilToken(td)) {
-            // This type does not exist in metadata. Simply append "dynamicClass".
-            tnb.AddName(W("(dynamicClass)"));
+        if (IsNilToken(td))
+        {
+            if (ty.IsContinuationWithoutMetadata())
+            {
+                AsyncContinuationsManager::PrintContinuationName(
+                    ty.AsMethodTable(),
+                    [&](LPCSTR str, LPCWSTR wstr) { tnb.Append(wstr); },
+                    [&](unsigned num) { tnb.AppendNum(num); });
+            }
+            else
+            {
+                // This type does not exist in metadata. Simply append "dynamicClass".
+                tnb.AddName(W("(dynamicClass)"));
+            }
         }
         else
         {
+            IMDInternalImport *pImport = ty.GetMethodTable()->GetMDImport();
 #ifdef _DEBUG
             if (format & FormatDebug)
             {
-                WCHAR wzAddress[128];
-                _snwprintf_s(wzAddress, 128, _TRUNCATE, W("(%p)"), (VOID *)dac_cast<TADDR>(ty.AsPtr()));
-                tnb.AddName(wzAddress);
+                UTF8 buffer[128];
+                _snprintf_s(buffer, ARRAY_SIZE(buffer), _TRUNCATE, "(%p)", (VOID *)dac_cast<TADDR>(ty.AsPtr()));
+                MAKE_WIDEPTR_FROMUTF8(pointerName, buffer);
+                tnb.AddName(pointerName);
             }
 #endif
             AppendNestedTypeDef(tnb, pImport, td, format);
@@ -859,16 +871,12 @@ void TypeString::AppendType(TypeNameBuilder& tnb, TypeHandle ty, Instantiation t
 #ifdef DACCESS_COMPILE
         pAssemblyName.SetUTF8(pAssembly->GetSimpleName());
 #else
-        pAssembly->GetDisplayName(pAssemblyName,
-                                  ASM_DISPLAYF_PUBLIC_KEY_TOKEN | ASM_DISPLAYF_CONTENT_TYPE |
-                                  (format & FormatNoVersion ? 0 : ASM_DISPLAYF_VERSION | ASM_DISPLAYF_CULTURE));
+        pAssembly->GetDisplayName(pAssemblyName, ASM_DISPLAYF_FULL);
 #endif
 
         tnb.AddAssemblySpec(pAssemblyName.GetUnicode());
 
     }
-
-    RETURN;
 }
 
 void TypeString::AppendMethod(SString& s, MethodDesc *pMD, Instantiation typeInstantiation, const DWORD format)
@@ -922,13 +930,11 @@ void TypeString::AppendMethodImpl(SString& ss, MethodDesc *pMD, Instantiation ty
         {
             if (pMD->IsLCGMethod())
             {
-                SString sss(SString::Literal, "DynamicClass");
-                ss += sss;
+                ss.AppendUTF8("DynamicClass");
             }
             else if (pMD->IsILStub())
             {
-                SString sss(SString::Literal, ILStubResolver::GetStubClassName(pMD));
-                ss += sss;
+                ss.AppendUTF8(ILStubResolver::GetStubClassName(pMD));
             }
         }
         else
@@ -937,10 +943,8 @@ void TypeString::AppendMethodImpl(SString& ss, MethodDesc *pMD, Instantiation ty
             AppendType(ss, th, typeInstantiation, format);
         }
 
-        SString sss1(SString::Literal, NAMESPACE_SEPARATOR_STR);
-        ss += sss1;
-        SString sss2(SString::Utf8, pMD->GetName());
-        ss += sss2;
+        ss.AppendUTF8(NAMESPACE_SEPARATOR_STR);
+        ss.AppendUTF8(pMD->GetName());
 
         if (pMD->HasMethodInstantiation() && !pMD->IsGenericMethodDefinition())
         {
@@ -953,40 +957,34 @@ void TypeString::AppendMethodImpl(SString& ss, MethodDesc *pMD, Instantiation ty
 
             SigFormat sigFormatter(pMD, th);
             const char* sigStr = sigFormatter.GetCStringParmsOnly();
-            SString sss(SString::Utf8, sigStr);
-            ss += sss;
+            ss.AppendUTF8(sigStr);
         }
 
-        if (format & FormatStubInfo) {
+        if (format & FormatStubInfo)
+        {
             if (pMD->IsInstantiatingStub())
             {
-                SString sss(SString::Literal, "{inst-stub}");
-                ss += sss;
+                ss.AppendUTF8("{inst-stub}");
             }
             if (pMD->IsUnboxingStub())
             {
-                SString sss(SString::Literal, "{unbox-stub}");
-                ss += sss;
+                ss.AppendUTF8("{unbox-stub}");
             }
             if (pMD->IsSharedByGenericMethodInstantiations())
             {
-                SString sss(SString::Literal, "{method-shared}");
-                ss += sss;
+                ss.AppendUTF8("{method-shared}");
             }
             else if (pMD->IsSharedByGenericInstantiations())
             {
-                SString sss(SString::Literal, "{shared}");
-                ss += sss;
+                ss.AppendUTF8("{shared}");
             }
             if (pMD->RequiresInstMethodTableArg())
             {
-                SString sss(SString::Literal, "{requires-mt-arg}");
-                ss += sss;
+                ss.AppendUTF8("{requires-mt-arg}");
             }
             if (pMD->RequiresInstMethodDescArg())
             {
-                SString sss(SString::Literal, "{requires-mdesc-arg}");
-                ss += sss;
+                ss.AppendUTF8("{requires-mdesc-arg}");
             }
         }
     }
@@ -1039,7 +1037,7 @@ void TypeString::AppendMethodDebug(SString& ss, MethodDesc *pMD)
 
         // Should we set ss to Empty
     }
-    EX_END_CATCH(SwallowAllExceptions);
+    EX_END_CATCH
 #endif
 }
 
@@ -1067,12 +1065,12 @@ void TypeString::AppendTypeDebug(SString& ss, TypeHandle t)
             // If we run out of memory or hit some other problem,
             // tough luck for the debugger.
         }
-        EX_END_CATCH(SwallowAllExceptions);
+        EX_END_CATCH
     }
 #endif
 }
 
-void TypeString::AppendTypeKeyDebug(SString& ss, TypeKey *pTypeKey)
+void TypeString::AppendTypeKeyDebug(SString& ss, const TypeKey *pTypeKey)
 {
     CONTRACTL
     {
@@ -1096,7 +1094,7 @@ void TypeString::AppendTypeKeyDebug(SString& ss, TypeKey *pTypeKey)
             // If we run out of memory or hit some other problem,
             // tough luck for the debugger.
         }
-        EX_END_CATCH(SwallowAllExceptions);
+        EX_END_CATCH
     }
 #endif
 }
@@ -1104,16 +1102,16 @@ void TypeString::AppendTypeKeyDebug(SString& ss, TypeKey *pTypeKey)
 #endif // _DEBUG
 
 
-void TypeString::AppendTypeKey(TypeNameBuilder& tnb, TypeKey *pTypeKey, DWORD format)
+void TypeString::AppendTypeKey(TypeNameBuilder& tnb, const TypeKey *pTypeKey, DWORD format)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         MODE_ANY;
         THROWS;
         if (format & (FormatAssembly|FormatFullInst)) GC_TRIGGERS; else GC_NOTRIGGER;
         PRECONDITION(CheckPointer(pTypeKey));
     }
-    CONTRACT_END
+    CONTRACTL_END
 
     Module *pModule = NULL;
 
@@ -1145,7 +1143,7 @@ void TypeString::AppendTypeKey(TypeNameBuilder& tnb, TypeKey *pTypeKey, DWORD fo
     }
     else if (kind == ELEMENT_TYPE_FNPTR)
     {
-        RETURN;
+        return;
     }
 
     // ...otherwise it's just a plain type def or an instantiated type
@@ -1178,33 +1176,27 @@ void TypeString::AppendTypeKey(TypeNameBuilder& tnb, TypeKey *pTypeKey, DWORD fo
 #ifdef DACCESS_COMPILE
         pAssemblyName.SetUTF8(pAssembly->GetSimpleName());
 #else
-        pAssembly->GetDisplayName(pAssemblyName,
-                                  ASM_DISPLAYF_PUBLIC_KEY_TOKEN | ASM_DISPLAYF_CONTENT_TYPE |
-                                  (format & FormatNoVersion ? 0 : ASM_DISPLAYF_VERSION | ASM_DISPLAYF_CULTURE));
+        pAssembly->GetDisplayName(pAssemblyName, ASM_DISPLAYF_FULL);
 #endif
         tnb.AddAssemblySpec(pAssemblyName.GetUnicode());
     }
-
-    RETURN;
 }
 
-void TypeString::AppendTypeKey(SString& ss, TypeKey *pTypeKey, DWORD format)
+void TypeString::AppendTypeKey(SString& ss, const TypeKey *pTypeKey, DWORD format)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         MODE_ANY;
         if (format & (FormatAssembly|FormatFullInst)) GC_TRIGGERS; else GC_NOTRIGGER;
         THROWS;
         PRECONDITION(CheckPointer(pTypeKey));
     }
-    CONTRACT_END
+    CONTRACTL_END
 
     {
         TypeNameBuilder tnb(&ss);
         AppendTypeKey(tnb, pTypeKey, format);
     }
-
-    RETURN;
 }
 
 /*static*/

@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 /*
+using TestLibrary;
  * Copyright (c) 2003-2005  Tom Wu
  * All Rights Reserved.
  *
@@ -40,6 +41,8 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Runtime.CompilerServices;
+using Xunit;
 
 namespace V8.Crypto
 {
@@ -47,29 +50,20 @@ namespace V8.Crypto
     {
         private const string INPUT = "The quick brown fox jumped over the extremely lazy frogs!";
 
-        public static int Main(String[] args)
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/54906", TestPlatforms.Android)]
+        [ActiveIssue("((null) error) * Assertion at runtime/src/mono/mono/metadata/assembly.c:2049, condition `is_ok (error)' not met, function:mono_assembly_load_friends, Could not load file or assembly 'xunit.performance.core, Version=1.0.0.0, Culture=neutral, PublicKeyToken=67066efe964d3b03' or one of its dependencies.", TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+        [Fact]
+        public static int TestEntryPoint()
         {
-            int n = 1;
+            return Test(null, false);
+        }
 
-            if (args.Length > 0)
-            {
-                n = Int32.Parse(args[0]);
-            }
-
-            bool verbose = false;
-
-            if (args.Length > 1)
-            {
-                switch (args[1])
-                {
-                    case "verbose":
-                        verbose = true;
-                        break;
-                    default:
-                        Console.WriteLine("Bad arg: '{0}'.\n", args[1]);
-                        return -1;
-                }
-            }
+        // Main method entrypoint runs the manual timer loop
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static int Test(int? iters, bool verbose)
+        {
+            int n = iters ?? 1;
 
             Measure(n, verbose);
 

@@ -19,7 +19,10 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             _size = -1;
         }
 
-        public override ObjectNodeSection Section => ObjectNodeSection.TextSection;
+        public override ObjectNodeSection GetSection(NodeFactory factory)
+        {
+            return ObjectNodeSection.ReadOnlyDataSection;
+        }
 
         public override bool IsShareable => false;
 
@@ -33,7 +36,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
         public void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
         {
-            sb.Append("____Win32Resources");
+            sb.Append("____Win32Resources"u8);
         }
 
         public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)
@@ -44,6 +47,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         private ObjectData GetDataInternal()
         {
             ObjectDataBuilder builder = new ObjectDataBuilder();
+            builder.RequireInitialAlignment(1);
             builder.AddSymbol(this);
             _resourceData.WriteResources(this, ref builder);
             _size = builder.CountBytes;

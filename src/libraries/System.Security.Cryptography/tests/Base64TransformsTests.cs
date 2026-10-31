@@ -42,6 +42,7 @@ namespace System.Security.Cryptography.Tests
             yield return new object[] { "fo", "\tZ\tm8=\n" };
             yield return new object[] { "fo", "\tZ\tm8=\r\n" };
             yield return new object[] { "foo", " Z m 9 v" };
+            yield return new object[] { "abcdef", "YWJj\nZGVm" };
         }
 
         public static IEnumerable<object[]> TestData_Oversize()
@@ -53,10 +54,15 @@ namespace System.Security.Cryptography.Tests
             yield return new object[] { "Zm9vYmFyYm", 0, 10, "foobar" };
         }
 
+        public static IEnumerable<object[]> TestData_All_Ascii()
+            => TestData_Ascii()
+            .Union(TestData_LongBlock_Ascii())
+            .Union(TestData_Ascii_Whitespace());
+
         [Fact]
         public void InvalidInput_ToBase64Transform()
         {
-            byte[] data_3bytes = Text.Encoding.ASCII.GetBytes("aaa");
+            byte[] data_3bytes = "aaa"u8.ToArray();
             ICryptoTransform transform = new ToBase64Transform();
 
             AssertExtensions.Throws<ArgumentNullException>("inputBuffer", () => transform.TransformBlock(null, 0, 0, null, 0));
@@ -77,7 +83,7 @@ namespace System.Security.Cryptography.Tests
         [Fact]
         public void InvalidInput_FromBase64Transform()
         {
-            byte[] data_4bytes = Text.Encoding.ASCII.GetBytes("aaaa");
+            byte[] data_4bytes = "aaaa"u8.ToArray();
             ICryptoTransform transform = new FromBase64Transform();
 
             AssertExtensions.Throws<ArgumentNullException>("inputBuffer", () => transform.TransformBlock(null, 0, 0, null, 0));
@@ -360,6 +366,109 @@ namespace System.Security.Cryptography.Tests
             }
 
             return totalRead;
+        }
+
+        [Theory, MemberData(nameof(TestData_All_Ascii))]
+        public void ReadOneByteAtTheTime(string expected, string data)
+        {
+            byte[] inputBytes = Text.Encoding.ASCII.GetBytes(data);
+            byte[] outputBytes = new byte[100];
+
+            int written = 0;
+            int remaining = inputBytes.Length;
+
+            using (ICryptoTransform transform = new FromBase64Transform())
+            {
+                while (remaining > 0)
+                {
+                    written += transform.TransformBlock(inputBytes, inputBytes.Length - remaining, 1, outputBytes, written);
+                    remaining--;
+                }
+            }
+
+            string outputString = Text.Encoding.ASCII.GetString(outputBytes, 0, written);
+            Assert.Equal(expected, outputString);
+        }
+
+        [Fact]
+        public void TransformBlock_PartialBlockFollowedByPowerOfTwoInput_DoesNotThrow()
+        {
+            using FromBase64Transform transform = new();
+            byte[] dest = new byte[2048];
+
+            byte[] partialBlock = "AAA"u8.ToArray();
+            int written = transform.TransformBlock(partialBlock, 0, partialBlock.Length, dest, 0);
+
+            // Nothing should be written because it is a partial block the transform will hold on to.
+            Assert.Equal(0, written);
+
+            // Transform a buffer that is exactly a power of two, meaning the ArrayPool (CryptoPool) will not be oversized.
+            byte[] completeBlock = new byte[1024];
+            completeBlock.AsSpan().Fill((byte)'A');
+
+            written = transform.TransformBlock(completeBlock, 0, completeBlock.Length, dest, written);
+            Assert.NotEqual(0, written);
+        }
+
+        [Fact]
+        public void TransformFinalBlock_PartialBlockFollowedByPowerOfTwoInput_DoesNotThrow()
+        {
+            using FromBase64Transform transform = new();
+            byte[] dest = new byte[2048];
+
+            byte[] partialBlock = "AAA"u8.ToArray();
+            int written = transform.TransformBlock(partialBlock, 0, partialBlock.Length, dest, 0);
+
+            // Nothing should be written because it is a partial block the transform will hold on to.
+            Assert.Equal(0, written);
+
+            // Transform a buffer that is exactly a power of two via TransformFinalBlock
+            byte[] completeBlock = new byte[1024];
+            completeBlock.AsSpan().Fill((byte)'A');
+
+            byte[] result = transform.TransformFinalBlock(completeBlock, 0, completeBlock.Length);
+            Assert.NotEqual(0, result.Length);
+        }
+
+        [Fact]
+        public void TransformBlock_OutputBufferTooSmall_ThrowsArgumentOutOfRangeException()
+        {
+            using FromBase64Transform transform = new();
+            byte[] destination = new byte[0];
+            byte[] block = "AAAA"u8.ToArray();
+            AssertExtensions.Throws<ArgumentOutOfRangeException>("outputBuffer",
+                () => transform.TransformBlock(block, 0, block.Length, destination, 0));
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1)]
+        public void TransformFinalBlock_ShouldResetStateConsistently(int finalBlockSize)
+        {
+            using FromBase64Transform transform = new();
+            byte[] destination = new byte[2048];
+            byte[] partialBlock = [(byte)'A'];
+            byte[] finalBlock = new byte[finalBlockSize];
+            finalBlock.AsSpan().Fill((byte)'A');
+
+            // First, do a TransformBlock with a partial block of one unit
+            transform.TransformBlock(partialBlock, 0, partialBlock.Length, destination, 0);
+
+            // Call TransformFinalBlock with either zero or one input
+            // This still results in a partial block (we need four for a complete block)
+            byte[] transformed = transform.TransformFinalBlock(finalBlock, 0, finalBlockSize);
+
+            // The transform should return an empty buffer for partial blocks
+            Assert.Empty(transformed);
+
+            // Now try to reuse the transform with a complete block
+            // This should succeed without observing leftover data from before
+            byte[] complete = Text.Encoding.UTF8.GetBytes(Convert.ToBase64String("Hello World"u8.ToArray()));
+            transformed = transform.TransformFinalBlock(complete, 0, complete.Length);
+
+            // Verify we get the expected output
+            string result = Text.Encoding.UTF8.GetString(transformed);
+            Assert.Equal("Hello World", result);
         }
     }
 }

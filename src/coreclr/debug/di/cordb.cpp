@@ -13,18 +13,10 @@
 #include "classfactory.h"
 #include "corsym.h"
 #include "contract.h"
-#include "metadataexports.h"
 #if defined(FEATURE_DBGIPC_TRANSPORT_DI)
 #include "dbgtransportsession.h"
 #include "dbgtransportmanager.h"
 #endif // FEATURE_DBGIPC_TRANSPORT_DI
-
-#if defined(TARGET_UNIX) || defined(__ANDROID__)
-// Local (in-process) debugging is not supported for UNIX and Android.
-#define SUPPORT_LOCAL_DEBUGGING 0
-#else
-#define SUPPORT_LOCAL_DEBUGGING 1
-#endif
 
 //-----------------------------------------------------------------------------
 // SxS Versioning story for Mscordbi (ICorDebug + friends)
@@ -33,10 +25,9 @@
 //-----------------------------------------------------------------------------
 // In v1.0, we declared that mscordbi was a "shared" component, which means
 // that we promised to provide it from now until the end of time. So every CLR implementation
-// needs an Mscordbi that implements the everett guids for CorDebug + CorPublish.
+// needs an Mscordbi that implements the everett guids for CorDebug
 //
-// This works fine for CorPublish, which is truly shared.
-// CorDebug however is "versioned" not "shared" - each version of the CLR has its own disjoint copy.
+// CorDebug is "versioned" not "shared" - each version of the CLR has its own disjoint copy.
 //
 // Thus creating a CorDebug object requires a version parameter.
 // CoCreateInstance doesn't have a the version param, so we use the new (v2.0+)
@@ -67,6 +58,32 @@
 
 //********** Locals. **********************************************************
 
+#if defined(MSCORDBI_LINKS_PRIVATE_PAL) && defined(HOST_UNIX)
+
+#include <pthread.h>
+
+// Defined later in this file. The DLL_PROCESS_ATTACH path stands up this binary's private PAL.
+BOOL WINAPI DbgDllMain(HINSTANCE hInstance, DWORD dwReason, LPVOID lpReserved);
+
+static BOOL s_universalDbiInitSucceeded = FALSE;
+
+static void UniversalDbiInitOnce()
+{
+    s_universalDbiInitSucceeded = DbgDllMain(NULL, DLL_PROCESS_ATTACH, NULL);
+}
+
+// The universal DBI does not export DllMain, so the Unix PAL loader never runs the
+// DLL_PROCESS_ATTACH path that stands up this binary's private PAL. Each public export
+// initializes it on first use through this helper instead.
+// PAL_InitializeDLL is itself idempotent, but the same attach path also performs one-time
+// transport setup.
+HRESULT EnsureUniversalDbiInitialized()
+{
+    static pthread_once_t s_initOnce = PTHREAD_ONCE_INIT;
+    pthread_once(&s_initOnce, UniversalDbiInitOnce);
+    return s_universalDbiInitSucceeded ? S_OK : E_FAIL;
+}
+#endif // MSCORDBI_LINKS_PRIVATE_PAL && HOST_UNIX
 
 //********** Code. ************************************************************
 
@@ -84,16 +101,6 @@
 //*****************************************************************************
 STDAPI CreateCordbObject(int iDebuggerVersion, IUnknown ** ppCordb)
 {
-#if !defined(FEATURE_DBGIPC_TRANSPORT_DI) && !defined(FEATURE_CORESYSTEM)
-    // This API should not be called for Windows CoreCLR unless we are doing interop-debugging
-    // (which is only supported internally).  Use code:CoreCLRCreateCordbObject instead.
-    if (CLRConfig::GetConfigValue(CLRConfig::INTERNAL_DbgEnableMixedModeDebugging) == 0)
-    {
-        _ASSERTE(!"Deprecated entry point CreateCordbObject() is called on Windows CoreCLR\n");
-        return E_NOTIMPL;
-    }
-#endif // !defined(FEATURE_DBGIPC_TRANSPORT_DI) && !defined(FEATURE_CORESYSTEM)
-
     if (ppCordb == NULL)
     {
         return E_INVALIDARG;
@@ -102,30 +109,37 @@ STDAPI CreateCordbObject(int iDebuggerVersion, IUnknown ** ppCordb)
     {
         return E_INVALIDARG;
     }
-
     return Cordb::CreateObject(
-        (CorDebugInterfaceVersion)iDebuggerVersion, ProcessDescriptor::UNINITIALIZED_PID, /*lpApplicationGroupId*/ NULL, IID_ICorDebug, (void **) ppCordb);
+        (CorDebugInterfaceVersion)iDebuggerVersion, ProcessDescriptor::UNINITIALIZED_PID, /*lpApplicationGroupId*/ NULL,  /*dacModulePath*/ NULL, IID_ICorDebug, (void **) ppCordb);
 }
 
 //
 // Public API.
-// Telesto Creation path with Mac sandbox support - only way to debug a sandboxed application on Mac.
-// This supercedes code:CoreCLRCreateCordbObject
+// Creation path with Mac sandbox support and explicit DAC module path for single-file apps
+// This supersedes code:CoreCLRCreateCordbObjectEx
 //
 // Arguments:
 //    iDebuggerVersion - version of ICorDebug interfaces that the debugger is requesting
 //    pid - pid of debuggee that we're attaching to.
-//    lpApplicationGroupId - A string representing the application group ID of a sandboxed
+//    lpApplicationGroupId - a string representing the application group ID of a sandboxed
 //                           process running in Mac. Pass NULL if the process is not
 //                           running in a sandbox and other platforms.
+//    dacModulePath - the full module path of the DAC module or NULL.
 //    hmodTargetCLR - module handle to clr in target pid that we're attaching to.
 //    ppCordb - (out) the resulting ICorDebug object.
 //
 // Notes:
 //    It's inconsistent that this takes a (handle, pid) but hands back an ICorDebug instead of an ICorDebugProcess.
 //    Callers will need to call *ppCordb->DebugActiveProcess(pid).
-STDAPI DLLEXPORT CoreCLRCreateCordbObjectEx(int iDebuggerVersion, DWORD pid, LPCWSTR lpApplicationGroupId, HMODULE hmodTargetCLR, IUnknown ** ppCordb)
+STDAPI DLLEXPORT CoreCLRCreateCordbObject3(int iDebuggerVersion, DWORD pid, LPCWSTR lpApplicationGroupId, LPCWSTR dacModulePath, HMODULE hmodTargetCLR, IUnknown** ppCordb)
 {
+#if defined(MSCORDBI_LINKS_PRIVATE_PAL) && defined(HOST_UNIX)
+    HRESULT hrInit = EnsureUniversalDbiInitialized();
+    if (FAILED(hrInit))
+    {
+        return hrInit;
+    }
+#endif
     if (ppCordb == NULL)
     {
         return E_INVALIDARG;
@@ -140,7 +154,7 @@ STDAPI DLLEXPORT CoreCLRCreateCordbObjectEx(int iDebuggerVersion, DWORD pid, LPC
     // Create the ICorDebug object
     //
     RSExtSmartPtr<ICorDebug> pCordb;
-    Cordb::CreateObject((CorDebugInterfaceVersion)iDebuggerVersion, pid, lpApplicationGroupId, IID_ICorDebug, (void **) &pCordb);
+    Cordb::CreateObject((CorDebugInterfaceVersion)iDebuggerVersion, pid, lpApplicationGroupId, dacModulePath, IID_ICorDebug, (void **) &pCordb);
 
     //
     // Associate it with the target instance
@@ -162,8 +176,30 @@ STDAPI DLLEXPORT CoreCLRCreateCordbObjectEx(int iDebuggerVersion, DWORD pid, LPC
 
 //
 // Public API.
-// Telesto Creation path - only way to debug multi-instance.
-// This supercedes code:CreateCordbObject
+// Creation path with Mac sandbox support - only way to debug a sandboxed application on Mac.
+// This supersedes code:CoreCLRCreateCordbObject
+//
+// Arguments:
+//    iDebuggerVersion - version of ICorDebug interfaces that the debugger is requesting
+//    pid - pid of debuggee that we're attaching to.
+//    lpApplicationGroupId - a string representing the application group ID of a sandboxed
+//                           process running in Mac. Pass NULL if the process is not
+//                           running in a sandbox and other platforms.
+//    hmodTargetCLR - module handle to clr in target pid that we're attaching to.
+//    ppCordb - (out) the resulting ICorDebug object.
+//
+// Notes:
+//    It's inconsistent that this takes a (handle, pid) but hands back an ICorDebug instead of an ICorDebugProcess.
+//    Callers will need to call *ppCordb->DebugActiveProcess(pid).
+STDAPI DLLEXPORT CoreCLRCreateCordbObjectEx(int iDebuggerVersion, DWORD pid, LPCWSTR lpApplicationGroupId, HMODULE hmodTargetCLR, IUnknown ** ppCordb)
+{
+    return CoreCLRCreateCordbObject3(iDebuggerVersion, pid, lpApplicationGroupId, NULL, hmodTargetCLR, ppCordb);
+}
+
+//
+// Public API.
+// Creation path - only way to debug multi-instance.
+// This supersedes code:CreateCordbObject
 //
 // Arguments:
 //    iDebuggerVersion - version of ICorDebug interfaces that the debugger is requesting
@@ -178,9 +214,6 @@ STDAPI DLLEXPORT CoreCLRCreateCordbObject(int iDebuggerVersion, DWORD pid, HMODU
 {
     return CoreCLRCreateCordbObjectEx(iDebuggerVersion, pid, NULL, hmodTargetCLR, ppCordb);
 }
-
-
-
 
 
 //*****************************************************************************
@@ -220,16 +253,12 @@ BOOL WINAPI DbgDllMain(HINSTANCE hInstance, DWORD dwReason, LPVOID lpReserved)
                 WszGetModuleFileName(hInstance, rcFile);
                 LOG((LF_CORDB, LL_INFO10000,
                     "DI::DbgDllMain: load right side support from file '%s'\n",
-                     rcFile.GetUnicode()));
+                     rcFile.GetUTF8()));
             }
 #endif
 
 #if defined(FEATURE_DBGIPC_TRANSPORT_DI)
-            g_pDbgTransportTarget = new (nothrow) DbgTransportTarget();
-            if (g_pDbgTransportTarget == NULL)
-                return FALSE;
-
-            if (FAILED(g_pDbgTransportTarget->Init()))
+            if (FAILED(g_DbgTransportTarget.Init()))
                 return FALSE;
 #endif // FEATURE_DBGIPC_TRANSPORT_DI
         }
@@ -255,12 +284,7 @@ BOOL WINAPI DbgDllMain(HINSTANCE hInstance, DWORD dwReason, LPVOID lpReserved)
         case DLL_PROCESS_DETACH:
         {
 #if defined(FEATURE_DBGIPC_TRANSPORT_DI)
-            if (g_pDbgTransportTarget != NULL)
-            {
-                g_pDbgTransportTarget->Shutdown();
-                delete g_pDbgTransportTarget;
-                g_pDbgTransportTarget = NULL;
-            }
+            g_DbgTransportTarget.Shutdown();
 #endif // FEATURE_DBGIPC_TRANSPORT_DI
         }
         break;
@@ -299,31 +323,10 @@ STDAPI DLLEXPORT DllGetClassObjectInternal(               // Return code.
     CClassFactory   *pClassFactory;         // To create class factory object.
     PFN_CREATE_OBJ  pfnCreateObject = NULL;
 
-
-#if defined(FEATURE_DBG_PUBLISH)
-    if (rclsid == CLSID_CorpubPublish)
-    {
-        pfnCreateObject = CorpubPublish::CreateObject;
-    }
-    else
-#endif
 #if defined(FEATURE_DBGIPC_TRANSPORT_DI)
     if (rclsid == CLSID_CorDebug_Telesto)
     {
         pfnCreateObject = Cordb::CreateObjectTelesto;
-    }
-#else  // !FEATURE_DBGIPC_TRANSPORT_DI
-    if(rclsid == CLSID_CorDebug_V1)
-    {
-        if (0) // if (IsSingleCLR())
-        {
-            // Don't allow creating backwards objects until we ensure that the v2.0 Right-side
-            // is backwards compat. This may involve using CordbProcess::SupportsVersion to conditionally
-            // emulate old behavior.
-            // If emulating V1.0, QIs for V2.0 interfaces should fail.
-            _ASSERTE(!"Ensure that V2.0 RS is backwards compat");
-            pfnCreateObject = Cordb::CreateObjectV1;
-        }
     }
 #endif // FEATURE_DBGIPC_TRANSPORT_DI
 
@@ -453,79 +456,3 @@ STDAPI GetRequestedRuntimeInfo(LPCWSTR pExe,
     _ASSERTE(!"GetRequestedRuntimeInfo not impl");
     return E_NOTIMPL;
 }
-
-#ifdef TARGET_ARM
-BOOL
-DbiGetThreadContext(HANDLE hThread,
-    DT_CONTEXT *lpContext)
-{
-    // if we aren't local debugging this isn't going to work
-#if !defined(HOST_ARM) || defined(FEATURE_DBGIPC_TRANSPORT_DI) || !SUPPORT_LOCAL_DEBUGGING
-    _ASSERTE(!"Can't use local GetThreadContext remotely, this needed to go to datatarget");
-    return FALSE;
-#else
-    BOOL res = FALSE;
-    if (((ULONG)lpContext) & ~0x10)
-    {
-        CONTEXT *ctx = (CONTEXT*)_aligned_malloc(sizeof(CONTEXT), 16);
-        if (ctx)
-        {
-            ctx->ContextFlags = lpContext->ContextFlags;
-            if (::GetThreadContext(hThread, ctx))
-            {
-                *lpContext = *(DT_CONTEXT*)ctx;
-                res = TRUE;
-            }
-
-            _aligned_free(ctx);
-        }
-        else
-        {
-            // malloc does not set the last error, but the caller of GetThreadContext
-            // will expect it to be set on failure.
-            SetLastError(ERROR_OUTOFMEMORY);
-        }
-    }
-    else
-    {
-        res = ::GetThreadContext(hThread, (CONTEXT*)lpContext);
-    }
-
-    return res;
-#endif
-}
-
-BOOL
-DbiSetThreadContext(HANDLE hThread,
-    const DT_CONTEXT *lpContext)
-{
-#if !defined(HOST_ARM) || defined(FEATURE_DBGIPC_TRANSPORT_DI) || !SUPPORT_LOCAL_DEBUGGING
-    _ASSERTE(!"Can't use local GetThreadContext remotely, this needed to go to datatarget");
-    return FALSE;
-#else
-    BOOL res = FALSE;
-    if (((ULONG)lpContext) & ~0x10)
-    {
-        CONTEXT *ctx = (CONTEXT*)_aligned_malloc(sizeof(CONTEXT), 16);
-        if (ctx)
-        {
-            *ctx = *(CONTEXT*)lpContext;
-            res = ::SetThreadContext(hThread, ctx);
-            _aligned_free(ctx);
-        }
-        else
-        {
-            // malloc does not set the last error, but the caller of SetThreadContext
-            // will expect it to be set on failure.
-            SetLastError(ERROR_OUTOFMEMORY);
-        }
-    }
-    else
-    {
-        res = ::SetThreadContext(hThread, (CONTEXT*)lpContext);
-    }
-
-    return res;
-#endif
-}
-#endif

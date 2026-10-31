@@ -6,6 +6,7 @@
 #include <inttypes.h>
 #include <assert.h>
 #include "minipal.h"
+#include "minipal/cpufeatures.h"
 
 #define HIDWORD(_qw)    ((ULONG)((_qw) >> 32))
 #define LODWORD(_qw)    ((ULONG)(_qw))
@@ -60,6 +61,12 @@ inline void *GetBotMemoryAddress(void)
 
 bool VMToOSInterface::CreateDoubleMemoryMapper(void **pHandle, size_t *pMaxExecutableCodeSize)
 {
+    if (minipal_detect_rosetta())
+    {
+        // Rosetta doesn't support double mapping correctly. WINE on macOS ARM64 can be running under Rosetta.
+        return false;
+    }
+
     *pMaxExecutableCodeSize = (size_t)MaxDoubleMappedSize;
     *pHandle = CreateFileMapping(
                  INVALID_HANDLE_VALUE,    // use paging file
@@ -108,7 +115,7 @@ void* VMToOSInterface::ReserveDoubleMappedMemory(void *mapperHandle, size_t offs
     }
 
     // If pMinAddr is BOT_MEMORY and pMaxAddr is TOP_MEMORY
-    // then we can call ClrVirtualAlloc instead
+    // then we can call VirtualAlloc instead
     if ((pMinAddr == (BYTE *) BOT_MEMORY) && (pMaxAddr == (BYTE *) TOP_MEMORY))
     {
         return (BYTE*)MapViewOfFile((HANDLE)mapperHandle,
@@ -184,8 +191,12 @@ void *VMToOSInterface::CommitDoubleMappedMemory(void* pStart, size_t size, bool 
 
 bool VMToOSInterface::ReleaseDoubleMappedMemory(void *mapperHandle, void* pStart, size_t offset, size_t size)
 {
-    // Zero the memory before the unmapping
-    VirtualAlloc(pStart, size, MEM_COMMIT, PAGE_READWRITE);
+    LPVOID  result = VirtualAlloc(pStart, size, MEM_COMMIT, PAGE_READWRITE);
+    assert(result != NULL);
+    if (result == NULL)
+    {
+        return false;
+    }
     memset(pStart, 0, size);
     return UnmapViewOfFile(pStart);
 }
@@ -202,4 +213,24 @@ void* VMToOSInterface::GetRWMapping(void *mapperHandle, void* pStart, size_t off
 bool VMToOSInterface::ReleaseRWMapping(void* pStart, size_t size)
 {
     return UnmapViewOfFile(pStart);
+}
+
+void* VMToOSInterface::CreateTemplate(void* pImageTemplate, size_t templateSize, void (*codePageGenerator)(uint8_t* pageBase, uint8_t* pageBaseRX, size_t size))
+{
+    return NULL;
+}
+
+bool VMToOSInterface::AllocateThunksFromTemplateRespectsStartAddress()
+{
+    return false;
+}
+
+void* VMToOSInterface::AllocateThunksFromTemplate(void* pTemplate, size_t templateSize, void* pStart, void (*dataPageGenerator)(uint8_t* pageBase, size_t size))
+{
+    return NULL;
+}
+
+bool VMToOSInterface::FreeThunksFromTemplate(void* thunks, size_t templateSize)
+{
+    return false;
 }

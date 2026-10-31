@@ -11,7 +11,7 @@ namespace System.Threading
         /// <summary>
         /// Tracks information on the number of threads we want/have in different states in our thread pool.
         /// </summary>
-        private struct ThreadCounts
+        private struct ThreadCounts : IEquatable<ThreadCounts>
         {
             // SOS's ThreadPool command depends on this layout
             private const byte NumProcessingWorkShift = 0;
@@ -31,28 +31,76 @@ namespace System.Threading
             /// </summary>
             public short NumProcessingWork
             {
-                get => GetInt16Value(NumProcessingWorkShift);
+                get
+                {
+                    short value = GetInt16Value(NumProcessingWorkShift);
+                    Debug.Assert(value >= 0);
+                    return value;
+                }
                 set
                 {
                     Debug.Assert(value >= 0);
-                    SetInt16Value(value, NumProcessingWorkShift);
+                    SetInt16Value(Math.Max((short)0, value), NumProcessingWorkShift);
                 }
             }
 
-            public void SubtractNumProcessingWork(short value)
+            // Returns "true" if adding NumProcessingWork has reached the limit.
+            // Note: it is possible to be in Saturated state while NumProcessingWork is under
+            // the limit if the limit has been changed after the state was set. That is ok.
+            // While changes in NumProcessingWork need to be matched with semaphore Wait/Signal,
+            // the redundantly set Saturated is mostly harmless and should self-correct when
+            // a worker that sees no work calls TryDecrementProcessingWork, possibly at a cost of
+            // redundant check for work.
+            public bool IsSaturated
             {
-                Debug.Assert(value >= 0);
-                Debug.Assert(value <= NumProcessingWork);
-
-                _data -= (ulong)(ushort)value << NumProcessingWorkShift;
+                get
+                {
+                    return (long)_data < 0;
+                }
             }
 
-            public void InterlockedDecrementNumProcessingWork()
+            /// <summary>
+            /// Tries to increase the number of threads processing work items by one.
+            /// If at or above goal, returns false and sets Saturated flag instead.
+            /// Note: only if "true" is returned the NumProcessingWork is incremented.
+            /// </summary>
+            public bool TryIncrementProcessingWork()
             {
-                Debug.Assert(NumProcessingWorkShift == 0);
+                Debug.Assert(NumProcessingWork >= 0);
+                if (NumProcessingWork < NumThreadsGoal)
+                {
+                    NumProcessingWork++;
+                    // This should never overflow
+                    Debug.Assert(NumProcessingWork > 0);
+                    return true;
+                }
+                else
+                {
+                    _data |= (1ul << 63);
+                    return false;
+                }
+            }
 
-                ThreadCounts counts = new ThreadCounts(Interlocked.Decrement(ref _data));
-                Debug.Assert(counts.NumProcessingWork >= 0);
+            /// <summary>
+            /// Tries to reduce the number of threads processing work items by one.
+            /// If in a Saturated state, clears the Saturated state and returns false.
+            /// Note: only if "true" is returned the NumProcessingWork is decremented.
+            /// </summary>
+            public bool TryDecrementProcessingWork()
+            {
+                Debug.Assert(NumProcessingWork > 0);
+                if (IsSaturated)
+                {
+                    _data &= ~(1ul << 63);
+                    return false;
+                }
+                else
+                {
+                    NumProcessingWork--;
+                    // This should never underflow
+                    Debug.Assert(NumProcessingWork >= 0);
+                    return true;
+                }
             }
 
             /// <summary>
@@ -60,20 +108,17 @@ namespace System.Threading
             /// </summary>
             public short NumExistingThreads
             {
-                get => GetInt16Value(NumExistingThreadsShift);
+                get
+                {
+                    short value = GetInt16Value(NumExistingThreadsShift);
+                    Debug.Assert(value >= 0);
+                    return value;
+                }
                 set
                 {
                     Debug.Assert(value >= 0);
-                    SetInt16Value(value, NumExistingThreadsShift);
+                    SetInt16Value(Math.Max((short)0, value), NumExistingThreadsShift);
                 }
-            }
-
-            public void SubtractNumExistingThreads(short value)
-            {
-                Debug.Assert(value >= 0);
-                Debug.Assert(value <= NumExistingThreads);
-
-                _data -= (ulong)(ushort)value << NumExistingThreadsShift;
             }
 
             /// <summary>
@@ -81,11 +126,16 @@ namespace System.Threading
             /// </summary>
             public short NumThreadsGoal
             {
-                get => GetInt16Value(NumThreadsGoalShift);
+                get
+                {
+                    short value = GetInt16Value(NumThreadsGoalShift);
+                    Debug.Assert(value > 0);
+                    return value;
+                }
                 set
                 {
                     Debug.Assert(value > 0);
-                    SetInt16Value(value, NumThreadsGoalShift);
+                    SetInt16Value(Math.Max((short)1, value), NumThreadsGoalShift);
                 }
             }
 
@@ -126,7 +176,8 @@ namespace System.Threading
             public static bool operator ==(ThreadCounts lhs, ThreadCounts rhs) => lhs._data == rhs._data;
             public static bool operator !=(ThreadCounts lhs, ThreadCounts rhs) => lhs._data != rhs._data;
 
-            public override bool Equals([NotNullWhen(true)] object? obj) => obj is ThreadCounts other && _data == other._data;
+            public override bool Equals([NotNullWhen(true)] object? obj) => obj is ThreadCounts other && Equals(other);
+            public bool Equals(ThreadCounts other) => _data == other._data;
             public override int GetHashCode() => (int)_data + (int)(_data >> 32);
         }
     }

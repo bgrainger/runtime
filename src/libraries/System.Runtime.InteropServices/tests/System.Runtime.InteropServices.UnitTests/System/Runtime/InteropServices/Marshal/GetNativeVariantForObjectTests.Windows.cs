@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
+using System.Runtime.InteropServices.Marshalling;
 using System.Runtime.InteropServices.Tests.Common;
 using Xunit;
 
@@ -43,14 +44,14 @@ namespace System.Runtime.InteropServices.Tests
             yield return new object[] { new AutoDualComObjectEmpty[] { autoDualEmpty, null }, (VarEnum.VT_ARRAY | VarEnum.VT_UNKNOWN), new object[] { autoDualEmpty, null } };
         }
 
-        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsNotWindowsNanoServer))]
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsBuiltInComEnabled))]
         [MemberData(nameof(GetNativeVariantForObject_ComObjectArray_TestData))]
         public void GetNativeVariantForObject_ComObjectArray_Success(object obj, VarEnum expectedVarType, object expectedRoundtripValue)
         {
             GetNativeVariantForObject_ValidObject_Success(obj, expectedVarType, (IntPtr)(-1), expectedRoundtripValue);
         }
 
-        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsNotWindowsNanoServer))]
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsBuiltInComEnabled))]
         [MemberData(nameof(GetNativeVariantForObject_ComObject_TestData))]
         public void GetNativeVariantForObject_ComObject_Success(object obj, VarEnum expectedVarType)
         {
@@ -87,7 +88,7 @@ namespace System.Runtime.InteropServices.Tests
             yield return new object[] { new DispatchWrapper(autoDual), autoDual, VarEnum.VT_DISPATCH };
         }
 
-        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsNotWindowsNanoServer))]
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsBuiltInComEnabled))]
         [MemberData(nameof(GetNativeVariantForObject_WrappedComObject_TestData))]
         public void GetNativeVariantForObject_WrappedComObject_Success(object obj, object wrapped, VarEnum expectedVarType)
         {
@@ -104,21 +105,15 @@ namespace System.Runtime.InteropServices.Tests
             yield return new object[] { new AutoDualComObject[] { new AutoDualComObject(), null } };
         }
 
-        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsNotWindowsNanoServer))]
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsBuiltInComEnabled))]
         [MemberData(nameof(GetNativeVariantForObject_InvalidArrayType_TestData))]
-        public void GetNativeVariantForObject_InvalidArrayType_ThrowsInvalidCastException(object obj)
+        public unsafe void GetNativeVariantForObject_InvalidArrayType_ThrowsInvalidCastException(object obj)
         {
-            Variant v = new Variant();
-            IntPtr pNative = Marshal.AllocHGlobal(Marshal.SizeOf(v));
-            try
-            {
-                Assert.Throws<InvalidCastException>(() => Marshal.GetNativeVariantForObject(obj, pNative));
-                Assert.Throws<InvalidCastException>(() => Marshal.GetNativeVariantForObject<object>(obj, pNative));
-            }
-            finally
-            {
-                Marshal.FreeHGlobal(pNative);
-            }
+            ComVariant variant = default;
+            nint pNative = (nint)(&variant);
+
+            Assert.Throws<InvalidCastException>(() => Marshal.GetNativeVariantForObject(obj, pNative));
+            Assert.Throws<InvalidCastException>(() => Marshal.GetNativeVariantForObject<object>(obj, pNative));
         }
     }
 }

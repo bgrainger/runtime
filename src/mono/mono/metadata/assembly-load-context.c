@@ -12,6 +12,7 @@
 #include "mono/metadata/mono-debug.h"
 #include "mono/utils/mono-error-internals.h"
 #include "mono/utils/mono-logger-internals.h"
+#include "mono/utils/mono-tls.h"
 
 GENERATE_GET_CLASS_WITH_CACHE (assembly_load_context, "System.Runtime.Loader", "AssemblyLoadContext");
 static GENERATE_GET_CLASS_WITH_CACHE (assembly, "System.Reflection", "Assembly");
@@ -21,6 +22,14 @@ static MonoAssemblyLoadContext *default_alc;
 static MonoCoopMutex alc_list_lock; /* Used when accessing 'alcs' */
 /* Protected by alc_list_lock */
 static GSList *loaded_assemblies;
+
+/*
+ * Per-thread list of "alc:resolve_method:assembly_name" keys currently being resolved via a
+ * managed ALC resolve hook. Used to break re-entrant resolution: invoking a managed hook
+ * (e.g. MonoResolveUsingLoad) may need to JIT-compile methods, and under full-AOT that
+ * compilation may re-trigger resolution of the same assembly, causing unbounded recursion.
+ */
+static MonoNativeTlsKey alc_resolve_in_progress_tls_id;
 
 static inline void
 alcs_lock (void)
@@ -38,10 +47,13 @@ static void
 mono_alc_init (MonoAssemblyLoadContext *alc, gboolean collectible)
 {
 	MonoLoadedImages *li = g_new0 (MonoLoadedImages, 1);
+
+	// FIXME:
+	collectible = FALSE;
+
 	mono_loaded_images_init (li, alc);
 	alc->loaded_images = li;
 	alc->loaded_assemblies = NULL;
-	alc->memory_manager = mono_mem_manager_new (&alc, 1, collectible);
 	alc->generic_memory_managers = g_ptr_array_new ();
 	mono_coop_mutex_init (&alc->memory_managers_lock);
 	alc->unloading = FALSE;
@@ -49,6 +61,12 @@ mono_alc_init (MonoAssemblyLoadContext *alc, gboolean collectible)
 	alc->pinvoke_scopes = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
 	mono_coop_mutex_init (&alc->assemblies_lock);
 	mono_coop_mutex_init (&alc->pinvoke_lock);
+
+	alc->memory_manager = mono_mem_manager_new (&alc, 1, collectible);
+
+	if (collectible)
+		/* Eagerly create the loader alloc object for the main memory manager */
+		mono_mem_manager_get_loader_alloc (alc->memory_manager);
 }
 
 static MonoAssemblyLoadContext *
@@ -70,6 +88,7 @@ void
 mono_alcs_init (void)
 {
 	mono_coop_mutex_init (&alc_list_lock);
+	mono_native_tls_alloc (&alc_resolve_in_progress_tls_id, NULL);
 
 	default_alc = mono_alc_create (FALSE);
 	default_alc->gchandle = mono_gchandle_new_internal (NULL, FALSE);
@@ -95,9 +114,10 @@ mono_alc_create_individual (MonoGCHandle this_gchandle, gboolean collectible, Mo
 static void
 mono_alc_cleanup_assemblies (MonoAssemblyLoadContext *alc)
 {
-	// The minimum refcount on assemblies is 2: one for the domain and one for the ALC. 
+	// The minimum refcount on assemblies is 2: one for the domain and one for the ALC.
 	// The domain refcount might be less than optimal on netcore, but its removal is too likely to cause issues for now.
 	GSList *tmp;
+	const char *name = alc->name ? alc->name : "<default>";
 
 	// Remove the assemblies from loaded_assemblies
 	for (tmp = alc->loaded_assemblies; tmp; tmp = tmp->next) {
@@ -107,8 +127,8 @@ mono_alc_cleanup_assemblies (MonoAssemblyLoadContext *alc)
 		loaded_assemblies = g_slist_remove (loaded_assemblies, assembly);
 		alcs_unlock ();
 
-		mono_assembly_decref (assembly);
-		mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_ASSEMBLY, "Unloading ALC [%p], removing assembly %s[%p] from loaded_assemblies, ref_count=%d\n", alc, assembly->aname.name, assembly, assembly->ref_count);
+		//mono_assembly_decref (assembly);
+		mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_ASSEMBLY, "Unloading ALC '%s'[%p], removing assembly %s[%p] from loaded_assemblies, ref_count=%d\n", name, alc, assembly->aname.name, assembly, assembly->ref_count);
 	}
 
 	// Release the GC roots
@@ -122,7 +142,7 @@ mono_alc_cleanup_assemblies (MonoAssemblyLoadContext *alc)
 		MonoAssembly *assembly = (MonoAssembly *)tmp->data;
 		if (!assembly->image || !image_is_dynamic (assembly->image))
 			continue;
-		mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_ASSEMBLY, "Unloading ALC [%p], dynamic assembly %s[%p], ref_count=%d", alc, assembly->aname.name, assembly, assembly->ref_count);
+		mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_ASSEMBLY, "Unloading ALC '%s'[%p], dynamic assembly %s[%p], ref_count=%d", name, alc, assembly->aname.name, assembly, assembly->ref_count);
 		if (!mono_assembly_close_except_image_pools (assembly))
 			tmp->data = NULL;
 	}
@@ -134,7 +154,7 @@ mono_alc_cleanup_assemblies (MonoAssemblyLoadContext *alc)
 			continue;
 		if (!assembly->image || image_is_dynamic (assembly->image))
 			continue;
-		mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_ASSEMBLY, "Unloading ALC [%p], non-dynamic assembly %s[%p], ref_count=%d", alc, assembly->aname.name, assembly, assembly->ref_count);
+		mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_ASSEMBLY, "Unloading ALC '%s'[%p], non-dynamic assembly %s[%p], ref_count=%d", name, alc, assembly->aname.name, assembly, assembly->ref_count);
 		if (!mono_assembly_close_except_image_pools (assembly))
 			tmp->data = NULL;
 	}
@@ -173,15 +193,21 @@ mono_alc_cleanup (MonoAssemblyLoadContext *alc)
 
 	mono_alc_cleanup_assemblies (alc);
 
-	mono_mem_manager_free (alc->memory_manager, FALSE);
+	// FIXME: Do it for every memory manager
+	mono_gchandle_free_internal (alc->memory_manager->loader_allocator_handle);
+	alc->memory_manager->loader_allocator_handle = NULL;
+
+	// FIXME: Change to FALSE
+	mono_mem_manager_free (alc->memory_manager, TRUE);
 	alc->memory_manager = NULL;
 
 	/*for (int i = 0; i < alc->generic_memory_managers->len; i++) {
 		MonoGenericMemoryManager *memory_manager = (MonoGenericMemoryManager *)alc->generic_memory_managers->pdata [i];
 		mono_mem_manager_free_generic (memory_manager, FALSE);
 	}*/
-	g_ptr_array_free (alc->generic_memory_managers, TRUE);
-	mono_coop_mutex_destroy (&alc->memory_managers_lock);
+	// FIXME:
+	//g_ptr_array_free (alc->generic_memory_managers, TRUE);
+	//mono_coop_mutex_destroy (&alc->memory_managers_lock);
 
 	mono_gchandle_free_internal (alc->gchandle);
 	alc->gchandle = NULL;
@@ -260,6 +286,10 @@ ves_icall_System_Runtime_Loader_AssemblyLoadContext_PrepareForAssemblyLoadContex
 	MonoGCHandle strong_gchandle = (MonoGCHandle)strong_gchandle_ptr;
 	MonoAssemblyLoadContext *alc = (MonoAssemblyLoadContext *)alc_pointer;
 
+	// FIXME:
+	if (!alc->collectible)
+		return;
+
 	g_assert (alc->collectible);
 	g_assert (!alc->unloading);
 	g_assert (alc->gchandle);
@@ -270,6 +300,12 @@ ves_icall_System_Runtime_Loader_AssemblyLoadContext_PrepareForAssemblyLoadContex
 	MonoGCHandle weak_gchandle = alc->gchandle;
 	alc->gchandle = strong_gchandle;
 	mono_gchandle_free_internal (weak_gchandle);
+
+	mono_mem_manager_start_unload (alc->memory_manager);
+	mono_alc_memory_managers_lock (alc);
+	for (guint i = 0; i < alc->generic_memory_managers->len; i++)
+		mono_mem_manager_start_unload ((MonoMemoryManager *)g_ptr_array_index (alc->generic_memory_managers, i));
+	mono_alc_memory_managers_unlock (alc);
 }
 
 gpointer
@@ -300,7 +336,7 @@ ves_icall_System_Runtime_Loader_AssemblyLoadContext_InternalGetLoadedAssemblies 
 
 	MonoArrayHandle res = mono_array_new_handle (mono_class_get_assembly_class (), assemblies->len, error);
 	goto_if_nok (error, leave);
-	for (int i = 0; i < assemblies->len; ++i) {
+	for (guint i = 0; i < assemblies->len; ++i) {
 		if (!add_assembly_to_array (res, i, (MonoAssembly *)g_ptr_array_index (assemblies, i), error))
 			goto leave;
 	}
@@ -424,11 +460,19 @@ mono_alc_from_gchandle (MonoGCHandle alc_gchandle)
 	if (alc_gchandle == default_alc->gchandle)
 		return default_alc;
 
-	HANDLE_FUNCTION_ENTER ();
-	MonoManagedAssemblyLoadContextHandle managed_alc = MONO_HANDLE_CAST (MonoManagedAssemblyLoadContext, mono_gchandle_get_target_handle (alc_gchandle));
-	g_assert (!MONO_HANDLE_IS_NULL (managed_alc));
-	MonoAssemblyLoadContext *alc = MONO_HANDLE_GETVAL (managed_alc, native_assembly_load_context);
-	HANDLE_FUNCTION_RETURN_VAL (alc);
+	MONO_STATIC_POINTER_INIT (MonoClassField, resolve)
+
+		MonoClass *alc_class = mono_class_get_assembly_load_context_class ();
+		g_assert (alc_class);
+		resolve = mono_class_get_field_from_name_full (alc_class, "_nativeAssemblyLoadContext", NULL);
+
+	MONO_STATIC_POINTER_INIT_END (MonoClassField, resolve)
+
+	g_assert (resolve);
+
+	MonoAssemblyLoadContext *alc = NULL;
+	mono_field_get_value_internal (mono_gchandle_get_target_internal (alc_gchandle), resolve, &alc);
+	return alc;
 }
 
 MonoGCHandle
@@ -443,13 +487,37 @@ invoke_resolve_method (MonoMethod *resolve_method, MonoAssemblyLoadContext *alc,
 {
 	MonoAssembly *result = NULL;
 	char* aname_str = NULL;
+	char *resolve_key = NULL;
+	GSList *in_progress;
 
 	if (mono_runtime_get_no_exec ())
 		return NULL;
 
-	HANDLE_FUNCTION_ENTER ();
-
 	aname_str = mono_stringify_assembly_name (aname);
+
+	/*
+	 * Invoking a managed resolve hook can re-enter assembly resolution for the same
+	 * assembly: constructing the AssemblyName inside the hook parses the name using a
+	 * generic method, and under full-AOT JIT-compiling that method can itself trigger
+	 * resolution of the same assembly -> unbounded recursion -> stack overflow.
+	 * Guard against re-entering the same hook for the same name on the same ALC on the
+	 * current thread (mirrors the TLS recursion guard in mono_class_setup_fields). The key
+	 * includes the ALC instance because resolve_method is a single cached MonoMethod shared
+	 * by all ALCs, so keying on it alone would wrongly suppress a legitimate nested resolve
+	 * of the same name on a different ALC.
+	 */
+	resolve_key = g_strdup_printf ("%p:%p:%s", (gpointer)alc, (gpointer)resolve_method, aname_str);
+	in_progress = (GSList *)mono_native_tls_get_value (alc_resolve_in_progress_tls_id);
+	if (g_slist_find_custom (in_progress, resolve_key, (GCompareFunc)strcmp)) {
+		mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_ASSEMBLY, "Skipping re-entrant ALC resolve for '%s'.", aname_str);
+		g_free (resolve_key);
+		g_free (aname_str);
+		return NULL;
+	}
+	in_progress = g_slist_prepend (in_progress, resolve_key);
+	mono_native_tls_set_value (alc_resolve_in_progress_tls_id, in_progress);
+
+	HANDLE_FUNCTION_ENTER ();
 
 	MonoStringHandle aname_obj = mono_string_new_handle (aname_str, error);
 	goto_if_nok (error, leave);
@@ -466,6 +534,10 @@ invoke_resolve_method (MonoMethod *resolve_method, MonoAssemblyLoadContext *alc,
 		result = MONO_HANDLE_GETVAL (assm, assembly);
 
 leave:
+	in_progress = (GSList *)mono_native_tls_get_value (alc_resolve_in_progress_tls_id);
+	in_progress = g_slist_remove (in_progress, resolve_key);
+	mono_native_tls_set_value (alc_resolve_in_progress_tls_id, in_progress);
+	g_free (resolve_key);
 	g_free (aname_str);
 	HANDLE_FUNCTION_RETURN_VAL (result);
 }
@@ -647,3 +719,60 @@ mono_alc_get_all_loaded_assemblies (void)
 	alcs_unlock ();
 	return assemblies;
 }
+
+GPtrArray*
+mono_alc_get_all (void)
+{
+	// FIXME: prevent the individual ALCs from being collected until the iteration is done.
+	GSList *tmp;
+	GPtrArray *all_alcs = g_ptr_array_new ();
+	MonoAssemblyLoadContext *alc;
+	alcs_lock ();
+	for (tmp = alcs; tmp; tmp = tmp->next) {
+		alc = (MonoAssemblyLoadContext *)tmp->data;
+		g_ptr_array_add (all_alcs, alc);
+	}
+	alcs_unlock ();
+	return all_alcs;
+}
+
+MonoBoolean
+ves_icall_System_Reflection_LoaderAllocatorScout_Destroy (gpointer native)
+{
+	/* Not enabled yet */
+	return FALSE;
+
+#if 0
+	MonoMemoryManager *mem_manager = (MonoMemoryManager *)native;
+	MonoAssemblyLoadContext *alc;
+
+	MonoGCHandle loader_handle = mem_manager->loader_allocator_weak_handle;
+	if (mono_gchandle_get_target_internal (loader_handle))
+		return FALSE;
+
+	/*
+	 * The weak handle is NULL, meaning the managed LoaderAllocator object is dead, we can
+	 * free the native side.
+	 */
+	for (int i = 0; i < mem_manager->n_alcs; ++i) {
+		alc = mem_manager->alcs [i];
+		mono_alc_memory_managers_lock (alc);
+		g_ptr_array_remove (alc->generic_memory_managers, mem_manager);
+		mono_alc_memory_managers_unlock (alc);
+	}
+
+	alc = mem_manager->alcs [0];
+
+	// FIXME: Generic memory managers might need to be destroyed in a specific order/together,
+	// hold ref counts on alcs etc.
+	if (mem_manager == alc->memory_manager) {
+		mono_alc_cleanup (alc);
+	} else {
+		// FIXME: Use debug_unload=FALSE
+		mono_mem_manager_free (mem_manager, TRUE);
+	}
+
+	return TRUE;
+#endif
+}
+

@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Text;
@@ -14,7 +15,7 @@ using Internal.ReadyToRunConstants;
 namespace ILCompiler.Reflection.ReadyToRun
 {
     /// <summary>
-    /// This represents all possible signatures that is 
+    /// This represents all possible signatures that is
     /// </summary>
     public abstract class ReadyToRunSignature
     {
@@ -94,7 +95,7 @@ namespace ILCompiler.Reflection.ReadyToRun
         public static ReadyToRunSignature FormatSignature(IAssemblyResolver assemblyResolver, ReadyToRunReader r2rReader, int imageOffset)
         {
             SignatureFormattingOptions dummyOptions = new SignatureFormattingOptions();
-            SignatureDecoder decoder = new SignatureDecoder(assemblyResolver, dummyOptions, r2rReader.GetGlobalMetadata()?.MetadataReader, r2rReader, imageOffset);
+            SignatureDecoder decoder = new SignatureDecoder(assemblyResolver, dummyOptions, r2rReader.GetGlobalMetadata()?.MetadataReader, r2rReader, imageOffset, forFixup: true);
             StringBuilder dummyBuilder = new StringBuilder();
             return decoder.ReadR2RSignature(dummyBuilder);
         }
@@ -301,7 +302,7 @@ namespace ILCompiler.Reflection.ReadyToRun
             TypeReference typeRef = _metadataReader.GetTypeReference(typeRefHandle);
             string typeName = EmitString(typeRef.Name);
             string output = "";
-            if (typeRef.ResolutionScope.Kind != HandleKind.AssemblyReference)
+            if ((typeRef.ResolutionScope.Kind != HandleKind.AssemblyReference) && (typeRef.ResolutionScope.Kind != HandleKind.ModuleReference))
             {
                 // Nested type - format enclosing type followed by the nested type
                 return EmitHandleName(typeRef.ResolutionScope, namespaceQualified, owningTypeOverride: null) + "+" + typeName;
@@ -526,9 +527,25 @@ namespace ILCompiler.Reflection.ReadyToRun
             return _image[_offset++];
         }
 
+        public void SkipBytes(uint bytesToSkip)
+        {
+            checked
+            {
+                _offset += (int)bytesToSkip;
+            }
+        }
+
+        public void SkipBytes(int bytesToSkip)
+        {
+            checked
+            {
+                _offset += bytesToSkip;
+            }
+        }
+
         /// <summary>
         /// Read a single unsigned 32-bit in from the signature stream. Adapted from CorSigUncompressData,
-        /// <a href="">https://github.com/dotnet/coreclr/blob/master/src/inc/cor.h</a>.
+        /// <a href="">https://github.com/dotnet/runtime/blob/main/src/coreclr/inc/cor.h</a>.
         /// </summary>
         /// <param name="data"></param>
         public uint ReadUInt()
@@ -558,7 +575,7 @@ namespace ILCompiler.Reflection.ReadyToRun
         /// <summary>
         /// Read a signed integer from the signature stream. Signed integer is basically encoded
         /// as an unsigned integer after converting it to the unsigned number 2 * abs(x) + (x &gt;= 0 ? 0 : 1).
-        /// Adapted from CorSigUncompressSignedInt, <a href="">https://github.com/dotnet/coreclr/blob/master/src/inc/cor.h</a>.
+        /// Adapted from CorSigUncompressSignedInt, <a href="">https://github.com/dotnet/runtime/blob/main/src/coreclr/inc/cor.h</a>.
         /// </summary>
         public int ReadInt()
         {
@@ -603,7 +620,7 @@ namespace ILCompiler.Reflection.ReadyToRun
 
         /// <summary>
         /// Read a single element type from the signature stream. Adapted from CorSigUncompressElementType,
-        /// <a href="">https://github.com/dotnet/coreclr/blob/master/src/inc/cor.h</a>.
+        /// <a href="">https://github.com/dotnet/runtime/blob/main/src/coreclr/inc/cor.h</a>.
         /// </summary>
         /// <returns></returns>
         public CorElementType ReadElementType()
@@ -813,6 +830,7 @@ namespace ILCompiler.Reflection.ReadyToRun
             {
                 int moduleIndex = (int)ReadUInt();
                 IAssemblyMetadata refAsmReader = _contextReader.OpenReferenceAssembly(moduleIndex);
+
                 var refAsmDecoder = new R2RSignatureDecoder<TType, TMethod, TGenericContext>(_provider, Context, refAsmReader.MetadataReader, _image, _offset, _outerReader, _contextReader, skipOverrideMetadataReader: true);
                 var result = refAsmDecoder.ParseMethodWithMethodFlags(methodFlags);
                 _offset = refAsmDecoder.Offset;
@@ -1003,6 +1021,10 @@ namespace ILCompiler.Reflection.ReadyToRun
                 {
                     builder.Append("[INST] ");
                 }
+                if ((flags & ReadyToRunMethodSigFlags.READYTORUN_METHOD_SIG_AsyncVariant) != 0)
+                {
+                    builder.Append("[ASYNC] ");
+                }
                 builder.Append(method);
                 return builder.ToString();
             }
@@ -1015,8 +1037,8 @@ namespace ILCompiler.Reflection.ReadyToRun
         /// <param name="options">SignatureFormattingOptions for signature formatting</param>
         /// <param name="r2rReader">R2RReader object representing the PE file containing the ECMA metadata</param>
         /// <param name="offset">Signature offset within the PE file byte array</param>
-        public SignatureDecoder(IAssemblyResolver assemblyResolver, SignatureFormattingOptions options, MetadataReader metadataReader, ReadyToRunReader r2rReader, int offset) :
-            base(TextTypeProvider.Singleton, new TextSignatureDecoderContext(assemblyResolver, options), metadataReader, r2rReader, offset)
+        public SignatureDecoder(IAssemblyResolver assemblyResolver, SignatureFormattingOptions options, MetadataReader metadataReader, ReadyToRunReader r2rReader, int offset, bool forFixup = false) :
+            base(TextTypeProvider.Singleton, new TextSignatureDecoderContext(assemblyResolver, options), metadataReader, r2rReader, offset, skipOverrideMetadataReader: !forFixup)
         {
         }
 
@@ -1200,6 +1222,11 @@ namespace ILCompiler.Reflection.ReadyToRun
                     builder.Append(" (METHOD_ENTRY)");
                     break;
 
+                case ReadyToRunFixupKind.MethodEntry_ReadyToRun:
+                    ParseMethod(builder);
+                    builder.Append(" (METHOD_ENTRY_READYTORUN)");
+                    break;
+
                 case ReadyToRunFixupKind.MethodEntry_DefToken:
                     uint methodDefToken = ParseMethodDefToken(builder, owningTypeOverride: null);
                     builder.Append(" (METHOD_ENTRY");
@@ -1332,42 +1359,51 @@ namespace ILCompiler.Reflection.ReadyToRun
 
                 case ReadyToRunFixupKind.Check_TypeLayout:
                 case ReadyToRunFixupKind.Verify_TypeLayout:
+                case ReadyToRunFixupKind.ContinuationLayout:
                     ParseType(builder);
-                    ReadyToRunTypeLayoutFlags layoutFlags = (ReadyToRunTypeLayoutFlags)ReadUInt();
-                    builder.Append($" Flags {layoutFlags}");
-                    int actualSize = (int)ReadUInt();
-                    builder.Append($" Size {actualSize}");
-
-                    if (layoutFlags.HasFlag(ReadyToRunTypeLayoutFlags.READYTORUN_LAYOUT_HFA))
+                    ParseTypeLayout(builder);
+                    builder.Append(fixupType switch
                     {
-                        builder.Append($" HFAType {ReadUInt()}");
-                    }
+                        ReadyToRunFixupKind.Check_TypeLayout => " (CHECK_TYPE_LAYOUT)",
+                        ReadyToRunFixupKind.Verify_TypeLayout => " (VERIFY_TYPE_LAYOUT)",
+                        ReadyToRunFixupKind.ContinuationLayout => " (CONTINUATION_LAYOUT)",
+                        _ => throw new UnreachableException()
+                    });
+                    break;
 
-                    if (layoutFlags.HasFlag(ReadyToRunTypeLayoutFlags.READYTORUN_LAYOUT_Alignment))
+                case ReadyToRunFixupKind.ResumptionStubEntryPoint:
+                    uint stubRVA = BitConverter.ToUInt32(_image, Offset);
+                    SkipBytes(4);
+                    builder.Append($" (RESUMPTION_STUB RVA[0x{stubRVA:X}])");
+                    break;
+
+                case ReadyToRunFixupKind.InjectStringThunks:
+                    builder.Append(" (INJECT_STRING_THUNKS");
+                    while (true)
                     {
-                        if (!layoutFlags.HasFlag(ReadyToRunTypeLayoutFlags.READYTORUN_LAYOUT_Alignment_Native))
-                        {
-                            builder.Append($" Align {ReadUInt()}");
-                        }
-                    }
+                        int strStart = Offset;
+                        while (_image[Offset] != 0)
+                            SkipBytes(1);
+                        int strLen = Offset - strStart;
+                        SkipBytes(1); // skip null terminator
 
-                    if (layoutFlags.HasFlag(ReadyToRunTypeLayoutFlags.READYTORUN_LAYOUT_GCLayout))
-                    {
-                        if (!layoutFlags.HasFlag(ReadyToRunTypeLayoutFlags.READYTORUN_LAYOUT_GCLayout_Empty))
-                        {
-                            int cbGCRefMap = (actualSize / _contextReader.TargetPointerSize + 7) / 8;
-                            builder.Append(" GCLayout ");
-                            for (int i = 0; i < cbGCRefMap; i++)
-                            {
-                                builder.Append(ReadByte().ToString("X"));
-                            }
-                        }
-                    }
+                        if (strLen == 0)
+                            break;
 
-                    if (fixupType == ReadyToRunFixupKind.Check_TypeLayout)
-                        builder.Append(" (CHECK_TYPE_LAYOUT)");
-                    else
-                        builder.Append(" (VERIFY_TYPE_LAYOUT)");
+                        string lookupString = System.Text.Encoding.UTF8.GetString(_image, strStart, strLen);
+                        uint thunkRVA = BitConverter.ToUInt32(_image, Offset);
+                        SkipBytes(4);
+                        builder.Append($" \"{lookupString}\"->RVA[0x{thunkRVA:X}]");
+                    }
+                    builder.Append(')');
+                    break;
+
+                case ReadyToRunFixupKind.StoreMultiCallableAddrOfCode:
+                    uint targetCodeRVA = BitConverter.ToUInt32(_image, Offset);
+                    SkipBytes(4);
+                    uint storeLocationRVA = BitConverter.ToUInt32(_image, Offset);
+                    SkipBytes(4);
+                    builder.Append($" (STORE_MULTI_CALLABLE_ADDR_OF_CODE Target:RVA[0x{targetCodeRVA:X}] Location:RVA[0x{storeLocationRVA:X}])");
                     break;
 
                 case ReadyToRunFixupKind.Check_VirtualFunctionOverride:
@@ -1376,14 +1412,14 @@ namespace ILCompiler.Reflection.ReadyToRun
                     ParseMethod(builder);
                     builder.Append($" ImplType :");
                     ParseType(builder);
-                    if (flags.HasFlag(ReadyToRunVirtualFunctionOverrideFlags.VirtualFunctionOverriden))
+                    if (flags.HasFlag(ReadyToRunVirtualFunctionOverrideFlags.VirtualFunctionOverridden))
                     {
                         builder.Append($" ImplMethod :");
                         ParseMethod(builder);
                     }
                     else
                     {
-                        builder.Append("Not Overriden");
+                        builder.Append("Not Overridden");
                     }
 
                     if (fixupType == ReadyToRunFixupKind.Check_TypeLayout)
@@ -1425,7 +1461,18 @@ namespace ILCompiler.Reflection.ReadyToRun
                     break;
 
                 case ReadyToRunFixupKind.DeclaringTypeHandle:
-                    ParseType(builder);
+                    if (_contextReader.DeclaringTypeHandleFixupUsesMethodSignature)
+                    {
+                        ParseMethod(builder);
+                    }
+                    else
+                    {
+                        // Images predating R2R version 27 encode the declaring type followed by the type
+                        // named by the token.
+                        ParseType(builder);
+                        builder.Append(" of ");
+                        ParseType(builder);
+                    }
                     builder.Append(" (DECLARING_TYPE_HANDLE)");
                     break;
 
@@ -1437,6 +1484,20 @@ namespace ILCompiler.Reflection.ReadyToRun
                 case ReadyToRunFixupKind.PInvokeTarget:
                     ParseMethod(builder);
                     builder.Append(" (PINVOKE_TARGET)");
+                    break;
+
+                case ReadyToRunFixupKind.Check_IL_Body:
+                case ReadyToRunFixupKind.Verify_IL_Body:
+                    uint ilBodyByteBlobSize = ReadUInt();
+                    SkipBytes(ilBodyByteBlobSize);
+                    uint types = ReadUInt();
+                    for (uint i = 0; i < types; i++)
+                        ParseType();
+                    ParseMethod(builder);
+                    if (fixupType == ReadyToRunFixupKind.Check_IL_Body)
+                        builder.Append(" (CHECK_IL_BODY)");
+                    else
+                        builder.Append(" (VERIFY_IL_BODY)");
                     break;
 
                 default:
@@ -1478,6 +1539,48 @@ namespace ILCompiler.Reflection.ReadyToRun
         private void ParseMethod(StringBuilder builder)
         {
             builder.Append(ParseMethod());
+        }
+
+        private void ParseTypeLayout(StringBuilder builder)
+        {
+            ReadyToRunTypeLayoutFlags layoutFlags = (ReadyToRunTypeLayoutFlags)ReadUInt();
+            builder.Append($" Flags {layoutFlags}");
+            int actualSize = (int)ReadUInt();
+            builder.Append($" Size {actualSize}");
+
+            if (layoutFlags.HasFlag(ReadyToRunTypeLayoutFlags.READYTORUN_LAYOUT_HFA))
+            {
+                builder.Append($" HFAType {ReadUInt()}");
+            }
+
+            if (layoutFlags.HasFlag(ReadyToRunTypeLayoutFlags.READYTORUN_LAYOUT_Alignment))
+            {
+                if (!layoutFlags.HasFlag(ReadyToRunTypeLayoutFlags.READYTORUN_LAYOUT_Alignment_Native))
+                {
+                    builder.Append($" Align {ReadUInt()}");
+                }
+                else
+                {
+                    builder.Append(" Align native");
+                }
+            }
+
+            if (layoutFlags.HasFlag(ReadyToRunTypeLayoutFlags.READYTORUN_LAYOUT_GCLayout))
+            {
+                if (!layoutFlags.HasFlag(ReadyToRunTypeLayoutFlags.READYTORUN_LAYOUT_GCLayout_Empty))
+                {
+                    int cbGCRefMap = (actualSize / _contextReader.TargetPointerSize + 7) / 8;
+                    builder.Append(" GCLayout 0x");
+                    for (int i = 0; i < cbGCRefMap; i++)
+                    {
+                        builder.Append(ReadByte().ToString("X"));
+                    }
+                }
+                else
+                {
+                    builder.Append(" GCLayout 0x00 (Empty)");
+                }
+            }
         }
 
         /// <summary>
@@ -1608,6 +1711,10 @@ namespace ILCompiler.Reflection.ReadyToRun
                     builder.Append("RETHROW");
                     break;
 
+                case ReadyToRunHelper.ThrowExact:
+                    builder.Append("THROW_EXACT");
+                    break;
+
                 case ReadyToRunHelper.Overflow:
                     builder.Append("OVERFLOW");
                     break;
@@ -1628,6 +1735,22 @@ namespace ILCompiler.Reflection.ReadyToRun
                     builder.Append("THROW_DIV_ZERO");
                     break;
 
+                case ReadyToRunHelper.ThrowArgument:
+                    builder.Append("THROW_ARGUMENT");
+                    break;
+
+                case ReadyToRunHelper.ThrowArgumentOutOfRange:
+                    builder.Append("THROW_ARGUMENT_OUT_OF_RANGE");
+                    break;
+
+                case ReadyToRunHelper.ThrowPlatformNotSupported:
+                    builder.Append("THROW_PLATFORM_NOT_SUPPORTED");
+                    break;
+
+                case ReadyToRunHelper.ThrowNotImplemented:
+                    builder.Append("THROW_NOT_IMPLEMENTED");
+                    break;
+
                 // Write barriers
                 case ReadyToRunHelper.WriteBarrier:
                     builder.Append("WRITE_BARRIER");
@@ -1639,6 +1762,14 @@ namespace ILCompiler.Reflection.ReadyToRun
 
                 case ReadyToRunHelper.ByRefWriteBarrier:
                     builder.Append("BYREF_WRITE_BARRIER");
+                    break;
+
+                case ReadyToRunHelper.BulkWriteBarrier:
+                    builder.Append("BULK_WRITE_BARRIER");
+                    break;
+
+                case ReadyToRunHelper.BulkWriteBarrierSmall:
+                    builder.Append("BULK_WRITE_BARRIER_SMALL");
                     break;
 
                 // Array helpers
@@ -1654,8 +1785,16 @@ namespace ILCompiler.Reflection.ReadyToRun
                     builder.Append("MEM_SET");
                     break;
 
+                case ReadyToRunHelper.MemZero:
+                    builder.Append("MEM_ZERO");
+                    break;
+
                 case ReadyToRunHelper.MemCpy:
                     builder.Append("MEM_CPY");
+                    break;
+
+                case ReadyToRunHelper.NativeMemSet:
+                    builder.Append("NATIVE_MEM_SET");
                     break;
 
                 // PInvoke helpers
@@ -1667,8 +1806,16 @@ namespace ILCompiler.Reflection.ReadyToRun
                     builder.Append("PINVOKE_END");
                     break;
 
+                case ReadyToRunHelper.ResumeAfterCatch:
+                    builder.Append("RESUME_AFTER_CATCH");
+                    break;
+
                 case ReadyToRunHelper.GCPoll:
                     builder.Append("GCPOLL");
+                    break;
+
+                case ReadyToRunHelper.WasmProfSamplepoint:
+                    builder.Append("WASM_PROF_SAMPLEPOINT");
                     break;
 
                 case ReadyToRunHelper.GetCurrentManagedThreadId:
@@ -1722,12 +1869,12 @@ namespace ILCompiler.Reflection.ReadyToRun
                     builder.Append("UNBOX_NULLABLE");
                     break;
 
-                case ReadyToRunHelper.NewMultiDimArr:
-                    builder.Append("NEW_MULTI_DIM_ARR");
+                case ReadyToRunHelper.Unbox_TypeTest:
+                    builder.Append("UNBOX_TYPETEST");
                     break;
 
-                case ReadyToRunHelper.NewMultiDimArr_NonVarArg:
-                    builder.Append("NEW_MULTI_DIM_ARR__NON_VAR_ARG");
+                case ReadyToRunHelper.NewMultiDimArr:
+                    builder.Append("NEW_MULTI_DIM_ARR");
                     break;
 
                 case ReadyToRunHelper.MonitorEnter:
@@ -1747,12 +1894,24 @@ namespace ILCompiler.Reflection.ReadyToRun
                     builder.Append("NEW_ARRAY");
                     break;
 
+                case ReadyToRunHelper.NewMaybeFrozenArray:
+                    builder.Append("NEW_MAYBEFROZEN_ARRAY");
+                    break;
+
+                case ReadyToRunHelper.NewMaybeFrozenObject:
+                    builder.Append("NEW_MAYBEFROZEN_OBJECT");
+                    break;
+
                 case ReadyToRunHelper.CheckCastAny:
                     builder.Append("CHECK_CAST_ANY");
                     break;
 
                 case ReadyToRunHelper.CheckInstanceAny:
                     builder.Append("CHECK_INSTANCE_ANY");
+                    break;
+
+                case ReadyToRunHelper.IsInstanceOfException:
+                    builder.Append("SIMPLE_ISINSTANCE_OF");
                     break;
 
                 case ReadyToRunHelper.GenericGcStaticBase:
@@ -1842,10 +2001,6 @@ namespace ILCompiler.Reflection.ReadyToRun
                     break;
 
                 // Floating point conversions
-                case ReadyToRunHelper.Dbl2Int:
-                    builder.Append("DBL2INT");
-                    break;
-
                 case ReadyToRunHelper.Dbl2IntOvf:
                     builder.Append("DBL2INTOVF");
                     break;
@@ -1858,10 +2013,6 @@ namespace ILCompiler.Reflection.ReadyToRun
                     builder.Append("DBL2LNGOVF");
                     break;
 
-                case ReadyToRunHelper.Dbl2UInt:
-                    builder.Append("DBL2UINT");
-                    break;
-
                 case ReadyToRunHelper.Dbl2UIntOvf:
                     builder.Append("DBL2UINTOVF");
                     break;
@@ -1872,6 +2023,14 @@ namespace ILCompiler.Reflection.ReadyToRun
 
                 case ReadyToRunHelper.Dbl2ULngOvf:
                     builder.Append("DBL2ULNGOVF");
+                    break;
+
+                case ReadyToRunHelper.Lng2Flt:
+                    builder.Append("LNG2FLT");
+                    break;
+
+                case ReadyToRunHelper.ULng2Flt:
+                    builder.Append("ULNG2FLT");
                     break;
 
                 // Floating point ops
@@ -1888,7 +2047,7 @@ namespace ILCompiler.Reflection.ReadyToRun
                     builder.Append("FLT_ROUND");
                     break;
 
-                // Personality rountines
+                // Personality routines
                 case ReadyToRunHelper.PersonalityRoutine:
                     builder.Append("PERSONALITY_ROUTINE");
                     break;
@@ -1947,8 +2106,28 @@ namespace ILCompiler.Reflection.ReadyToRun
                     builder.Append("STACK_PROBE");
                     break;
 
+                case ReadyToRunHelper.AllocContinuation:
+                    builder.Append("ALLOC_CONTINUATION");
+                    break;
+                case ReadyToRunHelper.AllocContinuationMethod:
+                    builder.Append("ALLOC_CONTINUATION_METHOD");
+                    break;
+                case ReadyToRunHelper.AllocContinuationClass:
+                    builder.Append("ALLOC_CONTINUATION_CLASS");
+                    break;
+
+                case ReadyToRunHelper.InitClass:
+                    builder.Append("INIT_CLASS");
+                    break;
+                case ReadyToRunHelper.InitInstClass:
+                    builder.Append("INIT_INST_CLASS");
+                    break;
+                case ReadyToRunHelper.R2RToInterpreter:
+                    builder.Append("R2R_TO_INTERPRETER");
+                    break;
+
                 default:
-                    throw new BadImageFormatException();
+                    throw new BadImageFormatException(helperType.ToString());
             }
         }
 

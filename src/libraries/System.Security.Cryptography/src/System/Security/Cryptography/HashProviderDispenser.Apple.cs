@@ -5,40 +5,72 @@ using System.Diagnostics;
 using System.Security.Cryptography.Apple;
 using Internal.Cryptography;
 
+using PAL_HashAlgorithm = Interop.AppleCrypto.PAL_HashAlgorithm;
+
 namespace System.Security.Cryptography
 {
     internal static partial class HashProviderDispenser
     {
         public static HashProvider CreateHashProvider(string hashAlgorithmId)
         {
-            Interop.AppleCrypto.PAL_HashAlgorithm algorithm = HashAlgorithmToPal(hashAlgorithmId);
-            return new AppleDigestProvider(algorithm);
+            return new AppleDigestProvider(hashAlgorithmId);
         }
 
         public static HashProvider CreateMacProvider(string hashAlgorithmId, ReadOnlySpan<byte> key)
         {
-            Interop.AppleCrypto.PAL_HashAlgorithm algorithm = HashAlgorithmToPal(hashAlgorithmId);
-            return new AppleHmacProvider(algorithm, key);
+            return new AppleHmacProvider(hashAlgorithmId, key);
         }
 
-        private static Interop.AppleCrypto.PAL_HashAlgorithm HashAlgorithmToPal(string hashAlgorithmId) => hashAlgorithmId switch {
-            HashAlgorithmNames.MD5 => Interop.AppleCrypto.PAL_HashAlgorithm.Md5,
-            HashAlgorithmNames.SHA1 => Interop.AppleCrypto.PAL_HashAlgorithm.Sha1,
-            HashAlgorithmNames.SHA256 => Interop.AppleCrypto.PAL_HashAlgorithm.Sha256,
-            HashAlgorithmNames.SHA384 => Interop.AppleCrypto.PAL_HashAlgorithm.Sha384,
-            HashAlgorithmNames.SHA512 => Interop.AppleCrypto.PAL_HashAlgorithm.Sha512,
-            _ => throw new CryptographicException(SR.Format(SR.Cryptography_UnknownHashAlgorithm, hashAlgorithmId))
-        };
+        internal static bool HashSupported(string hashAlgorithmId)
+        {
+            switch (hashAlgorithmId)
+            {
+                case HashAlgorithmNames.MD5:
+                case HashAlgorithmNames.SHA1:
+                case HashAlgorithmNames.SHA256:
+                case HashAlgorithmNames.SHA384:
+                case HashAlgorithmNames.SHA512:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        internal static bool MacSupported(string hashAlgorithmId) => HashSupported(hashAlgorithmId);
+
+        internal static bool KmacSupported(string algorithmId)
+        {
+            _ = algorithmId;
+            return false;
+        }
 
         internal static class OneShotHashProvider
         {
+            public static int KmacData(
+                string algorithmId,
+                ReadOnlySpan<byte> key,
+                ReadOnlySpan<byte> source,
+                Span<byte> destination,
+                ReadOnlySpan<byte> customizationString,
+                bool xof)
+            {
+                _ = algorithmId;
+                _ = key;
+                _ = customizationString;
+                _ = source;
+                _ = destination;
+                _ = xof;
+                Debug.Fail("Platform should have checked if KMAC was available first.");
+                throw new UnreachableException();
+            }
+
             public static unsafe int MacData(
                 string hashAlgorithmId,
                 ReadOnlySpan<byte> key,
                 ReadOnlySpan<byte> source,
                 Span<byte> destination)
             {
-                Interop.AppleCrypto.PAL_HashAlgorithm algorithm = HashAlgorithmToPal(hashAlgorithmId);
+                Interop.AppleCrypto.PAL_HashAlgorithm algorithm = HashAlgorithmNames.HashAlgorithmToPal(hashAlgorithmId);
 
                 fixed (byte* pKey = key)
                 fixed (byte* pSource = source)
@@ -67,9 +99,18 @@ namespace System.Security.Cryptography
                 }
             }
 
+            public static void HashDataXof(string hashAlgorithmId, ReadOnlySpan<byte> source, Span<byte> destination)
+            {
+                _ = hashAlgorithmId;
+                _ = source;
+                _ = destination;
+                Debug.Fail("Caller should have checked if platform supported XOFs.");
+                throw new UnreachableException();
+            }
+
             public static unsafe int HashData(string hashAlgorithmId, ReadOnlySpan<byte> source, Span<byte> destination)
             {
-                Interop.AppleCrypto.PAL_HashAlgorithm algorithm = HashAlgorithmToPal(hashAlgorithmId);
+                Interop.AppleCrypto.PAL_HashAlgorithm algorithm = HashAlgorithmNames.HashAlgorithmToPal(hashAlgorithmId);
 
                 fixed (byte* pSource = source)
                 fixed (byte* pDestination = destination)
@@ -96,204 +137,168 @@ namespace System.Security.Cryptography
             }
         }
 
-        private sealed class AppleHmacProvider : HashProvider
-        {
-            private readonly byte[] _key;
-            private readonly SafeHmacHandle _ctx;
-
-            private bool _running;
-
-            public override int HashSizeInBytes { get; }
-
-            internal AppleHmacProvider(Interop.AppleCrypto.PAL_HashAlgorithm algorithm, ReadOnlySpan<byte> key)
-            {
-                _key = key.ToArray();
-                int hashSizeInBytes = 0;
-                _ctx = Interop.AppleCrypto.HmacCreate(algorithm, ref hashSizeInBytes);
-
-                if (hashSizeInBytes < 0)
-                {
-                    _ctx.Dispose();
-                    throw new PlatformNotSupportedException(
-                        SR.Format(
-                            SR.Cryptography_UnknownHashAlgorithm,
-                            Enum.GetName(typeof(Interop.AppleCrypto.PAL_HashAlgorithm), algorithm)));
-                }
-
-                if (_ctx.IsInvalid)
-                {
-                    _ctx.Dispose();
-                    throw new CryptographicException();
-                }
-
-                HashSizeInBytes = hashSizeInBytes;
-            }
-
-            public override void AppendHashData(ReadOnlySpan<byte> data)
-            {
-                if (!_running)
-                {
-                    SetKey();
-                }
-
-                if (Interop.AppleCrypto.HmacUpdate(_ctx, data) != 1)
-                {
-                    throw new CryptographicException();
-                }
-            }
-
-            private void SetKey()
-            {
-                if (Interop.AppleCrypto.HmacInit(_ctx, _key, _key.Length) != 1)
-                {
-                    throw new CryptographicException();
-                }
-
-                _running = true;
-            }
-
-            public override unsafe int FinalizeHashAndReset(Span<byte> destination)
-            {
-                Debug.Assert(destination.Length >= HashSizeInBytes);
-
-                if (!_running)
-                {
-                    SetKey();
-                }
-
-                if (Interop.AppleCrypto.HmacFinal(_ctx, destination) != 1)
-                {
-                    throw new CryptographicException();
-                }
-
-                _running = false;
-                return HashSizeInBytes;
-            }
-
-            public override unsafe int GetCurrentHash(Span<byte> destination)
-            {
-                Debug.Assert(destination.Length >= HashSizeInBytes);
-
-                if (!_running)
-                {
-                    SetKey();
-                }
-
-                if (Interop.AppleCrypto.HmacCurrent(_ctx, destination) != 1)
-                {
-                    throw new CryptographicException();
-                }
-
-                return HashSizeInBytes;
-            }
-
-            public override void Dispose(bool disposing)
-            {
-                if (disposing)
-                {
-                    _ctx?.Dispose();
-                    Array.Clear(_key);
-                }
-            }
-
-            public override void Reset() => _running = false;
-        }
-
         private sealed class AppleDigestProvider : HashProvider
         {
-            private readonly SafeDigestCtxHandle _ctx;
+            private readonly LiteHash _liteHash;
             private bool _running;
+            private ConcurrencyBlock _block;
 
-            public override int HashSizeInBytes { get; }
-
-            internal AppleDigestProvider(Interop.AppleCrypto.PAL_HashAlgorithm algorithm)
+            public AppleDigestProvider(string hashAlgorithmId)
             {
-                int hashSizeInBytes;
-                _ctx = Interop.AppleCrypto.DigestCreate(algorithm, out hashSizeInBytes);
+                _liteHash = LiteHashProvider.CreateHash(hashAlgorithmId);
+            }
 
-                if (hashSizeInBytes < 0)
-                {
-                    _ctx.Dispose();
-                    throw new PlatformNotSupportedException(
-                        SR.Format(
-                            SR.Cryptography_UnknownHashAlgorithm,
-                            Enum.GetName(typeof(Interop.AppleCrypto.PAL_HashAlgorithm), algorithm)));
-                }
-
-                if (_ctx.IsInvalid)
-                {
-                    _ctx.Dispose();
-                    throw new CryptographicException();
-                }
-
-                HashSizeInBytes = hashSizeInBytes;
+            private AppleDigestProvider(LiteHash liteHash, bool running)
+            {
+                _liteHash = liteHash;
+                _running = running;
             }
 
             public override void AppendHashData(ReadOnlySpan<byte> data)
             {
-                _running = true;
-                int ret = Interop.AppleCrypto.DigestUpdate(_ctx, data);
-
-                if (ret != 1)
+                using (ConcurrencyBlock.Enter(ref _block))
                 {
-                    Debug.Assert(ret == 0, $"DigestUpdate return value {ret} was not 0 or 1");
-                    throw new CryptographicException();
+                    _liteHash.Append(data);
+                    _running = true;
+                }
+            }
+
+            public override AppleDigestProvider Clone()
+            {
+                using (ConcurrencyBlock.Enter(ref _block))
+                {
+                    return new AppleDigestProvider(_liteHash.Clone(), _running);
                 }
             }
 
             public override int FinalizeHashAndReset(Span<byte> destination)
             {
-                Debug.Assert(destination.Length >= HashSizeInBytes);
-
-                int ret = Interop.AppleCrypto.DigestFinal(_ctx, destination);
-                _running = false;
-
-                if (ret != 1)
+                using (ConcurrencyBlock.Enter(ref _block))
                 {
-                    Debug.Assert(ret == 0, $"DigestFinal return value {ret} was not 0 or 1");
-                    throw new CryptographicException();
+                    int written = _liteHash.Finalize(destination);
+                    // Apple's DigestFinal self-resets, so don't bother calling reset.
+                    _running = false;
+                    return written;
                 }
-
-                return HashSizeInBytes;
             }
 
             public override int GetCurrentHash(Span<byte> destination)
             {
-                Debug.Assert(destination.Length >= HashSizeInBytes);
-
-                int ret = Interop.AppleCrypto.DigestCurrent(_ctx, destination);
-
-                if (ret != 1)
+                using (ConcurrencyBlock.Enter(ref _block))
                 {
-                    Debug.Assert(ret == 0, $"DigestFinal return value {ret} was not 0 or 1");
-                    throw new CryptographicException();
-                }
-
-                return HashSizeInBytes;
-            }
-
-            public override void Reset()
-            {
-                if (_running)
-                {
-                    int ret = Interop.AppleCrypto.DigestReset(_ctx);
-
-                    if (ret != 1)
-                    {
-                        Debug.Assert(ret == 0, $"DigestReset return value {ret} was not 0 or 1");
-                        throw new CryptographicException();
-                    }
-
-                    _running = false;
+                    return _liteHash.Current(destination);
                 }
             }
+
+            public override int HashSizeInBytes => _liteHash.HashSizeInBytes;
 
             public override void Dispose(bool disposing)
             {
                 if (disposing)
                 {
-                    _ctx?.Dispose();
+                    _liteHash.Dispose();
                 }
+            }
+
+            public override void Reset()
+            {
+                using (ConcurrencyBlock.Enter(ref _block))
+                {
+                    if (_running)
+                    {
+                        _liteHash.Reset();
+                        _running = false;
+                    }
+                }
+            }
+        }
+
+        private sealed class AppleHmacProvider : HashProvider
+        {
+            private readonly LiteHmac _liteHmac;
+            private readonly byte[] _key;
+            private bool _running;
+            private ConcurrencyBlock _block;
+
+            public AppleHmacProvider(string hashAlgorithmId, ReadOnlySpan<byte> key)
+            {
+                PAL_HashAlgorithm algorithm = HashAlgorithmNames.HashAlgorithmToPal(hashAlgorithmId);
+                _liteHmac = new LiteHmac(algorithm, key, preinitialize: false);
+                _key = key.ToArray();
+            }
+
+            private AppleHmacProvider(LiteHmac liteHmac, ReadOnlySpan<byte> key, bool running)
+            {
+                _liteHmac = liteHmac;
+                _running = running;
+                _key = key.ToArray();
+            }
+
+            public override void AppendHashData(ReadOnlySpan<byte> data)
+            {
+                using (ConcurrencyBlock.Enter(ref _block))
+                {
+                    if (!_running)
+                    {
+                        _liteHmac.Reset(_key);
+                    }
+
+                    _liteHmac.Append(data);
+                    _running = true;
+                }
+            }
+
+            public override int FinalizeHashAndReset(Span<byte> destination)
+            {
+                using (ConcurrencyBlock.Enter(ref _block))
+                {
+                    if (!_running)
+                    {
+                        _liteHmac.Reset(_key);
+                    }
+
+                    int written = _liteHmac.Finalize(destination);
+                    _liteHmac.Reset(_key);
+                    _running = false;
+                    return written;
+                }
+            }
+
+            public override int GetCurrentHash(Span<byte> destination)
+            {
+                using (ConcurrencyBlock.Enter(ref _block))
+                {
+                    if (!_running)
+                    {
+                        _liteHmac.Reset(_key);
+                    }
+
+                    return _liteHmac.Current(destination);
+                }
+            }
+
+            public override AppleHmacProvider Clone()
+            {
+                using (ConcurrencyBlock.Enter(ref _block))
+                {
+                    return new AppleHmacProvider(_liteHmac.Clone(), _key, _running);
+                }
+            }
+
+            public override int HashSizeInBytes => _liteHmac.HashSizeInBytes;
+
+            public override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    _liteHmac.Dispose();
+                    Array.Clear(_key);
+                }
+            }
+
+            public override void Reset()
+            {
+                _running = false;
             }
         }
     }

@@ -344,18 +344,15 @@ namespace System.Net.Primitives.Unit.Tests
                 }
             }; // Empty header followed by another empty header at the end
 
-            if (!PlatformDetection.IsNetFramework)
+            yield return new object[]
             {
-                yield return new object[]
+                uSecure,
+                "hello world=value",
+                new Cookie[]
                 {
-                    uSecure,
-                    "hello world=value",
-                    new Cookie[]
-                    {
-                        new Cookie("hello world", "value"),
-                    }
-                }; // Name with space in it
-            }
+                    new Cookie("hello world", "value"),
+                }
+            }; // Name with space in it
         }
 
         [Theory]
@@ -364,6 +361,73 @@ namespace System.Net.Primitives.Unit.Tests
         {
             CookieContainer cc = CreateCount11Container();
             Assert.Equal(expected, cc.GetCookieHeader(uri));
+        }
+
+        [Theory]
+        [InlineData("", "", 0)]
+        [InlineData("", "\"\"", 0)]
+        [InlineData("\"", "\"\"", -1)]
+        [InlineData("", "/", 1)]
+        [InlineData("/", "/a", 1)]
+        [InlineData("/a", "/a/b", 1)]
+        [InlineData("/a", "/b", -1)]
+        [InlineData("\"/a\"", "/b", -1)]
+        [InlineData("/a", "\"/b\"", -1)]
+        [InlineData("\"/a\"", "\"/b\"", -1)]
+        [InlineData("/a", "\"/a\"", 0)]
+        [InlineData("\"/a\"", "\"/a/b\"", 1)]
+        [InlineData("\"\"", "\"/a\"", 1)]
+        [InlineData("/A", "/a", -1)]
+        [InlineData("/a", "/B", 1)]
+        [InlineData("/a\0b", "/ab", -1)]
+        [InlineData("/a\"", "/a", -1)]
+        [InlineData("\"/a", "/a", -1)]
+        [InlineData("\"\"/a\"\"", "\"/a\"", -1)]
+        [InlineData("/\uD800\uDC00", "/\uE000", -1)]
+        [InlineData("/abcdefghijklmnopqrstuvwxyz/a", "/abcdefghijklmnopqrstuvwxyz/b", -1)]
+        [InlineData("\"/abcdefghijklmnopqrstuvwxyz\"", "/abcdefghijklmnopqrstuvwxyz/a", 1)]
+        public void PathList_Paths_OrdersOrdinallyWithLongerPrefixesFirst(string left, string right, int expectedSign)
+        {
+            VerifyOrder(left, right, expectedSign);
+            VerifyOrder(right, left, -expectedSign);
+
+            static void VerifyOrder(string left, string right, int expectedSign)
+            {
+                var paths = new PathList();
+                var leftCookies = new CookieCollection();
+                var rightCookies = new CookieCollection();
+                paths[left] = leftCookies;
+                paths[right] = rightCookies;
+
+                Assert.Same(rightCookies, paths[right]);
+                if (expectedSign == 0)
+                {
+                    Assert.Equal(1, paths.Count);
+                    Assert.Same(rightCookies, paths[left]);
+                }
+                else
+                {
+                    Assert.Equal(2, paths.Count);
+                    Assert.Same(leftCookies, paths[left]);
+                    Assert.Equal(expectedSign < 0 ? left : right, paths.List.GetKey(0));
+                    Assert.Equal(expectedSign < 0 ? right : left, paths.List.GetKey(1));
+                }
+            }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void GetCookieHeader_PathPrefixes_OrdersLongestFirst(bool quoted)
+        {
+            var container = new CookieContainer();
+            var uri = new Uri("http://contoso.com/a/b");
+            foreach (string path in new[] { "/", "/a", "/a/b" })
+            {
+                container.Add(uri, new Cookie("name", path, quoted ? $"\"{path}\"" : path, "contoso.com"));
+            }
+
+            Assert.Equal("name=/a/b; name=/a; name=/", container.GetCookieHeader(uri));
         }
 
         [Theory]
@@ -471,39 +535,6 @@ namespace System.Net.Primitives.Unit.Tests
         }
 
         [Fact]
-        public void GetCookies_AddCookieVersion1WithExplicitDomain_CookieReturnedForDomainAndOneLevelSubDomain()
-        {
-            const string SchemePrefix = "http://";
-            const string OriginalDomain = "contoso.com";
-            const string OriginalDomainWithLeadingDot = "." + OriginalDomain;
-
-            var container = new CookieContainer();
-            var cookie1 = new Cookie(CookieName1, CookieValue1) { Domain = OriginalDomainWithLeadingDot, Version = 1 };
-            container.Add(new Uri(SchemePrefix + OriginalDomain), cookie1);
-
-            var uri = new Uri(SchemePrefix + OriginalDomain);
-            CookieCollection cookies = container.GetCookies(uri);
-            Assert.Equal(1, cookies.Count);
-            Assert.Equal(OriginalDomainWithLeadingDot, cookies[CookieName1].Domain);
-
-            uri = new Uri(SchemePrefix + "www." + OriginalDomain);
-            cookies = container.GetCookies(uri);
-            Assert.Equal(1, cookies.Count);
-
-            uri = new Uri(SchemePrefix + "x.www." + OriginalDomain);
-            cookies = container.GetCookies(uri);
-            Assert.Equal(0, cookies.Count);
-
-            uri = new Uri(SchemePrefix + "y.x.www." + OriginalDomain);
-            cookies = container.GetCookies(uri);
-            Assert.Equal(0, cookies.Count);
-
-            uri = new Uri(SchemePrefix + "z.y.x.www." + OriginalDomain);
-            cookies = container.GetCookies(uri);
-            Assert.Equal(0, cookies.Count);
-        }
-
-        [Fact]
         public void Ctor_Capacity_Success()
         {
             CookieContainer cc = new CookieContainer(5);
@@ -513,7 +544,7 @@ namespace System.Net.Primitives.Unit.Tests
         [Fact]
         public void Ctor_Capacity_Invalid()
         {
-            AssertExtensions.Throws<ArgumentException>("capacity", () => new CookieContainer(0)); // Capacity <= 0
+            AssertExtensions.Throws<ArgumentOutOfRangeException>("capacity", () => new CookieContainer(0)); // Capacity <= 0
         }
 
         [Fact]
@@ -570,7 +601,7 @@ namespace System.Net.Primitives.Unit.Tests
             Assert.Equal(4, cc.Count);
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public async Task Add_ReachedMaxCountWithExpiredCookies_Added()
         {
             Cookie c1 = new Cookie("name1", "value", "", ".domain1.com");
@@ -593,13 +624,20 @@ namespace System.Net.Primitives.Unit.Tests
         {
             Uri uri = new Uri("http://domain.com");
 
+            Cookie c0 = new Cookie("name1", "value", "", "domain.com");
             Cookie c1 = new Cookie("name1", "value", "", ".domain.com"); // Variant = Plain
             Cookie c2 = new Cookie("name1", "value", "", ".domain.com") { Port = "\"80\"" }; // Variant = RFC2965 (should override)
             Cookie c3 = new Cookie("name1", "value", "", ".domain.com") { Port = "\"80, 90\"" }; // Variant = RFC2965 (should override)
             Cookie c4 = new Cookie("name1", "value", "", ".domain.com") { Version = 1 }; // Variant = RFC2109 (should be rejected)
 
             CookieContainer cc = new CookieContainer();
+
+            cc.Add(c0);
+            Assert.Equal("domain.com", cc.GetCookies(uri)[0].Domain);
+
             cc.Add(c1);
+            Assert.Equal(1, cc.Count);
+            Assert.Equal(".domain.com", cc.GetCookies(uri)[0].Domain);
 
             // Adding a newer variant should override an older one
             cc.Add(c2);
@@ -615,6 +653,24 @@ namespace System.Net.Primitives.Unit.Tests
 
             // Ensure that although we added 3 cookies, only 1 was actually added (the others were overridden or rejected)
             Assert.Equal(1, cc.Count);
+        }
+
+        [Fact]
+        public static void Add_SetCookies_SameCookieDifferentVairants_OverridesOlderVariant()
+        {
+            Uri uri = new Uri("http://domain.com");
+            CookieContainer cc = new();
+            Cookie a = new()
+            {
+                Domain = "domain.com",
+                Name = "lol",
+                Value = "0"
+            };
+            cc.Add(uri, a);
+            cc.SetCookies(uri, "lol=42");
+
+            Assert.Equal(1, cc.Count);
+            Assert.Equal("42", cc.GetCookies(uri).Single().Value);
         }
 
         [Fact]
@@ -652,11 +708,11 @@ namespace System.Net.Primitives.Unit.Tests
         [Fact]
         public void Ctor_CapacityPerDomainCapacityMaxCookieSize_Invalid()
         {
-            AssertExtensions.Throws<ArgumentException>("capacity", () => new CookieContainer(0, 10, 5)); // Capacity <= 0
+            AssertExtensions.Throws<ArgumentOutOfRangeException>("capacity", () => new CookieContainer(0, 10, 5)); // Capacity <= 0
             Assert.Throws<ArgumentOutOfRangeException>(() => new CookieContainer(5, 0, 5)); // Per domain capacity <= 0
             Assert.Throws<ArgumentOutOfRangeException>(() => new CookieContainer(5, 10, 5)); // Per domain capacity > Capacity
 
-            AssertExtensions.Throws<ArgumentException>("maxCookieSize", () => new CookieContainer(15, 10, 0)); // Max cookie size <= 0
+            AssertExtensions.Throws<ArgumentOutOfRangeException>("maxCookieSize", () => new CookieContainer(15, 10, 0)); // Max cookie size <= 0
         }
 
         [Fact]
@@ -705,7 +761,7 @@ namespace System.Net.Primitives.Unit.Tests
             Assert.Equal(c1, cc3[1]);
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public async Task GetCookies_RemovesExpired_Cookies()
         {
             Cookie c1 = new Cookie("name1", "value", "", ".url1.com");
@@ -784,10 +840,10 @@ namespace System.Net.Primitives.Unit.Tests
 
             for (int i = 0; i < expected.Length; i++)
             {
-                Cookie c1 = expected[i];
                 Cookie c2 = cc2[i];
-                Assert.Equal(c1.Name, c2.Name); // Primitive check for equality
-                Assert.Equal(c1.Value, c2.Value);
+                Cookie c1 = expected.Single(c => c.Name == c2.Name);
+
+                Assert.Equal(c1.Value, c2.Value); // Primitive check for equality
             }
         }
 
@@ -866,6 +922,51 @@ namespace System.Net.Primitives.Unit.Tests
             Assert.Throws<CookieException>(() => container.SetCookies(uri, cookie));
         }
 
+        [Theory]
+        [InlineData("example.com", "example.com"  )]
+        [InlineData("example.com", ".example.com" )]
+        [InlineData(".example.com", "example.com" )]
+        [InlineData(".example.com", ".example.com")]
+        public void SetCookies_DomainCheckSuccess_IgnoresLeadingDot(params string[] domains)
+        {
+            var uri = new Uri($"https://{domains[0].Trim('.')}/", UriKind.Absolute);
+            var container = new CookieContainer();
+
+            // First HTTP response...
+            container.SetCookies(uri, $"foo=bar; Path=/; Domain={domains[0]}");
+
+            // Second HTTP response...
+            container.SetCookies(uri, $"foo=baz; Path=/; Domain={domains[1]}");
+
+            CookieCollection acceptedCookies = container.GetCookies(uri);
+            Assert.Equal(1, acceptedCookies.Count);
+            Assert.Equal(domains[1], acceptedCookies[0].Domain);
+        }
+
+        [Theory]
+        [InlineData("test.example.com", "example.com")]
+        [InlineData("test.example.com", ".example.com")]
+        [InlineData("example.com", "test.example.com")]
+        [InlineData(".example.com", "test.example.com")]
+        public void SetCookies_DomainCheckFailure_IgnoresLeadingDot(params string[] domains)
+        {
+            var uri = new Uri($"https://test.example.com/", UriKind.Absolute);
+            var container = new CookieContainer();
+
+            // First HTTP response...
+            container.SetCookies(uri, $"foo=bar; Path=/; Domain={domains[0]}");
+
+            // Second HTTP response...
+            container.SetCookies(uri, $"foo=baz; Path=/; Domain={domains[1]}");
+
+            CookieCollection acceptedCookies = container.GetCookies(uri);
+            Assert.Equal(2, acceptedCookies.Count);
+            foreach (Cookie cookie in acceptedCookies)
+            {
+                Assert.Contains(cookie.Domain, domains);
+            }
+        }
+
         // Test default-path calculation as defined in
         // https://tools.ietf.org/html/rfc6265#section-5.1.4
         public static readonly TheoryData<string, string> DefaultPathData = new TheoryData<string, string>()
@@ -905,6 +1006,12 @@ namespace System.Net.Primitives.Unit.Tests
             {false, new [] {"//"}, "/", 0},
             {false, new [] {"//"}, "//", 1},
             {false, new [] {"", "/", "//", "///"}, "///", 4},
+            {false, new [] {"\"\""}, "/", 1},
+            {false, new [] {"\"/a\""}, "/a", 1},
+            {false, new [] {"\"/a\""}, "/a/b", 1},
+            {false, new [] {"\"/a/\""}, "/a/b", 1},
+            {false, new [] {"\"/a\""}, "/abc", 0},
+            {false, new [] {"\"/A\""}, "/a", 0},
 
             // Should not match the second half of the criteria:
             // "The cookie-path is a prefix of the request-path, and the first
@@ -940,6 +1047,101 @@ namespace System.Net.Primitives.Unit.Tests
             Uri requestUri = new Uri("http://test.com" + requestPath);
             CookieCollection collection = container.GetCookies(requestUri);
             Assert.Equal(expectedMatches, collection.Count);
+        }
+
+        [Fact]
+        public void Add_ImplicitDomainOfIPv6Hostname_Success()
+        {
+            CookieContainer container = new CookieContainer();
+            Cookie cookie = new Cookie("lol", "haha");
+            Uri uri = new Uri("https://[::FFFF:192.168.0.1]/test");
+            container.Add(uri, cookie);
+            Assert.Equal(uri.Host, container.GetCookies(uri).Single().Domain);
+        }
+
+        public static TheoryData<string, string> DomainMatching_WhenMatches_Success_Data = new TheoryData<string, string>()
+        {
+            { "https://q", "q" },
+            { "https://localhost/", "localhost" },
+            { "https://test.com", "test.com" },
+            { "https://test.COM", "tEsT.com" },
+            { "https://test.com", ".test.com" },
+            { "https://yay.test.com", "yay.test.com" },
+            { "https://yay.test.com", ".yay.test.com" },
+            { "https://yay.test.com", ".test.com" },
+            { "https://42.aaaa.bbb.cc.d.test.com", "d.test.com" },
+            { "https://yay.test.com/foo/bar", "test.com" },
+            { "https://127.0.1.1", "127.0.1.1" },
+            { "https://42.42.100.100", "42.42.100.100" },
+        };
+
+        [Theory]
+        [MemberData(nameof(DomainMatching_WhenMatches_Success_Data))]
+        public void DomainMatching_WhenMatches_Success(string uriString, string domain)
+        {
+            CookieContainer container = new CookieContainer();
+            Cookie cookie = new Cookie("lol", "haha")
+            {
+                Domain = domain
+            };
+
+            Uri uri = new Uri(uriString);
+            container.Add(uri, cookie);
+            Assert.Equal(1, container.Count);
+
+            CookieCollection collection = container.GetCookies(uri);
+            Assert.Equal(1, collection.Count);
+        }
+
+        [Fact]
+        public void DomainMatching_ExplicitDomain_MatchesMultiple()
+        {
+            CookieContainer container = new CookieContainer();
+            Cookie a = new Cookie("a", "aa", null, "a.com");
+            Cookie b = new Cookie("b", "bb", null, "b.a.com");
+            Cookie c = new Cookie("c", "cc", null, "c.b.a.com");
+
+            container.Add(new Uri("http://a.com"), a);
+            container.Add(new Uri("http://b.a.com"), b);
+            container.Add(new Uri("http://c.b.a.com"), c);
+
+            CookieCollection matches = container.GetCookies(new Uri("http://c.b.a.com"));
+            Assert.Equal(3, matches.Count);
+        }
+
+        public static TheoryData<string, string> DomainMatching_WhenDoesNotMatch_ThrowsCookieException_Data = new TheoryData<string, string>()
+        {
+            { "https://test.com", "test.co" }, // Domain is not a suffix
+            { "https://test.com", "x.test.com" }, // Domain is not a suffix (extra chars at start)
+            { "https://test.com", "ttest.com" }, // Suffix but not separated by dot
+            { "https://test.com", "test.com." }, // Trailing dot
+            { "https://test.com", "..test.com" }, // 2 leading dots
+            { "https://foo.test.com", "yay.test.com" }, // subdomain mismatch
+            { "https://42.42.100.100", "41.42.100.100" }, // different IP
+
+            // Single label domain without a full match.
+            { "https://test.com", ".com" },
+            { "https://test.com", "com" }, 
+
+            // If Host is an IP address, it should be equal to the domain.
+            // See https://issues.chromium.org/issues/40126142 and the last condition in
+            // https://datatracker.ietf.org/doc/html/rfc6265#section-5.1.3
+            { "https://1.2.3.4", ".2.3.4" }
+        };
+
+
+        [Theory]
+        [MemberData(nameof(DomainMatching_WhenDoesNotMatch_ThrowsCookieException_Data))]
+        public void DomainMatching_WhenDoesNotMatch_ThrowsCookieException(string uriString, string domain)
+        {
+            CookieContainer container = new CookieContainer();
+            Cookie cookie = new Cookie("lol", "haha")
+            {
+                Domain = domain
+            };
+
+            Uri uri = new Uri(uriString);
+            Assert.Throws<CookieException>(() => container.Add(uri, cookie));
         }
     }
 }

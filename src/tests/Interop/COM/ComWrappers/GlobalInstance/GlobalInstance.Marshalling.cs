@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using Xunit;
 namespace ComWrappersTests.GlobalInstance
 {
     using System;
@@ -9,7 +10,7 @@ namespace ComWrappersTests.GlobalInstance
     using TestLibrary;
     using Xunit;
 
-    partial class Program
+    public partial class Program
     {
         private static void ValidateNotRegisteredForTrackerSupport()
         {
@@ -19,7 +20,10 @@ namespace ComWrappersTests.GlobalInstance
             Assert.NotEqual(GlobalComWrappers.ReleaseObjectsCallAck, hr);
         }
 
-        static int Main(string[] doNotUse)
+        [ActiveIssue("Not supported on Mono", TestRuntimes.Mono)]
+        [Fact]
+        [Xunit.SkipOnCoreClrAttribute("Depends on windows-only COM->CLR transitions flowing hidden parameter", RuntimeTestModes.InterpreterActive)]
+        public static int TestEntryPoint()
         {
             try
             {

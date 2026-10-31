@@ -6,9 +6,13 @@
 
 // The JIT32 only supports up to 32767 variables
 
+
+namespace b602004;
+
 using System;
 using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
+using Xunit;
 
 //Disable the warning about having variables that are not used
 #pragma warning disable 219
@@ -2821,7 +2825,9 @@ public class Test_Inline_Vars2
         Console.WriteLine(a400);
         return 100;
     }
-    static int Main()
+    [OuterLoop]
+    [Fact]
+    public static void TestEntryPoint()
     {
 
         (new Test_Inline_Vars2()).RunTest0_Inline();
@@ -3625,7 +3631,6 @@ public class Test_Inline_Vars2
         (new Test_Inline_Vars2()).RunTest399_Inline();
 
         (new Test_Inline_Vars2()).RunTest400_Inline();
-        return 100;
 
     }
 

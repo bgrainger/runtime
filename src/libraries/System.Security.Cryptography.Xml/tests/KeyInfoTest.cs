@@ -69,8 +69,7 @@ namespace System.Security.Cryptography.Xml.Tests
         // private static string xmlDSA = "<DSAKeyValue><P>" + dsaP + "</P><Q>" + dsaQ + "</Q><G>" + dsaG + "</G><Y>" + dsaY + "</Y><J>" + dsaJ + "</J><Seed>" + dsaSeed + "</Seed><PgenCounter>" + dsaPgenCounter + "</PgenCounter></DSAKeyValue>";
         private static string xmlDSA = "<DSAKeyValue><P>" + dsaP + "</P><Q>" + dsaQ + "</Q><G>" + dsaG + "</G><Y>" + dsaY + "</Y></DSAKeyValue>";
 
-        [Fact]
-        [SkipOnPlatform(PlatformSupport.MobileAppleCrypto, "DSA is not available")]
+        [ConditionalFact(typeof(PlatformSupport), nameof(PlatformSupport.IsDSASupported))]
         public void DSAKeyValue()
         {
             using (DSA key = DSA.Create())
@@ -148,8 +147,7 @@ namespace System.Security.Cryptography.Xml.Tests
             }
         }
 
-        [Fact]
-        [SkipOnPlatform(PlatformSupport.MobileAppleCrypto, "DSA is not available")]
+        [ConditionalFact(typeof(PlatformSupport), nameof(PlatformSupport.IsDSASupported))]
         public void Complex()
         {
             KeyInfoName name = new KeyInfoName();
@@ -199,8 +197,7 @@ namespace System.Security.Cryptography.Xml.Tests
             }
         }
 
-        [Fact]
-        [SkipOnPlatform(PlatformSupport.MobileAppleCrypto, "DSA is not available")]
+        [ConditionalFact(typeof(PlatformSupport), nameof(PlatformSupport.IsDSASupported))]
         public void ImportKeyNode()
         {
             string keyName = "Mono::";
@@ -336,7 +333,7 @@ namespace System.Security.Cryptography.Xml.Tests
                 }
                 else
                 {
-                    Assert.True(false, $"Unexpected clause type: {clause.GetType().FullName}");
+                    Assert.Fail($"Unexpected clause type: {clause.GetType().FullName}");
                 }
             }
 
@@ -369,7 +366,7 @@ namespace System.Security.Cryptography.Xml.Tests
             XmlDocument doc = new XmlDocument();
             doc.LoadXml(bad);
             info.LoadXml(doc.DocumentElement);
-            // no expection but Xml isn't loaded
+            // no exception but Xml isn't loaded
             Assert.Equal("<KeyInfo xmlns=\"http://www.w3.org/2000/09/xmldsig#\" />", (info.GetXml().OuterXml));
             Assert.Equal(0, info.Count);
         }

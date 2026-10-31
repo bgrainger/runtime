@@ -4,6 +4,7 @@
 using System.Collections;
 using System.ComponentModel;
 using System.ComponentModel.Design.Serialization;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.Versioning;
@@ -12,7 +13,7 @@ namespace System.Security.Authentication.ExtendedProtection
 {
     public class ExtendedProtectionPolicyTypeConverter : TypeConverter
     {
-        public override bool CanConvertTo(ITypeDescriptorContext? context, Type? destinationType)
+        public override bool CanConvertTo(ITypeDescriptorContext? context, [NotNullWhen(true)] Type? destinationType)
         {
             return destinationType == typeof(InstanceDescriptor) || base.CanConvertTo(context, destinationType);
         }
@@ -20,6 +21,8 @@ namespace System.Security.Authentication.ExtendedProtection
         [UnsupportedOSPlatform("browser")]
         public override object? ConvertTo(ITypeDescriptorContext? context, CultureInfo? culture, object? value, Type destinationType)
         {
+            if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // TODO remove with https://github.com/dotnet/runtime/pull/107185
+
             if (destinationType == typeof(InstanceDescriptor))
             {
                 if (value is ExtendedProtectionPolicy policy)

@@ -8,6 +8,7 @@ using System.IO;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 
+using Internal;
 using Internal.NativeFormat;
 using Internal.Text;
 using Internal.TypeSystem;
@@ -15,22 +16,13 @@ using Internal.TypeSystem.Ecma;
 
 namespace ILCompiler.DependencyAnalysis.ReadyToRun
 {
-    public class TypesTableNode : HeaderTableNode
+    public class TypesTableNode : ModuleSpecificHeaderTableNode
     {
-        private readonly EcmaModule _module;
+        public TypesTableNode(EcmaModule module) : base(module)
+        {
+        }
 
-        public TypesTableNode(TargetDetails target, EcmaModule module)
-            : base(target)
-        {
-            _module = module;
-        }
-        
-        public override void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
-        {
-            sb.Append(nameMangler.CompilationUnitPrefix);
-            sb.Append("__ReadyToRunAvailableTypesTable__");
-            sb.Append(_module.Assembly.GetName().Name);
-        }
+        protected override string ModuleSpecificName => "__ReadyToRunAvailableTypesTable__";
 
         public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)
         {
@@ -52,9 +44,9 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                 for (; ; )
                 {
                     TypeDefinition defType = defTypeInfo.MetadataReader.GetTypeDefinition(defTypeHandle);
-                    string namespaceName = defTypeInfo.MetadataReader.GetString(defType.Namespace);
-                    string typeName = defTypeInfo.MetadataReader.GetString(defType.Name);
-                    hashCode ^= ReadyToRunHashCode.NameHashCode(namespaceName, typeName);
+                    ReadOnlySpan<byte> namespaceName = defTypeInfo.MetadataReader.GetStringBytes(defType.Namespace);
+                    ReadOnlySpan<byte> typeName = defTypeInfo.MetadataReader.GetStringBytes(defType.Name);
+                    hashCode ^= VersionResilientHashCode.NameHashCode(namespaceName, typeName);
                     if (!defType.Attributes.IsNested())
                     {
                         break;
@@ -71,9 +63,9 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                 for (; ;)
                 {
                     ExportedType expType = expTypeInfo.MetadataReader.GetExportedType(expTypeHandle);
-                    string namespaceName = expTypeInfo.MetadataReader.GetString(expType.Namespace);
-                    string typeName = expTypeInfo.MetadataReader.GetString(expType.Name);
-                    hashCode ^= ReadyToRunHashCode.NameHashCode(namespaceName, typeName);
+                    ReadOnlySpan<byte> namespaceName = expTypeInfo.MetadataReader.GetStringBytes(expType.Namespace);
+                    ReadOnlySpan<byte> typeName = expTypeInfo.MetadataReader.GetStringBytes(expType.Name);
+                    hashCode ^= VersionResilientHashCode.NameHashCode(namespaceName, typeName);
                     if (expType.Implementation.Kind != HandleKind.ExportedType)
                     {
                         // Not a nested class
@@ -92,12 +84,6 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                 relocs: null,
                 alignment: 8,
                 definedSymbols: new ISymbolDefinitionNode[] { this });
-        }
-
-        public override int CompareToImpl(ISortableNode other, CompilerComparer comparer)
-        {
-            TypesTableNode otherTypesTable = (TypesTableNode)other;
-            return _module.Assembly.GetName().Name.CompareTo(otherTypesTable._module.Assembly.GetName().Name);
         }
 
         public override int ClassCode => -944318825;

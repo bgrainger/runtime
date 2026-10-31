@@ -70,7 +70,7 @@ attach_profiler_command_try_parse_payload (
 		!ds_ipc_message_try_parse_value (&buffer_cursor, &buffer_cursor_len, (uint8_t *)&instance->profiler_guid, (uint32_t)ARRAY_SIZE (instance->profiler_guid)) ||
 		!ds_ipc_message_try_parse_string_utf16_t (&buffer_cursor, &buffer_cursor_len, &instance->profiler_path) ||
 		!ds_ipc_message_try_parse_uint32_t (&buffer_cursor, &buffer_cursor_len, &instance->client_data_len) ||
-		!(buffer_cursor_len <= instance->client_data_len))
+		!(buffer_cursor_len >= instance->client_data_len))
 		ep_raise_error ();
 
 	instance->client_data = buffer_cursor;
@@ -299,7 +299,7 @@ ds_profiler_protocol_helper_handle_ipc_message (
 #endif /* !defined(DS_INCLUDE_SOURCE_FILES) || defined(DS_FORCE_INCLUDE_SOURCE_FILES) */
 #endif /* ENABLE_PERFTRACING */
 
-#ifndef DS_INCLUDE_SOURCE_FILES
+#if !defined(ENABLE_PERFTRACING) || (defined(DS_INCLUDE_SOURCE_FILES) && !defined(DS_FORCE_INCLUDE_SOURCE_FILES))
 extern const char quiet_linker_empty_file_warning_diagnostics_profiler_protocol;
 const char quiet_linker_empty_file_warning_diagnostics_profiler_protocol = 0;
 #endif

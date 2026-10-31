@@ -11,8 +11,8 @@ namespace Microsoft.Extensions.Options
         where TOptions : class
     {
         private readonly IOptionsFactory<TOptions> _factory;
-        private volatile object _syncObj;
-        private volatile TOptions _value;
+        private object? _syncObj;
+        private volatile TOptions? _value;
 
         public UnnamedOptionsManager(IOptionsFactory<TOptions> factory) => _factory = factory;
 
@@ -29,6 +29,19 @@ namespace Microsoft.Extensions.Options
                 {
                     return _value ??= _factory.Create(Options.DefaultName);
                 }
+            }
+        }
+
+        internal TOptions GetOrSetValue(TOptions value)
+        {
+            if (_value is TOptions existingValue)
+            {
+                return existingValue;
+            }
+
+            lock (_syncObj ?? Interlocked.CompareExchange(ref _syncObj, new object(), null) ?? _syncObj)
+            {
+                return _value ??= value;
             }
         }
     }

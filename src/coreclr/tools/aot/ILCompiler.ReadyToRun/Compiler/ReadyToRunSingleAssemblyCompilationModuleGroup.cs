@@ -17,29 +17,21 @@ namespace ILCompiler
         private bool _profileGuidedCompileRestrictionSet;
 
         public ReadyToRunSingleAssemblyCompilationModuleGroup(
-            CompilerTypeSystemContext context,
-            bool isCompositeBuildMode,
-            bool isInputBubble,
-            IEnumerable<EcmaModule> compilationModuleSet,
-            IEnumerable<ModuleDesc> versionBubbleModuleSet,
-            bool compileGenericDependenciesFromVersionBubbleModuleSet) :
-                base(context,
-                     isCompositeBuildMode,
-                     isInputBubble,
-                     compilationModuleSet,
-                     versionBubbleModuleSet,
-                     compileGenericDependenciesFromVersionBubbleModuleSet)
+            ReadyToRunCompilationModuleGroupConfig config) :
+                base(config)
         {
         }
 
-        public sealed override bool ContainsMethodBody(MethodDesc method, bool unboxingStub)
+        protected sealed override bool ContainsMethodBodyCore(MethodDesc method, bool unboxingStub)
         {
             if (!_profileGuidedCompileRestrictionSet)
                 throw new InternalCompilerErrorException("Called ContainsMethodBody without setting profile guided restriction");
 
             if (_profileGuidedCompileRestriction != null)
             {
-                if (!_profileGuidedCompileRestriction.IsMethodInProfileData(method))
+                if (!_profileGuidedCompileRestriction.IsMethodInInputProfileData(method) &&
+                    (((ReadyToRunCompilerContext)method.Context).TargetAllowsRuntimeCodeGeneration ||
+                     !HardwareIntrinsicHelpers.IsHardwareIntrinsic(method)))
                     return false;
             }
 
@@ -50,23 +42,26 @@ namespace ILCompiler
                 return false;
             }
 
-            return (ContainsType(method.OwningType) && VersionsWithMethodBody(method)) || CompileVersionBubbleGenericsIntoCurrentModule(method);
+            return (ContainsType(method.OwningType) && VersionsWithMethodBody(method)) || CompileVersionBubbleGenericsIntoCurrentModule(method) || this.CrossModuleCompileable(method);
         }
 
-        public sealed override void ApplyProfilerGuidedCompilationRestriction(ProfileDataManager profileGuidedCompileRestriction)
+        public sealed override void ApplyProfileGuidedOptimizationData(ProfileDataManager profileGuidedCompileRestriction, bool partial)
         {
             if (_profileGuidedCompileRestrictionSet)
-                throw new InternalCompilerErrorException("Called ApplyProfilerGuidedCompilationRestriction twice.");
+                throw new InternalCompilerErrorException("Called ApplyProfileGuidedOptimizationData twice.");
 
             _profileGuidedCompileRestrictionSet = true;
-            _profileGuidedCompileRestriction = profileGuidedCompileRestriction;
+            if (partial)
+                _profileGuidedCompileRestriction = profileGuidedCompileRestriction;
+
+            base.ApplyProfileGuidedOptimizationData(profileGuidedCompileRestriction, partial);
         }
 
         public override ReadyToRunFlags GetReadyToRunFlags()
         {
             Debug.Assert(_profileGuidedCompileRestrictionSet);
 
-            ReadyToRunFlags flags = 0;
+            ReadyToRunFlags flags = base.GetReadyToRunFlags();
             if (_profileGuidedCompileRestriction != null)
                 flags |= ReadyToRunFlags.READYTORUN_FLAG_Partial;
 

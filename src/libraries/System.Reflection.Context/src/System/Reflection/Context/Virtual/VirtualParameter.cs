@@ -10,10 +10,13 @@ namespace System.Reflection.Context.Virtual
     {
         public VirtualParameter(MemberInfo member, Type parameterType, string? name, int position)
         {
+            ArgumentNullException.ThrowIfNull(member);
+            ArgumentNullException.ThrowIfNull(parameterType);
+
             Debug.Assert(position >= -1);
 
-            ClassImpl = parameterType ?? throw new ArgumentNullException(nameof(parameterType));
-            MemberImpl = member ?? throw new ArgumentNullException(nameof(member));
+            ClassImpl = parameterType;
+            MemberImpl = member;
             NameImpl = name;
             PositionImpl = position;
         }

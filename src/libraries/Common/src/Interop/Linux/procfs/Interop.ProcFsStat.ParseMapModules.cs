@@ -11,13 +11,15 @@ using System.Text;
 
 internal static partial class Interop
 {
-    internal static partial class procfs
+    internal static partial class @procfs
     {
         private const string MapsFileName = "/maps";
 
-        private static string GetMapsFilePathForProcess(int pid) => string.Create(null, stackalloc char[256], $"{RootPath}{(uint)pid}{MapsFileName}");
+        private static string GetMapsFilePathForProcess(ProcPid pid) =>
+            pid == ProcPid.Self ? $"{RootPath}{Self}{MapsFileName}" :
+                                  string.Create(null, stackalloc char[256], $"{RootPath}{(uint)pid}{MapsFileName}");
 
-        internal static ProcessModuleCollection? ParseMapsModules(int pid)
+        internal static ProcessModuleCollection? ParseMapsModules(ProcPid pid)
         {
             try
             {
@@ -61,10 +63,8 @@ internal static partial class Interop
                 // Not a continuation, commit any current modules and create a new one.
                 CommitCurrentModule();
 
-                module = new ProcessModule
+                module = new ProcessModule(parsedLine.Path, Path.GetFileName(parsedLine.Path))
                 {
-                    FileName = parsedLine.Path,
-                    ModuleName = Path.GetFileName(parsedLine.Path),
                     ModuleMemorySize = parsedLine.Size,
                     EntryPointAddress = IntPtr.Zero // unknown
                 };
@@ -146,16 +146,8 @@ internal static partial class Interop
 
             static bool HasReadAndExecFlags(string s, ref int start, ref int end)
             {
-                bool sawRead = false, sawExec = false;
-                for (int i = start; i < end; i++)
-                {
-                    if (s[i] == 'r')
-                        sawRead = true;
-                    else if (s[i] == 'x')
-                        sawExec = true;
-                }
-
-                return sawRead & sawExec;
+                ReadOnlySpan<char> span = s.AsSpan(start, end - start);
+                return span.Contains('r') && span.Contains('x');
             }
         }
     }

@@ -7,8 +7,8 @@ using System.Runtime.Versioning;
 namespace System.Security.Cryptography
 {
     [Obsolete(Obsoletions.DerivedCryptographicTypesMessage, DiagnosticId = Obsoletions.DerivedCryptographicTypesDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
-    [UnsupportedOSPlatform("browser")]
     [EditorBrowsable(EditorBrowsableState.Never)]
+    [UnsupportedOSPlatform("browser")]
     public sealed class AesManaged : Aes
     {
         private readonly Aes _impl;
@@ -59,6 +59,8 @@ namespace System.Security.Cryptography
             get { return _impl.Padding; }
             set { _impl.Padding = value; }
         }
+
+        protected override void SetKeyCore(ReadOnlySpan<byte> key) => _impl.SetKey(key);
 
         public override KeySizes[] LegalBlockSizes => _impl.LegalBlockSizes;
         public override KeySizes[] LegalKeySizes => _impl.LegalKeySizes;

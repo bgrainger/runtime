@@ -15,7 +15,7 @@ namespace System.ComponentModel.Composition.Hosting
     public partial class ApplicationCatalog : ComposablePartCatalog, ICompositionElement
     {
         private bool _isDisposed;
-        private volatile AggregateCatalog? _innerCatalog;
+        private AggregateCatalog? _innerCatalog;
         private readonly object _thisLock = new object();
         private readonly ICompositionElement? _definitionOrigin;
         private readonly ReflectionContext? _reflectionContext;
@@ -110,17 +110,14 @@ namespace System.ComponentModel.Composition.Hosting
             {
                 if (!_isDisposed)
                 {
-                    IDisposable? innerCatalog = null;
+                    AggregateCatalog? innerCatalog = null;
                     lock (_thisLock)
                     {
-                        innerCatalog = _innerCatalog as IDisposable;
+                        innerCatalog = _innerCatalog;
                         _innerCatalog = null;
                         _isDisposed = true;
                     }
-                    if (innerCatalog != null)
-                    {
-                        innerCatalog.Dispose();
-                    }
+                    innerCatalog?.Dispose();
                 }
             }
             finally

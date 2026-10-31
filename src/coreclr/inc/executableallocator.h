@@ -1,23 +1,42 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-//
 
-//
-// Allocator and holders for double mapped executable memory
-//
+// Allocator and holders for runtime method and loader-heap storage.
 
 #pragma once
 
 #include "utilcode.h"
 #include "ex.h"
 
-#include "minipal.h"
+#include <minipal.h>
 
 #ifndef DACCESS_COMPILE
 
-// This class is responsible for allocation of all the executable memory in the runtime.
+//#define LOG_EXECUTABLE_ALLOCATOR_STATISTICS
+
+// Most targets allocate executable memory or map executable templates. Targets with portable
+// entrypoints use read-write storage for loader and interpreter data.
 class ExecutableAllocator
 {
+public:
+
+    enum CacheableMapping
+    {
+        AddToCache,
+        DoNotAddToCache,
+    };
+
+private:
+
+    typedef void (*FatalErrorHandler)(UINT errorCode, LPCWSTR pszMessage);
+
+    // Instance of the allocator
+    static ExecutableAllocator* g_instance;
+
+    // Callback to the runtime to report fatal errors
+    static FatalErrorHandler g_fatalErrorHandler;
+
+#ifndef FEATURE_PORTABLE_ENTRYPOINTS
     // RX address range block descriptor
     struct BlockRX
     {
@@ -48,27 +67,35 @@ class ExecutableAllocator
         size_t refCount;
     };
 
-    typedef void (*FatalErrorHandler)(UINT errorCode, LPCWSTR pszMessage);
+#ifdef LOG_EXECUTABLE_ALLOCATOR_STATISTICS
+    static int64_t g_mapTimeSum;
+    static int64_t g_mapTimeWithLockSum;
+    static int64_t g_unmapTimeSum;
+    static int64_t g_unmapTimeWithLockSum;
+    static int64_t g_mapFindRXTimeSum;
+    static int64_t g_mapCreateTimeSum;
 
-    // Instance of the allocator
-    static ExecutableAllocator* g_instance;
+    static int64_t g_releaseCount;
+    static int64_t g_reserveCount;
 
-    // Callback to the runtime to report fatal errors
-    static FatalErrorHandler g_fatalErrorHandler;
-
+    static int64_t g_MapRW_Calls;
+    static int64_t g_MapRW_CallsWithCacheMiss;
+    static int64_t g_MapRW_LinkedListWalkDepth;
+    static int64_t g_LinkedListTotalDepth;
+#endif
 #if USE_LAZY_PREFERRED_RANGE
     static BYTE* g_lazyPreferredRangeStart;
     // Next address to try to allocate for code in the lazy preferred region.
     static BYTE* g_lazyPreferredRangeHint;
 #endif // USE_LAZY_PREFERRED_RANGE
 
-    // For PAL, this region represents the area that is eagerly reserved on
+    // For Unix, this region represents the area that is eagerly reserved on
     // startup where executable memory and static fields are preferrably kept.
     // For Windows, this is the region that we lazily reserve from.
     static BYTE* g_preferredRangeMin;
     static BYTE* g_preferredRangeMax;
 
-    // Caches the COMPlus_EnableWXORX setting
+    // Caches the DOTNET_EnableWXORX setting
     static bool g_isWXorXEnabled;
 
     // Head of the linked list of all RX blocks that were allocated by this allocator
@@ -90,9 +117,19 @@ class ExecutableAllocator
     // for platforms that don't use shared memory.
     size_t m_freeOffset = 0;
 
-    // Last RW mapping cached so that it can be reused for the next mapping
+// Uncomment these to gather information to better choose caching parameters
+//#define VARIABLE_SIZED_CACHEDMAPPING_SIZE
+
+    // Last RW mappings cached so that it can be reused for the next mapping
     // request if it goes into the same range.
-    BlockRW* m_cachedMapping = NULL;
+    // This is handled as a 3 element cache with an LRU replacement policy
+#ifdef VARIABLE_SIZED_CACHEDMAPPING_SIZE
+    // If variable sized mappings enabled, make the cache physically big enough to cover all interesting sizes
+    static int g_cachedMappingSize;
+    BlockRW* m_cachedMapping[16] = { 0 };
+#else
+    BlockRW* m_cachedMapping[3] = { 0 };
+#endif
 
     // Synchronization of the public allocator methods
     CRITSEC_COOKIE m_CriticalSection;
@@ -102,12 +139,18 @@ class ExecutableAllocator
     // and replaces it by the passed in one.
     void UpdateCachedMapping(BlockRW *pBlock);
 
+    // Remove the cached mapping (1 based indexing)
+    void RemoveCachedMapping(size_t indexToRemove);
+
+    // Find an overlapped cached mapping with pBlock, or return 0
+    size_t FindOverlappingCachedMapping(BlockRX* pBlock);
+
     // Find existing RW block that maps the whole specified range of RX memory.
     // Return NULL if no such block exists.
-    void* FindRWBlock(void* baseRX, size_t size);
+    void* FindRWBlock(void* baseRX, size_t size, CacheableMapping cacheMapping);
 
     // Add RW block to the list of existing RW blocks
-    bool AddRWBlock(void* baseRW, void* baseRX, size_t size);
+    bool AddRWBlock(void* baseRW, void* baseRX, size_t size, CacheableMapping cacheMapping);
 
     // Remove RW block from the list of existing RW blocks and return the base
     // address and size the underlying memory was mapped at.
@@ -139,13 +182,37 @@ class ExecutableAllocator
     // Return true if double mapping is enabled.
     static bool IsDoubleMappingEnabled();
 
+    // Release memory allocated via DoubleMapping for either templates or normal double mapped data
+    void ReleaseWorker(void* pRX, size_t size, bool releaseTemplate) noexcept;
+
     // Initialize the allocator instance
     bool Initialize();
 
+#ifdef LOG_EXECUTABLE_ALLOCATOR_STATISTICS
+    static CRITSEC_COOKIE s_LoggerCriticalSection;
+
+    struct LogEntry
+    {
+        const char* source;
+        const char* function;
+        int line;
+        int count;
+    };
+
+    static LogEntry s_usageLog[256];
+    static int s_logMaxIndex;
+#endif
+#endif // !FEATURE_PORTABLE_ENTRYPOINTS
+
 public:
 
+#if defined(LOG_EXECUTABLE_ALLOCATOR_STATISTICS) && !defined(FEATURE_PORTABLE_ENTRYPOINTS)
+    static void LogUsage(const char* source, int line, const char* function);
+    static void DumpHolderUsage();
+#endif
+
     // Return the ExecuteAllocator singleton instance
-    static ExecutableAllocator* Instance();
+    static ExecutableAllocator* Instance() noexcept;
 
     // Initialize the static members of the Executable allocator and allocate
     // and initialize the instance of it.
@@ -165,7 +232,7 @@ public:
     static void ResetLazyPreferredRangeHint();
 
     // Use this function to initialize the preferred range of executable memory
-    // from PAL.
+    // from minipal.
     static void InitPreferredRange();
 
     // Returns TRUE if p is located in near clr.dll that allows us
@@ -178,28 +245,47 @@ public:
     // Reserve the specified amount of virtual address space for executable mapping.
     // The reserved range must be within the loAddress and hiAddress. If it is not
     // possible to reserve memory in such range, the method returns NULL.
+    // Targets with portable entrypoints ignore the address bounds and allocate read-write
+    // storage anywhere.
     void* ReserveWithinRange(size_t size, const void* loAddress, const void* hiAddress);
-
-    // Reserve the specified amount of virtual address space for executable mapping
-    // exactly at the given address.
-    void* ReserveAt(void* baseAddressRX, size_t size);
 
     // Commit the specified range of memory. The memory can be committed as executable (RX)
     // or non-executable (RW) based on the passed in isExecutable flag. The non-executable
     // allocations are used to allocate data structures that need to be close to the
     // executable code due to memory addressing performance related reasons.
+    // On targets with portable entrypoints, storage is already accessible, so Commit returns
+    // pStart unchanged.
     void* Commit(void* pStart, size_t size, bool isExecutable);
 
     // Release the executable memory block starting at the passed in address that was allocated
-    // by one of the ReserveXXX methods.
-    void Release(void* pRX);
+    // by one of the ReserveXXX methods. The size must be the size originally requested from
+    // that reserve call.
+    void Release(void* pRX, size_t size) noexcept;
 
-    // Map the specified block of executable memory as RW
-    void* MapRW(void* pRX, size_t size);
+    // Map the specified block of executable memory as RW. Targets with portable entrypoints
+    // return the original pointer.
+    void* MapRW(void* pRX, size_t size, CacheableMapping cacheMapping);
 
-    // Unmap the RW mapping at the specified address
-    void UnmapRW(void* pRW);
+    // Unmap the RW mapping at the specified address. This is a no-op on targets with portable
+    // entrypoints.
+    void UnmapRW(void* pRW) noexcept;
+
+#ifndef FEATURE_PORTABLE_ENTRYPOINTS
+    // Allocate thunks from a template. pTemplate is the return value from CreateTemplate
+    void* AllocateThunksFromTemplate(void *pTemplate, size_t templateSize, void (*dataPageGenerator)(uint8_t* pageBase, size_t size));
+
+    // Free a set of thunks allocated from templates. pThunks must have been returned from AllocateThunksFromTemplate
+    void FreeThunksFromTemplate(void *pThunks, size_t templateSize);
+
+    // Create a template
+    // If templateInImage is not null, it will attempt to use it as the template, otherwise it will create an temporary in memory file to serve as the template
+    // Some OS/Architectures may/may not be able to work with this, so this api is permitted to return NULL, and callers should have an alternate approach using
+    // the codePageGenerator directly.
+    void* CreateTemplate(void* templateInImage, size_t templateSize, void (*codePageGenerator)(uint8_t* pageBase, uint8_t* pageBaseRX, size_t size));
+#endif // !FEATURE_PORTABLE_ENTRYPOINTS
 };
+
+#define ExecutableWriterHolder ExecutableWriterHolderNoLog
 
 // Holder class to map read-execute memory as read-write so that it can be modified without using read-write-execute mapping.
 // At the moment the implementation is dummy, returning the same addresses for both cases and expecting them to be read-write-execute.
@@ -218,12 +304,12 @@ class ExecutableWriterHolder
         other.m_addressRW = NULL;
     }
 
-    void Unmap()
+    void Unmap() noexcept
     {
-#if defined(HOST_OSX) && defined(HOST_ARM64) && !defined(DACCESS_COMPILE)
+#if defined(HOST_APPLE) && defined(HOST_ARM64) && !defined(DACCESS_COMPILE)
         if (m_addressRX != NULL)
         {
-            PAL_JitWriteProtect(false);
+            VMToOSInterface::JitWriteProtect(false);
         }
 #else
         if (m_addressRX != m_addressRW)
@@ -253,18 +339,18 @@ public:
     {
     }
 
-    ExecutableWriterHolder(T* addressRX, size_t size)
+    ExecutableWriterHolder(T* addressRX, size_t size, ExecutableAllocator::CacheableMapping cacheMapping = ExecutableAllocator::AddToCache)
     {
         m_addressRX = addressRX;
-#if defined(HOST_OSX) && defined(HOST_ARM64)
+#if defined(HOST_APPLE) && defined(HOST_ARM64)
         m_addressRW = addressRX;
-        PAL_JitWriteProtect(true);
+        VMToOSInterface::JitWriteProtect(true);
 #else
-        m_addressRW = (T *)ExecutableAllocator::Instance()->MapRW((void*)addressRX, size);
+        m_addressRW = (T *)ExecutableAllocator::Instance()->MapRW((void*)addressRX, size, cacheMapping);
 #endif
     }
 
-    ~ExecutableWriterHolder()
+    ~ExecutableWriterHolder() noexcept
     {
         Unmap();
     }
@@ -274,6 +360,24 @@ public:
     {
         return m_addressRW;
     }
+
+    void AssignExecutableWriterHolder(T* addressRX, size_t size)
+    {
+        *this = ExecutableWriterHolder(addressRX, size);
+    }
 };
+
+#if defined(LOG_EXECUTABLE_ALLOCATOR_STATISTICS) && !defined(FEATURE_PORTABLE_ENTRYPOINTS)
+#undef ExecutableWriterHolder
+#ifdef HOST_UNIX
+#define ExecutableWriterHolder ExecutableAllocator::LogUsage(__FILE__, __LINE__, __PRETTY_FUNCTION__); ExecutableWriterHolderNoLog
+#define AssignExecutableWriterHolder(addressRX, size) AssignExecutableWriterHolder(addressRX, size); ExecutableAllocator::LogUsage(__FILE__, __LINE__, __PRETTY_FUNCTION__);
+#else
+#define ExecutableWriterHolder ExecutableAllocator::LogUsage(__FILE__, __LINE__, __FUNCTION__); ExecutableWriterHolderNoLog
+#define AssignExecutableWriterHolder(addressRX, size) AssignExecutableWriterHolder(addressRX, size); ExecutableAllocator::LogUsage(__FILE__, __LINE__, __FUNCTION__);
+#endif
+#else
+#define ExecutableWriterHolder ExecutableWriterHolderNoLog
+#endif
 
 #endif // !DACCESS_COMPILE

@@ -5,12 +5,15 @@ using System.Buffers;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+#pragma warning disable IDE0060
 
 namespace System
 {
     internal sealed class NSLogStream : CachedConsoleStream
     {
-        public NSLogStream(Encoding encoding) : base(encoding) {}
+        public NSLogStream(Encoding encoding) : base(encoding) { }
 
         protected override unsafe void Print(ReadOnlySpan<char> line)
         {
@@ -31,6 +34,12 @@ namespace System
         public static Stream OpenStandardOutput() => new NSLogStream(OutputEncoding);
 
         public static Stream OpenStandardError() => new NSLogStream(OutputEncoding);
+
+        public static SafeFileHandle OpenStandardInputHandle() => throw new PlatformNotSupportedException();
+
+        public static SafeFileHandle OpenStandardOutputHandle() => throw new PlatformNotSupportedException();
+
+        public static SafeFileHandle OpenStandardErrorHandle() => throw new PlatformNotSupportedException();
 
         public static Encoding InputEncoding => throw new PlatformNotSupportedException();
 

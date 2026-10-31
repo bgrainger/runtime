@@ -71,53 +71,53 @@ short Compiler::mapRegNumToDwarfReg(regNumber reg)
         case REG_R15:
             dwarfReg = 15;
             break;
-        case REG_XMM0:
-            dwarfReg = 17;
+        case REG_R16:
+            dwarfReg = 130;
             break;
-        case REG_XMM1:
-            dwarfReg = 18;
+        case REG_R17:
+            dwarfReg = 131;
             break;
-        case REG_XMM2:
-            dwarfReg = 19;
+        case REG_R18:
+            dwarfReg = 132;
             break;
-        case REG_XMM3:
-            dwarfReg = 20;
+        case REG_R19:
+            dwarfReg = 133;
             break;
-        case REG_XMM4:
-            dwarfReg = 21;
+        case REG_R20:
+            dwarfReg = 134;
             break;
-        case REG_XMM5:
-            dwarfReg = 22;
+        case REG_R21:
+            dwarfReg = 135;
             break;
-        case REG_XMM6:
-            dwarfReg = 23;
+        case REG_R22:
+            dwarfReg = 136;
             break;
-        case REG_XMM7:
-            dwarfReg = 24;
+        case REG_R23:
+            dwarfReg = 137;
             break;
-        case REG_XMM8:
-            dwarfReg = 25;
+        case REG_R24:
+            dwarfReg = 138;
             break;
-        case REG_XMM9:
-            dwarfReg = 26;
+        case REG_R25:
+            dwarfReg = 139;
             break;
-        case REG_XMM10:
-            dwarfReg = 27;
+        case REG_R26:
+            dwarfReg = 140;
             break;
-        case REG_XMM11:
-            dwarfReg = 28;
+        case REG_R27:
+            dwarfReg = 141;
             break;
-        case REG_XMM12:
-            dwarfReg = 29;
+        case REG_R28:
+            dwarfReg = 142;
             break;
-        case REG_XMM13:
-            dwarfReg = 30;
+        case REG_R29:
+            dwarfReg = 143;
             break;
-        case REG_XMM14:
-            dwarfReg = 31;
+        case REG_R30:
+            dwarfReg = 144;
             break;
-        case REG_XMM15:
-            dwarfReg = 32;
+        case REG_R31:
+            dwarfReg = 145;
             break;
         default:
             noway_assert(!"unexpected REG_NUM");
@@ -134,6 +134,8 @@ short Compiler::mapRegNumToDwarfReg(regNumber reg)
 //
 void Compiler::unwindBegProlog()
 {
+    assert(!compGeneratingUnwindProlog);
+    compGeneratingUnwindProlog = true;
 #ifdef UNIX_AMD64_ABI
     if (generateCFIUnwindCodes())
     {
@@ -148,7 +150,7 @@ void Compiler::unwindBegProlog()
 
 void Compiler::unwindBegPrologWindows()
 {
-    assert(compGeneratingProlog);
+    assert(GetEmitter()->emitGeneratingPrologOrFuncletProlog());
 
     FuncInfoDsc* func = funCurrentFunc();
 
@@ -176,7 +178,9 @@ void Compiler::unwindBegPrologWindows()
 //
 void Compiler::unwindEndProlog()
 {
-    assert(compGeneratingProlog);
+    assert(GetEmitter()->emitGeneratingPrologOrFuncletProlog());
+    assert(compGeneratingUnwindProlog);
+    compGeneratingUnwindProlog = false;
 }
 
 //------------------------------------------------------------------------
@@ -185,7 +189,9 @@ void Compiler::unwindEndProlog()
 //
 void Compiler::unwindBegEpilog()
 {
-    assert(compGeneratingEpilog);
+    assert(GetEmitter()->emitGeneratingEpilogOrFuncletEpilog());
+    assert(!compGeneratingUnwindEpilog);
+    compGeneratingUnwindEpilog = true;
 }
 
 //------------------------------------------------------------------------
@@ -194,7 +200,9 @@ void Compiler::unwindBegEpilog()
 //
 void Compiler::unwindEndEpilog()
 {
-    assert(compGeneratingEpilog);
+    assert(GetEmitter()->emitGeneratingEpilogOrFuncletEpilog());
+    assert(compGeneratingUnwindEpilog);
+    compGeneratingUnwindEpilog = false;
 }
 
 //------------------------------------------------------------------------
@@ -217,9 +225,30 @@ void Compiler::unwindPush(regNumber reg)
     }
 }
 
+//------------------------------------------------------------------------
+// Compiler::unwindPush2Windows: Record  push/save of 2 registers simultaneously.
+//
+// Arguments:
+//    reg1 - The first register being pushed/saved.
+//    reg2 - The second register being pushed/saved.
+//
+void Compiler::unwindPush2(regNumber reg1, regNumber reg2)
+{
+#ifdef UNIX_AMD64_ABI
+    if (generateCFIUnwindCodes())
+    {
+        unwindPush2Pop2CFI(reg1, reg2);
+    }
+    else
+#endif // UNIX_AMD64_ABI
+    {
+        unwindPush2Windows(reg1, reg2);
+    }
+}
+
 void Compiler::unwindPushWindows(regNumber reg)
 {
-    assert(compGeneratingProlog);
+    assert(GetEmitter()->emitGeneratingPrologOrFuncletProlog());
 
     FuncInfoDsc* func = funCurrentFunc();
 
@@ -239,7 +268,7 @@ void Compiler::unwindPushWindows(regNumber reg)
         // since it is pushed as a frame register.
         || (reg == REG_FPBASE)
 #endif // ETW_EBP_FRAMED
-            )
+    )
     {
         code->UnwindOp = UWOP_PUSH_NONVOL;
         code->OpInfo   = (BYTE)reg;
@@ -250,6 +279,20 @@ void Compiler::unwindPushWindows(regNumber reg)
         code->UnwindOp = UWOP_ALLOC_SMALL;
         code->OpInfo   = 0;
     }
+}
+
+//------------------------------------------------------------------------
+// Compiler::unwindPush2Windows: Record  push/save of 2 registers simultaneously in windows OS.
+//
+// Arguments:
+//    reg1 - The first register being pushed/saved.
+//    reg2 - The second register being pushed/saved.
+//
+void Compiler::unwindPush2Windows(regNumber reg1, regNumber reg2)
+{
+    // ToDo: This is a placeholder till Windows OS has unwind support for push2/pop2.
+    unwindPushWindows(reg1);
+    unwindPushWindows(reg2);
 }
 
 #ifdef UNIX_AMD64_ABI
@@ -277,7 +320,7 @@ void Compiler::unwindAllocStack(unsigned size)
 
 void Compiler::unwindAllocStackWindows(unsigned size)
 {
-    assert(compGeneratingProlog);
+    assert(GetEmitter()->emitGeneratingPrologOrFuncletProlog());
 
     FuncInfoDsc* func = funCurrentFunc();
 
@@ -338,7 +381,7 @@ void Compiler::unwindSetFrameReg(regNumber reg, unsigned offset)
 
 void Compiler::unwindSetFrameRegWindows(regNumber reg, unsigned offset)
 {
-    assert(compGeneratingProlog);
+    assert(GetEmitter()->emitGeneratingPrologOrFuncletProlog());
 
     FuncInfoDsc* func = funCurrentFunc();
 
@@ -404,7 +447,7 @@ void Compiler::unwindSaveReg(regNumber reg, unsigned offset)
 
 void Compiler::unwindSaveRegWindows(regNumber reg, unsigned offset)
 {
-    assert(compGeneratingProlog);
+    assert(GetEmitter()->emitGeneratingPrologOrFuncletProlog());
 
     FuncInfoDsc* func = funCurrentFunc();
 
@@ -439,7 +482,22 @@ void Compiler::unwindSaveRegWindows(regNumber reg, unsigned offset)
             code             = (UNWIND_CODE*)&func->unwindCodes[func->unwindCodeSlot -= sizeof(UNWIND_CODE)];
             code->UnwindOp   = (genIsValidFloatReg(reg)) ? UWOP_SAVE_XMM128_FAR : UWOP_SAVE_NONVOL_FAR;
         }
-        code->OpInfo          = (BYTE)reg;
+        unsigned unwindRegNum;
+        if (genIsValidFloatReg(reg))
+        {
+            unwindRegNum = reg - XMMBASE;
+        }
+        else
+        {
+            assert(genIsValidIntReg(reg));
+            unwindRegNum = reg;
+        }
+        // We only add unwind codes for non-volatile registers and for x86/x64,
+        // the max registers index for a non-volatile register is 15.
+        assert(unwindRegNum <= 15);
+        code->OpInfo = (UCHAR)unwindRegNum;
+        assert((unsigned)code->OpInfo == unwindRegNum);
+
         unsigned int cbProlog = unwindGetCurrentOffset(func);
         noway_assert((BYTE)cbProlog == cbProlog);
         code->CodeOffset = (BYTE)cbProlog;
@@ -449,7 +507,7 @@ void Compiler::unwindSaveRegWindows(regNumber reg, unsigned offset)
 #ifdef UNIX_AMD64_ABI
 void Compiler::unwindSaveRegCFI(regNumber reg, unsigned offset)
 {
-    assert(compGeneratingProlog);
+    assert(GetEmitter()->emitGeneratingPrologOrFuncletProlog());
 
     if (RBM_CALLEE_SAVED & genRegMask(reg))
     {
@@ -637,13 +695,12 @@ void DumpUnwindInfo(bool                     isHotCode,
 //
 void Compiler::unwindReserve()
 {
-    assert(!compGeneratingProlog);
-    assert(!compGeneratingEpilog);
+    assert(!GetEmitter()->emitGeneratingPrologOrFuncletProlog());
+    assert(!GetEmitter()->emitGeneratingEpilogOrFuncletEpilog());
 
-    assert(compFuncInfoCount > 0);
-    for (unsigned funcIdx = 0; funcIdx < compFuncInfoCount; funcIdx++)
+    for (FuncInfoDsc* const func : Funcs())
     {
-        unwindReserveFunc(funGetFunc(funcIdx));
+        unwindReserveFunc(func);
     }
 }
 
@@ -656,11 +713,33 @@ void Compiler::unwindReserve()
 //
 void Compiler::unwindReserveFunc(FuncInfoDsc* func)
 {
-    unwindReserveFuncHelper(func, true);
-
-    if (fgFirstColdBlock != nullptr)
+#ifdef DEBUG
+    // If fake-splitting, treat all unwind info as hot.
+    if (JitConfig.JitFakeProcedureSplitting())
     {
-        unwindReserveFuncHelper(func, false);
+        unwindReserveFuncHelper(func, true);
+        return;
+    }
+#endif // DEBUG
+
+    if (func->funKind == FUNC_ROOT)
+    {
+        unwindReserveFuncHelper(func, true);
+
+        // If the function's main body is split, reserve unwind info of size 0 for the cold section.
+        // If only funclets are cold, the main body is hot, so don't make a second call.
+        const bool isFunctionSplit = ((fgFirstColdBlock != nullptr) && (fgFirstColdBlock != fgFirstFuncletBB));
+        if (isFunctionSplit)
+        {
+            unwindReserveFuncHelper(func, false);
+        }
+    }
+    else
+    {
+        // Make only one call for funclets.
+        // If function is split and has EH, the funclets will be cold.
+        const bool isFuncletHot = (fgFirstColdBlock == nullptr);
+        unwindReserveFuncHelper(func, isFuncletHot);
     }
 }
 
@@ -674,8 +753,10 @@ void Compiler::unwindReserveFunc(FuncInfoDsc* func)
 //
 void Compiler::unwindReserveFuncHelper(FuncInfoDsc* func, bool isHotCode)
 {
-    DWORD unwindCodeBytes = 0;
-    if (isHotCode)
+    const bool isFunclet       = (func->funKind != FUNC_ROOT);
+    DWORD      unwindCodeBytes = 0;
+
+    if (isHotCode || isFunclet)
     {
 #ifdef UNIX_AMD64_ABI
         if (generateCFIUnwindCodes())
@@ -712,9 +793,7 @@ void Compiler::unwindReserveFuncHelper(FuncInfoDsc* func, bool isHotCode)
         }
     }
 
-    bool isFunclet  = (func->funKind != FUNC_ROOT);
-    bool isColdCode = !isHotCode;
-
+    const bool isColdCode = !isHotCode;
     eeReserveUnwindInfo(isFunclet, isColdCode, unwindCodeBytes);
 }
 
@@ -727,13 +806,12 @@ void Compiler::unwindReserveFuncHelper(FuncInfoDsc* func, bool isHotCode)
 //
 void Compiler::unwindEmit(void* pHotCode, void* pColdCode)
 {
-    assert(!compGeneratingProlog);
-    assert(!compGeneratingEpilog);
+    assert(!GetEmitter()->emitGeneratingPrologOrFuncletProlog());
+    assert(!GetEmitter()->emitGeneratingEpilogOrFuncletEpilog());
 
-    assert(compFuncInfoCount > 0);
-    for (unsigned funcIdx = 0; funcIdx < compFuncInfoCount; funcIdx++)
+    for (FuncInfoDsc* const func : Funcs())
     {
-        unwindEmitFunc(funGetFunc(funcIdx), pHotCode, pColdCode);
+        unwindEmitFunc(func, pHotCode, pColdCode);
     }
 }
 
@@ -774,7 +852,32 @@ void Compiler::unwindEmitFuncHelper(FuncInfoDsc* func, void* pHotCode, void* pCo
         {
             endOffset = func->endLoc->CodeOffset(GetEmitter());
         }
+    }
+    else
+    {
+        assert(fgFirstColdBlock != nullptr);
 
+        if (func->coldStartLoc == nullptr)
+        {
+            startOffset = 0;
+        }
+        else
+        {
+            startOffset = func->coldStartLoc->CodeOffset(GetEmitter());
+        }
+
+        if (func->coldEndLoc == nullptr)
+        {
+            endOffset = info.compNativeCodeSize;
+        }
+        else
+        {
+            endOffset = func->coldEndLoc->CodeOffset(GetEmitter());
+        }
+    }
+
+    if (isHotCode || (func->funKind != FUNC_ROOT))
+    {
 #ifdef UNIX_AMD64_ABI
         if (generateCFIUnwindCodes())
         {
@@ -802,29 +905,6 @@ void Compiler::unwindEmitFuncHelper(FuncInfoDsc* func, void* pHotCode, void* pCo
             pUnwindBlock = &func->unwindCodes[func->unwindCodeSlot];
         }
     }
-    else
-    {
-        assert(fgFirstColdBlock != nullptr);
-        assert(func->funKind == FUNC_ROOT); // No splitting of funclets.
-
-        if (func->coldStartLoc == nullptr)
-        {
-            startOffset = 0;
-        }
-        else
-        {
-            startOffset = func->coldStartLoc->CodeOffset(GetEmitter());
-        }
-
-        if (func->coldEndLoc == nullptr)
-        {
-            endOffset = info.compNativeCodeSize;
-        }
-        else
-        {
-            endOffset = func->coldEndLoc->CodeOffset(GetEmitter());
-        }
-    }
 
 #ifdef DEBUG
     if (opts.dspUnwind)
@@ -849,7 +929,17 @@ void Compiler::unwindEmitFuncHelper(FuncInfoDsc* func, void* pHotCode, void* pCo
 
     if (isHotCode)
     {
-        assert(endOffset <= info.compTotalHotCodeSize);
+#ifdef DEBUG
+        if (JitConfig.JitFakeProcedureSplitting() && (fgFirstColdBlock != nullptr))
+        {
+            assert(endOffset <= info.compNativeCodeSize);
+        }
+        else
+#endif // DEBUG
+        {
+            assert(endOffset <= info.compTotalHotCodeSize);
+        }
+
         pColdCode = nullptr;
     }
     else
@@ -876,15 +966,37 @@ void Compiler::unwindEmitFuncHelper(FuncInfoDsc* func, void* pHotCode, void* pCo
 void Compiler::unwindEmitFunc(FuncInfoDsc* func, void* pHotCode, void* pColdCode)
 {
     // Verify that the JIT enum is in sync with the JIT-EE interface enum
-    static_assert_no_msg(FUNC_ROOT == (FuncKind)CORJIT_FUNC_ROOT);
-    static_assert_no_msg(FUNC_HANDLER == (FuncKind)CORJIT_FUNC_HANDLER);
-    static_assert_no_msg(FUNC_FILTER == (FuncKind)CORJIT_FUNC_FILTER);
+    static_assert(FUNC_ROOT == (FuncKind)CORJIT_FUNC_ROOT);
+    static_assert(FUNC_HANDLER == (FuncKind)CORJIT_FUNC_HANDLER);
+    static_assert(FUNC_FILTER == (FuncKind)CORJIT_FUNC_FILTER);
 
-    unwindEmitFuncHelper(func, pHotCode, pColdCode, true);
-
-    if (pColdCode != nullptr)
+#ifdef DEBUG
+    // If fake-splitting, treat all unwind info as hot.
+    if (JitConfig.JitFakeProcedureSplitting())
     {
-        unwindEmitFuncHelper(func, pHotCode, pColdCode, false);
+        unwindEmitFuncHelper(func, pHotCode, pColdCode, true);
+        return;
+    }
+#endif // DEBUG
+
+    if (func->funKind == FUNC_ROOT)
+    {
+        unwindEmitFuncHelper(func, pHotCode, pColdCode, true);
+
+        // If the function's main body is split, reserve unwind info of size 0 for the cold section.
+        // If only funclets are cold, the main body is hot, so don't make a second call.
+        const bool isFunctionSplit = ((fgFirstColdBlock != nullptr) && (fgFirstColdBlock != fgFirstFuncletBB));
+        if (isFunctionSplit)
+        {
+            unwindEmitFuncHelper(func, pHotCode, pColdCode, false);
+        }
+    }
+    else
+    {
+        // Make only one call for funclets.
+        // If function is split and has EH, the funclets will be cold.
+        const bool isFuncletHot = (fgFirstColdBlock == nullptr);
+        unwindEmitFuncHelper(func, pHotCode, pColdCode, isFuncletHot);
     }
 }
 

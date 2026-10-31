@@ -63,9 +63,11 @@ unsafe class CdeclMemberFunctionNative
     public static extern CLong GetWidthAsLongFromManaged(C* c);
 }
 
-unsafe class CdeclMemberFunctionTest
+public unsafe class CdeclMemberFunctionTest
 {
-    public static int Main(string[] args)
+    [Fact]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/50440", TestPlatforms.Windows, runtimes: TestRuntimes.Mono)]
+    public static int TestEntryPoint()
     {
         try
         {
@@ -198,7 +200,7 @@ unsafe class CdeclMemberFunctionTest
         }
     }
 
-    [UnmanagedCallersOnly(CallConvs = new [] {typeof(CallConvCdecl), typeof(CallConvMemberFunction)})]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl), typeof(CallConvMemberFunction)])]
     private static CdeclMemberFunctionNative.SizeF GetSize(CdeclMemberFunctionNative.C* c, int unused)
     {
         return new CdeclMemberFunctionNative.SizeF
@@ -208,7 +210,7 @@ unsafe class CdeclMemberFunctionTest
         };
     }
 
-    [UnmanagedCallersOnly(CallConvs = new [] {typeof(CallConvCdecl), typeof(CallConvMemberFunction)})]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl), typeof(CallConvMemberFunction)])]
     private static CdeclMemberFunctionNative.Width GetWidth(CdeclMemberFunctionNative.C* c)
     {
         return new CdeclMemberFunctionNative.Width
@@ -217,7 +219,7 @@ unsafe class CdeclMemberFunctionTest
         };
     }
 
-    [UnmanagedCallersOnly(CallConvs = new [] {typeof(CallConvCdecl), typeof(CallConvMemberFunction)})]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl), typeof(CallConvMemberFunction)])]
     private static CdeclMemberFunctionNative.IntWrapper GetHeightAsInt(CdeclMemberFunctionNative.C* c)
     {
         return new CdeclMemberFunctionNative.IntWrapper
@@ -226,13 +228,13 @@ unsafe class CdeclMemberFunctionTest
         };
     }
 
-    [UnmanagedCallersOnly(CallConvs = new [] {typeof(CallConvCdecl), typeof(CallConvMemberFunction)})]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl), typeof(CallConvMemberFunction)])]
     private static CdeclMemberFunctionNative.E GetE(CdeclMemberFunctionNative.C* c)
     {
         return c->dummy;
     }
 
-    [UnmanagedCallersOnly(CallConvs = new [] {typeof(CallConvCdecl), typeof(CallConvMemberFunction)})]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl), typeof(CallConvMemberFunction)])]
     private static CLong GetWidthAsLong(CdeclMemberFunctionNative.C* c)
     {
         return new CLong((nint)c->width);

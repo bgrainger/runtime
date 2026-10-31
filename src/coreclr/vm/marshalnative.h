@@ -14,132 +14,53 @@
 
 #include "fcall.h"
 
-#define MAX_UTF8_CHAR_SIZE 3
-
 class MarshalNative
 {
 public:
+    FCDECL0(static int, GetLastPInvokeError);
+    FCDECL1(static void, SetLastPInvokeError, int error);
 
-    //====================================================================
-    // These methods convert between an HR and and a managed exception.
-    //====================================================================
-    static FCDECL2(Object *, GetExceptionForHR, INT32 errorCode, LPVOID errorInfo);
-    static FCDECL1(int, GetHRForException, Object* eUNSAFE);
-
-    static FCDECL2(UINT32, SizeOfClass, ReflectClassBaseObject* refClass, CLR_BOOL throwIfNotMarshalable);
-
-    static FCDECL1(UINT32, OffsetOfHelper, ReflectFieldObject* pFieldUNSAFE);
-    static FCDECL0(int, GetLastPInvokeError);
-    static FCDECL1(void, SetLastPInvokeError, int error);
-
-    static FCDECL3(VOID, StructureToPtr, Object* pObjUNSAFE, LPVOID ptr, CLR_BOOL fDeleteOld);
-    static FCDECL3(VOID, PtrToStructureHelper, LPVOID ptr, Object* pObjIn, CLR_BOOL allowValueClasses);
-    static FCDECL2(VOID, DestroyStructure, LPVOID ptr, ReflectClassBaseObject* refClassUNSAFE);
-
-    static FCDECL1(FC_BOOL_RET, IsPinnable, Object* obj);
-
-    static FCDECL2(LPVOID, GCHandleInternalAlloc, Object *obj, int type);
-    static FCDECL1(VOID, GCHandleInternalFree, OBJECTHANDLE handle);
-    static FCDECL1(LPVOID, GCHandleInternalGet, OBJECTHANDLE handle);
-    static FCDECL2(VOID, GCHandleInternalSet, OBJECTHANDLE handle, Object *obj);
-    static FCDECL3(Object*, GCHandleInternalCompareExchange, OBJECTHANDLE handle, Object *obj, Object* oldObj);
-
-    static FCDECL2(Object*, GetDelegateForFunctionPointerInternal, LPVOID FPtr, ReflectClassBaseObject* refTypeUNSAFE);
-    static FCDECL1(LPVOID, GetFunctionPointerForDelegateInternal, Object* refDelegateUNSAFE);
+    FCDECL2(static LPVOID, GCHandleInternalAlloc, Object *obj, int type);
+    FCDECL1(static FC_BOOL_RET, GCHandleInternalFree, OBJECTHANDLE handle);
+    FCDECL1(static LPVOID, GCHandleInternalGet, OBJECTHANDLE handle);
+#ifdef FEATURE_JAVAMARSHAL
+    FCDECL2(static FC_BOOL_RET, GCHandleInternalTryGetBridgeWait, OBJECTHANDLE handle, Object** pObjResult);
+#endif
+    FCDECL2(static VOID, GCHandleInternalSet, OBJECTHANDLE handle, Object *obj);
+    FCDECL3(static Object*, GCHandleInternalCompareExchange, OBJECTHANDLE handle, Object *obj, Object* oldObj);
 
 #ifdef FEATURE_COMINTEROP
     //====================================================================
-    // return the IUnknown* for an Object
-    //====================================================================
-    static FCDECL1(IUnknown*, GetIUnknownForObjectNative, Object* orefUNSAFE);
-
-    //====================================================================
-    // return the IDispatch* for an Object
-    //====================================================================
-    static FCDECL1(IDispatch*, GetIDispatchForObjectNative, Object* orefUNSAFE);
-
-    //====================================================================
-    // return the IUnknown* representing the interface for the Object
-    // Object o should support Type T
-    //====================================================================
-    static FCDECL3(IUnknown*, GetComInterfaceForObjectNative, Object* orefUNSAFE, ReflectClassBaseObject* refClassUNSAFE, CLR_BOOL bEnableCustomizedQueryInterface);
-
-    //====================================================================
-    // return an Object for IUnknown
-    //====================================================================
-    static FCDECL1(Object*, GetObjectForIUnknownNative, IUnknown* pUnk);
-
-    //====================================================================
-    // return a unique cacheless Object for IUnknown
-    //====================================================================
-    static FCDECL1(Object*, GetUniqueObjectForIUnknownNative, IUnknown* pUnk);
-
-    //====================================================================
-    // return an Object for IUnknown, using the Type T,
-    //	NOTE:
-    //	Type T should be either a COM imported Type or a sub-type of COM imported Type
-    //====================================================================
-    static FCDECL2(Object*, GetTypedObjectForIUnknown, IUnknown* pUnk, ReflectClassBaseObject* refClassUNSAFE);
-
-    //====================================================================
-    // Free unused RCWs in the current COM+ context.
-    //====================================================================
-    static FCDECL0(void, CleanupUnusedObjectsInCurrentContext);
-
-    //====================================================================
     // Checks whether there are RCWs from any context available for cleanup.
     //====================================================================
-    static FCDECL0(FC_BOOL_RET, AreComObjectsAvailableForCleanup);
-
-    //====================================================================
-    // Create an object and aggregate it, then return the inner unknown.
-    //====================================================================
-    static FCDECL2(IUnknown*, CreateAggregatedObjectNative, IUnknown* pOuter, Object* refObjUNSAFE);
-
-    //====================================================================
-    // free the COM component and zombie this object
-    // further usage of this Object might throw an exception,
-    //====================================================================
-    static FCDECL1(INT32, ReleaseComObject, Object* objUNSAFE);
-    static FCDECL1(void, FinalReleaseComObject, Object* objUNSAFE);
-
-    //====================================================================
-    // This method takes the given COM object and wraps it in an object
-    // of the specified type. The type must be derived from __ComObject.
-    //====================================================================
-    static FCDECL2(Object*, InternalCreateWrapperOfType, Object* objUNSAFE, ReflectClassBaseObject* refClassUNSAFE);
-
-    //====================================================================
-    // check if the type is visible from COM.
-    //====================================================================
-    static FCDECL1(FC_BOOL_RET, IsTypeVisibleFromCom, ReflectClassBaseObject* refClassUNSAFE);
-
-    //====================================================================
-    // These methods convert OLE variants to and from objects.
-    //====================================================================
-    static FCDECL2(void, GetNativeVariantForObjectNative, Object* ObjUNSAFE, LPVOID pDestNativeVariant);
-    static FCDECL1(Object*, GetObjectForNativeVariantNative, LPVOID pSrcNativeVariant);
-    static FCDECL2(Object*, GetObjectsForNativeVariantsNative, VARIANT* aSrcNativeVariant, int cVars);
-
-    //====================================================================
-    // These methods are used to map COM slots to method info's.
-    //====================================================================
-    static FCDECL1(int, GetStartComSlot, ReflectClassBaseObject* tUNSAFE);
-    static FCDECL1(int, GetEndComSlot, ReflectClassBaseObject* tUNSAFE);
-
-    static FCDECL2(void, ChangeWrapperHandleStrength, Object* orefUNSAFE, CLR_BOOL fIsWeak);
-
-private:
-    static int GetComSlotInfo(MethodTable *pMT, MethodTable **ppDefItfMT);
+    FCDECL0(static FC_BOOL_RET, AreComObjectsAvailableForCleanup);
 #endif // FEATURE_COMINTEROP
 };
 
-// Check that the supplied object is valid to put in a pinned handle,
-// throwing an exception if not.
-void ValidatePinnedObject(OBJECTREF obj);
+extern "C" SIZE_T QCALLTYPE MarshalNative_OffsetOf(FieldDesc* pFD, QCallExceptionStatus* qcallError);
 
-extern "C" VOID QCALLTYPE MarshalNative_Prelink(MethodDesc * pMD);
-extern "C" BOOL QCALLTYPE MarshalNative_IsBuiltInComSupported();
+extern "C" VOID QCALLTYPE MarshalNative_Prelink(MethodDesc * pMD, QCallExceptionStatus* qcallError);
+extern "C" BOOL QCALLTYPE MarshalNative_IsBuiltInComSupported(QCallExceptionStatus* qcallError);
+
+extern "C" BOOL QCALLTYPE MarshalNative_HasLayout(QCall::TypeHandle t, BOOL* pIsBlittable, DWORD* pNativeSize, QCallExceptionStatus* qcallError);
+extern "C" INT32 QCALLTYPE MarshalNative_SizeOfHelper(QCall::TypeHandle t, BOOL throwIfNotMarshalable, QCallExceptionStatus* qcallError);
+
+extern "C" void QCALLTYPE MarshalNative_GetDelegateForFunctionPointerInternal(PVOID FPtr, QCall::TypeHandle t, QCall::ObjectHandleOnStack retDelegate, QCallExceptionStatus* qcallError);
+extern "C" PVOID QCALLTYPE MarshalNative_GetFunctionPointerForDelegateInternal(QCall::ObjectHandleOnStack delegate, QCallExceptionStatus* qcallError);
+
+//====================================================================
+// These methods convert between an HR and and a managed exception.
+//====================================================================
+extern "C" void QCALLTYPE MarshalNative_GetExceptionForHR(INT32 errorCode, LPVOID errorInfo, QCall::ObjectHandleOnStack obj, QCallExceptionStatus* qcallError);
+#ifdef FEATURE_COMINTEROP
+extern "C" int32_t QCALLTYPE MarshalNative_GetHRForException(QCall::ObjectHandleOnStack obj, QCallExceptionStatus* qcallError);
+#endif // FEATURE_COMINTEROP
+
+extern "C" OBJECTHANDLE QCALLTYPE GCHandle_InternalAllocWithGCTransition(QCall::ObjectHandleOnStack obj, int type, QCallExceptionStatus* qcallError);
+extern "C" void QCALLTYPE GCHandle_InternalFreeWithGCTransition(OBJECTHANDLE handle, QCallExceptionStatus* qcallError);
+#ifdef FEATURE_JAVAMARSHAL
+extern "C" void QCALLTYPE GCHandle_InternalGetBridgeWait(OBJECTHANDLE handle, QCall::ObjectHandleOnStack result, QCallExceptionStatus* qcallError);
+#endif
 
 #ifdef _DEBUG
 using IsInCooperativeGCMode_fn = BOOL(STDMETHODCALLTYPE*)(void);
@@ -150,7 +71,88 @@ extern "C" IsInCooperativeGCMode_fn QCALLTYPE MarshalNative_GetIsInCooperativeGC
 //====================================================================
 // Create type for given CLSID.
 //====================================================================
-extern "C" void QCALLTYPE MarshalNative_GetTypeFromCLSID(REFCLSID clsid, PCWSTR wszServer, QCall::ObjectHandleOnStack retType);
-#endif
+extern "C" void QCALLTYPE MarshalNative_GetTypeFromCLSID(REFCLSID clsid, PCWSTR wszServer, QCall::ObjectHandleOnStack retType, QCallExceptionStatus* qcallError);
+
+//====================================================================
+// return the IUnknown* for an Object
+//====================================================================
+extern "C" IUnknown* QCALLTYPE MarshalNative_GetIUnknownForObject(QCall::ObjectHandleOnStack o, QCallExceptionStatus* qcallError);
+
+//====================================================================
+// return the IDispatch* for an Object
+//====================================================================
+extern "C" IDispatch* QCALLTYPE MarshalNative_GetIDispatchForObject(QCall::ObjectHandleOnStack o, QCallExceptionStatus* qcallError);
+
+//====================================================================
+// return the IUnknown* or IDispatch* for an Object.
+//====================================================================
+extern "C" void* QCALLTYPE MarshalNative_GetIUnknownOrIDispatchForObject(QCall::ObjectHandleOnStack o, BOOL* isIDispatch, QCallExceptionStatus* qcallError);
+
+//====================================================================
+// return the IUnknown* representing the interface for the Object
+// Object o should support Type T
+//====================================================================
+extern "C" IUnknown* QCALLTYPE MarshalNative_GetComInterfaceForObject(QCall::ObjectHandleOnStack o, QCall::TypeHandle t, BOOL bEnableCustomizedQueryInterface, QCallExceptionStatus* qcallError);
+
+//====================================================================
+// return an Object for IUnknown
+//====================================================================
+extern "C" void QCALLTYPE MarshalNative_GetObjectForIUnknown(IUnknown* pUnk, QCall::ObjectHandleOnStack retObject, QCallExceptionStatus* qcallError);
+
+//====================================================================
+// return a unique cacheless Object for IUnknown
+//====================================================================
+extern "C" void QCALLTYPE MarshalNative_GetUniqueObjectForIUnknown(IUnknown* pUnk, QCall::ObjectHandleOnStack retObject, QCallExceptionStatus* qcallError);
+
+//====================================================================
+// return an Object for IUnknown, using the Type T,
+//	NOTE:
+//	Type T should be either a COM imported Type or a sub-type of COM imported Type
+//====================================================================
+extern "C" void QCALLTYPE MarshalNative_GetTypedObjectForIUnknown(IUnknown* pUnk, QCall::TypeHandle t, QCall::ObjectHandleOnStack retObject, QCallExceptionStatus* qcallError);
+
+//====================================================================
+// Create an object and aggregate it, then return the inner unknown.
+//====================================================================
+extern "C" IUnknown* QCALLTYPE MarshalNative_CreateAggregatedObject(IUnknown* pOuter, QCall::ObjectHandleOnStack o, QCallExceptionStatus* qcallError);
+
+//====================================================================
+// Free unused RCWs in the current CLR context.
+//====================================================================
+extern "C" void QCALLTYPE MarshalNative_CleanupUnusedObjectsInCurrentContext(QCallExceptionStatus* qcallError);
+
+//====================================================================
+// free the COM component and zombie this object
+// further usage of this Object might throw an exception,
+//====================================================================
+extern "C" INT32 QCALLTYPE MarshalNative_ReleaseComObject(QCall::ObjectHandleOnStack objUNSAFE, QCallExceptionStatus* qcallError);
+extern "C" void QCALLTYPE MarshalNative_FinalReleaseComObject(QCall::ObjectHandleOnStack objUNSAFE, QCallExceptionStatus* qcallError);
+
+//====================================================================
+// This method takes the given COM object and wraps it in an object
+// of the specified type. The type must be derived from __ComObject.
+//====================================================================
+extern "C" void QCALLTYPE MarshalNative_InternalCreateWrapperOfType(QCall::ObjectHandleOnStack o, QCall::TypeHandle t, QCall::ObjectHandleOnStack retObject, QCallExceptionStatus* qcallError);
+
+//====================================================================
+// check if the type is visible from COM.
+//====================================================================
+extern "C" BOOL QCALLTYPE MarshalNative_IsTypeVisibleFromCom(QCall::TypeHandle t, QCallExceptionStatus* qcallError);
+
+//====================================================================
+// These methods convert OLE variants to and from objects.
+//====================================================================
+extern "C" void QCALLTYPE MarshalNative_GetNativeVariantForObject(QCall::ObjectHandleOnStack ObjUNSAFE, LPVOID pDestNativeVariant, QCallExceptionStatus* qcallError);
+extern "C" void QCALLTYPE MarshalNative_GetObjectForNativeVariant(LPVOID pSrcNativeVariant, QCall::ObjectHandleOnStack retObject, QCallExceptionStatus* qcallError);
+extern "C" void QCALLTYPE MarshalNative_GetObjectsForNativeVariants(VARIANT* aSrcNativeVariant, int cVars, QCall::ObjectHandleOnStack retArray, QCallExceptionStatus* qcallError);
+
+//====================================================================
+// These methods are used to map COM slots to method info's.
+//====================================================================
+extern "C" INT32 QCALLTYPE MarshalNative_GetStartComSlot(QCall::TypeHandle t, QCallExceptionStatus* qcallError);
+extern "C" INT32 QCALLTYPE MarshalNative_GetEndComSlot(QCall::TypeHandle t, QCallExceptionStatus* qcallError);
+
+extern "C" VOID QCALLTYPE MarshalNative_ChangeWrapperHandleStrength(QCall::ObjectHandleOnStack otp, BOOL fIsWeak, QCallExceptionStatus* qcallError);
+#endif // FEATURE_COMINTEROP
 
 #endif

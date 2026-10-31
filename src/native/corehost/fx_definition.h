@@ -4,8 +4,9 @@
 #ifndef __FX_DEFINITION_H__
 #define __FX_DEFINITION_H__
 
+#include <optional>
+
 #include "pal.h"
-#include "deps_format.h"
 #include "runtime_config.h"
 
 class fx_definition_t
@@ -23,13 +24,10 @@ public:
     const pal::string_t& get_found_version() const { return m_found_version; }
     const pal::string_t& get_dir() const { return m_dir; }
     const runtime_config_t& get_runtime_config() const { return m_runtime_config; }
-    void parse_runtime_config(const pal::string_t& path, const pal::string_t& dev_path, const runtime_config_t::settings_t& override_settings);
-
-    const pal::string_t& get_deps_file() const { return m_deps_file; }
-    void set_deps_file(const pal::string_t value) { m_deps_file = value; }
-    const deps_json_t& get_deps() const { return m_deps; }
-    void parse_deps();
-    void parse_deps(const deps_json_t::rid_fallback_graph_t& graph);
+    void parse_runtime_config(
+        const pal::string_t& path,
+        const pal::string_t& dev_path,
+        const std::optional<roll_forward_option>& override_roll_forward);
 
 private:
     pal::string_t m_name;
@@ -37,8 +35,6 @@ private:
     pal::string_t m_requested_version;
     pal::string_t m_found_version;
     runtime_config_t m_runtime_config;
-    pal::string_t m_deps_file;
-    deps_json_t m_deps;
 };
 
 typedef std::vector<std::unique_ptr<fx_definition_t>> fx_definition_vector_t;

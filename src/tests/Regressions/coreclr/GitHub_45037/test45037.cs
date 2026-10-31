@@ -4,6 +4,8 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using Xunit;
+using TestLibrary;
 
 public abstract class Base<T>
 {
@@ -44,14 +46,14 @@ class Child<T> : Parent where T : class
 
 class Foo { }
 
-class Program
+public class Program
 {
-    static int Main()
+    [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+    [Fact]
+    public static void TestEntryPoint()
     {
         Type[] t = Assembly.GetExecutingAssembly().GetTypes();
         new Child<Foo>();
         new CovariantReturn();
-
-        return 100;
     }
 }

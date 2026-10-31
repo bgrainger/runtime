@@ -34,18 +34,17 @@ inline PTR_VOID EEClassHashTable::CompressClassDef(mdToken cl)
         case mdtExportedType: return (PTR_VOID)(EECLASSHASH_MDEXPORT_DISCR | (((ULONG_PTR)cl & 0x00ffffff) << 1) | EECLASSHASH_TYPEHANDLE_DISCR);
         default:
             _ASSERTE(!"Can't get here.");
-            return 0;
+            return nullptr;
     }
 }
 
-inline DWORD EEClassHashTable::Hash(LPCUTF8 pszNamespace, LPCUTF8 pszClassName)
+inline DWORD EEClassHashTable::Hash(LPCUTF8 pszNamespace, LPCUTF8 pszClassName, DWORD hashEncloser)
 {
     CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
         MODE_ANY;
-        FORBID_FAULT;
         SUPPORTS_DAC;
     }
     CONTRACTL_END;
@@ -59,6 +58,11 @@ inline DWORD EEClassHashTable::Hash(LPCUTF8 pszNamespace, LPCUTF8 pszClassName)
 
     while ((dwChar = *pszClassName++) != 0)
         dwHash = ((dwHash << 5) + dwHash) ^ dwChar;
+
+    if (hashEncloser != 0)
+    {
+        dwHash = ((dwHash << 5) + dwHash) ^ hashEncloser;
+    }
 
     return  dwHash;
 }

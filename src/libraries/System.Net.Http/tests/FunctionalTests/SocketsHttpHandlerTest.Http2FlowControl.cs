@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Globalization;
 using System.Linq;
 using System.Net.Test.Common;
 using System.Threading;
@@ -11,16 +12,11 @@ using Xunit.Abstractions;
 
 namespace System.Net.Http.Functional.Tests
 {
-    [CollectionDefinition(nameof(NonParallelTestCollection), DisableParallelization = true)]
-    public class NonParallelTestCollection
-    {
-    }
-
     // This test class contains tests which are strongly timing-dependent.
     // There are two mitigations avoid flaky behavior on CI:
     // - Parallel test execution is disabled
     // - Using extreme parameters, and checks which are very unlikely to fail, if the implementation is correct
-    [Collection(nameof(NonParallelTestCollection))]
+    [Collection(nameof(DisableParallelization))]
     [ConditionalClass(typeof(SocketsHttpHandler_Http2FlowControl_Test), nameof(IsSupported))]
     public sealed class SocketsHttpHandler_Http2FlowControl_Test : HttpClientHandlerTestBase
     {
@@ -102,8 +98,8 @@ namespace System.Net.Http.Functional.Tests
         }
 
         [OuterLoop("Runs long")]
-        [Fact]
-        public void DisableDynamicWindowScaling_HighBandwidthDelayProduct_WindowRemainsConstant()
+        [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
+        public async Task DisableDynamicWindowScaling_HighBandwidthDelayProduct_WindowRemainsConstant()
         {
             static async Task RunTest()
             {
@@ -118,12 +114,12 @@ namespace System.Net.Http.Functional.Tests
                 Assert.Equal(DefaultInitialWindowSize, maxCredit);
             }
 
-            RemoteExecutor.Invoke(RunTest).Dispose();
+            await RemoteExecutor.Invoke(RunTest).DisposeAsync();
         }
 
         [OuterLoop("Runs long")]
-        [Fact]
-        public void MaxStreamWindowSize_WhenSet_WindowDoesNotScaleAboveMaximum()
+        [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
+        public async Task MaxStreamWindowSize_WhenSet_WindowDoesNotScaleAboveMaximum()
         {
             const int MaxWindow = 654321;
 
@@ -132,8 +128,7 @@ namespace System.Net.Http.Functional.Tests
                 int maxCredit = await TestClientWindowScalingAsync(
                     TimeSpan.FromMilliseconds(30),
                     TimeSpan.Zero,
-                    2 * 1024 * 1024,
-                    null);
+                    2 * 1024 * 1024);
 
                 Assert.True(maxCredit <= MaxWindow);
             }
@@ -141,12 +136,87 @@ namespace System.Net.Http.Functional.Tests
             RemoteInvokeOptions options = new RemoteInvokeOptions();
             options.StartInfo.EnvironmentVariables["DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_FLOWCONTROL_MAXSTREAMWINDOWSIZE"] = MaxWindow.ToString();
 
-            RemoteExecutor.Invoke(RunTest, options).Dispose();
+            await RemoteExecutor.Invoke(RunTest, options).DisposeAsync();
+        }
+
+        [ConditionalTheory(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
+        [InlineData(327161)] // Doubling exceeds the maximum by one byte.
+        [InlineData(654321)]
+        public async Task MaxStreamWindowSize_WindowUpdateRespectsMaximum(int initialWindowSize)
+        {
+            const int MaxWindow = 654321;
+
+            static async Task RunTest(string initialWindowValue)
+            {
+                const int StreamWindowUpdateRatio = 8;
+                int initialWindow = int.Parse(initialWindowValue, CultureInfo.InvariantCulture);
+                // Consume exactly one update threshold, then stop sending so remaining credit measures the window.
+                byte[] data = Enumerable.Range(0, initialWindow / StreamWindowUpdateRatio).Select(i => (byte)i).ToArray();
+
+                await Http2LoopbackServer.CreateClientAndServerAsync(async uri =>
+                {
+                    using HttpClientHandler handler = CreateHttpClientHandler(HttpVersion20.Value);
+                    GetUnderlyingSocketsHttpHandler(handler).InitialHttp2StreamWindowSize = initialWindow;
+                    using HttpClient client = new HttpClient(handler) { DefaultRequestVersion = HttpVersion20.Value };
+                    using HttpResponseMessage response = await client.GetAsync(uri);
+                    Assert.Equal(data, await response.Content.ReadAsByteArrayAsync());
+                },
+                async server =>
+                {
+                    await using Http2LoopbackConnection connection = await server.AcceptConnectionAsync();
+                    SettingsFrame settings = await connection.ReadSettingsAsync();
+                    Assert.Equal(initialWindow, (int)settings.Entries.Single(e => e.SettingId == SettingId.InitialWindowSize).Value);
+
+                    await connection.WriteFrameAsync(new SettingsFrame());
+                    // Establish a positive RTT before DATA can trigger window scaling.
+                    await Task.Delay(30);
+                    await connection.WriteFrameAsync(new SettingsFrame(FrameFlags.Ack, Array.Empty<SettingsEntry>()));
+                    await connection.ExpectSettingsAckAsync();
+
+                    int streamId = await connection.ReadRequestHeaderAsync();
+                    await connection.SendDefaultResponseHeadersAsync(streamId);
+                    for (int offset = 0; offset < data.Length; offset += Frame.MaxFrameLength)
+                    {
+                        await connection.SendResponseDataAsync(streamId, data.AsMemory(offset, Math.Min(Frame.MaxFrameLength, data.Length - offset)), endStream: false);
+                    }
+
+                    using CancellationTokenSource timeoutCts = new CancellationTokenSource(TestHelper.PassingTestTimeout);
+                    while (true)
+                    {
+                        Frame frame = await connection.ReadFrameAsync(timeoutCts.Token);
+                        if (frame is PingFrame ping)
+                        {
+                            await connection.SendPingAckAsync(ping.Data);
+                            continue;
+                        }
+
+                        WindowUpdateFrame update = Assert.IsType<WindowUpdateFrame>(frame);
+                        if (update.StreamId == 0)
+                        {
+                            continue;
+                        }
+
+                        Assert.Equal(streamId, update.StreamId);
+                        Assert.Equal(MaxWindow, initialWindow - data.Length + update.UpdateSize);
+                        break;
+                    }
+
+                    // Keep the response open until the update; END_STREAM suppresses further window adjustments.
+                    await connection.SendResponseDataAsync(streamId, ReadOnlyMemory<byte>.Empty, endStream: true);
+                }, NoAutoPingResponseHttp2Options);
+            }
+
+            RemoteInvokeOptions options = new RemoteInvokeOptions();
+            options.StartInfo.EnvironmentVariables["DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_FLOWCONTROL_MAXSTREAMWINDOWSIZE"] = MaxWindow.ToString(CultureInfo.InvariantCulture);
+            // Make growth independent of bandwidth and scheduling delays.
+            options.StartInfo.EnvironmentVariables["DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_FLOWCONTROL_STREAMWINDOWSCALETHRESHOLDMULTIPLIER"] = "0";
+
+            await RemoteExecutor.Invoke(RunTest, initialWindowSize.ToString(CultureInfo.InvariantCulture), options).DisposeAsync();
         }
 
         [OuterLoop("Runs long")]
-        [Fact]
-        public void StreamWindowScaleThresholdMultiplier_HighValue_WindowScalesSlower()
+        [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
+        public async Task StreamWindowScaleThresholdMultiplier_HighValue_WindowScalesSlower()
         {
             static async Task RunTest()
             {
@@ -162,12 +232,12 @@ namespace System.Net.Http.Functional.Tests
             RemoteInvokeOptions options = new RemoteInvokeOptions();
             options.StartInfo.EnvironmentVariables["DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_FLOWCONTROL_STREAMWINDOWSCALETHRESHOLDMULTIPLIER"] = "10000"; // Extreme value
 
-            RemoteExecutor.Invoke(RunTest, options).Dispose();
+            await RemoteExecutor.Invoke(RunTest, options).DisposeAsync();
         }
 
         [OuterLoop("Runs long")]
-        [Fact]
-        public void StreamWindowScaleThresholdMultiplier_LowValue_WindowScalesFaster()
+        [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
+        public async Task StreamWindowScaleThresholdMultiplier_LowValue_WindowScalesFaster()
         {
             static async Task RunTest()
             {
@@ -183,7 +253,23 @@ namespace System.Net.Http.Functional.Tests
             RemoteInvokeOptions options = new RemoteInvokeOptions();
             options.StartInfo.EnvironmentVariables["DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_FLOWCONTROL_STREAMWINDOWSCALETHRESHOLDMULTIPLIER"] = "0.00001"; // Extreme value
 
-            RemoteExecutor.Invoke(RunTest, options).Dispose();
+            await RemoteExecutor.Invoke(RunTest, options).DisposeAsync();
+        }
+
+        [OuterLoop("Runs long")]
+        [Fact]
+        public async Task LongRunningSlowServerStream_NoInvalidPingsAreSent()
+        {
+            // A scenario similar to https://github.com/grpc/grpc-dotnet/issues/2361.
+            // We need to send a small amount of data so the connection window is not consumed and no "standard" WINDOW_UPDATEs are sent and
+            // we also need to do it very slowly to cover some RTT PINGs after the initial burst.
+            // This scenario should trigger the "forced WINDOW_UPDATE" logic in the implementation, ensuring that no more than 4 PINGs are sent without a WINDOW_UPDATE.
+            await TestClientWindowScalingAsync(
+                TimeSpan.FromMilliseconds(500),
+                TimeSpan.FromMilliseconds(500),
+                1024,
+                _output,
+                dataPerFrame: 32);
         }
 
         private static async Task<int> TestClientWindowScalingAsync(
@@ -191,14 +277,12 @@ namespace System.Net.Http.Functional.Tests
             TimeSpan slowBandwidthSimDelay,
             int bytesToDownload,
             ITestOutputHelper output = null,
-            int maxWindowForPingStopValidation = int.MaxValue, // set to actual maximum to test if we stop sending PING when window reached maximum
-            Action<SocketsHttpHandler> configureHandler = null)
+            int dataPerFrame = 16384)
         {
             TimeSpan timeout = TimeSpan.FromSeconds(30);
             CancellationTokenSource timeoutCts = new CancellationTokenSource(timeout);
 
             HttpClientHandler handler = CreateHttpClientHandler(HttpVersion20.Value);
-            configureHandler?.Invoke(GetUnderlyingSocketsHttpHandler(handler));
 
             using Http2LoopbackServer server = Http2LoopbackServer.CreateServer(NoAutoPingResponseHttp2Options);
             using HttpClient client = new HttpClient(handler, true);
@@ -230,13 +314,13 @@ namespace System.Net.Http.Functional.Tests
             using SemaphoreSlim writeSemaphore = new SemaphoreSlim(1);
             int remainingBytes = bytesToDownload;
 
-            bool pingReceivedAfterReachingMaxWindow = false;
+            string unexpectedPingReason = null;
             bool unexpectedFrameReceived = false;
             CancellationTokenSource stopFrameProcessingCts = new CancellationTokenSource();
             
             CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stopFrameProcessingCts.Token, timeoutCts.Token);
             Task processFramesTask = ProcessIncomingFramesAsync(linkedCts.Token);
-            byte[] buffer = new byte[16384];
+            byte[] buffer = new byte[dataPerFrame];
 
             while (remainingBytes > 0)
             {
@@ -264,17 +348,14 @@ namespace System.Net.Http.Functional.Tests
 
             int dataReceived = (await response.Content.ReadAsByteArrayAsync()).Length;
             Assert.Equal(bytesToDownload, dataReceived);
-            Assert.False(pingReceivedAfterReachingMaxWindow, "Server received a PING after reaching max window");
+            Assert.Null(unexpectedPingReason);
             Assert.False(unexpectedFrameReceived, "Server received an unexpected frame, see test output for more details.");
 
             return maxCredit;
 
             async Task ProcessIncomingFramesAsync(CancellationToken cancellationToken)
             {
-                // If credit > 90% of the maximum window, we are safe to assume we reached the max window.
-                // We should not receive any more RTT PING's after this point
-                int maxWindowCreditThreshold = (int) (0.9 * maxWindowForPingStopValidation);
-                output?.WriteLine($"maxWindowCreditThreshold: {maxWindowCreditThreshold} maxWindowForPingStopValidation: {maxWindowForPingStopValidation}");
+                int pingsWithoutWindowUpdate = 0;
 
                 try
                 {
@@ -289,10 +370,13 @@ namespace System.Net.Http.Functional.Tests
 
                             output?.WriteLine($"Received PING ({pingFrame.Data})");
 
-                            if (maxCredit > maxWindowCreditThreshold)
+                            pingsWithoutWindowUpdate++;
+
+                            // Exceeding this limit may trigger a GOAWAY on some servers. See implementation comments for more details.
+                            if (pingsWithoutWindowUpdate > 4)
                             {
-                                output?.WriteLine("PING was unexpected");
-                                Volatile.Write(ref pingReceivedAfterReachingMaxWindow, true);
+                                Volatile.Write(ref unexpectedPingReason, $"The server received {pingsWithoutWindowUpdate} PINGs without receiving a WINDOW_UPDATE");
+                                output?.WriteLine($"PING was unexpected: {unexpectedPingReason}");
                             }
 
                             await writeSemaphore.WaitAsync(cancellationToken);
@@ -301,6 +385,7 @@ namespace System.Net.Http.Functional.Tests
                         }
                         else if (frame is WindowUpdateFrame windowUpdateFrame)
                         {
+                            pingsWithoutWindowUpdate = 0;
                             // Ignore connection window:
                             if (windowUpdateFrame.StreamId != streamId) continue;
 

@@ -2,14 +2,13 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
-
 using Debug = System.Diagnostics.Debug;
 using IEnumerable = System.Collections.IEnumerable;
-using StringBuilder = System.Text.StringBuilder;
 using Interlocked = System.Threading.Interlocked;
-using System.Diagnostics.CodeAnalysis;
+using StringBuilder = System.Text.StringBuilder;
 
 namespace System.Xml.Linq
 {
@@ -28,7 +27,8 @@ namespace System.Xml.Linq
 
         internal XContainer(XContainer other)
         {
-            if (other == null) throw new ArgumentNullException(nameof(other));
+            ArgumentNullException.ThrowIfNull(other);
+
             if (other.content is string)
             {
                 this.content = other.content;
@@ -54,8 +54,7 @@ namespace System.Xml.Linq
         {
             get
             {
-                XNode? last = LastNode;
-                return last != null ? last.next : null;
+                return LastNode?.next;
             }
         }
 
@@ -76,7 +75,7 @@ namespace System.Xml.Linq
                     XText t = new XText(s);
                     t.parent = this;
                     t.next = t;
-                    Interlocked.CompareExchange<object>(ref content, t, s);
+                    Interlocked.CompareExchange(ref content, t, s);
                 }
                 return (XNode)content;
             }
@@ -835,6 +834,10 @@ namespace System.Xml.Linq
 
             ContentReader cr = new ContentReader(this);
             while (cr.ReadContentFrom(this, r) && r.Read()) ;
+
+            // Materialize any text still buffered when the reader stops at end-of-input rather
+            // than a matching EndElement (e.g. document-level trailing whitespace on an XDocument).
+            cr.FlushBufferedText();
         }
 
         internal void ReadContentFrom(XmlReader r, LoadOptions o)
@@ -847,7 +850,11 @@ namespace System.Xml.Linq
             if (r.ReadState != ReadState.Interactive) throw new InvalidOperationException(SR.InvalidOperation_ExpectedInteractive);
 
             ContentReader cr = new ContentReader(this, r, o);
-            while (cr.ReadContentFrom(this, r, o) && r.Read()) ;
+            while (cr.ReadContentFromContainer(this, r) && r.Read()) ;
+
+            // Materialize any text still buffered when the reader stops at end-of-input rather
+            // than a matching EndElement (e.g. document-level trailing whitespace on an XDocument).
+            cr.FlushBufferedText();
         }
 
         internal async Task ReadContentFromAsync(XmlReader r, CancellationToken cancellationToken)
@@ -860,6 +867,10 @@ namespace System.Xml.Linq
                 cancellationToken.ThrowIfCancellationRequested();
             }
             while (await cr.ReadContentFromAsync(this, r).ConfigureAwait(false) && await r.ReadAsync().ConfigureAwait(false));
+
+            // Materialize any text still buffered when the reader stops at end-of-input rather
+            // than a matching EndElement (e.g. document-level trailing whitespace on an XDocument).
+            cr.FlushBufferedText();
         }
 
         internal async Task ReadContentFromAsync(XmlReader r, LoadOptions o, CancellationToken cancellationToken)
@@ -876,16 +887,22 @@ namespace System.Xml.Linq
             {
                 cancellationToken.ThrowIfCancellationRequested();
             }
-            while (await cr.ReadContentFromAsync(this, r, o).ConfigureAwait(false) && await r.ReadAsync().ConfigureAwait(false));
+            while (await cr.ReadContentFromContainerAsync(this, r).ConfigureAwait(false) && await r.ReadAsync().ConfigureAwait(false));
+
+            // Materialize any text still buffered when the reader stops at end-of-input rather
+            // than a matching EndElement (e.g. document-level trailing whitespace on an XDocument).
+            cr.FlushBufferedText();
         }
 
         private sealed class ContentReader
         {
-            private readonly NamespaceCache _eCache;
-            private readonly NamespaceCache _aCache;
+            private NamespaceCache _eCache;
+            private NamespaceCache _aCache;
             private readonly IXmlLineInfo? _lineInfo;
             private XContainer _currentContainer;
             private string? _baseUri;
+            private string? _textValue;
+            private StringBuilder? _textBuffer;
 
             public ContentReader(XContainer rootContainer)
             {
@@ -899,9 +916,64 @@ namespace System.Xml.Linq
                 _lineInfo = (o & LoadOptions.SetLineInfo) != 0 ? r as IXmlLineInfo : null;
             }
 
+            private void BufferText(string value)
+            {
+                if (_textBuffer is not null)
+                {
+                    _textBuffer.Append(value);
+                }
+                else if (_textValue is null)
+                {
+                    _textValue = value;
+                }
+                else
+                {
+                    _textBuffer = new StringBuilder(_textValue).Append(value);
+                    _textValue = null;
+                }
+            }
+
+            // A single text node is retained as its original string. Consecutive text nodes are
+            // promoted to a StringBuilder and materialized in one pass rather than being
+            // concatenated one chunk at a time. Some readers (notably the one used by
+            // DataContractSerializer over a stream) deliver a single logical text value as many
+            // small text nodes; appending each of them individually via AddStringSkipNotify
+            // concatenates immutable strings and degrades to O(n^2). Every read loop calls this
+            // once before handling any non-text node (so document order is preserved) and once
+            // more after the loop ends (so trailing buffered text is not lost when the reader
+            // stops at end-of-input rather than an EndElement).
+            internal void FlushBufferedText()
+            {
+                if (_textBuffer is StringBuilder buffer)
+                {
+                    if (buffer.Length > 0)
+                    {
+                        _currentContainer.AddStringSkipNotify(buffer.ToString());
+                    }
+
+                    _textBuffer = null;
+                }
+                else if (!string.IsNullOrEmpty(_textValue))
+                {
+                    _currentContainer.AddStringSkipNotify(_textValue);
+                }
+
+                _textValue = null;
+            }
+
             public bool ReadContentFrom(XContainer rootContainer, XmlReader r)
             {
-                switch (r.NodeType)
+                XmlNodeType nodeType = r.NodeType;
+                if (nodeType is XmlNodeType.Text or XmlNodeType.SignificantWhitespace or XmlNodeType.Whitespace)
+                {
+                    BufferText(r.Value);
+                    return true;
+                }
+
+                // Any non-text node ends the current run of text, so materialize it first.
+                FlushBufferedText();
+
+                switch (nodeType)
                 {
                     case XmlNodeType.Element:
                         XElement e = new XElement(_eCache.Get(r.NamespaceURI).GetName(r.LocalName));
@@ -920,17 +992,9 @@ namespace System.Xml.Linq
                         }
                         break;
                     case XmlNodeType.EndElement:
-                        if (_currentContainer.content == null)
-                        {
-                            _currentContainer.content = string.Empty;
-                        }
+                        _currentContainer.content ??= string.Empty;
                         if (_currentContainer == rootContainer) return false;
                         _currentContainer = _currentContainer.parent!;
-                        break;
-                    case XmlNodeType.Text:
-                    case XmlNodeType.SignificantWhitespace:
-                    case XmlNodeType.Whitespace:
-                        _currentContainer.AddStringSkipNotify(r.Value);
                         break;
                     case XmlNodeType.CDATA:
                         _currentContainer.AddNodeSkipNotify(new XCData(r.Value));
@@ -951,14 +1015,24 @@ namespace System.Xml.Linq
                     case XmlNodeType.EndEntity:
                         break;
                     default:
-                        throw new InvalidOperationException(SR.Format(SR.InvalidOperation_UnexpectedNodeType, r.NodeType));
+                        throw new InvalidOperationException(SR.Format(SR.InvalidOperation_UnexpectedNodeType, nodeType));
                 }
                 return true;
             }
 
             public async ValueTask<bool> ReadContentFromAsync(XContainer rootContainer, XmlReader r)
             {
-                switch (r.NodeType)
+                XmlNodeType nodeType = r.NodeType;
+                if (nodeType is XmlNodeType.Text or XmlNodeType.SignificantWhitespace or XmlNodeType.Whitespace)
+                {
+                    BufferText(await r.GetValueAsync().ConfigureAwait(false));
+                    return true;
+                }
+
+                // Any non-text node ends the current run of text, so materialize it first.
+                FlushBufferedText();
+
+                switch (nodeType)
                 {
                     case XmlNodeType.Element:
                         XElement e = new XElement(_eCache.Get(r.NamespaceURI).GetName(r.LocalName));
@@ -979,17 +1053,9 @@ namespace System.Xml.Linq
                         }
                         break;
                     case XmlNodeType.EndElement:
-                        if (_currentContainer.content == null)
-                        {
-                            _currentContainer.content = string.Empty;
-                        }
+                        _currentContainer.content ??= string.Empty;
                         if (_currentContainer == rootContainer) return false;
                         _currentContainer = _currentContainer.parent!;
-                        break;
-                    case XmlNodeType.Text:
-                    case XmlNodeType.SignificantWhitespace:
-                    case XmlNodeType.Whitespace:
-                        _currentContainer.AddStringSkipNotify(await r.GetValueAsync().ConfigureAwait(false));
                         break;
                     case XmlNodeType.CDATA:
                         _currentContainer.AddNodeSkipNotify(new XCData(await r.GetValueAsync().ConfigureAwait(false)));
@@ -1010,17 +1076,31 @@ namespace System.Xml.Linq
                     case XmlNodeType.EndEntity:
                         break;
                     default:
-                        throw new InvalidOperationException(SR.Format(SR.InvalidOperation_UnexpectedNodeType, r.NodeType));
+                        throw new InvalidOperationException(SR.Format(SR.InvalidOperation_UnexpectedNodeType, nodeType));
                 }
                 return true;
             }
 
-            public bool ReadContentFrom(XContainer rootContainer, XmlReader r, LoadOptions o)
+            public bool ReadContentFromContainer(XContainer rootContainer, XmlReader r)
             {
                 XNode? newNode = null;
                 string baseUri = r.BaseURI;
+                XmlNodeType nodeType = r.NodeType;
 
-                switch (r.NodeType)
+                // Fast path: coalesce a run of adjacent text. Text that must carry its own
+                // baseUri or line info can't be coalesced, so it falls through to be created as a
+                // standalone XText node in the switch below.
+                if (nodeType is XmlNodeType.Text or XmlNodeType.SignificantWhitespace or XmlNodeType.Whitespace
+                    && !((_baseUri != null && _baseUri != baseUri) || (_lineInfo != null && _lineInfo.HasLineInfo())))
+                {
+                    BufferText(r.Value);
+                    return true;
+                }
+
+                // Any other node ends the current run of text, so materialize it first.
+                FlushBufferedText();
+
+                switch (nodeType)
                 {
                     case XmlNodeType.Element:
                     {
@@ -1059,10 +1139,7 @@ namespace System.Xml.Linq
                     }
                     case XmlNodeType.EndElement:
                     {
-                        if (_currentContainer.content == null)
-                        {
-                                _currentContainer.content = string.Empty;
-                        }
+                        _currentContainer.content ??= string.Empty;
                         // Store the line info of the end element tag.
                         // Note that since we've got EndElement the current container must be an XElement
                         XElement? e = _currentContainer as XElement;
@@ -1082,15 +1159,9 @@ namespace System.Xml.Linq
                     case XmlNodeType.Text:
                     case XmlNodeType.SignificantWhitespace:
                     case XmlNodeType.Whitespace:
-                        if ((_baseUri != null && _baseUri != baseUri) ||
-                            (_lineInfo != null && _lineInfo.HasLineInfo()))
-                        {
-                            newNode = new XText(r.Value);
-                        }
-                        else
-                        {
-                            _currentContainer.AddStringSkipNotify(r.Value);
-                        }
+                        // Only reached for text that needs its own baseUri/line info; plain text
+                        // runs are coalesced by the fast path above.
+                        newNode = new XText(r.Value);
                         break;
                     case XmlNodeType.CDATA:
                         newNode = new XCData(r.Value);
@@ -1111,7 +1182,7 @@ namespace System.Xml.Linq
                     case XmlNodeType.EndEntity:
                         break;
                     default:
-                        throw new InvalidOperationException(SR.Format(SR.InvalidOperation_UnexpectedNodeType, r.NodeType));
+                        throw new InvalidOperationException(SR.Format(SR.InvalidOperation_UnexpectedNodeType, nodeType));
                 }
 
                 if (newNode != null)
@@ -1127,18 +1198,31 @@ namespace System.Xml.Linq
                     }
 
                     _currentContainer.AddNodeSkipNotify(newNode);
-                    newNode = null;
                 }
 
                 return true;
             }
 
-            public async ValueTask<bool> ReadContentFromAsync(XContainer rootContainer, XmlReader r, LoadOptions o)
+            public async ValueTask<bool> ReadContentFromContainerAsync(XContainer rootContainer, XmlReader r)
             {
                 XNode? newNode = null;
                 string baseUri = r.BaseURI!;
+                XmlNodeType nodeType = r.NodeType;
 
-                switch (r.NodeType)
+                // Fast path: coalesce a run of adjacent text. Text that must carry its own
+                // baseUri or line info can't be coalesced, so it falls through to be created as a
+                // standalone XText node in the switch below.
+                if (nodeType is XmlNodeType.Text or XmlNodeType.SignificantWhitespace or XmlNodeType.Whitespace
+                    && !((_baseUri != null && _baseUri != baseUri) || (_lineInfo != null && _lineInfo.HasLineInfo())))
+                {
+                    BufferText(await r.GetValueAsync().ConfigureAwait(false));
+                    return true;
+                }
+
+                // Any other node ends the current run of text, so materialize it first.
+                FlushBufferedText();
+
+                switch (nodeType)
                 {
                     case XmlNodeType.Element:
                         {
@@ -1179,10 +1263,7 @@ namespace System.Xml.Linq
                         }
                     case XmlNodeType.EndElement:
                         {
-                            if (_currentContainer.content == null)
-                            {
-                                _currentContainer.content = string.Empty;
-                            }
+                            _currentContainer.content ??= string.Empty;
                             // Store the line info of the end element tag.
                             // Note that since we've got EndElement the current container must be an XElement
                             XElement? e = _currentContainer as XElement;
@@ -1202,15 +1283,9 @@ namespace System.Xml.Linq
                     case XmlNodeType.Text:
                     case XmlNodeType.SignificantWhitespace:
                     case XmlNodeType.Whitespace:
-                        if ((_baseUri != null && _baseUri != baseUri) ||
-                            (_lineInfo != null && _lineInfo.HasLineInfo()))
-                        {
-                            newNode = new XText(await r.GetValueAsync().ConfigureAwait(false));
-                        }
-                        else
-                        {
-                            _currentContainer.AddStringSkipNotify(await r.GetValueAsync().ConfigureAwait(false));
-                        }
+                        // Only reached for text that needs its own baseUri/line info; plain text
+                        // runs are coalesced by the fast path above.
+                        newNode = new XText(await r.GetValueAsync().ConfigureAwait(false));
                         break;
                     case XmlNodeType.CDATA:
                         newNode = new XCData(await r.GetValueAsync().ConfigureAwait(false));
@@ -1231,7 +1306,7 @@ namespace System.Xml.Linq
                     case XmlNodeType.EndEntity:
                         break;
                     default:
-                        throw new InvalidOperationException(SR.Format(SR.InvalidOperation_UnexpectedNodeType, r.NodeType));
+                        throw new InvalidOperationException(SR.Format(SR.InvalidOperation_UnexpectedNodeType, nodeType));
                 }
 
                 if (newNode != null)
@@ -1247,7 +1322,6 @@ namespace System.Xml.Linq
                     }
 
                     _currentContainer.AddNodeSkipNotify(newNode);
-                    newNode = null;
                 }
 
                 return true;
@@ -1381,7 +1455,7 @@ namespace System.Xml.Linq
             }
         }
 
-        [return: NotNullIfNotNull("content")]
+        [return: NotNullIfNotNull(nameof(content))]
         internal static object? GetContentSnapshot(object? content)
         {
             if (content is string || !(content is IEnumerable)) return content;

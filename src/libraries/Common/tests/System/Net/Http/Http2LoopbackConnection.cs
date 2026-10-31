@@ -28,19 +28,79 @@ namespace System.Net.Test.Common
         private readonly TimeSpan _timeout;
         private int _lastStreamId;
         private bool _expectClientDisconnect;
+        private bool _closeDeferred;
+        private int _lastRequestStreamId;
+        private int _lastGoAwayStreamId = int.MaxValue;
+        private int _closed;
+        private readonly SemaphoreSlim? _readLock;
+        private readonly SemaphoreSlim? _writeLock;
 
         private readonly byte[] _prefix = new byte[24];
         public string PrefixString => Encoding.UTF8.GetString(_prefix, 0, _prefix.Length);
         public bool IsInvalid => _connectionSocket == null;
         public Stream Stream => _connectionStream;
         public Task<bool> SettingAckWaiter => _ignoredSettingsAckPromise?.Task;
+        internal bool DeferClose { get; set; }
+        internal bool IsCloseDeferred => _closeDeferred;
 
-        private Http2LoopbackConnection(SocketWrapper socket, Stream stream, TimeSpan timeout, bool transparentPingResponse)
+        private Http2LoopbackConnection(SocketWrapper socket, Stream stream, TimeSpan timeout, Http2Options httpOptions)
         {
             _connectionSocket = socket;
             _connectionStream = stream;
             _timeout = timeout;
-            _transparentPingResponse = transparentPingResponse;
+            _transparentPingResponse = httpOptions.EnableTransparentPingResponse;
+
+            if (httpOptions.EnsureThreadSafeIO)
+            {
+                _readLock = new SemaphoreSlim(1, 1);
+                _writeLock = new SemaphoreSlim(1, 1);
+                _connectionStream = CreateConcurrentConnectionStream(stream, _readLock, _writeLock);
+            }
+
+            static Stream CreateConcurrentConnectionStream(Stream stream, SemaphoreSlim readLock, SemaphoreSlim writeLock)
+            {
+                return new DelegateStream(
+                    canReadFunc: () => true,
+                    canWriteFunc: () => true,
+                    readAsyncFunc: async (buffer, offset, count, cancellationToken) =>
+                    {
+                        await readLock.WaitAsync(cancellationToken);
+                        try
+                        {
+                            return await stream.ReadAsync(buffer, offset, count, cancellationToken);
+                        }
+                        finally
+                        {
+                            readLock.Release();
+                        }
+                    },
+                    writeAsyncFunc: async (buffer, offset, count, cancellationToken) =>
+                    {
+                        await writeLock.WaitAsync(cancellationToken);
+                        try
+                        {
+                            await stream.WriteAsync(buffer, offset, count, cancellationToken);
+                            await stream.FlushAsync(cancellationToken);
+                        }
+                        finally
+                        {
+                            writeLock.Release();
+                        }
+                    },
+                    disposeFunc: (disposing) =>
+                    {
+                        if (disposing)
+                        {
+                            stream.Dispose();
+                        }
+                    }
+                );
+            }
+        }
+
+        public override string ToString()
+        {
+            return $"{this.GetType().Name} {_connectionSocket.LocalEndPoint} <-> {_connectionSocket.RemoteEndPoint}";
         }
 
         public static Task<Http2LoopbackConnection> CreateAsync(SocketWrapper socket, Stream stream, Http2Options httpOptions)
@@ -54,7 +114,7 @@ namespace System.Net.Test.Common
             {
                 var sslStream = new SslStream(stream, false, delegate { return true; });
 
-                using (X509Certificate2 cert = Configuration.Certificates.GetServerCertificate())
+                using (X509Certificate2 cert = httpOptions.Certificate ?? Configuration.Certificates.GetServerCertificate())
                 {
 #if !NETFRAMEWORK
                     SslServerAuthenticationOptions options = new SslServerAuthenticationOptions();
@@ -78,7 +138,7 @@ namespace System.Net.Test.Common
                 stream = sslStream;
             }
 
-            var con = new Http2LoopbackConnection(socket, stream, timeout, httpOptions.EnableTransparentPingResponse);
+            var con = new Http2LoopbackConnection(socket, stream, timeout, httpOptions);
             await con.ReadPrefixAsync().ConfigureAwait(false);
 
             return con;
@@ -91,7 +151,7 @@ namespace System.Net.Test.Common
                 throw new Exception("Connection stream closed while attempting to read connection preface.");
             }
 
-            if (Text.Encoding.ASCII.GetString(_prefix).Contains("HTTP/1.1"))
+            if (_prefix.AsSpan().IndexOf("HTTP/1.1"u8) >= 0)
             {
                 // Tests that use HttpAgnosticLoopbackServer will attempt to send an HTTP/1.1 request to an HTTP/2 server.
                 // This is invalid and we should terminate the connection.
@@ -100,10 +160,10 @@ namespace System.Net.Test.Common
                 // Since those tests are not set up to handle multiple retries, we instead just send back an invalid response here
                 // so that SocketsHttpHandler will not induce retry.
                 // The contents of what we send don't really matter, as long as it is interpreted by SocketsHttpHandler as an invalid response.
-                await _connectionStream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/2.0 400 Bad Request\r\n\r\n"));
-                _connectionSocket.Shutdown(SocketShutdown.Send);
+                await _connectionStream.WriteAsync("HTTP/2.0 400 Bad Request\r\n\r\n"u8.ToArray());
+                await _connectionSocket.ShutdownAsync(SocketShutdown.Send);
                 // If WinHTTP doesn't support streaming a request without a length then it will fallback
-                // to HTTP/1.1. Throwing an exception to detect this case in WinHttpHandler tests. 
+                // to HTTP/1.1. Throwing an exception to detect this case in WinHttpHandler tests.
                 throw new Exception("HTTP/1.1 request sent to HTTP/2 connection.");
             }
         }
@@ -125,8 +185,22 @@ namespace System.Net.Test.Common
 
         public async Task WriteFrameAsync(Frame frame, CancellationToken cancellationToken = default)
         {
+            Stream stream = _connectionStream ?? throw new ObjectDisposedException(nameof(Http2LoopbackConnection));
             byte[] writeBuffer = new byte[Frame.FrameHeaderLength + frame.Length];
             frame.WriteTo(writeBuffer);
+            await stream.WriteAsync(writeBuffer, 0, writeBuffer.Length, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task WriteFramesAsync(Frame[] frames, CancellationToken cancellationToken = default)
+        {
+            byte[] writeBuffer = new byte[frames.Sum(frame => Frame.FrameHeaderLength + frame.Length)];
+
+            int offset = 0;
+            foreach (Frame frame in frames)
+            {
+                frame.WriteTo(writeBuffer.AsSpan(offset));
+                offset += Frame.FrameHeaderLength + frame.Length;
+            }
             await _connectionStream.WriteAsync(writeBuffer, 0, writeBuffer.Length, cancellationToken).ConfigureAwait(false);
         }
 
@@ -180,6 +254,10 @@ namespace System.Net.Test.Common
             }
 
             Frame header = Frame.ReadFrom(headerBytes);
+            if (header.Type == FrameType.Headers)
+            {
+                _lastRequestStreamId = Math.Max(_lastRequestStreamId, header.StreamId);
+            }
 
             // Read the data segment of the frame, if it is present.
             byte[] data = new byte[header.Length];
@@ -330,9 +408,12 @@ namespace System.Net.Test.Common
             _ignoreWindowUpdates = false;
         }
 
-        public void ShutdownSend()
+        public async Task ShutdownSendAsync()
         {
-            _connectionSocket?.Shutdown(SocketShutdown.Send);
+            if (_connectionSocket != null)
+            {
+                await _connectionSocket.ShutdownAsync(SocketShutdown.Send);
+            }
         }
 
         // This will cause a server-initiated shutdown of the connection.
@@ -341,7 +422,7 @@ namespace System.Net.Test.Common
         public async Task WaitForConnectionShutdownAsync(bool ignoreUnexpectedFrames = false)
         {
             // Shutdown our send side, so the client knows there won't be any more frames coming.
-            ShutdownSend();
+            await ShutdownSendAsync();
 
             await WaitForClientDisconnectAsync(ignoreUnexpectedFrames: ignoreUnexpectedFrames);
         }
@@ -389,7 +470,7 @@ namespace System.Net.Test.Common
             return (HeadersFrame)frame;
         }
 
-        public async Task<Frame> ReadDataFrameAsync()
+        public async Task<DataFrame> ReadDataFrameAsync()
         {
             // Receive DATA frame for request.
             Frame frame = await ReadFrameAsync(_timeout).ConfigureAwait(false);
@@ -399,7 +480,7 @@ namespace System.Net.Test.Common
             }
 
             Assert.Equal(FrameType.Data, frame.Type);
-            return frame;
+            return Assert.IsType<DataFrame>(frame);
         }
 
         private static (int bytesConsumed, int value) DecodeInteger(ReadOnlySpan<byte> headerBlock, byte prefixMask)
@@ -407,7 +488,7 @@ namespace System.Net.Test.Common
             return QPackTestDecoder.DecodeInteger(headerBlock, prefixMask);
         }
 
-        private static (int bytesConsumed, string value) DecodeString(ReadOnlySpan<byte> headerBlock)
+        private static (int bytesConsumed, string value, bool huffmanEncoded, int valueStart) DecodeString(ReadOnlySpan<byte> headerBlock)
         {
             (int bytesConsumed, int stringLength) = DecodeInteger(headerBlock, 0b01111111);
             if ((headerBlock[0] & 0b10000000) != 0)
@@ -416,12 +497,12 @@ namespace System.Net.Test.Common
                 byte[] buffer = new byte[stringLength * 2];
                 int bytesDecoded = HuffmanDecoder.Decode(headerBlock.Slice(bytesConsumed, stringLength), buffer);
                 string value = Encoding.ASCII.GetString(buffer, 0, bytesDecoded);
-                return (bytesConsumed + stringLength, value);
+                return (bytesConsumed + stringLength, value, true, bytesConsumed);
             }
             else
             {
                 string value = Encoding.ASCII.GetString(headerBlock.Slice(bytesConsumed, stringLength).ToArray());
-                return (bytesConsumed + stringLength, value);
+                return (bytesConsumed + stringLength, value, false, bytesConsumed);
             }
         }
 
@@ -505,7 +586,7 @@ namespace System.Net.Test.Common
             string name;
             if (index == 0)
             {
-                (bytesConsumed, name) = DecodeString(headerBlock.Slice(i));
+                (bytesConsumed, name, _, _) = DecodeString(headerBlock.Slice(i));
                 i += bytesConsumed;
             }
             else
@@ -514,10 +595,11 @@ namespace System.Net.Test.Common
             }
 
             string value;
-            (bytesConsumed, value) = DecodeString(headerBlock.Slice(i));
+            (bytesConsumed, value, bool huffmanEncoded, int valueStart) = DecodeString(headerBlock.Slice(i));
+            valueStart += i;
             i += bytesConsumed;
 
-            return (i, new HttpHeaderData(name, value));
+            return (i, new HttpHeaderData(name, value, huffmanEncoded, rawValueStart: valueStart));
         }
 
         private static (int bytesConsumed, HttpHeaderData headerData) DecodeHeader(ReadOnlySpan<byte> headerBlock)
@@ -553,6 +635,7 @@ namespace System.Net.Test.Common
         public async Task<byte[]> ReadBodyAsync(bool expectEndOfStream = false)
         {
             byte[] body = null;
+            int bodyLength = 0;
             Frame frame;
 
             do
@@ -567,7 +650,7 @@ namespace System.Net.Test.Common
                 }
                 else if (frame == null || frame.Type == FrameType.RstStream)
                 {
-                    throw new IOException( frame == null ? "End of stream" : "Got RST");
+                    throw new IOException(frame == null ? "End of stream" : "Got RST");
                 }
 
                 Assert.Equal(FrameType.Data, frame.Type);
@@ -576,21 +659,23 @@ namespace System.Net.Test.Common
                 {
                     DataFrame dataFrame = (DataFrame)frame;
 
-                    if (body == null)
+                    if (body is null)
                     {
                         body = dataFrame.Data.ToArray();
+                        bodyLength = body.Length;
                     }
                     else
                     {
-                        byte[] newBuffer = new byte[body.Length + dataFrame.Data.Length];
-
-                        body.CopyTo(newBuffer, 0);
-                        dataFrame.Data.Span.CopyTo(newBuffer.AsSpan(body.Length));
-                        body= newBuffer;
+                        bodyLength = GenericLoopbackConnection.AppendToBuffer(ref body, bodyLength, dataFrame.Data.Span);
                     }
                 }
             }
             while ((frame.Flags & FrameFlags.EndStream) == 0);
+
+            if (body is not null)
+            {
+                Array.Resize(ref body, bodyLength);
+            }
 
             return body;
         }
@@ -650,7 +735,7 @@ namespace System.Net.Test.Common
                     default:
                         // Assert.Fail is already merged in xUnit but not released yet. Replace once available.
                         // https://github.com/xunit/xunit/issues/2105
-                        Assert.True(false, $"Unexpected frame type '{frame.Type}'");
+                        Assert.Fail($"Unexpected frame type '{frame.Type}'");
                         break;
                 }
             }
@@ -662,7 +747,7 @@ namespace System.Net.Test.Common
                 (int bytesConsumed, HttpHeaderData headerData) = DecodeHeader(data.Span.Slice(i));
 
                 byte[] headerRaw = data.Span.Slice(i, bytesConsumed).ToArray();
-                headerData = new HttpHeaderData(headerData.Name, headerData.Value, headerData.HuffmanEncoded, headerRaw);
+                headerData = new HttpHeaderData(headerData.Name, headerData.Value, headerData.HuffmanEncoded, headerRaw, headerData.RawValueStart);
 
                 requestData.Headers.Add(headerData);
                 i += bytesConsumed;
@@ -728,6 +813,7 @@ namespace System.Net.Test.Common
 
         public async Task SendGoAway(int lastStreamId, ProtocolErrors errorCode = ProtocolErrors.NO_ERROR)
         {
+            _lastGoAwayStreamId = Math.Min(_lastGoAwayStreamId, lastStreamId);
             GoAwayFrame frame = new GoAwayFrame(lastStreamId, (int)errorCode, new byte[] { }, 0);
             await WriteFrameAsync(frame).ConfigureAwait(false);
         }
@@ -791,9 +877,9 @@ namespace System.Net.Test.Common
 
         public async Task SendResponseHeadersAsync(int streamId, bool endStream = true, HttpStatusCode statusCode = HttpStatusCode.OK, bool isTrailingHeader = false, bool endHeaders = true, IList<HttpHeaderData> headers = null)
         {
-            // For now, only support headers that fit in a single frame
             byte[] headerBlock = new byte[Frame.MaxFrameLength];
             int bytesGenerated = 0;
+            bool sentAnyFrames = false;
 
             if (!isTrailingHeader)
             {
@@ -805,18 +891,39 @@ namespace System.Net.Test.Common
             {
                 foreach (HttpHeaderData headerData in headers)
                 {
+                    int estimatedHeaderLength = headerData.Name.Length + headerData.Value.Length + 20;
+                    Assert.True(estimatedHeaderLength < headerBlock.Length, "A single header exceeds MaxFrameLength");
+
+                    if (bytesGenerated + estimatedHeaderLength > headerBlock.Length)
+                    {
+                        await FlushHeadersAsync(endHeaders: false);
+                    }
+
                     bytesGenerated += HPackEncoder.EncodeHeader(headerData.Name, headerData.Value, headerData.ValueEncoding, headerData.HuffmanEncoded ? HPackFlags.HuffmanEncode : HPackFlags.None, headerBlock.AsSpan(bytesGenerated));
                 }
             }
 
-            FrameFlags flags = endHeaders ? FrameFlags.EndHeaders : FrameFlags.None;
-            if (endStream)
-            {
-                flags |= FrameFlags.EndStream;
-            }
+            await FlushHeadersAsync(endHeaders);
 
-            HeadersFrame headersFrame = new HeadersFrame(headerBlock.AsMemory(0, bytesGenerated), flags, 0, 0, 0, streamId);
-            await WriteFrameAsync(headersFrame).ConfigureAwait(false);
+            async Task FlushHeadersAsync(bool endHeaders)
+            {
+                Memory<byte> headerBytes = headerBlock.AsMemory(0, bytesGenerated);
+                bytesGenerated = 0;
+
+                FrameFlags flags = endHeaders ? FrameFlags.EndHeaders : FrameFlags.None;
+                if (endStream)
+                {
+                    flags |= FrameFlags.EndStream;
+                }
+
+                Frame frame = sentAnyFrames
+                    ? new ContinuationFrame(headerBytes, flags, 0, 0, 0, streamId)
+                    : new HeadersFrame(headerBytes, flags, 0, 0, 0, streamId);
+
+                sentAnyFrames = true;
+
+                await WriteFrameAsync(frame).ConfigureAwait(false);
+            }
         }
 
         public async Task SendResponseDataAsync(int streamId, ReadOnlyMemory<byte> responseData, bool endStream)
@@ -838,12 +945,58 @@ namespace System.Net.Test.Common
             await SendResponseDataAsync(streamId, responseBody, isFinal).ConfigureAwait(false);
         }
 
-        public override void Dispose()
+        public override async ValueTask DisposeAsync()
         {
+            if (_closeDeferred)
+            {
+                return;
+            }
+
             // Might have been already shutdown manually via WaitForConnectionShutdownAsync which nulls the _connectionStream.
             if (_connectionStream != null)
             {
-                ShutdownIgnoringErrorsAsync(_lastStreamId).GetAwaiter().GetResult();
+                if (DeferClose)
+                {
+                    _closeDeferred = true;
+                    try
+                    {
+                        await SendGoAway(Math.Min(_lastRequestStreamId, _lastGoAwayStreamId)).ConfigureAwait(false);
+                    }
+                    catch (ObjectDisposedException) when (Volatile.Read(ref _closed) != 0)
+                    {
+                        // The server can close connections while a failing test is still unwinding.
+                    }
+                    catch (IOException)
+                    {
+                        // The client may already have closed the connection.
+                    }
+                    catch (SocketException)
+                    {
+                        // The client may already have closed the connection.
+                    }
+                    return;
+                }
+
+                await ShutdownIgnoringErrorsAsync(_lastStreamId);
+            }
+        }
+
+        internal void Close()
+        {
+            if (Interlocked.Exchange(ref _closed, 1) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                _connectionStream?.Dispose();
+            }
+            finally
+            {
+                _connectionSocket?.Dispose();
+                _connectionStream = null;
+                _connectionSocket = null;
             }
         }
 
@@ -919,10 +1072,10 @@ namespace System.Net.Test.Common
             return SendResponseAsync(statusCode, headers, content, isFinal, requestId: 0);
         }
 
-        public override Task SendResponseHeadersAsync(HttpStatusCode statusCode = HttpStatusCode.OK, IList<HttpHeaderData> headers = null)
+        public override Task SendResponseHeadersAsync(HttpStatusCode statusCode = HttpStatusCode.OK, IList<HttpHeaderData> headers = null, bool isTrailingHeader = false)
         {
             int streamId = _lastStreamId;
-            return SendResponseHeadersAsync(streamId, endStream: false, statusCode, isTrailingHeader: false, endHeaders: true, headers);
+            return SendResponseHeadersAsync(streamId, endStream: isTrailingHeader, statusCode, isTrailingHeader: isTrailingHeader, endHeaders: true, headers);
         }
 
         public override Task SendPartialResponseHeadersAsync(HttpStatusCode statusCode = HttpStatusCode.OK, IList<HttpHeaderData> headers = null)
@@ -947,15 +1100,22 @@ namespace System.Net.Test.Common
 
             if (string.IsNullOrEmpty(content))
             {
-                await SendResponseHeadersAsync(streamId, endStream: true, statusCode, isTrailingHeader: false, headers : headers).ConfigureAwait(false);
+                await SendResponseHeadersAsync(streamId, endStream: true, statusCode, isTrailingHeader: false, headers: headers).ConfigureAwait(false);
             }
             else
             {
-                await SendResponseHeadersAsync(streamId, endStream: false, statusCode, isTrailingHeader: false, headers : headers).ConfigureAwait(false);
+                await SendResponseHeadersAsync(streamId, endStream: false, statusCode, isTrailingHeader: false, headers: headers).ConfigureAwait(false);
                 await SendResponseBodyAsync(streamId, Encoding.ASCII.GetBytes(content)).ConfigureAwait(false);
             }
 
-            await WaitForConnectionShutdownAsync().ConfigureAwait(false);
+            if (DeferClose)
+            {
+                await DisposeAsync().ConfigureAwait(false);
+            }
+            else
+            {
+                await WaitForConnectionShutdownAsync().ConfigureAwait(false);
+            }
 
             return requestData;
         }
@@ -983,6 +1143,11 @@ namespace System.Net.Test.Common
             Assert.Equal(streamId, frame.StreamId);
             RstStreamFrame rstStreamFrame = Assert.IsType<RstStreamFrame>(frame);
             Assert.Equal((int)ProtocolErrors.CANCEL, rstStreamFrame.ErrorCode);
+        }
+
+        public override Task WaitForCloseAsync(CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
         }
     }
 }

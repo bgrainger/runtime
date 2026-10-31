@@ -21,14 +21,14 @@ typedef DPTR(const struct HardCodedMetaSig) PTR_HARDCODEDMETASIG;
 struct HardCodedMetaSig
 {
     const BYTE* m_pMetaSig; // metasig prefixed with INT8 length:
-                            // length > 0 - resolved, lenght < 0 - has unresolved type references
+                            // length > 0 - resolved, length < 0 - has unresolved type references
 };
 
 #define DEFINE_METASIG(body)            extern const body
 #define DEFINE_METASIG_T(body)          extern body
 #define METASIG_BODY(varname, types)    HardCodedMetaSig gsig_ ## varname;
 #include "metasig.h"
-
+#include "cdacdata.h"
 //
 // Use the Binder objects to avoid doing unnecessary name lookup
 // (esp. in the prejit case)
@@ -139,7 +139,7 @@ class CoreLibBinder
     static FieldDesc * GetField(BinderFieldID id);
 
     //
-    // A slighly faster version that assumes that the class was fetched
+    // A slightly faster version that assumes that the class was fetched
     // by the binder earlier.
     //
     static PTR_MethodTable GetExistingClass(BinderClassID id);
@@ -294,6 +294,7 @@ private:
     USHORT m_cFields;
 
     static CrstStatic s_SigConvertCrst;
+    friend struct ::cdac_data<CoreLibBinder>;
 
 #ifdef _DEBUG
 
@@ -313,6 +314,12 @@ private:
 #endif
 };
 
+template<>
+struct cdac_data<CoreLibBinder>
+{
+    static constexpr size_t Classes = offsetof(CoreLibBinder, m_pClasses);
+};
+
 //
 // Global bound modules:
 //
@@ -325,7 +332,7 @@ FORCEINLINE PTR_MethodTable CoreLibBinder::GetClass(BinderClassID id)
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(ThrowOutOfMemory());
+        MODE_ANY;
 
         PRECONDITION(id != CLASS__NIL);
         PRECONDITION((&g_CoreLib)->m_cClasses > 0);  // Make sure CoreLib has been loaded.
@@ -333,7 +340,7 @@ FORCEINLINE PTR_MethodTable CoreLibBinder::GetClass(BinderClassID id)
     }
     CONTRACTL_END;
 
-    // Force a GC here under stress because type loading could trigger GC nondeterminsticly
+    // Force a GC here under stress because type loading could trigger GC nondeterministicly
     INDEBUG(TriggerGCUnderStress());
 
     PTR_MethodTable pMT = VolatileLoad(&((&g_CoreLib)->m_pClasses[id]));
@@ -348,14 +355,14 @@ FORCEINLINE MethodDesc * CoreLibBinder::GetMethod(BinderMethodID id)
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(ThrowOutOfMemory());
+        MODE_ANY;
 
         PRECONDITION(id != METHOD__NIL);
         PRECONDITION(id <= (&g_CoreLib)->m_cMethods);
     }
     CONTRACTL_END;
 
-    // Force a GC here under stress because type loading could trigger GC nondeterminsticly
+    // Force a GC here under stress because type loading could trigger GC nondeterministicly
     INDEBUG(TriggerGCUnderStress());
 
     MethodDesc * pMD = VolatileLoad(&((&g_CoreLib)->m_pMethods[id]));
@@ -370,14 +377,14 @@ FORCEINLINE FieldDesc * CoreLibBinder::GetField(BinderFieldID id)
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(ThrowOutOfMemory());
+        MODE_ANY;
 
         PRECONDITION(id != FIELD__NIL);
         PRECONDITION(id <= (&g_CoreLib)->m_cFields);
     }
     CONTRACTL_END;
 
-    // Force a GC here under stress because type loading could trigger GC nondeterminsticly
+    // Force a GC here under stress because type loading could trigger GC nondeterministicly
     INDEBUG(TriggerGCUnderStress());
 
     FieldDesc * pFD = VolatileLoad(&((&g_CoreLib)->m_pFields[id]));
@@ -416,7 +423,6 @@ FORCEINLINE PTR_MethodTable CoreLibBinder::GetClassIfExist(BinderClassID id)
     {
         GC_NOTRIGGER;
         NOTHROW;
-        FORBID_FAULT;
         MODE_ANY;
 
         PRECONDITION(id != CLASS__NIL);

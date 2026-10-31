@@ -4,13 +4,14 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using System.Text;
 
 internal static partial class Interop
 {
     internal static partial class Sys
     {
-        [GeneratedDllImport(Libraries.SystemNative, EntryPoint = "SystemNative_GetUnixVersion", CharSet = CharSet.Ansi, SetLastError = true)]
+        [LibraryImport(Libraries.SystemNative, EntryPoint = "SystemNative_GetUnixVersion", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
         private static partial int GetUnixVersion(byte[] version, ref int capacity);
 
         internal static string GetUnixVersion()
@@ -36,12 +37,12 @@ internal static partial class Interop
                 return string.Empty;
             }
 
-            Debug.Assert(Array.IndexOf<byte>(version, 0) != -1);
+            Debug.Assert(Array.IndexOf<byte>(version, 0) >= 0);
             unsafe
             {
                 fixed (byte* ptr = version)
                 {
-                    return new string((sbyte*)ptr);
+                    return Utf8StringMarshaller.ConvertToManaged(ptr)!;
                 }
             }
         }

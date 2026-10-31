@@ -13,10 +13,10 @@ internal static partial class Interop
         private const int INSUFFICIENT_BUFFER = -1;
         private const int SUCCESS = 1;
 
-        [GeneratedDllImport(Libraries.AndroidCryptoNative, EntryPoint = "AndroidCryptoNative_X509Decode")]
+        [LibraryImport(Libraries.AndroidCryptoNative, EntryPoint = "AndroidCryptoNative_X509Decode")]
         internal static partial SafeX509Handle X509Decode(ref byte buf, int len);
 
-        [GeneratedDllImport(Libraries.AndroidCryptoNative, EntryPoint = "AndroidCryptoNative_X509Encode")]
+        [LibraryImport(Libraries.AndroidCryptoNative, EntryPoint = "AndroidCryptoNative_X509Encode")]
         private static partial int X509Encode(SafeX509Handle x, byte[]? buf, ref int len);
         internal static byte[] X509Encode(SafeX509Handle x)
         {
@@ -32,8 +32,33 @@ internal static partial class Interop
 
             return encoded;
         }
+        [LibraryImport(Libraries.AndroidCryptoNative, EntryPoint = "AndroidCryptoNative_X509IsKeyStorePrivateKeyEntry")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool IsKeyStorePrivateKeyEntry(IntPtr handle);
+        [LibraryImport(Libraries.AndroidCryptoNative, EntryPoint = "AndroidCryptoNative_X509GetCertificateForPrivateKeyEntry")]
+        private static partial IntPtr GetPrivateKeyEntryCertificate(IntPtr privatKeyEntryHandle);
+        internal static SafeX509Handle GetPrivateKeyEntryCertificate(SafeHandle privatKeyEntryHandle)
+        {
+            bool addedRef = false;
+            try
+            {
+                privatKeyEntryHandle.DangerousAddRef(ref addedRef);
+                IntPtr certificatePtr = GetPrivateKeyEntryCertificate(privatKeyEntryHandle.DangerousGetHandle());
 
-        [GeneratedDllImport(Libraries.AndroidCryptoNative, EntryPoint = "AndroidCryptoNative_X509DecodeCollection")]
+                SafeX509Handle certificateHandle = new();
+                Marshal.InitHandle(certificateHandle, certificatePtr);
+                return certificateHandle;
+            }
+            finally
+            {
+                if (addedRef)
+                {
+                    privatKeyEntryHandle.DangerousRelease();
+                }
+            }
+        }
+
+        [LibraryImport(Libraries.AndroidCryptoNative, EntryPoint = "AndroidCryptoNative_X509DecodeCollection")]
         private static partial int X509DecodeCollection(ref byte buf, int bufLen, IntPtr[]? ptrs, ref int handlesLen);
         internal static SafeX509Handle[] X509DecodeCollection(ReadOnlySpan<byte> data)
         {
@@ -47,20 +72,32 @@ internal static partial class Interop
                 throw new CryptographicException();
 
             IntPtr[] ptrs = new IntPtr[size];
-            ret = X509DecodeCollection(ref buf, data.Length, ptrs, ref size);
-            if (ret != SUCCESS)
-                throw new CryptographicException();
-
             SafeX509Handle[] handles = new SafeX509Handle[ptrs.Length];
             for (var i = 0; i < handles.Length; i++)
             {
-                handles[i] = new SafeX509Handle(ptrs[i]);
+                handles[i] = new SafeX509Handle();
+            }
+
+            ret = X509DecodeCollection(ref buf, data.Length, ptrs, ref size);
+            if (ret != SUCCESS)
+            {
+                foreach (SafeX509Handle handle in handles)
+                {
+                    handle.Dispose();
+                }
+
+                throw new CryptographicException();
+            }
+
+            for (var i = 0; i < handles.Length; i++)
+            {
+                Marshal.InitHandle(handles[i], ptrs[i]);
             }
 
             return handles;
         }
 
-        [GeneratedDllImport(Libraries.AndroidCryptoNative, EntryPoint = "AndroidCryptoNative_X509ExportPkcs7")]
+        [LibraryImport(Libraries.AndroidCryptoNative, EntryPoint = "AndroidCryptoNative_X509ExportPkcs7")]
         private static partial int X509ExportPkcs7(IntPtr[] certs, int certsLen, byte[]? buf, ref int len);
         internal static byte[] X509ExportPkcs7(IntPtr[] certHandles)
         {
@@ -77,7 +114,7 @@ internal static partial class Interop
             return encoded;
         }
 
-        [GeneratedDllImport(Libraries.AndroidCryptoNative, EntryPoint = "AndroidCryptoNative_X509GetContentType")]
+        [LibraryImport(Libraries.AndroidCryptoNative, EntryPoint = "AndroidCryptoNative_X509GetContentType")]
         private static partial X509ContentType X509GetContentType(ref byte buf, int len);
         internal static X509ContentType X509GetContentType(ReadOnlySpan<byte> data)
         {
@@ -92,7 +129,7 @@ internal static partial class Interop
             UnknownAlgorithm = -1,
         }
 
-        [GeneratedDllImport(Libraries.AndroidCryptoNative, EntryPoint = "AndroidCryptoNative_X509PublicKey")]
+        [LibraryImport(Libraries.AndroidCryptoNative, EntryPoint = "AndroidCryptoNative_X509PublicKey")]
         internal static partial IntPtr X509GetPublicKey(SafeX509Handle x, PAL_KeyAlgorithm algorithm);
     }
 }

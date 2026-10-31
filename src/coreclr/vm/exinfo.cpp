@@ -1,303 +1,250 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-//
-
-//
 
 #include "common.h"
 #include "exinfo.h"
+#include "exkind.h"
 #include "dbginterface.h"
 
-#ifndef FEATURE_EH_FUNCLETS
+#include "eetoprofinterfacewrapper.inl"
+#include "eedbginterfaceimpl.inl"
+
 #ifndef DACCESS_COMPILE
-//
-// Destroy the handle within an ExInfo. This respects the fact that we can have preallocated global handles living
-// in ExInfo's.
-//
-void ExInfo::DestroyExceptionHandle(void)
+
+ExInfo::ExInfo(Thread *pThread, EXCEPTION_RECORD *pExceptionRecord, CONTEXT *pExceptionContext, ExKind exceptionKind) :
+    m_pPrevNestedInfo(pThread->GetExceptionState()->GetCurrentExceptionTracker()),
+    m_ptrs({pExceptionRecord, pExceptionContext}),
+    m_fDeliveredFirstChanceNotification(FALSE),
+    m_ExceptionCode((pExceptionRecord != PTR_NULL) ? pExceptionRecord->ExceptionCode : 0),
+    m_pExContext(&m_exContext),
+    m_exception((Object*)NULL),
+    m_kind(exceptionKind),
+    m_passNumber(1),
+    m_idxCurClause(0xffffffff),
+    m_notifyDebuggerSP{},
+    m_pFrame(pThread->GetFrame()),
+    m_ClauseForCatch({}),
+#ifdef HOST_UNIX
+    m_fOwnsExceptionPointers(FALSE),
+    m_propagateExceptionCallback(NULL),
+    m_propagateExceptionContext(NULL),
+#endif // HOST_UNIX
+    m_CurrentClause({}),
+    m_pMDToReportFunctionLeave(NULL),
+    m_reportedFunctionEnterWasForFunclet(false)
+#ifdef HOST_WINDOWS
+    , m_pLongJmpBuf(NULL),
+    m_longJmpReturnValue(0)
+#endif // HOST_WINDOWS
 {
-    CONTRACTL
+    pThread->GetExceptionState()->m_pCurrentTracker = this;
+
+    // m_exception is GC-reported via ExInfo chain scanning in ScanStackRoots
+    // (not via GCPROTECT - reporting the same location twice corrupts the GC
+    // relocation logic; see clr-code-guide.md §2.1.5).  Mark the slot as
+    // protected in the debug OBJECTREF tracking table so that checked-build
+    // validation knows the reference is rooted.
+#ifdef USE_CHECKED_OBJECTREFS
+    Thread::ObjectRefProtected(&m_exception);
+#endif
+
+    m_pInitialFrame = pThread->GetFrame();
+    if (exceptionKind == ExKind::HardwareFault)
     {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
+        // Hardware exception handling needs to start on the FaultingExceptionFrame, so we are
+        // passing in a context with zeroed out IP and SP.
+        SetIP(&m_exContext, 0);
+        SetSP(&m_exContext, 0);
+        m_exContext.ContextFlags = CONTEXT_FULL;
     }
-    CONTRACTL_END;
-
-    // Never, ever destroy a preallocated exception handle.
-    if ((m_hThrowable != NULL) && !CLRException::IsPreallocatedExceptionHandle(m_hThrowable))
+    else
     {
-        DestroyHandle(m_hThrowable);
+        memcpy(&m_exContext, pExceptionContext, sizeof(CONTEXT));
+        m_exContext.ContextFlags = m_exContext.ContextFlags & (CONTEXT_FULL | CONTEXT_EXCEPTION_ACTIVE);
     }
-
-    m_hThrowable = NULL;
-}
-
-//
-// CopyAndClearSource copies the contents of the given ExInfo into the current ExInfo, then re-initializes the
-// given ExInfo.
-//
-void ExInfo::CopyAndClearSource(ExInfo *from)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        if (GetThreadNULLOk() != NULL) MODE_COOPERATIVE; else MODE_ANY;
-        FORBID_FAULT;
-    }
-    CONTRACTL_END;
-
-#ifdef TARGET_X86
-    LOG((LF_EH, LL_INFO100, "In ExInfo::CopyAndClearSource: m_dEsp=%08x, %08x <- [%08x], stackAddress = 0x%p <- 0x%p\n",
-         from->m_dEsp, &(this->m_dEsp), &from->m_dEsp, this->m_StackAddress, from->m_StackAddress));
-#endif // TARGET_X86
-
-    // If we have a handle to an exception object in this ExInfo already, then go ahead and destroy it before we
-    // loose it.
-    DestroyExceptionHandle();
-
-    // The stack address is handled differently. Save the original value.
-    void* stackAddress = this->m_StackAddress;
-
-    // Blast the entire record. Note: we're copying the handle from the source ExInfo to this object. That's okay,
-    // since we're going to clear out the source ExInfo right below this.
-    memcpy(this, from, sizeof(ExInfo));
-
-    // Preserve the stack address. It should never change.
-    m_StackAddress = stackAddress;
-
-    // This ExInfo just took ownership of the handle to the exception object, so clear out that handle in the
-    // source ExInfo.
-    from->m_hThrowable = NULL;
-
-    // Finally, initialize the source ExInfo.
-    from->Init();
-
-#ifndef TARGET_UNIX
-    // Clear the Watson Bucketing information as well since they
-    // have been transferred over by the "memcpy" above.
-    from->GetWatsonBucketTracker()->Init();
-#endif // TARGET_UNIX
-}
-
-void ExInfo::Init()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-        FORBID_FAULT;
-    }
-    CONTRACTL_END;
-
-    m_ExceptionFlags.Init();
-    m_StackTraceInfo.Init();
-    m_DebuggerExState.Init();
-
-    m_pSearchBoundary = NULL;
-	STRESS_LOG3(LF_EH, LL_INFO10000, "ExInfo::Init: setting ExInfo:0x%p m_pBottomMostHandler from 0x%p to 0x%p\n",
-		this, m_pBottomMostHandler, NULL);
-    m_pBottomMostHandler = NULL;
-    m_pPrevNestedInfo = NULL;
-    m_ExceptionCode = 0xcccccccc;
-    m_pExceptionRecord = NULL;
-    m_pContext = NULL;
-    m_pShadowSP = NULL;
-    m_StackAddress = this;
-    DestroyExceptionHandle();
-    m_hThrowable = NULL;
-
-    // By default, mark the tracker as not having delivered the first
-    // chance exception notification
-    m_fDeliveredFirstChanceNotification = FALSE;
-
-    m_pTopMostHandlerDuringSO = NULL;
-
-#if defined(TARGET_X86) && defined(DEBUGGING_SUPPORTED)
-    m_InterceptionContext.Init();
-    m_ValidInterceptionContext = FALSE;
-#endif //TARGET_X86 && DEBUGGING_SUPPORTED
-}
-
-ExInfo::ExInfo()
-{
-    WRAPPER_NO_CONTRACT;
-
-    m_hThrowable = NULL;
-    Init();
 
 #ifndef TARGET_UNIX
     // Init the WatsonBucketTracker
     m_WatsonBucketTracker.Init();
-#endif // TARGET_UNIX
+#endif // !TARGET_UNIX
 }
 
-//*******************************************************************************
-// When we hit an endcatch or an unwind and have nested handler info, either
-//   1) we have contained a nested exception and will continue handling the original
-//      exception
-//  - or -
-//   2) the nested exception was not contained, and was thrown beyond the original
-//      bounds where the first exception occurred.
-//
-// The way we can tell this is from the stack pointer. The topmost nested handler is
-//  installed at the point where the exception occurred.  For a nested exception to be
-//  contained, it must be caught within the scope of any code that is called after
-//  the nested handler is installed.  (remember: after is a lower stack address.)
-//
-// If it is caught by anything earlier on the stack, it was not contained, and we
-//  unwind the nested handlers until we get to one that is higher on the stack
-//  than the esp we will unwind to.
-//
-// If we still have a nested handler, then we have successfully handled a nested
-//  exception and should restore the exception settings that we saved so that
-//  processing of the original exception can continue.
-// Otherwise the nested exception has gone beyond where the original exception was
-//  thrown and therefore replaces the original exception.
-//
-// We will always remove the current exception info from the chain.
-//
-void ExInfo::UnwindExInfo(VOID* limit)
+#if defined(TARGET_UNIX)
+void ExInfo::TakeExceptionPointersOwnership(PAL_SEHException* ex)
 {
-    CONTRACTL
-    {
-        NOTHROW; // This function does not throw.
-        GC_NOTRIGGER;
-        if (GetThreadNULLOk() != NULL) MODE_COOPERATIVE; else MODE_ANY;
-    }
-    CONTRACTL_END;
+    _ASSERTE(ex->GetExceptionRecord() == m_ptrs.ExceptionRecord);
+    _ASSERTE(ex->GetContextRecord() == m_ptrs.ContextRecord);
+    ex->Clear();
+    m_fOwnsExceptionPointers = TRUE;
+}
+#endif // TARGET_UNIX
 
-    // We must be in cooperative mode to do the chaining below
-#ifdef DEBUGGING_SUPPORTED
-    // The debugger thread will be using this, even though it has no
-    // Thread object associated with it.
-    _ASSERTE((GetThreadNULLOk() != NULL && GetThread()->PreemptiveGCDisabled()) ||
-             ((g_pDebugInterface != NULL) && (g_pDebugInterface->GetRCThreadId() == GetCurrentThreadId())));
+void ExInfo::ReleaseResources()
+{
+    m_exception = NULL;
+
+#ifndef TARGET_UNIX
+    // Clear any held Watson Bucketing details
+    GetWatsonBucketTracker()->ClearWatsonBucketDetails();
+#else // !TARGET_UNIX
+    if (m_fOwnsExceptionPointers)
+    {
+        PAL_FreeExceptionRecords(m_ptrs.ExceptionRecord, m_ptrs.ContextRecord);
+        m_fOwnsExceptionPointers = FALSE;
+    }
+#endif // !TARGET_UNIX
+}
+
+// static
+void ExInfo::PopExInfos(Thread *pThread, void *targetSp)
+{
+    STRESS_LOG1(LF_EH, LL_INFO100, "Popping ExInfos below SP=%p\n", targetSp);
+
+    ExInfo *pExInfo = (PTR_ExInfo)pThread->GetExceptionState()->GetCurrentExceptionTracker();
+#if defined(DEBUGGING_SUPPORTED)
+    DWORD_PTR dwInterceptStackFrame = 0;
+
+    // This method may be called on an unmanaged thread, in which case no interception can be done.
+    if (pExInfo)
+    {
+        ThreadExceptionState* pExState = pThread->GetExceptionState();
+
+        // If the exception is intercepted, then pop trackers according to the stack frame at which
+        // the exception is intercepted.  We must retrieve the frame pointer before we start popping trackers.
+        if (pExState->GetFlags()->DebuggerInterceptInfo())
+        {
+            pExState->GetDebuggerState()->GetDebuggerInterceptInfo(NULL, NULL, (PBYTE*)&dwInterceptStackFrame,
+                                                                   NULL, NULL);
+        }
+    }
 #endif // DEBUGGING_SUPPORTED
 
-    LOG((LF_EH, LL_INFO100, "UnwindExInfo: unwind limit is 0x%p, prevNested is 0x%p\n", limit, m_pPrevNestedInfo));
-
-    ExInfo *pPrevNestedInfo = m_pPrevNestedInfo;
-
-    // At first glance, you would think that each nested exception has
-    // been unwound by it's corresponding NestedExceptionHandler.  But that's
-    // not necessarily the case.  The following assertion cannot be made here,
-    // and the loop is necessary.
-    //
-    //_ASSERTE(pPrevNestedInfo == 0 || (DWORD)pPrevNestedInfo >= limit);
-    //
-    // Make sure we've unwound any nested exceptions that we're going to skip over.
-    //
-    while (pPrevNestedInfo && pPrevNestedInfo->m_StackAddress < limit)
+    while (pExInfo && pExInfo < (void*)targetSp)
     {
-        STRESS_LOG1(LF_EH, LL_INFO100, "UnwindExInfo: PopExInfo(): popping nested ExInfo at 0x%p\n", pPrevNestedInfo->m_StackAddress);
-
-        if (pPrevNestedInfo->m_hThrowable != NULL)
-        {
-            pPrevNestedInfo->DestroyExceptionHandle();
-        }
-
-        #ifndef TARGET_UNIX
-        // Free the Watson bucket details when ExInfo
-        // is being released
-        pPrevNestedInfo->GetWatsonBucketTracker()->ClearWatsonBucketDetails();
-        #endif // TARGET_UNIX
-
-        pPrevNestedInfo->m_StackTraceInfo.FreeStackTrace();
-
-        #ifdef DEBUGGING_SUPPORTED
+#if defined(DEBUGGING_SUPPORTED)
         if (g_pDebugInterface != NULL)
         {
-            g_pDebugInterface->DeleteInterceptContext(pPrevNestedInfo->m_DebuggerExState.GetDebuggerInterceptContext());
+            if (pExInfo->m_ScannedStackRange.GetUpperBound().SP < dwInterceptStackFrame)
+            {
+                g_pDebugInterface->DeleteInterceptContext(pExInfo->m_DebuggerExState.GetDebuggerInterceptContext());
+            }
         }
-        #endif
+#endif // DEBUGGING_SUPPORTED
 
-        // Get the next nested handler detail...
-        ExInfo* pPrev = pPrevNestedInfo->m_pPrevNestedInfo;
-
-        if (pPrevNestedInfo->IsHeapAllocated())
-        {
-            delete pPrevNestedInfo;
-        }
-
-        pPrevNestedInfo = pPrev;
+        pExInfo->ReleaseResources();
+        pExInfo = (PTR_ExInfo)pExInfo->m_pPrevNestedInfo;
     }
+    pThread->GetExceptionState()->m_pCurrentTracker = pExInfo;
+}
 
-    // either clear the one we're about to copy over or the topmost one
-    m_StackTraceInfo.FreeStackTrace();
+static bool IsFilterStartOffset(EE_ILEXCEPTION_CLAUSE* pEHClause, DWORD_PTR dwHandlerStartPC)
+{
+    EECodeInfo codeInfo((PCODE)dwHandlerStartPC);
+    _ASSERTE(codeInfo.IsValid());
 
-    if (pPrevNestedInfo)
+    return pEHClause->FilterOffset == codeInfo.GetRelOffset();
+}
+
+void ExInfo::MakeCallbacksRelatedToHandler(
+    bool fBeforeCallingHandler,
+    Thread*                pThread,
+    MethodDesc*            pMD,
+    EE_ILEXCEPTION_CLAUSE* pEHClause,
+    DWORD_PTR              dwHandlerStartPC,
+    StackFrame             sf
+    )
+{
+#ifdef DEBUGGING_SUPPORTED
+    // Here we need to make an extra check for filter handlers because we could be calling the catch handler
+    // associated with a filter handler and yet the EH clause we have saved is for the filter handler.
+    BOOL fIsFilterHandler         = IsFilterHandler(pEHClause) && IsFilterStartOffset(pEHClause, dwHandlerStartPC);
+    BOOL fIsFaultOrFinallyHandler = IsFaultOrFinally(pEHClause);
+
+    if (fBeforeCallingHandler)
     {
-        // found nested handler info that is above the esp restore point so succesfully caught nested
-        STRESS_LOG2(LF_EH, LL_INFO100, "UnwindExInfo: resetting nested ExInfo to 0x%p stackaddress:0x%p\n", pPrevNestedInfo, pPrevNestedInfo->m_StackAddress);
-
-        // Remember if this ExInfo is heap allocated or not.
-        BOOL isHeapAllocated = pPrevNestedInfo->IsHeapAllocated();
-
-        // Copy pPrevNestedInfo to 'this', clearing pPrevNestedInfo in the process.
-        CopyAndClearSource(pPrevNestedInfo);
-
-        if (isHeapAllocated)
+        m_EHClauseInfo.SetManagedCodeEntered(TRUE);
+        StackFrame sfToStore = sf;
+        if ((m_pPrevNestedInfo != NULL) &&
+            (((PTR_ExInfo)m_pPrevNestedInfo)->m_csfEnclosingClause == m_csfEnclosingClause))
         {
-            delete pPrevNestedInfo;         // Now delete the old record if we needed to.
+            // If this is a nested exception which has the same enclosing clause as the previous exception,
+            // we should just propagate the clause info from the previous exception.
+            sfToStore = m_pPrevNestedInfo->m_EHClauseInfo.GetStackFrameForEHClause();
+        }
+        m_EHClauseInfo.SetInfo(COR_PRF_CLAUSE_NONE, (UINT_PTR)dwHandlerStartPC, sfToStore);
+
+        if (pMD->IsDiagnosticsHidden())
+        {
+            return;
+        }
+
+        if (fIsFilterHandler)
+        {
+            m_EHClauseInfo.SetEHClauseType(COR_PRF_CLAUSE_FILTER);
+
+            // Suppress the debugger filter notification for the runtime helper that invokes
+            // the main program entrypoint (Environment.CallEntryPoint). This method has
+            // a filter clause that may return false, but the debugger intercepts at the notification
+            // before the filter evaluates, preventing the exception from propagating as unhandled.
+            if (pMD != g_pEnvironmentCallEntryPointMethodDesc)
+            {
+                EEToDebuggerExceptionInterfaceWrapper::ExceptionFilter(pMD, (TADDR) dwHandlerStartPC, pEHClause->FilterOffset, (BYTE*)sf.SP);
+            }
+
+            EEToProfilerExceptionInterfaceWrapper::ExceptionSearchFilterEnter(pMD);
+            ETW::ExceptionLog::ExceptionFilterBegin(pMD, (PVOID)dwHandlerStartPC);
+        }
+        else
+        {
+            EEToDebuggerExceptionInterfaceWrapper::ExceptionHandle(pMD, (TADDR) dwHandlerStartPC, pEHClause->HandlerStartPC, (BYTE*)sf.SP);
+
+            if (fIsFaultOrFinallyHandler)
+            {
+                m_EHClauseInfo.SetEHClauseType(COR_PRF_CLAUSE_FINALLY);
+                EEToProfilerExceptionInterfaceWrapper::ExceptionUnwindFinallyEnter(pMD);
+                ETW::ExceptionLog::ExceptionFinallyBegin(pMD, (PVOID)dwHandlerStartPC);
+            }
+            else
+            {
+                m_EHClauseInfo.SetEHClauseType(COR_PRF_CLAUSE_CATCH);
+                EEToProfilerExceptionInterfaceWrapper::ExceptionCatcherEnter(pThread, pMD);
+
+                DACNotify::DoExceptionCatcherEnterNotification(pMD, pEHClause->HandlerStartPC);
+                ETW::ExceptionLog::ExceptionCatchBegin(pMD, (PVOID)dwHandlerStartPC);
+            }
         }
     }
     else
     {
-        STRESS_LOG0(LF_EH, LL_INFO100, "UnwindExInfo: clearing topmost ExInfo\n");
+        if (pMD->IsDiagnosticsHidden())
+        {
+            return;
+        }
 
-        // We just do a basic Init of the current top ExInfo here.
-        Init();
+        if (fIsFilterHandler)
+        {
+            ETW::ExceptionLog::ExceptionFilterEnd();
+            EEToProfilerExceptionInterfaceWrapper::ExceptionSearchFilterLeave();
+        }
+        else
+        {
+            if (fIsFaultOrFinallyHandler)
+            {
+                ETW::ExceptionLog::ExceptionFinallyEnd();
+                EEToProfilerExceptionInterfaceWrapper::ExceptionUnwindFinallyLeave();
+            }
+            else
+            {
+                ETW::ExceptionLog::ExceptionCatchEnd();
+                ETW::ExceptionLog::ExceptionThrownEnd();
+                EEToProfilerExceptionInterfaceWrapper::ExceptionCatcherLeave();
+            }
+        }
 
-        #ifndef TARGET_UNIX
-        // Init the Watson buckets as well
-        GetWatsonBucketTracker()->ClearWatsonBucketDetails();
-        #endif // TARGET_UNIX
+        m_EHClauseInfo.SetManagedCodeEntered(FALSE);
+        m_EHClauseInfo.ResetInfo();
     }
+#endif // DEBUGGING_SUPPORTED
 }
+
 #endif // DACCESS_COMPILE
-
-
-#ifdef DACCESS_COMPILE
-
-void
-ExInfo::EnumMemoryRegions(CLRDataEnumMemoryFlags flags)
-{
-    SUPPORTS_DAC;
-    // ExInfo is embedded so don't enum 'this'.
-    OBJECTHANDLE_EnumMemoryRegions(m_hThrowable);
-
-    m_pExceptionRecord.EnumMem();
-    m_pContext.EnumMem();
-}
-
-#endif // #ifdef DACCESS_COMPILE
-
-
-void ExInfo::SetExceptionCode(const EXCEPTION_RECORD *pCER)
-{
-#ifndef DACCESS_COMPILE
-    STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
-
-    _ASSERTE(pCER != NULL);
-    m_ExceptionCode = pCER->ExceptionCode;
-
-    if (IsInstanceTaggedSEHCode(pCER->ExceptionCode) && ::WasThrownByUs(pCER, pCER->ExceptionCode))
-    {
-        m_ExceptionFlags.SetWasThrownByUs();
-    }
-    else
-    {
-        m_ExceptionFlags.ResetWasThrownByUs();
-    }
-#else // DACCESS_COMPILE
-    // This method is invoked by the X86 version of CLR's exception handler for
-    // managed code. There is no reason why DAC would be invoking this.
-    DacError(E_UNEXPECTED);
-#endif // !DACCESS_COMPILE
-}
-#endif // !FEATURE_EH_FUNCLETS

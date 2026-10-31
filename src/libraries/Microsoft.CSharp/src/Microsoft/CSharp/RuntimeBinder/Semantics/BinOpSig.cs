@@ -50,6 +50,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             }
         }
 
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private sealed class BinOpFullSig : BinOpSig
         {
             private readonly LiftFlags _grflt;
@@ -76,7 +77,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
                 the predefined types. Returns true iff the predef types are found.
             ***************************************************************************************************/
             [RequiresUnreferencedCode(Binder.TrimmerWarning)]
-            public BinOpFullSig(ExpressionBinder fnc, BinOpSig bos)
+            public BinOpFullSig(BinOpSig bos)
             {
                 this.pt1 = bos.pt1;
                 this.pt2 = bos.pt2;

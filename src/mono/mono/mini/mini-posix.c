@@ -78,6 +78,7 @@
 #include <mono/component/debugger-agent.h>
 #include "mini-runtime.h"
 #include "jit-icalls.h"
+#include <glib.h>
 
 #ifdef HOST_DARWIN
 #include <mach/mach.h>
@@ -176,7 +177,7 @@ save_old_signal_handler (int signo, struct sigaction *old_action)
 	}
 	handler_to_save->sa_mask = old_action->sa_mask;
 	handler_to_save->sa_flags = old_action->sa_flags;
-	
+
 	if (!mono_saved_signal_handlers)
 		mono_saved_signal_handlers = g_hash_table_new_full (NULL, NULL, NULL, g_free);
 	g_hash_table_insert (mono_saved_signal_handlers, GINT_TO_POINTER (signo), handler_to_save);
@@ -187,7 +188,7 @@ save_old_signal_handler (int signo, struct sigaction *old_action)
  *
  *   Call the original signal handler for the signal given by the arguments, which
  * should be the same as for a signal handler. Returns TRUE if the original handler
- * was called, false otherwise.
+ * was called, false otherwise. NOTE: sigaction.sa_handler == SIG_DFL handlers are not considered.
  */
 gboolean
 MONO_SIG_HANDLER_SIGNATURE (mono_chain_signal)
@@ -195,6 +196,7 @@ MONO_SIG_HANDLER_SIGNATURE (mono_chain_signal)
 	int signal = MONO_SIG_HANDLER_GET_SIGNO ();
 	struct sigaction *saved_handler = (struct sigaction *)get_saved_signal_handler (signal);
 
+	// Ignores chaining to default signal handlers i.e. when saved_handler->sa_handler == SIG_DFL
 	if (saved_handler && saved_handler->sa_handler) {
 		if (!(saved_handler->sa_flags & SA_SIGINFO)) {
 			saved_handler->sa_handler (signal);
@@ -207,6 +209,27 @@ MONO_SIG_HANDLER_SIGNATURE (mono_chain_signal)
 	}
 	return FALSE;
 }
+
+
+/*
+ * mono_chain_signal_to_default_sigsegv_handler:
+ *
+ *   Call the original SIGSEGV signal handler in cases when the original handler is
+ * sigaction.sa_handler == SIG_DFL. This is used to propagate the crash to the OS.
+ */
+void
+mono_chain_signal_to_default_sigsegv_handler (void)
+{
+	struct sigaction *saved_handler = (struct sigaction *)get_saved_signal_handler (SIGSEGV);
+
+	if (saved_handler && saved_handler->sa_handler == SIG_DFL) {
+		sigaction (SIGSEGV, saved_handler, NULL);
+		raise (SIGSEGV);
+	} else {
+		g_async_safe_printf ("\nFailed to chain SIGSEGV signal to the default handler.\n");
+	}
+}
+
 
 MONO_SIG_HANDLER_FUNC (static, sigabrt_signal_handler)
 {
@@ -268,11 +291,16 @@ MONO_SIG_HANDLER_FUNC (static, profiler_signal_handler)
 
 	int hp_save_index = mono_hazard_pointer_save_for_signal_handler ();
 
-	mono_thread_info_set_is_async_context (TRUE);
+	gboolean restore_async_context = FALSE;
+	if (!mono_thread_info_is_async_context ()) {
+		mono_thread_info_set_is_async_context (TRUE);
+		restore_async_context = TRUE;
+	}
 
 	MONO_PROFILER_RAISE (sample_hit, ((const mono_byte*)mono_arch_ip_from_context (ctx), ctx));
 
-	mono_thread_info_set_is_async_context (FALSE);
+	if (restore_async_context)
+		mono_thread_info_set_is_async_context (FALSE);
 
 	mono_hazard_pointer_restore_for_signal_handler (hp_save_index);
 
@@ -321,7 +349,7 @@ add_signal_handler (int signo, MonoSignalHandler handler, int flags)
 #endif
 		sa.sa_flags |= SA_ONSTACK;
 
-		/* 
+		/*
 		 * libgc will crash when trying to do stack marking for threads which are on
 		 * an altstack, so delay the suspend signal after the signal handler has
 		 * executed.
@@ -331,11 +359,11 @@ add_signal_handler (int signo, MonoSignalHandler handler, int flags)
 	}
 #endif
 	if (signo == SIGSEGV) {
-		/* 
+		/*
 		 * Delay abort signals while handling SIGSEGVs since they could go unnoticed.
 		 */
 		sigset_t block_mask;
-     
+
 		sigemptyset (&block_mask);
 	}
 #else
@@ -347,16 +375,22 @@ add_signal_handler (int signo, MonoSignalHandler handler, int flags)
 
 	/* if there was already a handler in place for this signal, store it */
 	if (! (previous_sa.sa_flags & SA_SIGINFO) &&
-			(SIG_DFL == previous_sa.sa_handler)) { 
-		/* it there is no sa_sigaction function and the sa_handler is default, we can safely ignore this */
+			(SIG_DFL == previous_sa.sa_handler) && signo != SIGSEGV) {
+		/* 
+		 * If there is no sa_sigaction function and the sa_handler is default, 
+		 * it means the currently registered handler for this signal is the default one.
+		 * For signal chaining, we need to store the default SIGSEGV handler so that the crash 
+		 * is properly propagated, while default handlers for other signals are ignored and 
+		 * are not considered.
+		 */
 	} else {
 		if (mono_do_signal_chaining)
 			save_old_signal_handler (signo, &previous_sa);
 	}
 }
 
-static void
-remove_signal_handler (int signo)
+void
+mono_runtime_posix_restore_handler (int signo)
 {
 	struct sigaction sa;
 	struct sigaction *saved_action = get_saved_signal_handler (signo);
@@ -366,11 +400,10 @@ remove_signal_handler (int signo)
 		sigemptyset (&sa.sa_mask);
 		sa.sa_flags = 0;
 
-		sigaction (signo, &sa, NULL);
+		g_assert (sigaction (signo, &sa, NULL) != -1);
 	} else {
 		g_assert (sigaction (signo, saved_action, NULL) != -1);
 	}
-	remove_saved_signal_handler(signo);
 }
 
 void
@@ -484,7 +517,7 @@ clock_init_for_profiler (MonoProfilerSampleMode mode)
 		 * CLOCK_PROCESS_CPUTIME_ID clock but don't actually support it. For
 		 * those systems, we fall back to CLOCK_MONOTONIC if we get EINVAL.
 		 */
-		if (clock_nanosleep (CLOCK_PROCESS_CPUTIME_ID, TIMER_ABSTIME, &ts, NULL) != EINVAL) {
+		if (g_clock_nanosleep (CLOCK_PROCESS_CPUTIME_ID, TIMER_ABSTIME, &ts, NULL) != EINVAL) {
 			sampling_clock = CLOCK_PROCESS_CPUTIME_ID;
 			break;
 		}
@@ -508,7 +541,7 @@ clock_sleep_ns_abs (guint64 ns_abs)
 	then.tv_nsec = ns_abs % 1000000000;
 
 	do {
-		ret = clock_nanosleep (sampling_clock, TIMER_ABSTIME, &then, NULL);
+		ret = g_clock_nanosleep (sampling_clock, TIMER_ABSTIME, &then, NULL);
 
 		if (ret != 0 && ret != EINTR)
 			g_error ("%s: clock_nanosleep () returned %d", __func__, ret);
@@ -784,8 +817,9 @@ dump_native_stacktrace (const char *signal, MonoContext *mctx)
 	if (!double_faulted) {
 		g_assertion_disable_global (assert_printer_callback);
 	} else {
-		g_async_safe_printf ("\nAn error has occured in the native fault reporting. Some diagnostic information will be unavailable.\n");
-
+		g_async_safe_printf ("\nAn error has occurred in the native fault reporting. Some diagnostic information will be unavailable.\n");
+		g_async_safe_printf ("\nExiting early due to double fault.\n");
+		_exit (-1);
 	}
 
 #ifdef HAVE_BACKTRACE_SYMBOLS
@@ -810,7 +844,7 @@ dump_native_stacktrace (const char *signal, MonoContext *mctx)
 		}
 	}
 
-#if !defined(HOST_WIN32) && defined(HAVE_SYS_SYSCALL_H) && (defined(SYS_fork) || HAVE_FORK)
+#if !defined(HOST_WIN32) && defined(HAVE_SYS_SYSCALL_H) && ((!defined(HOST_DARWIN) && defined(SYS_fork)) || HAVE_FORK)
 	pid_t crashed_pid = getpid ();
 
 	pid_t pid = crashed_pid; /* init to some >0 value */
@@ -842,11 +876,6 @@ dump_native_stacktrace (const char *signal, MonoContext *mctx)
 		waitpid (pid, &status, 0);
 	} else {
 		// If we can't fork, do as little as possible before exiting
-	}
-
-	if (double_faulted) {
-		g_async_safe_printf("\nExiting early due to double fault.\n");
-		_exit (-1);
 	}
 
 #endif
@@ -884,23 +913,15 @@ mono_post_native_crash_handler (const char *signal, MonoContext *mctx, MONO_SIG_
 }
 #endif /* !MONO_CROSS_COMPILE */
 
-static gchar *gdb_path;
-static gchar *lldb_path;
-
 void
 mono_init_native_crash_info (void)
 {
-	gdb_path = g_find_program_in_path ("gdb");
-	lldb_path = g_find_program_in_path ("lldb");
 }
 
 static gboolean
 native_stack_with_gdb (pid_t crashed_pid, const char **argv, int commands, char* commands_filename)
 {
-	if (!gdb_path)
-		return FALSE;
-
-	argv [0] = gdb_path;
+	argv [0] = "gdb";
 	argv [1] = "-batch";
 	argv [2] = "-x";
 	argv [3] = commands_filename;
@@ -925,10 +946,7 @@ native_stack_with_gdb (pid_t crashed_pid, const char **argv, int commands, char*
 static gboolean
 native_stack_with_lldb (pid_t crashed_pid, const char **argv, int commands, char* commands_filename)
 {
-	if (!lldb_path)
-		return FALSE;
-
-	argv [0] = lldb_path;
+	argv [0] = "lldb";
 	argv [1] = "--batch";
 	argv [2] = "--source";
 	argv [3] = commands_filename;
@@ -954,11 +972,11 @@ native_stack_with_lldb (pid_t crashed_pid, const char **argv, int commands, char
 void
 mono_gdb_render_native_backtraces (pid_t crashed_pid)
 {
-#ifdef HAVE_EXECV
+#ifdef HAVE_EXECVP
 	const char *argv [10];
 	memset (argv, 0, sizeof (char*) * 10);
 
-	char commands_filename [100]; 
+	char commands_filename [100];
 	commands_filename [0] = '\0';
 	g_snprintf (commands_filename, sizeof (commands_filename), "/tmp/mono-gdb-commands.%d", crashed_pid);
 
@@ -992,12 +1010,12 @@ mono_gdb_render_native_backtraces (pid_t crashed_pid)
 
 exec:
 	close (commands_handle);
-	execv (argv [0], (char**)argv);
+	execvp (argv [0], (char**)argv);
 
 	_exit (-1);
 #else
 	g_async_safe_printf ("mono_gdb_render_native_backtraces not supported on this platform\n");
-#endif // HAVE_EXECV
+#endif // HAVE_EXECVP
 }
 
 #if !defined (__MACH__)

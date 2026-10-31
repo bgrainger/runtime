@@ -4,18 +4,35 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Diagnostics;
 using SourceGenerators.Tests;
 using Xunit;
 
 namespace Microsoft.Extensions.Logging.Generators.Tests
 {
-    [ActiveIssue("https://github.com/dotnet/runtime/issues/32743", TestRuntimes.Mono)]
     public class LoggerMessageGeneratorParserTests
     {
+        [Fact]
+        public async Task Valid_AdditionalAttributes()
+        {
+            Assert.Empty(await RunGenerator($@"
+                using System.Diagnostics.CodeAnalysis;
+                partial class C
+                {{
+                    [SuppressMessage(""CATEGORY1"", ""SOMEID1"")]
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1"")]
+                    [SuppressMessage(""CATEGORY2"", ""SOMEID2"")]
+                    static partial void M1(ILogger logger);
+                }}
+            "));
+        }
+
         [Fact]
         public async Task InvalidMethodName()
         {
@@ -65,6 +82,23 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
             Assert.Equal(DiagnosticDescriptors.LoggingMethodHasBody.Id, diagnostics[0].Id);
         }
 
+        [Fact]
+        public async Task InvalidMethodExpressionBody()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C
+                {
+                    static partial void M1(ILogger logger);
+
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1"")]
+                    static partial void M1(ILogger logger) => throw new Exception();
+                }
+            ");
+
+            Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticDescriptors.LoggingMethodHasBody.Id, diagnostics[0].Id);
+        }
+
         [Theory]
         [InlineData("EventId = 0, Level = null, Message = \"This is a message with {foo}\"")]
         [InlineData("eventId: 0, level: null, message: \"This is a message with {foo}\"")]
@@ -76,7 +110,7 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
                 {{
                     [LoggerMessage({argumentList})]
                     static partial void M1(ILogger logger, string foo);
-                    
+
                     [LoggerMessage({argumentList})]
                     static partial void M2(ILogger logger, LogLevel level, string foo);
                 }}
@@ -102,13 +136,52 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
             Assert.Empty(diagnostics);
         }
 
-        [Fact]
-        public async Task WithNullMessage_GeneratorWontFail()
+        [Theory]
+        [InlineData(@"[LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = null)]")]
+        [InlineData(@"[LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = """")]")]
+        [InlineData(@"[LoggerMessage(EventId = 0, Level = LogLevel.Debug)]")]
+        [InlineData(@"[LoggerMessage(LogLevel.Debug)]")]
+        [InlineData(@"[LoggerMessage(0, LogLevel.Debug, null)]")]
+        [InlineData(@"[LoggerMessage(0, LogLevel.Debug, """")]")]
+        public async Task WithoutMessage_NoDiagnosticIsReported(string attribute)
         {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator($@"
+                partial class C
+                {{
+                    {attribute}
+                    static partial void M1(ILogger logger, string foo, string bar, string baz);
+                }}
+            ");
+
+            Assert.Empty(diagnostics);
+        }
+
+        [Theory]
+        [InlineData(@"[LoggerMessage("""")]")]
+        [InlineData(@"[LoggerMessage(LogLevel.Debug, null)]")]
+        [InlineData(@"[LoggerMessage(LogLevel.Debug, """")]")]
+        public async Task WithoutMessage_LevelSuppliedAsParameter_NoDiagnosticIsReported(string attribute)
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator($@"
+                partial class C
+                {{
+                    {attribute}
+                    static partial void M1(ILogger logger, LogLevel level, string foo, string bar);
+                }}
+            ");
+
+            Assert.Empty(diagnostics);
+        }
+
+        [Fact]
+        public async Task WithWhitespaceMessage_ArgumentDiagnosticIsStillReported()
+        {
+            // A hand-written whitespace message is still a message: it is formatted and surfaces as
+            // {OriginalFormat}, so an unreferenced argument remains worth reporting.
             IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
                 partial class C
                 {
-                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = null)]
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = "" "")]
                     static partial void M1(ILogger logger, string foo);
                 }
             ");
@@ -116,6 +189,20 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
             Assert.Single(diagnostics);
             Assert.Equal(DiagnosticDescriptors.ArgumentHasNoCorrespondingTemplate.Id, diagnostics[0].Id);
             Assert.Contains("foo", diagnostics[0].GetMessage(), StringComparison.InvariantCulture);
+        }
+
+        [Fact]
+        public async Task DoubleLogLevel_InAttributeAndAsParameterWithoutMessage_ProducesNoDiagnostic()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug)]
+                    static partial void M1(ILogger logger, LogLevel levelParam);
+                }
+            ");
+
+            Assert.Empty(diagnostics);
         }
 
         [Fact]
@@ -204,11 +291,15 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
                 {
                     [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1 {ex} {ex2}"")]
                     static partial void M1(ILogger logger, System.Exception ex, System.Exception ex2);
+
+                    [LoggerMessage(EventId = 2, Level = LogLevel.Debug, Message = ""M2 {arg1}: {ex}"")]
+                    static partial void M2(ILogger logger, string arg1, System.Exception ex);
                 }
             ");
 
-            Assert.Single(diagnostics);
+            Assert.Equal(2, diagnostics.Count);
             Assert.Equal(DiagnosticDescriptors.ShouldntMentionExceptionInMessage.Id, diagnostics[0].Id);
+            Assert.Equal(DiagnosticDescriptors.ShouldntMentionExceptionInMessage.Id, diagnostics[1].Id);
         }
 
         [Fact]
@@ -234,11 +325,15 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
                 {
                     [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1 {logger}"")]
                     static partial void M1(ILogger logger);
+
+                    [LoggerMessage(EventId = 2, Message = ""M2 {logger}"")]
+                    static partial void M2(ILogger logger, LogLevel level);
                 }
             ");
 
-            Assert.Single(diagnostics);
+            Assert.Equal(2, diagnostics.Count);
             Assert.Equal(DiagnosticDescriptors.ShouldntMentionLoggerInMessage.Id, diagnostics[0].Id);
+            Assert.Equal(DiagnosticDescriptors.ShouldntMentionLoggerInMessage.Id, diagnostics[1].Id);
         }
 
         [Fact]
@@ -285,40 +380,6 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
             Assert.Empty(diagnostics);
         }
 
-#if false
-        // TODO: can't have the same template with different casing
-        [Fact]
-        public async Task InconsistentTemplateCasing()
-        {
-            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
-                partial class C
-                {
-                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1 {p1} {P1}"")]
-                    static partial void M1(ILogger logger, int p1, int P1);
-                }
-            ");
-
-            Assert.Single(diagnostics);
-            Assert.Equal(DiagnosticDescriptors.InconsistentTemplateCasing.Id, diagnostics[0].Id);
-        }
-
-        // TODO: can't have malformed format strings (like dangling {, etc)
-        [Fact]
-        public async Task MalformedFormatString()
-        {
-            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
-                partial class C
-                {
-                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1 {p1} {P1}"")]
-                    static partial void M1(ILogger logger, int p1, int P1);
-                }
-            ");
-
-            Assert.Single(diagnostics);
-            Assert.Equal(DiagnosticDescriptors.MalformedFormatStrings.Id, diagnostics[0].Id);
-        }
-#endif
-
         [Fact]
         public async Task InvalidParameterName()
         {
@@ -351,6 +412,44 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
             Assert.Empty(diagnostics);
         }
 
+        [Fact]
+        public async Task NestedTypeWithGenericParameterOK()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C<T>
+                {
+                    public partial class Nested<U>
+                    {
+                        [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1"")]
+                        static partial void M1(ILogger logger);
+                    }
+                }
+            ");
+
+            Assert.Empty(diagnostics);
+        }
+
+        [Fact]
+        public async Task NestedTypeWithGenericParameterWithAttributeOK()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                using System;
+                using System.Diagnostics.CodeAnalysis;
+                partial class C<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>
+                {
+                    public partial class Nested<[MarkerAttribute] U>
+                    {
+                        [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1"")]
+                        static partial void M1(ILogger logger);
+                    }
+                }
+                [AttributeUsage(AttributeTargets.GenericParameter)]
+                class MarkerAttribute : Attribute { }
+            ");
+
+            Assert.Empty(diagnostics);
+        }
+
 #if ROSLYN4_0_OR_GREATER
         [Fact]
         public async Task FileScopedNamespaceOK()
@@ -368,6 +467,161 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
             ");
 
             Assert.Empty(diagnostics);
+        }
+#endif
+
+        [Fact]
+        public async Task FieldOnOtherPartialDeclarationOK()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C
+                {
+                    private ILogger _logger;
+
+                    public C(ILogger logger)
+                    {
+                        _logger = logger;
+                    }
+                }
+
+                partial class C
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1"")]
+                    public partial void M1();
+                }
+            ");
+
+            Assert.Empty(diagnostics);
+        }
+
+#if ROSLYN4_8_OR_GREATER
+        [Fact]
+        public async Task PrimaryConstructorOK()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C(ILogger logger)
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1"")]
+                    public partial void M1();
+                }
+            ");
+
+            Assert.Empty(diagnostics);
+        }
+
+        [Fact]
+        public async Task PrimaryConstructorWithParameterUsedInMethodOK()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C(ILogger logger)
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1"")]
+                    public partial void M1();
+
+                    private void M2()
+                    {
+                        logger.LogInformation(""M2"");
+                    }
+                }
+            ");
+
+            Assert.Empty(diagnostics);
+        }
+
+        [Fact]
+        public async Task PrimaryConstructorOnOtherPartialDeclarationOK()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C(ILogger logger);
+
+                partial class C
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1"")]
+                    public partial void M1();
+                }
+            ");
+
+            Assert.Empty(diagnostics);
+        }
+
+        [Fact]
+        public async Task PrimaryConstructorWithDifferentNameLoggerFieldOK()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C(ILogger logger)
+                {
+                    private readonly ILogger _logger = logger;
+
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1"")]
+                    public partial void M1();
+                }
+            ");
+
+            Assert.Empty(diagnostics);
+        }
+
+        [Fact]
+        public async Task PrimaryConstructorWithSameNameLoggerFieldOK()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C(ILogger logger)
+                {
+                    private readonly ILogger logger = logger;
+
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1"")]
+                    public partial void M1();
+                }
+            ");
+
+            Assert.Empty(diagnostics);
+        }
+
+        [Fact]
+        public async Task PrimaryConstructorLoggerShadowedByField()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C(ILogger logger)
+                {
+                    private readonly object logger = logger;
+
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1"")]
+                    public partial void M1();
+                }
+            ");
+
+            Assert.Equal(2, diagnostics.Count);
+
+            Assert.Equal(DiagnosticDescriptors.PrimaryConstructorParameterLoggerHidden.Id, diagnostics[0].Id);
+            var lineSpan = diagnostics[0].Location.GetLineSpan();
+            Assert.Equal(4, lineSpan.StartLinePosition.Line);
+            Assert.Equal(40, lineSpan.StartLinePosition.Character);
+
+            Assert.Equal(DiagnosticDescriptors.MissingLoggerField.Id, diagnostics[1].Id);
+        }
+
+        [Fact]
+        public async Task PrimaryConstructorLoggerShadowedByBaseClass()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                class Base(object logger) {
+                    protected readonly object logger = logger;
+                }
+
+                partial class Derived(ILogger logger) : Base(logger)
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M1"")]
+                    public partial void M1();
+                }
+            ");
+
+            Assert.Equal(2, diagnostics.Count);
+
+            Assert.Equal(DiagnosticDescriptors.PrimaryConstructorParameterLoggerHidden.Id, diagnostics[0].Id);
+            var lineSpan = diagnostics[0].Location.GetLineSpan();
+            Assert.Equal(8, lineSpan.StartLinePosition.Line);
+            Assert.Equal(46, lineSpan.StartLinePosition.Character);
+
+            Assert.Equal(DiagnosticDescriptors.MissingLoggerField.Id, diagnostics[1].Id);
         }
 #endif
 
@@ -495,6 +749,26 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
         }
 
         [Fact]
+        public async Task EventNameReuse()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class MyClass
+                {
+                    [LoggerMessage(EventId = 0, EventName = ""MyEvent"", Level = LogLevel.Debug, Message = ""M1"")]
+                    static partial void M1(ILogger logger);
+
+                    [LoggerMessage(EventId = 1, EventName = ""MyEvent"", Level = LogLevel.Debug, Message = ""M1"")]
+                    static partial void M2(ILogger logger);
+                }
+            ");
+
+            Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticDescriptors.ShouldntReuseEventNames.Id, diagnostics[0].Id);
+            Assert.Contains("MyEvent", diagnostics[0].GetMessage(), StringComparison.InvariantCulture);
+            Assert.Contains("MyClass", diagnostics[0].GetMessage(), StringComparison.InvariantCulture);
+        }
+
+        [Fact]
         public async Task MethodReturnType()
         {
             IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
@@ -604,21 +878,262 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
                 }
             ");
 
-            Assert.Single(diagnostics);
-            Assert.Equal(DiagnosticDescriptors.LoggingMethodIsGeneric.Id, diagnostics[0].Id);
+            Assert.Empty(diagnostics);
         }
 
         [Fact]
-        public async Task Templates()
+        public async Task MethodGenericWithConstraints()
         {
             IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
                 partial class C
                 {
-                    [LoggerMessage(EventId = 1, Level = LogLevel.Debug, Message = ""M1"")]
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Trace, Message = ""Code: {code}"")]
+                    static partial void M1<TCode>(ILogger logger, TCode code) where TCode : struct, System.Enum;
+
+                    [LoggerMessage(EventId = 1, Level = LogLevel.Debug, Message = ""Value: {value} Extra: {extra}"")]
+                    static partial void M2<T1, T2>(ILogger logger, T1 value, T2 extra) where T1 : class where T2 : new();
+
+                    [LoggerMessage(EventId = 2, Level = LogLevel.Information, Message = ""Data: {data}"")]
+                    static partial void M3<T>(ILogger logger, T data) where T : unmanaged;
+                }
+            ");
+
+            Assert.Empty(diagnostics);
+        }
+
+        [Fact]
+        public async Task MethodGenericWithNullableConstraint()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                #nullable enable
+                partial class C
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""Value: {value}"")]
+                    static partial void M1<T>(ILogger logger, T value) where T : System.IComparable<T>?;
+                }
+            ");
+
+            Assert.Empty(diagnostics);
+        }
+
+        [Fact]
+        public async Task MethodGenericWithAllowsRefStructConstraint()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""{value}"")]
+                    static partial void M1<T>(ILogger logger, T value) where T : allows ref struct;
+                }
+            ");
+
+            // AllowsRefLikeType is only available in Roslyn 4.9+ (C# 13). On older Roslyn
+            // versions the constraint is silently ignored and no diagnostic is produced.
+            bool roslynSupportsAllowsRefLike =
+                typeof(Microsoft.CodeAnalysis.ITypeParameterSymbol).GetProperty("AllowsRefLikeType") is not null;
+            if (!roslynSupportsAllowsRefLike)
+            {
+                Assert.Empty(diagnostics);
+                return;
+            }
+
+            Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticDescriptors.LoggingMethodHasAllowsRefStructConstraint.Id, diagnostics[0].Id);
+        }
+
+        [Theory]
+        [InlineData("ref")]
+        [InlineData("in")]
+        public async Task SupportsRefKindsInAndRef(string modifier)
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@$"
+                partial class C
+                {{
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""Parameter {{P1}}"")]
+                    static partial void M(ILogger logger, {modifier} int p1);
+                }}");
+
+            Assert.Empty(diagnostics);
+        }
+
+        [Fact]
+        public async Task InvalidRefKindsOut()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@$"
+                partial class C
+                {{
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""Parameter {{P1}}"")]
+                    static partial void M(ILogger logger, out int p1);
+                }}");
+
+            Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticDescriptors.InvalidLoggingMethodParameterOut.Id, diagnostics[0].Id);
+            Assert.Contains("p1", diagnostics[0].GetMessage(), StringComparison.InvariantCulture);
+        }
+
+        [Fact]
+        public async Task InvalidParamsParameter()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""Parameter {args}"")]
+                    static partial void M(ILogger logger, params object?[] args);
+                }");
+
+            Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticDescriptors.InvalidLoggingMethodParameterParams.Id, diagnostics[0].Id);
+            Assert.Contains("args", diagnostics[0].GetMessage(), StringComparison.InvariantCulture);
+        }
+
+#if ROSLYN4_8_OR_GREATER
+        [Fact]
+        public async Task InvalidParamsCollectionParameter()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                using System.Collections.Generic;
+                partial class C
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""Parameter {args}"")]
+                    static partial void M(ILogger logger, params IEnumerable<string> args);
+                }");
+
+            Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticDescriptors.InvalidLoggingMethodParameterParams.Id, diagnostics[0].Id);
+            Assert.Contains("args", diagnostics[0].GetMessage(), StringComparison.InvariantCulture);
+        }
+
+        [Fact]
+        public async Task RefReadOnlyParameterOK()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""Parameter {p1}"")]
+                    static partial void M(ILogger logger, ref readonly int p1);
+                }");
+
+            Assert.Empty(diagnostics);
+        }
+
+        [Fact]
+        public async Task InvalidScopedRefParameter()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""Parameter {p1}"")]
+                    static partial void M(ILogger logger, scoped ref int p1);
+                }");
+
+            Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticDescriptors.InvalidLoggingMethodParameterParams.Id, diagnostics[0].Id);
+            Assert.Contains("p1", diagnostics[0].GetMessage(), StringComparison.InvariantCulture);
+        }
+
+        [Fact]
+        public async Task InvalidScopedRefReadOnlyParameter()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""Parameter {p1}"")]
+                    static partial void M(ILogger logger, scoped ref readonly int p1);
+                }");
+
+            Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticDescriptors.InvalidLoggingMethodParameterParams.Id, diagnostics[0].Id);
+            Assert.Contains("p1", diagnostics[0].GetMessage(), StringComparison.InvariantCulture);
+        }
+
+        [Fact]
+        public async Task RefReadOnlyParameterWithMoreThan6ParamsOK()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""{p1} {p2} {p3} {p4} {p5} {p6} {p7}"")]
+                    static partial void M(ILogger logger, int p1, int p2, int p3, int p4, int p5, int p6, ref readonly int p7);
+                }");
+
+            Assert.Empty(diagnostics);
+        }
+
+        [Fact]
+        public async Task InvalidScopedRefParameterWithMoreThan6Params()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""{p1} {p2} {p3} {p4} {p5} {p6} {p7}"")]
+                    static partial void M(ILogger logger, int p1, int p2, int p3, int p4, int p5, int p6, scoped ref int p7);
+                }");
+
+            Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticDescriptors.InvalidLoggingMethodParameterParams.Id, diagnostics[0].Id);
+            Assert.Contains("p7", diagnostics[0].GetMessage(), StringComparison.InvariantCulture);
+        }
+
+        [Fact]
+        public async Task InvalidScopedRefReferenceTypeWithMoreThan6Params()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C
+                {
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""{p1} {p2} {p3} {p4} {p5} {p6} {p7}"")]
+                    static partial void M(ILogger logger, int p1, int p2, int p3, int p4, int p5, int p6, scoped ref string p7);
+                }");
+
+            Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticDescriptors.InvalidLoggingMethodParameterParams.Id, diagnostics[0].Id);
+            Assert.Contains("p7", diagnostics[0].GetMessage(), StringComparison.InvariantCulture);
+        }
+
+        [Fact]
+        public async Task InvalidScopedValueParameter()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C
+                {
+                    ref struct MyRefStruct { }
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""Parameter {p1}"")]
+                    static partial void M(ILogger logger, scoped MyRefStruct p1);
+                }");
+
+            Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticDescriptors.InvalidLoggingMethodParameterRefStruct.Id, diagnostics[0].Id);
+            Assert.Contains("p1", diagnostics[0].GetMessage(), StringComparison.InvariantCulture);
+        }
+
+#endif
+
+        [Fact]
+        public async Task InvalidRefLikeTypeParameter()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C
+                {
+                    ref struct MyRefStruct { }
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""Parameter {p1}"")]
+                    static partial void M(ILogger logger, ref MyRefStruct p1);
+                }");
+
+            Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticDescriptors.InvalidLoggingMethodParameterRefStruct.Id, diagnostics[0].Id);
+            Assert.Contains("p1", diagnostics[0].GetMessage(), StringComparison.InvariantCulture);
+        }
+
+        [Fact]
+        public async Task MalformedFormatString()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C
+                {
+                    [LoggerMessage(EventId = 1, Level = LogLevel.Debug, Message = ""M1 {A} M1 { M1"")]
                     static partial void M1(ILogger logger);
 
-                    [LoggerMessage(EventId = 2, Level = LogLevel.Debug, Message = ""M2 {arg1} {arg2}"")]
-                    static partial void M2(ILogger logger, string arg1, string arg2);
+                    [LoggerMessage(EventId = 2, Level = LogLevel.Debug, Message = ""M2 {A} M2 } M2"")]
+                    static partial void M2(ILogger logger);
 
                     [LoggerMessage(EventId = 3, Level = LogLevel.Debug, Message = ""M3 {arg1"")]
                     static partial void M3(ILogger logger);
@@ -632,8 +1147,65 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
                     [LoggerMessage(EventId = 6, Level = LogLevel.Debug, Message = ""}M6 "")]
                     static partial void M6(ILogger logger);
 
-                    [LoggerMessage(EventId = 7, Level = LogLevel.Debug, Message = ""M7 {{arg1}}"")]
+                    [LoggerMessage(EventId = 7, Level = LogLevel.Debug, Message = ""{M7{"")]
                     static partial void M7(ILogger logger);
+
+                    [LoggerMessage(EventId = 8, Level = LogLevel.Debug, Message = ""{{{arg1 M8"")]
+                    static partial void M8(ILogger logger);
+
+                    [LoggerMessage(EventId = 9, Level = LogLevel.Debug, Message = ""arg1}}} M9"")]
+                    static partial void M9(ILogger logger);
+
+                    [LoggerMessage(EventId = 10, Level = LogLevel.Debug, Message = ""{} M10"")]
+                    static partial void M10(ILogger logger);
+
+                    [LoggerMessage(EventId = 11, Level = LogLevel.Debug, Message = ""{ } M11"")]
+                    static partial void M11(ILogger logger);
+                }
+            ");
+
+            Assert.Equal(11, diagnostics.Count);
+            foreach (var diagnostic in diagnostics)
+            {
+                Assert.Equal(DiagnosticDescriptors.MalformedFormatStrings.Id, diagnostic.Id);
+            }
+        }
+
+        [Fact]
+        public async Task ValidTemplates()
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                partial class C
+                {
+                    [LoggerMessage(EventId = 1, Level = LogLevel.Debug, Message = """")]
+                    static partial void M1(ILogger logger);
+
+                    [LoggerMessage(EventId = 2, Level = LogLevel.Debug, Message = ""M2"")]
+                    static partial void M2(ILogger logger);
+
+                    [LoggerMessage(EventId = 3, Level = LogLevel.Debug, Message = ""{arg1}"")]
+                    static partial void M3(ILogger logger, int arg1);
+
+                    [LoggerMessage(EventId = 4, Level = LogLevel.Debug, Message = ""M4 {arg1}"")]
+                    static partial void M4(ILogger logger, int arg1);
+
+                    [LoggerMessage(EventId = 5, Level = LogLevel.Debug, Message = ""{arg1} M5"")]
+                    static partial void M5(ILogger logger, int arg1);
+
+                    [LoggerMessage(EventId = 6, Level = LogLevel.Debug, Message = ""M6{arg1}M6{arg2}M6"")]
+                    static partial void M6(ILogger logger, string arg1, string arg2);
+
+                    [LoggerMessage(EventId = 7, Level = LogLevel.Debug, Message = ""M7 {{const}}"")]
+                    static partial void M7(ILogger logger);
+
+                    [LoggerMessage(EventId = 8, Level = LogLevel.Debug, Message = ""{{prefix{{{arg1}}}suffix}}"")]
+                    static partial void M8(ILogger logger, string arg1);
+
+                    [LoggerMessage(EventId = 9, Level = LogLevel.Debug, Message = ""prefix }}"")]
+                    static partial void M9(ILogger logger);
+
+                    [LoggerMessage(EventId = 10, Level = LogLevel.Debug, Message = ""}}suffix"")]
+                    static partial void M10(ILogger logger);
                 }
             ");
 
@@ -678,6 +1250,23 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
             ");
 
             Assert.Empty(diagnostics);    // should fail quietly on broken code
+        }
+
+        [Fact]
+        public async Task EventIdGenerationTest()
+        {
+            // hashing Dzoggee should not result breaking generation.
+            // in our hashing, Dzoggee result to int.MinValue before we convert it to non-negative value.
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@"
+                using Microsoft.Extensions.Logging;
+                internal static partial class LoggerExtensions
+                {
+                    [LoggerMessage(Level = LogLevel.Information)]
+                    public static partial void Dzoggee(this ILogger logger);
+                }
+            ");
+
+            Assert.Empty(diagnostics);
         }
 
         [Fact]
@@ -726,7 +1315,126 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
             // Make sure compilation was successful.
             Assert.Empty(diagnostics);
             Assert.Equal(1, generatedSources.Length);
-            Assert.Equal(21, generatedSources[0].SourceText.Lines.Count);
+            Assert.Equal(25, generatedSources[0].SourceText.Lines.Count);
+        }
+        [Theory]
+        [InlineData("{request}", "request")]
+        [InlineData("{request}", "@request")]
+        [InlineData("{@request}", "request")]
+        [InlineData("{@request}", "@request")]
+        public async Task AtSymbolArgument(string stringTemplate, string parameterName)
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@$"
+                partial class C
+                {{
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""{stringTemplate}"")]
+                    static partial void M1(ILogger logger, string {parameterName});
+                }}
+            ");
+
+            Assert.Empty(diagnostics);
+        }
+
+        [Theory]
+        [InlineData("{request}", "request")]
+        [InlineData("{request}", "@request")]
+        [InlineData("{@request}", "request")]
+        [InlineData("{@request}", "@request")]
+        public async Task AtSymbolArgumentOutOfOrder(string stringTemplate, string parameterName)
+        {
+            IReadOnlyList<Diagnostic> diagnostics = await RunGenerator(@$"
+                partial class C
+                {{
+                    [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""{stringTemplate} {{a1}}"")]
+                    static partial void M1(ILogger logger,string a1, string {parameterName});
+                }}
+            ");
+
+            Assert.Empty(diagnostics);
+        }
+
+        [Fact]
+        public static void SyntaxListWithManyItems()
+        {
+            const int nItems = 200000;
+            var builder = new System.Text.StringBuilder();
+            builder.AppendLine(
+                """
+                using Microsoft.Extensions.Logging;
+                class Program
+                {
+                    [LoggerMessage(EventId = 1, Level = LogLevel.Debug, Message = "M1")]
+                    static partial void M1(ILogger logger)
+                    {
+                """);
+            builder.AppendLine("    int[] values = new[] { ");
+            for (int i = 0; i < nItems; i++)
+            {
+                builder.Append("0, ");
+            }
+            builder.AppendLine("};");
+            builder.AppendLine("}");
+            builder.AppendLine("}");
+
+            string source = builder.ToString();
+            Compilation compilation = CompilationHelper.CreateCompilation(source);
+            LoggerMessageGenerator generator = new LoggerMessageGenerator();
+
+            (ImmutableArray<Diagnostic> diagnostics, _) =
+                RoslynTestUtils.RunGenerator(compilation, generator);
+
+            Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticDescriptors.LoggingMethodHasBody.Id, diagnostics[0].Id);
+        }
+
+        [Fact]
+        public async Task LanguageVersionTest()
+        {
+            string source = """
+                using Microsoft.Extensions.Logging;
+
+                internal partial class Program
+                {
+                    static void Main() { }
+
+                    [LoggerMessage(
+                        EventId = 0,
+                        Level = LogLevel.Critical,
+                        Message = "Could not open socket to `{hostName}`")]
+                    static partial void CouldNotOpenSocket(ILogger logger, string hostName);
+                }
+            """;
+
+            Assembly[]? refs = new[] { typeof(ILogger).Assembly, typeof(LoggerMessageAttribute).Assembly };
+
+            // Run the generator with C# 7.0 and verify that it fails.
+            var (diagnostics, generatedSources) = await RoslynTestUtils.RunGenerator(
+                new LoggerMessageGenerator(), refs, new[] { source }, includeBaseReferences: true, LanguageVersion.CSharp7).ConfigureAwait(false);
+
+            Assert.NotEmpty(diagnostics);
+            Assert.Equal("SYSLIB1026", diagnostics[0].Id);
+            Assert.Empty(generatedSources);
+
+            // Run the generator with C# 8.0 and verify that it succeeds.
+            (diagnostics, generatedSources) = await RoslynTestUtils.RunGenerator(
+                new LoggerMessageGenerator(), refs, new[] { source }, includeBaseReferences: true, LanguageVersion.CSharp8).ConfigureAwait(false);
+
+            Assert.Empty(diagnostics);
+            Assert.Single(generatedSources);
+
+            // Compile the generated code with C# 7.0 and verify that it fails.
+            CSharpParseOptions parseOptions = new CSharpParseOptions(LanguageVersion.CSharp7);
+            SyntaxTree syntaxTree = SyntaxFactory.ParseSyntaxTree(generatedSources[0].SourceText.ToString(), parseOptions);
+            var diags = syntaxTree.GetDiagnostics().ToArray();
+            Assert.Equal(1, diags.Length);
+            // error CS8107: Feature 'nullable reference types' is not available in C# 7.0. Please use language version 8.0 or greater.
+            Assert.Equal("CS8107", diags[0].Id);
+
+            // Compile the generated code with C# 8.0 and verify that it succeeds.
+            parseOptions = new CSharpParseOptions(LanguageVersion.CSharp8);
+            syntaxTree = SyntaxFactory.ParseSyntaxTree(generatedSources[0].SourceText.ToString(), parseOptions);
+            diags = syntaxTree.GetDiagnostics().ToArray();
+            Assert.Equal(0, diags.Length);
         }
 
         private static async Task<IReadOnlyList<Diagnostic>> RunGenerator(
@@ -770,6 +1478,36 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
                 cancellationToken: cancellationToken).ConfigureAwait(false);
 
             return d;
+        }
+
+        [Fact]
+        public async Task Diagnostic_HasPragmaSuppressibleLocation()
+        {
+            // SYSLIB1017: MissingLogLevel (Error, but not NotConfigurable).
+            string code = """
+                #pragma warning disable SYSLIB1017
+                using Microsoft.Extensions.Logging;
+
+                namespace Test
+                {
+                    partial class C
+                    {
+                        [LoggerMessage(EventId = 0, Message = "M1")]
+                        static partial void M1(ILogger logger);
+                    }
+                }
+                """;
+
+            Assembly[] refs = new[] { typeof(ILogger).Assembly, typeof(LoggerMessageAttribute).Assembly };
+            using var workspace = RoslynTestUtils.CreateTestWorkspace();
+            Project proj = RoslynTestUtils.CreateTestProject(workspace, refs)
+                .WithDocuments(new[] { code });
+            Assert.True(proj.Solution.Workspace.TryApplyChanges(proj.Solution));
+            Compilation comp = (await proj.GetCompilationAsync().ConfigureAwait(false))!;
+            var (diags, _) = RoslynTestUtils.RunGenerator(comp, new LoggerMessageGenerator());
+            var effective = CompilationWithAnalyzers.GetEffectiveDiagnostics(diags, comp);
+            Diagnostic diagnostic = Assert.Single(effective, d => d.Id == "SYSLIB1017");
+            Assert.True(diagnostic.IsSuppressed);
         }
     }
 }

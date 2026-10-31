@@ -1,4 +1,4 @@
-// Licensed to the .NET Foundation under one or more agreements.
+﻿// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
@@ -9,23 +9,11 @@ namespace System.IO.Enumeration
     /// <summary>Provides methods for matching file system names.</summary>
     public static class FileSystemName
     {
-        // [MS - FSA] 2.1.4.4 Algorithm for Determining if a FileName Is in an Expression
-        // https://msdn.microsoft.com/en-us/library/ff469270.aspx
-        private static readonly char[] s_wildcardChars =
-        {
-            '\"', '<', '>', '*', '?'
-        };
-
-        private static readonly char[] s_simpleWildcardChars =
-        {
-            '*', '?'
-        };
-
         /// <summary>Translates the given Win32 expression. Change '*' and '?' to '&lt;', '&gt;' and '"' to match Win32 behavior.</summary>
         /// <param name="expression">The expression to translate.</param>
         /// <returns>A string with the translated Win32 expression.</returns>
         /// <remarks>For compatibility, Windows changes some wildcards to provide a closer match to historical DOS 8.3 filename matching.</remarks>
-        public static string TranslateWin32Expression(string? expression)
+        public static unsafe string TranslateWin32Expression(string? expression)
         {
             if (string.IsNullOrEmpty(expression) || expression == "*" || expression == "*.*")
                 return "*";
@@ -42,7 +30,7 @@ namespace System.IO.Enumeration
                         modified = true;
                         if (i >= 1 && i == length - 1 && expression[i - 1] == '*')
                         {
-                            sb[sb.Length - 1] = '<'; // DOS_STAR (ends in *.)
+                            sb[^1] = '<'; // DOS_STAR (ends in *.)
                         }
                         else if (i < length - 1 && (expression[i + 1] == '?' || expression[i + 1] == '*'))
                         {
@@ -63,7 +51,13 @@ namespace System.IO.Enumeration
                 }
             }
 
-            return modified ? sb.ToString() : expression;
+            if (!modified)
+            {
+                sb.Dispose();
+                return expression;
+            }
+
+            return sb.ToString();
         }
 
         /// <summary>Verifies whether the given Win32 expression matches the given name. Supports the following wildcards: '*', '?', '&lt;', '&gt;', '"'. The backslash character '\' escapes.</summary>
@@ -72,7 +66,7 @@ namespace System.IO.Enumeration
         /// <param name="ignoreCase"><see langword="true" /> to ignore case (default), <see langword="false" /> if the match should be case-sensitive.</param>
         /// <returns><see langword="true" /> if the given expression matches the given name; otherwise, <see langword="false" />.</returns>
         /// <remarks>The syntax of the <paramref name="expression" /> parameter is based on the syntax used by FileSystemWatcher, which is based on [RtlIsNameInExpression](/windows/win32/devnotes/rtlisnameinexpression), which defines the rules for matching DOS wildcards (`'*'`, `'?'`, `'&lt;'`, `'&gt;'`, `'"'`).
-        /// Matching will not correspond to Win32 behavior unless you transform the expression using <see cref="FileSystemName.TranslateWin32Expression(string)" />.</remarks>
+        /// Matching will not correspond to Win32 behavior unless you transform the expression using <see cref="TranslateWin32Expression(string)" />.</remarks>
         public static bool MatchesWin32Expression(ReadOnlySpan<char> expression, ReadOnlySpan<char> name, bool ignoreCase = true)
         {
             return MatchPattern(expression, name, ignoreCase, useExtendedWildcards: true);
@@ -144,7 +138,7 @@ namespace System.IO.Enumeration
         //           set of contiguous DOS_QMs.
         //       DOS_DOT matches either a . or zero characters beyond name string.
 
-        private static bool MatchPattern(ReadOnlySpan<char> expression, ReadOnlySpan<char> name, bool ignoreCase, bool useExtendedWildcards)
+        private static unsafe bool MatchPattern(ReadOnlySpan<char> expression, ReadOnlySpan<char> name, bool ignoreCase, bool useExtendedWildcards)
         {
             // The idea behind the algorithm is pretty simple. We keep track of all possible locations
             // in the regular expression that are matching the name. When the name has been exhausted,
@@ -161,7 +155,13 @@ namespace System.IO.Enumeration
                     return true;
 
                 ReadOnlySpan<char> expressionEnd = expression.Slice(1);
-                if (expressionEnd.IndexOfAny(useExtendedWildcards ? s_wildcardChars : s_simpleWildcardChars) == -1)
+
+                // [MS - FSA] 2.1.4.4 Algorithm for Determining if a FileName Is in an Expression
+                // https://msdn.microsoft.com/en-us/library/ff469270.aspx
+                bool hasWildcards = useExtendedWildcards ?
+                    expressionEnd.ContainsAny("\"<>*?") :
+                    expressionEnd.ContainsAny('*', '?');
+                if (!hasWildcards)
                 {
                     // Handle the special case of a single starting *, which essentially means "ends with"
 
@@ -185,7 +185,7 @@ namespace System.IO.Enumeration
             char nameChar = '\0';
             char expressionChar;
 
-            Span<int> temp = stackalloc int[0];
+            scoped Span<int> temp = default;
             Span<int> currentMatches = stackalloc int[16];
             Span<int> priorMatches = stackalloc int[16];
             priorMatches[0] = 0;
@@ -274,18 +274,11 @@ namespace System.IO.Enumeration
                             // If we are at a period, determine if we are allowed to
                             // consume it, i.e. make sure it is not the last one.
 
-                            bool notLastPeriod = false;
-                            if (!nameFinished && nameChar == '.')
-                            {
-                                for (int offset = nameOffset; offset < name.Length; offset++)
-                                {
-                                    if (name[offset] == '.')
-                                    {
-                                        notLastPeriod = true;
-                                        break;
-                                    }
-                                }
-                            }
+                            // Check if there's another period after this one (not the last period)
+                            bool notLastPeriod =
+                                !nameFinished &&
+                                nameChar == '.' &&
+                                name.Slice(nameOffset).Contains('.');
 
                             if (nameFinished || nameChar != '.' || notLastPeriod)
                             {
@@ -412,6 +405,36 @@ namespace System.IO.Enumeration
             currentState = priorMatches[matchCount - 1];
 
             return currentState == maxState;
+        }
+
+        /// <summary>
+        /// Escapes the given expression so that only '*' and '?' are treated as wildcards, and
+        /// '\' isn't treated as an escape character.
+        /// </summary>
+        internal static unsafe string EscapeExpression(string expression)
+        {
+            ReadOnlySpan<char> span = expression;
+            ReadOnlySpan<char> charsToEscape = ['\\', '"', '<', '>'];
+
+            int i = span.IndexOfAny(charsToEscape);
+            if (i >= 0)
+            {
+                ValueStringBuilder vsb = new(stackalloc char[256]);
+                do
+                {
+                    vsb.Append(span.Slice(0, i));
+                    vsb.Append('\\');
+                    vsb.Append(span[i]);
+                    span = span.Slice(i + 1);
+                    i = span.IndexOfAny(charsToEscape);
+                }
+                while (i >= 0);
+
+                vsb.Append(span);
+                expression = vsb.ToString();
+            }
+
+            return expression;
         }
     }
 }

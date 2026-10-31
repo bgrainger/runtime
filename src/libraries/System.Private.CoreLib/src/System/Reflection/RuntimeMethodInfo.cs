@@ -11,15 +11,17 @@ namespace System.Reflection
     internal sealed partial class RuntimeMethodInfo : MethodInfo
     {
         [MethodImpl(MethodImplOptions.NoInlining)] // move lazy invocation flags population out of the hot path
-        private static InvocationFlags ComputeAndUpdateInvocationFlags(MethodInfo methodInfo, ref InvocationFlags flagsToUpdate)
+        internal InvocationFlags ComputeAndUpdateInvocationFlags()
         {
             InvocationFlags invocationFlags = InvocationFlags.Unknown;
 
-            Type? declaringType = methodInfo.DeclaringType;
+            Type? declaringType = DeclaringType;
+            Type returnType = ReturnType;
 
-            if (methodInfo.ContainsGenericParameters // Method has unbound generics
-                || IsDisallowedByRefType(methodInfo.ReturnType) // Return type is an invalid by-ref (i.e., by-ref-like or void*)
-                || (methodInfo.CallingConvention & CallingConventions.VarArgs) == CallingConventions.VarArgs // Managed varargs
+            if (ContainsGenericParameters // Method has unbound generics
+                || IsDisallowedByRefType(returnType) // Return type is an invalid by-ref (i.e., by-ref-like or void*)
+                || (CallingConvention & CallingConventions.VarArgs) == CallingConventions.VarArgs // Managed varargs
+                || IsDisallowedAsyncHelper
                 )
             {
                 invocationFlags = InvocationFlags.NoInvoke;
@@ -38,14 +40,13 @@ namespace System.Reflection
                     }
                 }
 
-                if (methodInfo.ReturnType.IsByRefLike) // Check for byref-like types for return
+                if (returnType.IsByRefLike) // Check for byref-like types for return
                 {
                     invocationFlags |= InvocationFlags.ContainsStackPointers;
                 }
             }
 
             invocationFlags |= InvocationFlags.Initialized;
-            flagsToUpdate = invocationFlags; // accesses are guaranteed atomic
             return invocationFlags;
 
             static bool IsDisallowedByRefType(Type type)
@@ -59,8 +60,10 @@ namespace System.Reflection
         }
 
         [DoesNotReturn]
-        private void ThrowNoInvokeException()
+        internal void ThrowNoInvokeException()
         {
+            Type? declaringType = DeclaringType;
+
             // method is on a class that contains stack pointers
             if ((InvocationFlags & InvocationFlags.ContainsStackPointers) != 0)
             {
@@ -72,7 +75,7 @@ namespace System.Reflection
                 throw new NotSupportedException();
             }
             // method is generic or on a generic class
-            else if (DeclaringType!.ContainsGenericParameters || ContainsGenericParameters)
+            else if ((declaringType != null && declaringType.ContainsGenericParameters) || ContainsGenericParameters)
             {
                 throw new InvalidOperationException(SR.Arg_UnboundGenParam);
             }
@@ -89,13 +92,22 @@ namespace System.Reflection
                 if (elementType == typeof(void))
                     throw new NotSupportedException(SR.NotSupported_ByRefToVoidReturn);
             }
+            else if (IsDisallowedAsyncHelper)
+            {
+                throw new NotSupportedException(SR.NotSupported_Async);
+            }
 
             throw new TargetException();
         }
 
-        [DebuggerStepThroughAttribute]
-        [Diagnostics.DebuggerHidden]
-        public override object? Invoke(object? obj, BindingFlags invokeAttr, Binder? binder, object?[]? parameters, CultureInfo? culture)
+        [DebuggerStepThrough]
+        [DebuggerHidden]
+        public override object? Invoke(
+            object? obj,
+            BindingFlags invokeAttr,
+            Binder? binder,
+            object?[]? parameters,
+            CultureInfo? culture)
         {
             // ContainsStackPointers means that the struct (either the declaring type or the return type)
             // contains pointers that point to the stack. This is either a ByRef or a TypedReference. These structs cannot
@@ -105,32 +117,25 @@ namespace System.Reflection
                 ThrowNoInvokeException();
             }
 
-            ValidateInvokeTarget(obj);
+            if (!IsStatic)
+            {
+                MethodInvokerCommon.ValidateInvokeTarget(obj, this);
+            }
 
             // Correct number of arguments supplied
-            int actualCount = (parameters is null) ? 0 : parameters.Length;
-            if (ArgumentTypes.Length != actualCount)
+            int argCount = (parameters is null) ? 0 : parameters.Length;
+            if (ArgumentTypes.Length != argCount)
             {
-                throw new TargetParameterCountException(SR.Arg_ParmCnt);
+                MethodBaseInvoker.ThrowTargetParameterCountException();
             }
 
-            StackAllocedArguments stackArgs = default; // try to avoid intermediate array allocation if possible
-            Span<object?> arguments = default;
-            if (actualCount != 0)
+            return argCount switch
             {
-                arguments = CheckArguments(ref stackArgs, parameters!, binder, invokeAttr, culture, ArgumentTypes);
-            }
-
-            object? retValue = InvokeWorker(obj, invokeAttr, arguments);
-
-            // copy out. This should be made only if ByRef are present.
-            // n.b. cannot use Span<T>.CopyTo, as parameters.GetType() might not actually be typeof(object[])
-            for (int index = 0; index < arguments.Length; index++)
-            {
-                parameters![index] = arguments[index];
-            }
-
-            return retValue;
+                0 => Invoker.InvokeWithNoArgs(obj, invokeAttr),
+                1 => Invoker.InvokeWithOneArg(obj, invokeAttr, binder, parameters!, culture),
+                2 or 3 or 4 => Invoker.InvokeWithFewArgs(obj, invokeAttr, binder, parameters!, culture),
+                _ => Invoker.InvokeWithManyArgs(obj, invokeAttr, binder, parameters!, culture),
+            };
         }
     }
 }

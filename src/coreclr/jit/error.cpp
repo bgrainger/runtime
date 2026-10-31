@@ -15,6 +15,7 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 #pragma hdrstop
 #endif
 #include "compiler.h"
+#include "minipal/log.h"
 
 #if MEASURE_FATAL
 unsigned fatal_badCode;
@@ -32,7 +33,7 @@ unsigned fatal_NYI;
 void DECLSPEC_NORETURN fatal(int errCode)
 {
 #ifdef DEBUG
-    if (errCode != CORJIT_SKIPPED) // Don't stop on NYI: use COMPlus_AltJitAssertOnNYI for that.
+    if (errCode != CORJIT_SKIPPED) // Don't stop on NYI: use DOTNET_AltJitAssertOnNYI for that.
     {
         if (JitConfig.DebugBreakOnVerificationFailure())
         {
@@ -77,6 +78,12 @@ void DECLSPEC_NORETURN implLimitation()
 }
 
 /*****************************************************************************/
+void DECLSPEC_NORETURN implReadyToRunUnsupported()
+{
+    fatal(CORJIT_R2R_UNSUPPORTED);
+}
+
+/*****************************************************************************/
 void DECLSPEC_NORETURN NOMEM()
 {
 #if MEASURE_FATAL
@@ -108,32 +115,15 @@ void DECLSPEC_NORETURN noWayAssertBody()
     fatal(CORJIT_RECOVERABLEERROR);
 }
 
-inline static bool ShouldThrowOnNoway(
-#ifdef FEATURE_TRACELOGGING
-    const char* filename, unsigned line
-#endif
-    )
+inline static bool ShouldThrowOnNoway()
 {
-    return JitTls::GetCompiler() == nullptr ||
-           JitTls::GetCompiler()->compShouldThrowOnNoway(
-#ifdef FEATURE_TRACELOGGING
-               filename, line
-#endif
-               );
+    return JitTls::GetCompiler() == nullptr || JitTls::GetCompiler()->compShouldThrowOnNoway();
 }
 
 /*****************************************************************************/
-void noWayAssertBodyConditional(
-#ifdef FEATURE_TRACELOGGING
-    const char* filename, unsigned line
-#endif
-    )
+void noWayAssertBodyConditional()
 {
-#ifdef FEATURE_TRACELOGGING
-    if (ShouldThrowOnNoway(filename, line))
-#else
     if (ShouldThrowOnNoway())
-#endif // FEATURE_TRACELOGGING
     {
         noWayAssertBody();
     }
@@ -239,7 +229,7 @@ DWORD getBreakOnBadCode()
 /*****************************************************************************/
 void debugError(const char* msg, const char* file, unsigned line)
 {
-    const char* tail = strrchr(file, '\\');
+    const char* tail = strrchr(file, DIRECTORY_SEPARATOR_CHAR_A);
     if (tail != nullptr)
     {
         tail = tail + 1;
@@ -251,44 +241,46 @@ void debugError(const char* msg, const char* file, unsigned line)
 
     LogEnv* env = JitTls::GetLogEnv();
 
+    JITDUMP("\nCOMPILATION FAILED: %s (%s:%d)\n", msg, tail, line);
+
     logf(LL_ERROR, "COMPILATION FAILED: file: %s:%d compiling method %s reason %s\n", tail, line,
          env->compiler->info.compFullName, msg);
 
-    // We now only assert when user explicitly set ComPlus_JitRequired=1
-    // If ComPlus_JitRequired is 0 or is not set, we will not assert.
+    // We now only assert when user explicitly set DOTNET_JitRequired=1
+    // If DOTNET_JitRequired is 0 or is not set, we will not assert.
     if (JitConfig.JitRequired() == 1 || getBreakOnBadCode())
     {
-        // Don't assert if verification is done.
-        if (!env->compiler->tiVerificationNeeded || getBreakOnBadCode())
-        {
-            assertAbort(msg, file, line);
-        }
+        assertAbort(msg, file, line);
     }
 
     BreakIfDebuggerPresent();
 }
 
 /*****************************************************************************/
-LogEnv::LogEnv(ICorJitInfo* aCompHnd) : compHnd(aCompHnd), compiler(nullptr)
+LogEnv::LogEnv(ICorJitInfo* aCompHnd)
+    : compHnd(aCompHnd)
+    , compiler(nullptr)
 {
 }
 
 /*****************************************************************************/
-extern "C" void __cdecl assertAbort(const char* why, const char* file, unsigned line)
+extern "C" void assertAbort(const char* why, const char* file, unsigned line)
 {
     const char* msg       = why;
     LogEnv*     env       = JitTls::GetLogEnv();
     const int   BUFF_SIZE = 8192;
-    char*       buff      = (char*)alloca(BUFF_SIZE);
+    char*       buff      = (char*)_alloca(BUFF_SIZE);
     const char* phaseName = "unknown phase";
     if (env->compiler)
     {
         phaseName = PhaseNames[env->compiler->mostRecentlyActivePhase];
-        _snprintf_s(buff, BUFF_SIZE, _TRUNCATE, "Assertion failed '%s' in '%s' during '%s' (IL size %d)\n", why,
-                    env->compiler->info.compFullName, phaseName, env->compiler->info.compILCodeSize);
+        _snprintf_s(buff, BUFF_SIZE, _TRUNCATE,
+                    "Assertion failed '%s' in '%s' during '%s' (IL size %d; hash 0x%08x; %s)\n", why,
+                    env->compiler->info.compFullName, phaseName, env->compiler->info.compILCodeSize,
+                    env->compiler->info.compMethodHash(), env->compiler->compGetTieringName(/* short name */ true));
         msg = buff;
     }
-    printf(""); // null string means flush
+    fflush(jitstdout());
 
 #if FUNC_INFO_LOGGING
     if (Compiler::compJitFuncInfoFile != nullptr)
@@ -308,13 +300,13 @@ extern "C" void __cdecl assertAbort(const char* why, const char* file, unsigned 
     if (comp != nullptr && comp->opts.jitFlags->IsSet(JitFlags::JIT_FLAG_ALT_JIT))
     {
         // If we hit an assert, and we got here, it's either because the user hit "ignore" on the
-        // dialog pop-up, or they set COMPlus_ContinueOnAssert=1 to not emit a pop-up, but just continue.
+        // dialog pop-up, or they set DOTNET_ContinueOnAssert=1 to not emit a pop-up, but just continue.
         // If we're an altjit, we have two options: (1) silently continue, as a normal JIT would, probably
         // leading to additional asserts, or (2) tell the VM that the AltJit wants to skip this function,
-        // thus falling back to the fallback JIT. Setting COMPlus_AltJitSkipOnAssert=1 chooses this "skip"
+        // thus falling back to the fallback JIT. Setting DOTNET_AltJitSkipOnAssert=1 chooses this "skip"
         // to the fallback JIT behavior. This is useful when doing ASM diffs, where we only want to see
-        // the first assert for any function, but we don't want to kill the whole ngen process on the
-        // first assert (which would happen if you used COMPlus_NoGuiOnAssert=1 for example).
+        // the first assert for any function, but we don't want to kill the whole process on the
+        // first assert (which would happen if you used DOTNET_NoGuiOnAssert=1 for example).
         if (JitConfig.AltJitSkipOnAssert() != 0)
         {
             fatal(CORJIT_SKIPPED);
@@ -333,7 +325,14 @@ int vflogf(FILE* file, const char* fmt, va_list args)
     // 0-length string means flush
     if (fmt[0] == '\0')
     {
-        fflush(file);
+        if (file == procstdout())
+        {
+            minipal_log_flush_verbose();
+        }
+        else
+        {
+            fflush(file);
+        }
         return 0;
     }
 
@@ -346,8 +345,15 @@ int vflogf(FILE* file, const char* fmt, va_list args)
         OutputDebugStringA(buffer);
     }
 
-    // We use fputs here so that this executes as fast a possible
-    fputs(&buffer[0], file);
+    if (file == procstdout())
+    {
+        minipal_log_write_verbose(buffer);
+    }
+    else
+    {
+        fputs(&buffer[0], file);
+    }
+
     return written;
 }
 
@@ -387,7 +393,7 @@ int logf(const char* fmt, ...)
     {
         // if the EE refuses to log it, we try to send it to stdout
         va_start(args, fmt);
-        written = vflogf(jitstdout, fmt, args);
+        written = vflogf(jitstdout(), fmt, args);
         va_end(args);
     }
 #if 0  // Enable this only when you need it
@@ -448,7 +454,7 @@ void gcDump_logf(const char* fmt, ...)
     {
         // if the EE refuses to log it, we try to send it to stdout
         va_start(args, fmt);
-        vflogf(jitstdout, fmt, args);
+        vflogf(jitstdout(), fmt, args);
         va_end(args);
     }
 #if 0  // Enable this only when you need it
@@ -490,7 +496,7 @@ void logf(unsigned level, const char* fmt, ...)
     va_end(args);
 }
 
-void DECLSPEC_NORETURN badCode3(const char* msg, const char* msg2, int arg, __in_z const char* file, unsigned line)
+void DECLSPEC_NORETURN badCode3(const char* msg, const char* msg2, int arg, _In_z_ const char* file, unsigned line)
 {
     const int BUFF_SIZE = 512;
     char      buf1[BUFF_SIZE];
@@ -513,11 +519,7 @@ void noWayAssertAbortHelper(const char* cond, const char* file, unsigned line)
 
 void noWayAssertBodyConditional(const char* cond, const char* file, unsigned line)
 {
-#ifdef FEATURE_TRACELOGGING
-    if (ShouldThrowOnNoway(file, line))
-#else
     if (ShouldThrowOnNoway())
-#endif
     {
         noWayAssertBody(cond, file, line);
     }

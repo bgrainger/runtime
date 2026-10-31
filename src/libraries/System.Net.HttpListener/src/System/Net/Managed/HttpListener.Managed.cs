@@ -12,10 +12,14 @@ namespace System.Net
     {
         public static bool IsSupported => true;
 
-        private Dictionary<HttpListenerContext, HttpListenerContext> _listenerContexts = new Dictionary<HttpListenerContext, HttpListenerContext>();
-        private List<HttpListenerContext> _contextQueue = new List<HttpListenerContext>();
-        private List<ListenerAsyncResult> _asyncWaitQueue = new List<ListenerAsyncResult>();
-        private Dictionary<HttpConnection, HttpConnection> _connections = new Dictionary<HttpConnection, HttpConnection>();
+        private readonly Dictionary<HttpListenerContext, HttpListenerContext> _listenerContexts = new Dictionary<HttpListenerContext, HttpListenerContext>();
+        private readonly List<HttpListenerContext> _contextQueue = new List<HttpListenerContext>();
+        private readonly List<ListenerAsyncResult> _asyncWaitQueue = new List<ListenerAsyncResult>();
+        private readonly Dictionary<HttpConnection, HttpConnection> _connections = new Dictionary<HttpConnection, HttpConnection>();
+        // Set under the _asyncWaitQueue lock once Cleanup() has drained the queue, and cleared by Start().
+        // _state is only updated after Cleanup() returns, so BeginGetContext() checks this to avoid queuing
+        // an operation that nothing would ever complete.
+        private bool _asyncWaitQueueClosed;
         private bool _unsafeConnectionNtlmAuthentication;
 
         public HttpListenerTimeoutManager TimeoutManager
@@ -42,6 +46,11 @@ namespace System.Net
                         return;
 
                     HttpEndPointManager.AddListener(this);
+
+                    lock ((_asyncWaitQueue as ICollection).SyncRoot)
+                    {
+                        _asyncWaitQueueClosed = false;
+                    }
 
                     _state = State.Started;
                 }
@@ -207,10 +216,7 @@ namespace System.Net
                 }
             }
 
-            if (ares != null)
-            {
-                ares.Complete(context);
-            }
+            ares?.Complete(context);
         }
 
         private void Cleanup(bool close_existing)
@@ -220,7 +226,7 @@ namespace System.Net
                 if (close_existing)
                 {
                     // Need to copy this since closing will call UnregisterContext
-                    ICollection keys = _listenerContexts.Keys;
+                    Dictionary<HttpListenerContext, HttpListenerContext>.KeyCollection keys = _listenerContexts.Keys;
                     var all = new HttpListenerContext[keys.Count];
                     keys.CopyTo(all, 0);
                     _listenerContexts.Clear();
@@ -230,7 +236,7 @@ namespace System.Net
 
                 lock ((_connections as ICollection).SyncRoot)
                 {
-                    ICollection keys = _connections.Keys;
+                    Dictionary<HttpConnection, HttpConnection>.KeyCollection keys = _connections.Keys;
                     var conns = new HttpConnection[keys.Count];
                     keys.CopyTo(conns, 0);
                     _connections.Clear();
@@ -253,6 +259,7 @@ namespace System.Net
                         ares.Complete(exc);
                     }
                     _asyncWaitQueue.Clear();
+                    _asyncWaitQueueClosed = true;
                 }
             }
         }
@@ -286,6 +293,14 @@ namespace System.Net
             // lock wait_queue early to avoid race conditions
             lock ((_asyncWaitQueue as ICollection).SyncRoot)
             {
+                // The listener was stopped or closed after the state check above, so complete the
+                // operation in the same way as Cleanup() would have if it had been queued in time.
+                if (_asyncWaitQueueClosed)
+                {
+                    ares.Complete(new ObjectDisposedException("listener"));
+                    return ares;
+                }
+
                 lock ((_contextQueue as ICollection).SyncRoot)
                 {
                     HttpListenerContext? ctx = GetContextFromQueue();
@@ -305,10 +320,7 @@ namespace System.Net
         public HttpListenerContext EndGetContext(IAsyncResult asyncResult)
         {
             CheckDisposed();
-            if (asyncResult == null)
-            {
-                throw new ArgumentNullException(nameof(asyncResult));
-            }
+            ArgumentNullException.ThrowIfNull(asyncResult);
 
             ListenerAsyncResult? ares = asyncResult as ListenerAsyncResult;
             if (ares == null || !ReferenceEquals(this, ares._parent))

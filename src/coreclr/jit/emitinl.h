@@ -13,7 +13,7 @@ inline bool emitter::instrIs3opImul(instruction ins)
 #ifdef TARGET_X86
     return ((ins >= INS_imul_AX) && (ins <= INS_imul_DI));
 #else // TARGET_AMD64
-    return ((ins >= INS_imul_AX) && (ins <= INS_imul_15));
+    return ((ins >= INS_imul_AX) && (ins <= INS_imul_31));
 #endif
 }
 
@@ -23,7 +23,7 @@ inline bool emitter::instrIsExtendedReg3opImul(instruction ins)
 #ifdef TARGET_X86
     return false;
 #else // TARGET_AMD64
-    return ((ins >= INS_imul_08) && (ins <= INS_imul_15));
+    return ((ins >= INS_imul_08) && (ins <= INS_imul_31));
 #endif
 }
 
@@ -55,6 +55,22 @@ inline void emitter::check3opImulValues()
     assert(INS_imul_13 - INS_imul_AX == REG_R13);
     assert(INS_imul_14 - INS_imul_AX == REG_R14);
     assert(INS_imul_15 - INS_imul_AX == REG_R15);
+    assert(INS_imul_16 - INS_imul_AX == REG_R16);
+    assert(INS_imul_17 - INS_imul_AX == REG_R17);
+    assert(INS_imul_18 - INS_imul_AX == REG_R18);
+    assert(INS_imul_19 - INS_imul_AX == REG_R19);
+    assert(INS_imul_20 - INS_imul_AX == REG_R20);
+    assert(INS_imul_21 - INS_imul_AX == REG_R21);
+    assert(INS_imul_22 - INS_imul_AX == REG_R22);
+    assert(INS_imul_23 - INS_imul_AX == REG_R23);
+    assert(INS_imul_24 - INS_imul_AX == REG_R24);
+    assert(INS_imul_25 - INS_imul_AX == REG_R25);
+    assert(INS_imul_26 - INS_imul_AX == REG_R26);
+    assert(INS_imul_27 - INS_imul_AX == REG_R27);
+    assert(INS_imul_28 - INS_imul_AX == REG_R28);
+    assert(INS_imul_29 - INS_imul_AX == REG_R29);
+    assert(INS_imul_30 - INS_imul_AX == REG_R30);
+    assert(INS_imul_31 - INS_imul_AX == REG_R31);
 #endif
 }
 
@@ -103,7 +119,7 @@ inline regNumber emitter::inst3opImulReg(instruction ins)
 
 #ifdef TARGET_XARCH
 
-inline ssize_t emitter::emitGetInsAmd(instrDesc* id)
+inline ssize_t emitter::emitGetInsAmd(instrDesc* id) const
 {
     return id->idIsLargeDsp() ? ((instrDescAmd*)id)->idaAmdVal : id->idAddr()->iiaAddrMode.amDisp;
 }
@@ -127,7 +143,7 @@ inline int emitter::emitGetInsCDinfo(instrDesc* id)
     }
 }
 
-inline void emitter::emitGetInsCns(instrDesc* id, CnsVal* cv)
+inline void emitter::emitGetInsCns(const instrDesc* id, CnsVal* cv) const
 {
     cv->cnsReloc = id->idIsCnsReloc();
     if (id->idIsLargeCns())
@@ -140,7 +156,7 @@ inline void emitter::emitGetInsCns(instrDesc* id, CnsVal* cv)
     }
 }
 
-inline ssize_t emitter::emitGetInsAmdCns(instrDesc* id, CnsVal* cv)
+inline ssize_t emitter::emitGetInsAmdCns(const instrDesc* id, CnsVal* cv) const
 {
     cv->cnsReloc = id->idIsCnsReloc();
     if (id->idIsLargeDsp())
@@ -171,7 +187,7 @@ inline ssize_t emitter::emitGetInsAmdCns(instrDesc* id, CnsVal* cv)
     }
 }
 
-inline void emitter::emitGetInsDcmCns(instrDesc* id, CnsVal* cv)
+inline void emitter::emitGetInsDcmCns(const instrDesc* id, CnsVal* cv) const
 {
     cv->cnsReloc = id->idIsCnsReloc();
     if (id->idIsLargeCns())
@@ -191,7 +207,7 @@ inline void emitter::emitGetInsDcmCns(instrDesc* id, CnsVal* cv)
     }
 }
 
-inline ssize_t emitter::emitGetInsAmdAny(instrDesc* id)
+inline ssize_t emitter::emitGetInsAmdAny(const instrDesc* id) const
 {
     if (id->idIsLargeDsp())
     {
@@ -211,11 +227,9 @@ inline ssize_t emitter::emitGetInsAmdAny(instrDesc* id)
  *
  *  Convert between a register mask and a smaller version for storage.
  */
-
 /*static*/ inline void emitter::emitEncodeCallGCregs(regMaskTP regmask, instrDesc* id)
 {
-    assert((regmask & RBM_CALLEE_TRASH) == 0);
-
+#if HAS_FIXED_REGISTER_SET
     unsigned encodeMask;
 
 #ifdef TARGET_X86
@@ -335,15 +349,81 @@ inline ssize_t emitter::emitGetInsAmdAny(instrDesc* id)
 
     id->idReg2((regNumber)encodeMask); // Save in idReg2
 
+#elif defined(TARGET_LOONGARCH64)
+    assert(REGNUM_BITS >= 5);
+    encodeMask = 0;
+
+    if ((regmask & RBM_S0) != RBM_NONE)
+        encodeMask |= 0x01;
+    if ((regmask & RBM_S1) != RBM_NONE)
+        encodeMask |= 0x02;
+    if ((regmask & RBM_S2) != RBM_NONE)
+        encodeMask |= 0x04;
+    if ((regmask & RBM_S3) != RBM_NONE)
+        encodeMask |= 0x08;
+    if ((regmask & RBM_S4) != RBM_NONE)
+        encodeMask |= 0x10;
+
+    id->idReg1((regNumber)encodeMask); // Save in idReg1
+
+    encodeMask = 0;
+
+    if ((regmask & RBM_S5) != RBM_NONE)
+        encodeMask |= 0x01;
+    if ((regmask & RBM_S6) != RBM_NONE)
+        encodeMask |= 0x02;
+    if ((regmask & RBM_S7) != RBM_NONE)
+        encodeMask |= 0x04;
+    if ((regmask & RBM_S8) != RBM_NONE)
+        encodeMask |= 0x08;
+
+    id->idReg2((regNumber)encodeMask); // Save in idReg2
+
+#elif defined(TARGET_RISCV64)
+    assert(REGNUM_BITS >= 6);
+    encodeMask = 0;
+
+    if ((regmask & RBM_S1) != RBM_NONE)
+        encodeMask |= 0x01;
+    if ((regmask & RBM_S2) != RBM_NONE)
+        encodeMask |= 0x02;
+    if ((regmask & RBM_S3) != RBM_NONE)
+        encodeMask |= 0x04;
+    if ((regmask & RBM_S4) != RBM_NONE)
+        encodeMask |= 0x08;
+    if ((regmask & RBM_S5) != RBM_NONE)
+        encodeMask |= 0x10;
+    if ((regmask & RBM_S6) != RBM_NONE)
+        encodeMask |= 0x20;
+
+    id->idReg1((regNumber)encodeMask); // Save in idReg1
+
+    encodeMask = 0;
+
+    if ((regmask & RBM_S7) != RBM_NONE)
+        encodeMask |= 0x01;
+    if ((regmask & RBM_S8) != RBM_NONE)
+        encodeMask |= 0x02;
+    if ((regmask & RBM_S9) != RBM_NONE)
+        encodeMask |= 0x04;
+    if ((regmask & RBM_S10) != RBM_NONE)
+        encodeMask |= 0x08;
+    if ((regmask & RBM_S11) != RBM_NONE)
+        encodeMask |= 0x10;
+
+    id->idReg2((regNumber)encodeMask); // Save in idReg2
+
 #else
     NYI("unknown target");
 #endif
+#endif // HAS_FIXED_REGISTER_SET
 }
 
+#if HAS_FIXED_REGISTER_SET
 /*static*/ inline unsigned emitter::emitDecodeCallGCregs(instrDesc* id)
 {
-    unsigned regmask = 0;
-    unsigned encodeMask;
+    regMaskTP regmask = RBM_NONE;
+    unsigned  encodeMask;
 
 #ifdef TARGET_X86
     assert(REGNUM_BITS >= 3);
@@ -447,12 +527,69 @@ inline ssize_t emitter::emitGetInsAmdAny(instrDesc* id)
     if ((encodeMask & 0x10) != 0)
         regmask |= RBM_R28;
 
+#elif defined(TARGET_LOONGARCH64)
+    assert(REGNUM_BITS >= 5);
+    encodeMask = id->idReg1();
+
+    if ((encodeMask & 0x01) != 0)
+        regmask |= RBM_S0;
+    if ((encodeMask & 0x02) != 0)
+        regmask |= RBM_S1;
+    if ((encodeMask & 0x04) != 0)
+        regmask |= RBM_S2;
+    if ((encodeMask & 0x08) != 0)
+        regmask |= RBM_S3;
+    if ((encodeMask & 0x10) != 0)
+        regmask |= RBM_S4;
+
+    encodeMask = id->idReg2();
+
+    if ((encodeMask & 0x01) != 0)
+        regmask |= RBM_S5;
+    if ((encodeMask & 0x02) != 0)
+        regmask |= RBM_S6;
+    if ((encodeMask & 0x04) != 0)
+        regmask |= RBM_S7;
+    if ((encodeMask & 0x08) != 0)
+        regmask |= RBM_S8;
+
+#elif defined(TARGET_RISCV64)
+    assert(REGNUM_BITS >= 6);
+    encodeMask = id->idReg1();
+
+    if ((encodeMask & 0x01) != 0)
+        regmask |= RBM_S1;
+    if ((encodeMask & 0x02) != 0)
+        regmask |= RBM_S2;
+    if ((encodeMask & 0x04) != 0)
+        regmask |= RBM_S3;
+    if ((encodeMask & 0x08) != 0)
+        regmask |= RBM_S4;
+    if ((encodeMask & 0x10) != 0)
+        regmask |= RBM_S5;
+    if ((encodeMask & 0x20) != 0)
+        regmask |= RBM_S6;
+
+    encodeMask = id->idReg2();
+
+    if ((encodeMask & 0x01) != 0)
+        regmask |= RBM_S7;
+    if ((encodeMask & 0x02) != 0)
+        regmask |= RBM_S8;
+    if ((encodeMask & 0x04) != 0)
+        regmask |= RBM_S9;
+    if ((encodeMask & 0x08) != 0)
+        regmask |= RBM_S10;
+    if ((encodeMask & 0x10) != 0)
+        regmask |= RBM_S11;
+
 #else
     NYI("unknown target");
 #endif
 
-    return regmask;
+    return (unsigned int)regmask.getLow();
 }
+#endif // HAS_FIXED_REGISTER_SET
 
 #ifdef TARGET_XARCH
 inline bool insIsCMOV(instruction ins)
@@ -468,13 +605,21 @@ inline bool insIsCMOV(instruction ins)
  *  false. Returns the final result of the callback.
  */
 template <typename Callback>
-bool emitter::emitGenNoGCLst(Callback& cb)
+bool emitter::emitGenNoGCLst(Callback& cb, bool skipMainPrologsAndEpilogs /* = false */)
 {
     for (insGroup* ig = emitIGlist; ig; ig = ig->igNext)
     {
-        if (ig->igFlags & IGF_NOGCINTERRUPT)
+        if (skipMainPrologsAndEpilogs)
         {
-            if (!cb(ig->igFuncIdx, ig->igOffs, ig->igSize))
+            if ((ig->igFlags & (IGF_PROLOG | IGF_EPILOG)) != 0)
+                continue;
+        }
+        if ((ig->igFlags & IGF_NOGCINTERRUPT) && ig->igSize > 0)
+        {
+            emitter::instrDesc* id = emitFirstInstrDesc(ig->igData);
+            assert(id != nullptr);
+            assert(id->idCodeSize() > 0);
+            if (!cb(ig->igFuncIdx, ig->igOffs, ig->igSize, id->idCodeSize(), ig->igFlags & (IGF_FUNCLET_PROLOG)))
             {
                 return false;
             }

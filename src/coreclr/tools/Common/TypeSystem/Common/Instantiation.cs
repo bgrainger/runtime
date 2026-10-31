@@ -11,7 +11,7 @@ namespace Internal.TypeSystem
     /// Represents a generic instantiation - a collection of generic parameters
     /// or arguments of a generic type or a generic method.
     /// </summary>
-    public struct Instantiation
+    public struct Instantiation : IEquatable<Instantiation>
     {
         private TypeDesc[] _genericParameters;
 
@@ -48,15 +48,6 @@ namespace Internal.TypeSystem
             {
                 return _genericParameters == null;
             }
-        }
-
-        /// <summary>
-        /// Combines the given generic definition's hash code with the hashes
-        /// of the generic parameters in this instantiation
-        /// </summary>
-        public int ComputeGenericInstanceHashCode(int genericDefinitionHashCode)
-        {
-            return Internal.NativeFormat.TypeHashingAlgorithms.ComputeGenericInstanceHashCode(genericDefinitionHashCode, _genericParameters);
         }
 
         public static readonly Instantiation Empty = new Instantiation(TypeDesc.EmptyTypes);
@@ -113,5 +104,25 @@ namespace Internal.TypeSystem
                 return true;
             }
         }
+
+        public bool Equals(Instantiation other)
+        {
+            if (_genericParameters.Length != other._genericParameters.Length)
+                return false;
+
+            for (int i = 0; i < _genericParameters.Length; i++)
+            {
+                if (_genericParameters[i] != other._genericParameters[i])
+                    return false;
+            }
+            return true;
+        }
+        public override bool Equals(object o)
+        {
+            if (o is Instantiation inst)
+                return Equals(inst);
+            return false;
+        }
+        public override int GetHashCode() => VersionResilientHashCode.GenericInstanceHashCode(1, this);
     }
 }

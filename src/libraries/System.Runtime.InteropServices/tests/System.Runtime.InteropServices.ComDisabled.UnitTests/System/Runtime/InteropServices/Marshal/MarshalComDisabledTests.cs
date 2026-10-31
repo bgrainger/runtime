@@ -6,6 +6,7 @@ using Xunit;
 namespace System.Runtime.InteropServices.Tests
 {
     [PlatformSpecific(TestPlatforms.Windows)]
+    [SkipOnMono("COM Interop not supported on Mono")]
     public partial class MarshalComDisabledTests
     {
         [Fact]
@@ -66,12 +67,14 @@ namespace System.Runtime.InteropServices.Tests
         }        
 
         [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/72911", typeof(PlatformDetection), nameof(PlatformDetection.IsNativeAot))]
         public void GetNativeVariantForObject_ThrowsNotSupportedException()
         {
             Assert.Throws<NotSupportedException>(() => Marshal.GetNativeVariantForObject(99, IntPtr.Zero));
         }
 
         [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/72911", typeof(PlatformDetection), nameof(PlatformDetection.IsNativeAot))]
         public void GetNativeVariantForObject_T_ThrowsNotSupportedException()
         {
             Assert.Throws<NotSupportedException>(() => Marshal.GetNativeVariantForObject<double>(99, IntPtr.Zero));
@@ -80,6 +83,7 @@ namespace System.Runtime.InteropServices.Tests
         public struct NativeVariant{}
 
         [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/72911", typeof(PlatformDetection), nameof(PlatformDetection.IsNativeAot))]
         public void GetObjectForNativeVariant_ThrowsNotSupportedException()
         {
             NativeVariant variant = new NativeVariant();
@@ -99,6 +103,7 @@ namespace System.Runtime.InteropServices.Tests
         public struct NativeVariant_T{}
 
         [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/72911", typeof(PlatformDetection), nameof(PlatformDetection.IsNativeAot))]
         public void GetObjectForNativeVariant_T_ThrowsNotSupportedException()
         {
             NativeVariant_T variant = new NativeVariant_T();
@@ -146,7 +151,9 @@ namespace System.Runtime.InteropServices.Tests
         [Fact]
         public void BindToMoniker_ThrowsNotSupportedException()
         {            
+#pragma warning disable IL2026 // With COM disabled, this always throws so it's safe
             Assert.Throws<NotSupportedException>(() => Marshal.BindToMoniker("test"));
+#pragma warning restore IL2026
         }        
 
         [Fact]

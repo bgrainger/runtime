@@ -5,8 +5,11 @@
 using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using Xunit;
 
-internal partial class VectorTest
+namespace SIMDTests.VectorCastTests;
+
+public partial class VectorTest : VectorTestBase
 {
     const int Pass = 100;
     const int Fail = -1;
@@ -74,7 +77,8 @@ internal partial class VectorTest
         return success;
     }
 
-    static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         bool succeeded = true;
 

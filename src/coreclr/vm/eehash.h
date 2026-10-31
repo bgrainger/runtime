@@ -13,9 +13,7 @@
 //
 // 1. Any number of threads can be reading the hash table while another thread is writing, without error.
 // 2. Only one thread can write at a time.
-// 3. When calling ReplaceValue(), a reader will get the old value, or the new value, but not something
-//    in between.
-// 4. DeleteValue() is an unsafe operation - no other threads can be in the hash table when this happens.
+// 3. DeleteValue() is an unsafe operation - no other threads can be in the hash table when this happens.
 //
 
 #ifndef _EE_HASH_H
@@ -65,6 +63,10 @@ struct EEHashTableIteration;
 
 class GCHeap;
 
+// Bucket array allocation helpers for EEHashTable.
+EEHashEntry_t** AllocateEEHashBuckets(DWORD dwNumBuckets);
+void FreeEEHashBuckets(EEHashEntry_t** pBuckets);
+
 // Generic hash table.
 
 template <class KeyType, class Helper, BOOL bDefaultCopyIsDeep>
@@ -78,8 +80,6 @@ public:
     void            InsertValue(KeyType pKey, HashDatum Data, BOOL bDeepCopyKey = bDefaultCopyIsDeep);
     void            InsertKeyAsValue(KeyType pKey, BOOL bDeepCopyKey = bDefaultCopyIsDeep);
     BOOL            DeleteValue(KeyType pKey);
-    BOOL            ReplaceValue(KeyType pKey, HashDatum Data);
-    BOOL            ReplaceKey(KeyType pOldKey, KeyType pNewKey);
     void            ClearHashTable();
     void            EmptyHashTable();
     BOOL            IsEmpty();
@@ -94,7 +94,7 @@ public:
     // A fast inlinable flavor of GetValue that can return false instead of the actual item
     // if there is race with updating of the hashtable. Callers of GetValueSpeculative
     // should fall back to the slow GetValue if GetValueSpeculative returns false.
-    // Assumes that we are in cooperative mode already. For performance-sensitive codepaths.
+    // Uses EBR internally for safe concurrent access. For performance-sensitive codepaths.
     BOOL            GetValueSpeculative(KeyType pKey, HashDatum *pData);
     BOOL            GetValueSpeculative(KeyType pKey, HashDatum *pData, DWORD hashValue);
 
@@ -140,7 +140,7 @@ protected:
     // A fast inlinable flavor of FindItem that can return null instead of the actual item
     // if there is race with updating of the hashtable. Callers of FindItemSpeculative
     // should fall back to the slow FindItem if FindItemSpeculative returns null.
-    // Assumes that we are in cooperative mode already. For performance-sensitive codepaths.
+    // Uses EBR internally for safe concurrent access. For performance-sensitive codepaths.
     EEHashEntry_t * FindItemSpeculative(KeyType pKey, DWORD hashValue);
 
     // Double buffer to fix the race condition of growhashtable (the update
@@ -150,8 +150,11 @@ protected:
 
     struct BucketTable
     {
-        DPTR(PTR_EEHashEntry_t) m_pBuckets;    // Pointer to first entry for each bucket
-        DWORD            m_dwNumBuckets;
+        DPTR(PTR_EEHashEntry_t) m_pBuckets;       // Pointer to first entry for each bucket
+        DWORD                   m_dwNumBuckets;
+#ifdef TARGET_64BIT
+        UINT64                  m_dwNumBucketsMul; // "Fast Mod" multiplier for "X % m_dwNumBuckets"
+#endif
     } m_BucketTable[2];
     typedef DPTR(BucketTable) PTR_BucketTable;
 
@@ -191,10 +194,15 @@ public:
     EEHashTable()
     {
         LIMITED_METHOD_CONTRACT;
-        this->m_BucketTable[0].m_pBuckets     = NULL;
-        this->m_BucketTable[0].m_dwNumBuckets = 0;
-        this->m_BucketTable[1].m_pBuckets     = NULL;
-        this->m_BucketTable[1].m_dwNumBuckets = 0;
+        this->m_BucketTable[0].m_pBuckets        = NULL;
+        this->m_BucketTable[0].m_dwNumBuckets    = 0;
+        this->m_BucketTable[1].m_pBuckets        = NULL;
+        this->m_BucketTable[1].m_dwNumBuckets    = 0;
+#ifdef TARGET_64BIT
+        this->m_BucketTable[0].m_dwNumBucketsMul = 0;
+        this->m_BucketTable[1].m_dwNumBucketsMul = 0;
+#endif
+
 #ifndef DACCESS_COMPILE
         this->m_pVolatileBucketTable = NULL;
 #endif
@@ -229,7 +237,6 @@ public:
         {
             WRAPPER(THROWS);
             WRAPPER(GC_NOTRIGGER);
-            INJECT_FAULT(return NULL;);
         }
         CONTRACTL_END
 
@@ -289,7 +296,6 @@ public:
         {
             WRAPPER(THROWS);
             WRAPPER(GC_NOTRIGGER);
-            INJECT_FAULT(return NULL;);
         }
         CONTRACTL_END
 
@@ -342,21 +348,6 @@ public:
 
 typedef EEHashTable<PtrPlusInt, EEPtrPlusIntHashTableHelper, FALSE> EEPtrPlusIntHashTable;
 
-// UTF8 string hash table. The UTF8 strings are NULL terminated.
-
-class EEUtf8HashTableHelper
-{
-public:
-    static EEHashEntry_t * AllocateEntry(LPCUTF8 pKey, BOOL bDeepCopy, AllocationHeap Heap);
-    static void            DeleteEntry(EEHashEntry_t *pEntry, AllocationHeap Heap);
-    static BOOL            CompareKeys(EEHashEntry_t *pEntry, LPCUTF8 pKey);
-    static DWORD           Hash(LPCUTF8 pKey);
-    static LPCUTF8         GetKey(EEHashEntry_t *pEntry);
-};
-
-typedef EEHashTable<LPCUTF8, EEUtf8HashTableHelper, TRUE> EEUtf8StringHashTable;
-typedef DPTR(EEUtf8StringHashTable) PTR_EEUtf8StringHashTable;
-
 // Unicode String hash table - the keys are UNICODE strings which may
 // contain embedded nulls.  An EEStringData struct is used for the key
 // which contains the length of the item.  Note that this string is
@@ -369,7 +360,6 @@ private:
     LPCWSTR         szString;           // The string data.
     DWORD           cch;                // Characters in the string.
 #ifdef _DEBUG
-    BOOL            bDebugOnlyLowChars;      // Does the string contain only characters less than 0x80?
     DWORD           dwDebugCch;
 #endif // _DEBUG
 
@@ -381,7 +371,6 @@ public:
 
         SetStringBuffer(NULL);
         SetCharCount(0);
-        SetIsOnlyLowChars(FALSE);
     };
     EEStringData(DWORD cchString, LPCWSTR str) : cch(0)
     {
@@ -389,15 +378,6 @@ public:
 
         SetStringBuffer(str);
         SetCharCount(cchString);
-        SetIsOnlyLowChars(FALSE);
-    };
-    EEStringData(DWORD cchString, LPCWSTR str, BOOL onlyLow) : cch(0)
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        SetStringBuffer(str);
-        SetCharCount(cchString);
-        SetIsOnlyLowChars(onlyLow);
     };
     inline ULONG GetCharCount() const
     {
@@ -427,37 +407,7 @@ public:
 
         szString = _szString;
     }
-    inline BOOL GetIsOnlyLowChars() const
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        _ASSERTE(bDebugOnlyLowChars == ((cch & ONLY_LOW_CHARS_MASK) ? TRUE : FALSE));
-        return ((cch & ONLY_LOW_CHARS_MASK) ? TRUE : FALSE);
-    }
-    inline void SetIsOnlyLowChars(BOOL bIsOnlyLowChars)
-    {
-        LIMITED_METHOD_CONTRACT;
-
-#ifdef _DEBUG
-        bDebugOnlyLowChars = bIsOnlyLowChars;
-#endif // _DEBUG
-        bIsOnlyLowChars ? (cch |= ONLY_LOW_CHARS_MASK) : (cch &= ~ONLY_LOW_CHARS_MASK);
-    }
 };
-
-class EEUnicodeHashTableHelper
-{
-public:
-    static EEHashEntry_t * AllocateEntry(EEStringData *pKey, BOOL bDeepCopy, AllocationHeap Heap);
-    static void            DeleteEntry(EEHashEntry_t *pEntry, AllocationHeap Heap);
-    static BOOL            CompareKeys(EEHashEntry_t *pEntry, EEStringData *pKey);
-    static DWORD           Hash(EEStringData *pKey);
-    static EEStringData *  GetKey(EEHashEntry_t *pEntry);
-    static void            ReplaceKey(EEHashEntry_t *pEntry, EEStringData *pNewKey);
-};
-
-typedef EEHashTable<EEStringData *, EEUnicodeHashTableHelper, TRUE> EEUnicodeStringHashTable;
-
 
 class EEUnicodeStringLiteralHashTableHelper
 {
@@ -466,7 +416,6 @@ public:
     static void            DeleteEntry(EEHashEntry_t *pEntry, AllocationHeap Heap);
     static BOOL            CompareKeys(EEHashEntry_t *pEntry, EEStringData *pKey);
     static DWORD           Hash(EEStringData *pKey);
-    static void            ReplaceKey(EEHashEntry_t *pEntry, EEStringData *pNewKey);
 };
 
 typedef EEHashTable<EEStringData *, EEUnicodeStringLiteralHashTableHelper, TRUE> EEUnicodeStringLiteralHashTable;
@@ -484,7 +433,6 @@ public:
         {
             WRAPPER(THROWS);
             WRAPPER(GC_NOTRIGGER);
-            INJECT_FAULT(return FALSE;);
         }
         CONTRACTL_END
 

@@ -4,13 +4,13 @@
 using System.Security.Cryptography.Tests;
 using Xunit;
 
-namespace System.Security.Cryptography.EcDsa.Tests
+namespace System.Security.Cryptography.EcDiffieHellman.Tests
 {
     [SkipOnPlatform(TestPlatforms.Browser, "Not supported on Browser")]
-    public sealed class ECDiffieHellmanKeyPemTests : ECKeyPemTests<ECDiffieHellman>
+    public abstract class ECDiffieHellmanKeyPemTests : ECKeyPemTests<ECDiffieHellman>
     {
-        protected override ECDiffieHellman CreateKey() => ECDiffieHellman.Create();
-        protected override ECParameters ExportParameters(ECDiffieHellman key, bool includePrivateParameters) =>
-            key.ExportParameters(includePrivateParameters);
+        protected abstract ECDiffieHellmanProvider ECDiffieHellmanFactory { get; }
+
+        protected override ECDiffieHellman CreateKey() => ECDiffieHellmanFactory.Create();
     }
 }

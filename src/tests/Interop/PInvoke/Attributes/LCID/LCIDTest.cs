@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using Xunit;
+using TestLibrary;
 
 class LCIDNative
 {
@@ -19,7 +20,7 @@ class LCIDNative
     public static extern bool VerifyValidLCIDPassed(int lcid);
 }
 
-class LCIDTest
+public class LCIDTest
 {
     private static string Reverse(string s)
     {
@@ -28,7 +29,14 @@ class LCIDTest
         return new string(chars);
     }
 
-    public static int Main()
+    [ActiveIssue("https://github.com/dotnet/runtimelab/issues/155: LCID marshalling", typeof(Utilities), nameof(Utilities.IsNativeAot))]
+    [ActiveIssue("PInvoke LCIDConversionAttribute not supported on Mono", TestRuntimes.Mono)]
+    [Fact]
+    [PlatformSpecific(TestPlatforms.Windows)]
+    [SkipOnMono("PInvoke LCIDConversionAttribute not supported on Mono")]
+    [ActiveIssue("https://github.com/dotnet/runtimelab/issues/155", typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsNativeAot))]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/91388", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+    public static int TestEntryPoint()
     {
         try
         {

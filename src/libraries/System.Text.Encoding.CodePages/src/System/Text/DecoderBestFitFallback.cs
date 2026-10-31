@@ -47,19 +47,8 @@ namespace System.Text
         private readonly InternalDecoderBestFitFallback _oFallback;
 
         // Private object for locking instead of locking on a public type for SQL reliability work.
-        private static object? s_InternalSyncObject;
-        private static object InternalSyncObject
-        {
-            get
-            {
-                if (s_InternalSyncObject == null)
-                {
-                    object o = new object();
-                    Interlocked.CompareExchange<object?>(ref s_InternalSyncObject, o, null);
-                }
-                return s_InternalSyncObject;
-            }
-        }
+        private static object InternalSyncObject =>
+            field ?? Interlocked.CompareExchange(ref field, new object(), null) ?? field;
 
         // Constructor
         public InternalDecoderBestFitFallbackBuffer(InternalDecoderBestFitFallback fallback)
@@ -72,8 +61,7 @@ namespace System.Text
                 lock (InternalSyncObject)
                 {
                     // Double check before we do it again.
-                    if (_oFallback.arrayBestFit == null)
-                        _oFallback.arrayBestFit = fallback.encoding.GetBestFitBytesToUnicodeData();
+                    _oFallback.arrayBestFit ??= fallback.encoding.GetBestFitBytesToUnicodeData();
                 }
             }
         }
@@ -136,19 +124,9 @@ namespace System.Text
         }
 
         // Clear the buffer
-        public override unsafe void Reset()
+        public override void Reset()
         {
             iCount = -1;
-        }
-
-        // This version just counts the fallback and doesn't actually copy anything.
-        internal unsafe int InternalFallback(byte[] bytes, byte* pBytes)
-        // Right now this has both bytes and bytes[], since we might have extra bytes, hence the
-        // array, and we might need the index, hence the byte*
-        {
-            // return our replacement string Length (always 1 for InternalDecoderBestFitFallback, either
-            // a best fit char or ?
-            return 1;
         }
 
         // private helper methods

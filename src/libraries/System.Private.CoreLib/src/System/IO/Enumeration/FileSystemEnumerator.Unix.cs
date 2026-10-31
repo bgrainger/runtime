@@ -8,7 +8,7 @@ using System.Threading;
 
 namespace System.IO.Enumeration
 {
-    public unsafe abstract partial class FileSystemEnumerator<TResult> : CriticalFinalizerObject, IEnumerator<TResult>
+    public abstract unsafe partial class FileSystemEnumerator<TResult> : CriticalFinalizerObject, IEnumerator<TResult>
     {
         // The largest supported path on Unix is 4K bytes of UTF-8 (most only support 1K)
         private const int StandardBufferSize = 4096;
@@ -29,8 +29,19 @@ namespace System.IO.Enumeration
 
         // Used for creating full paths
         private char[]? _pathBuffer;
-        // Used to get the raw entry data
-        private byte[]? _entryBuffer;
+
+        /// <summary>
+        /// Encapsulates a find operation.
+        /// </summary>
+        /// <param name="directory">The directory to search in.</param>
+        /// <param name="isNormalized">Whether the directory path is already normalized or not.</param>
+        /// <param name="options">Enumeration options to use.</param>
+        /// <param name="expression">The search expression to potentially use for OS-level filtering (Windows only).</param>
+        internal FileSystemEnumerator(string directory, bool isNormalized, EnumerationOptions? options, string? expression) :
+            this(directory, isNormalized, options)
+        {
+            _ = expression; // unused
+        }
 
         private void Init()
         {
@@ -45,8 +56,6 @@ namespace System.IO.Enumeration
             try
             {
                 _pathBuffer = ArrayPool<char>.Shared.Rent(StandardBufferSize);
-                int size = Interop.Sys.GetReadDirRBufferSize();
-                _entryBuffer = size > 0 ? ArrayPool<byte>.Shared.Rent(size) : null;
             }
             catch
             {
@@ -76,7 +85,7 @@ namespace System.IO.Enumeration
                 {
                     return IntPtr.Zero;
                 }
-                throw Interop.GetExceptionForIoErrno(info, path, isDirectory: true);
+                throw Interop.GetExceptionForIoErrno(info, path, isDirError: true);
             }
             return handle;
         }
@@ -103,13 +112,11 @@ namespace System.IO.Enumeration
                 // If HAVE_READDIR_R is defined for the platform FindNextEntry depends on _entryBuffer being fixed since
                 // _entry will point to a string in the middle of the array. If the array is not fixed GC can move it after
                 // the native call and _entry will point to a bogus file name.
-                fixed (byte* entryBufferPtr = _entryBuffer)
+                do
                 {
-                    do
-                    {
-                        FindNextEntry(entryBufferPtr, _entryBuffer == null ? 0 : _entryBuffer.Length);
-                        if (_lastEntryFound)
-                            return false;
+                    FindNextEntry();
+                    if (_lastEntryFound)
+                        return false;
 
                         FileAttributes attributes = FileSystemEntry.Initialize(
                             ref entry, _entry, _currentPath, _rootDirectory, _originalRootDirectory, new Span<char>(_pathBuffer));
@@ -129,7 +136,7 @@ namespace System.IO.Enumeration
                             }
                         }
 
-                        if (!isSpecialDirectory && _options.AttributesToSkip != 0)
+                        if (!isSpecialDirectory && _options.AttributesToSkip != FileAttributes.None)
                         {
                             // entry.IsHidden and entry.IsReadOnly will hit the disk if the caches had not been
                             // initialized yet and we could not soft-retrieve the attributes in Initialize
@@ -147,19 +154,17 @@ namespace System.IO.Enumeration
                             if (_options.RecurseSubdirectories && _remainingRecursionDepth > 0 && ShouldRecurseIntoEntry(ref entry))
                             {
                                 // Recursion is on and the directory was accepted, Queue it
-                                if (_pending == null)
-                                    _pending = new Queue<(string Path, int RemainingDepth)>();
+                                _pending ??= new Queue<(string Path, int RemainingDepth)>();
                                 _pending.Enqueue((Path.Join(_currentPath, entry.FileName), _remainingRecursionDepth - 1));
                             }
                         }
 
-                        if (ShouldIncludeEntry(ref entry))
-                        {
-                            _current = TransformEntry(ref entry);
-                            return true;
-                        }
-                    } while (true);
-                }
+                    if (ShouldIncludeEntry(ref entry))
+                    {
+                        _current = TransformEntry(ref entry);
+                        return true;
+                    }
+                } while (true);
             }
 
             bool ShouldSkip(FileAttributes attributeToSkip) => (_options.AttributesToSkip & attributeToSkip) != 0;
@@ -167,18 +172,10 @@ namespace System.IO.Enumeration
 
         private unsafe void FindNextEntry()
         {
-            fixed (byte* entryBufferPtr = _entryBuffer)
-            {
-                FindNextEntry(entryBufferPtr, _entryBuffer == null ? 0 : _entryBuffer.Length);
-            }
-        }
-
-        private unsafe void FindNextEntry(byte* entryBufferPtr, int bufferLength)
-        {
             int result;
             fixed (Interop.Sys.DirectoryEntry* e = &_entry)
             {
-                result = Interop.Sys.ReadDirR(_directoryHandle, entryBufferPtr, bufferLength, e);
+                result = Interop.Sys.ReadDir(_directoryHandle, e);
             }
 
             switch (result)
@@ -199,7 +196,7 @@ namespace System.IO.Enumeration
                     }
                     else
                     {
-                        throw Interop.GetExceptionForIoErrno(new Interop.ErrorInfo(result), _currentPath, isDirectory: true);
+                        throw Interop.GetExceptionForIoErrno(new Interop.ErrorInfo(result), _currentPath, isDirError: true);
                     }
             }
         }
@@ -245,12 +242,6 @@ namespace System.IO.Enumeration
                     {
                         _pathBuffer = null;
                         ArrayPool<char>.Shared.Return(pathBuffer);
-                    }
-
-                    if (_entryBuffer is byte[] entryBuffer)
-                    {
-                        _entryBuffer = null;
-                        ArrayPool<byte>.Shared.Return(entryBuffer);
                     }
                 }
             }

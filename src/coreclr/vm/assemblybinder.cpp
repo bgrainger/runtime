@@ -9,7 +9,8 @@
 #ifndef DACCESS_COMPILE
 
 HRESULT AssemblyBinder::BindAssemblyByName(AssemblyNameData* pAssemblyNameData,
-    BINDER_SPACE::Assembly** ppAssembly)
+    BINDER_SPACE::Assembly** ppAssembly,
+    SString* pDiagnosticInfo)
 {
     _ASSERTE(pAssemblyNameData != nullptr && ppAssembly != nullptr);
 
@@ -20,45 +21,197 @@ HRESULT AssemblyBinder::BindAssemblyByName(AssemblyNameData* pAssemblyNameData,
     SAFE_NEW(pAssemblyName, BINDER_SPACE::AssemblyName);
     IF_FAIL_GO(pAssemblyName->Init(*pAssemblyNameData));
 
-    hr = BindUsingAssemblyName(pAssemblyName, ppAssembly);
+    hr = BindUsingAssemblyName(pAssemblyName, ppAssembly, pDiagnosticInfo);
 
 Exit:
     return hr;
 }
 
 
-NativeImage* AssemblyBinder::LoadNativeImage(Module* componentModule, LPCUTF8 nativeImageName)
+NativeImage* AssemblyBinder::LoadNativeImage(Module* componentModule, LPCUTF8 nativeImageName, bool isPlatformNative)
 {
     STANDARD_VM_CONTRACT;
 
-    BaseDomain::LoadLockHolder lock(AppDomain::GetCurrentDomain());
-    AssemblyBinder* binder = componentModule->GetPEAssembly()->GetAssemblyBinder();
+    AppDomain::LoadLockHolder lock(AppDomain::GetCurrentDomain());
     PTR_LoaderAllocator moduleLoaderAllocator = componentModule->GetLoaderAllocator();
 
-    bool isNewNativeImage;
-    NativeImage* nativeImage = NativeImage::Open(componentModule, nativeImageName, binder, moduleLoaderAllocator, &isNewNativeImage);
-
-    if (isNewNativeImage && nativeImage != nullptr)
-    {
-        m_nativeImages.Append(nativeImage);
-
-        for (COUNT_T assemblyIndex = 0; assemblyIndex < m_loadedAssemblies.GetCount(); assemblyIndex++)
-        {
-            nativeImage->CheckAssemblyMvid(m_loadedAssemblies[assemblyIndex]);
-        }
-    }
+    NativeImage* nativeImage = NativeImage::Open(componentModule->GetPath(), nativeImageName, this, moduleLoaderAllocator, isPlatformNative);
 
     return nativeImage;
 }
 
+#ifdef FEATURE_READYTORUN
+static void MvidMismatchFatalError(GUID mvidActual, GUID mvidExpected, LPCUTF8 simpleName, bool compositeComponent, LPCUTF8 assemblyRequirementName)
+{
+    CHAR assemblyMvidText[MINIPAL_GUID_BUFFER_LEN];
+    minipal_guid_as_string(mvidActual, assemblyMvidText, MINIPAL_GUID_BUFFER_LEN);
+
+    CHAR componentMvidText[MINIPAL_GUID_BUFFER_LEN];
+    minipal_guid_as_string(mvidExpected, componentMvidText, MINIPAL_GUID_BUFFER_LEN);
+
+    SString message;
+    if (compositeComponent)
+    {
+        message.Printf("MVID mismatch between loaded assembly '%s' (MVID = %s) and an assembly with the same simple name embedded in the native image '%s' (MVID = %s)",
+            simpleName,
+            assemblyMvidText,
+            assemblyRequirementName,
+            componentMvidText);
+    }
+    else
+    {
+        message.Printf("MVID mismatch between loaded assembly '%s' (MVID = %s) and version of assembly '%s' expected by assembly '%s' (MVID = %s)",
+            simpleName,
+            assemblyMvidText,
+            simpleName,
+            assemblyRequirementName,
+            componentMvidText);
+    }
+
+    EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_FAILFAST, message.GetUnicode());
+}
+
+void AssemblyBinder::DeclareDependencyOnMvid(LPCUTF8 simpleName, GUID mvid, bool compositeComponent, LPCUTF8 imageName)
+{
+    _ASSERTE(imageName != NULL);
+
+    // If the table is empty, then we didn't fill it with all the loaded assemblies as they were loaded. Record this detail, and fix after adding the dependency
+    bool addAllLoadedModules = false;
+    if (m_assemblySimpleNameMvidCheckHash.GetCount() == 0)
+    {
+        addAllLoadedModules = true;
+    }
+
+    if (!m_assemblySimpleNameMvidCheckHash.Update(simpleName, [&](SimpleNameToExpectedMVIDAndRequiringAssembly &entry)
+        {
+            // Elem already exists. Determine if the existing elem is another one with the same mvid, in which case just record that a dependency is in play.
+            // If the existing elem has a different mvid, fail.
+            if (IsEqualGUID(mvid, entry.Mvid))
+            {
+                // Mvid matches exactly.
+                if (entry.AssemblyRequirementName == NULL)
+                {
+                    entry.AssemblyRequirementName = imageName;
+                    entry.CompositeComponent = compositeComponent;
+                }
+            }
+            else
+            {
+                MvidMismatchFatalError(entry.Mvid, mvid, simpleName, compositeComponent, imageName);
+            }
+        }))
+    {
+        SimpleNameToExpectedMVIDAndRequiringAssembly newElem(simpleName, mvid, compositeComponent, imageName);
+        m_assemblySimpleNameMvidCheckHash.Add(newElem);
+    }
+
+    if (addAllLoadedModules)
+    {
+        for (COUNT_T assemblyIndex = 0; assemblyIndex < m_loadedAssemblies.GetCount(); assemblyIndex++)
+        {
+           DeclareLoadedAssembly(m_loadedAssemblies[assemblyIndex]);
+        }
+    }
+}
+
+void AssemblyBinder::DeclareLoadedAssembly(Assembly* loadedAssembly)
+{
+    // If table is empty, then no mvid dependencies have been declared, so we don't need to record this information
+    if (m_assemblySimpleNameMvidCheckHash.GetCount() == 0)
+        return;
+
+    GUID mvid;
+    loadedAssembly->GetMDImport()->GetScopeProps(NULL, &mvid);
+
+    LPCUTF8 simpleName = loadedAssembly->GetSimpleName();
+
+    if (!m_assemblySimpleNameMvidCheckHash.Update(simpleName, [&](SimpleNameToExpectedMVIDAndRequiringAssembly &entry)
+        {
+            // Elem already exists. Determine if the existing elem is another one with the same mvid, in which case do nothing. Everything is fine here.
+            // If the existing elem has a different mvid, but isn't a dependency on exact mvid elem, then set the mvid to all 0.
+            // If the existing elem has a different mvid, and is a dependency on exact mvid elem, then we've hit a fatal error.
+            if (IsEqualGUID(mvid, entry.Mvid))
+            {
+                // Mvid matches exactly.
+            }
+            else if (entry.AssemblyRequirementName == NULL)
+            {
+                // Another loaded assembly, set the stored Mvid to all zeroes to indicate that it isn't a unique mvid
+                memset(&entry.Mvid, 0, sizeof(GUID));
+            }
+            else
+            {
+                MvidMismatchFatalError(mvid, entry.Mvid, simpleName, entry.CompositeComponent, entry.AssemblyRequirementName);
+            }
+        }))
+    {
+        SimpleNameToExpectedMVIDAndRequiringAssembly newElem(simpleName, mvid, false, NULL);
+        m_assemblySimpleNameMvidCheckHash.Add(newElem);
+    }
+}
+#endif // FEATURE_READYTORUN
+
 void AssemblyBinder::AddLoadedAssembly(Assembly* loadedAssembly)
 {
-    BaseDomain::LoadLockHolder lock(AppDomain::GetCurrentDomain());
+    AppDomain::LoadLockHolder lock(AppDomain::GetCurrentDomain());
     m_loadedAssemblies.Append(loadedAssembly);
-    for (COUNT_T nativeImageIndex = 0; nativeImageIndex < m_nativeImages.GetCount(); nativeImageIndex++)
+
+#ifdef FEATURE_READYTORUN
+    DeclareLoadedAssembly(loadedAssembly);
+#endif // FEATURE_READYTORUN
+}
+
+void AssemblyBinder::GetNameForDiagnosticsFromManagedALC(INT_PTR managedALC, /* out */ SString& alcName)
+{
+    if (managedALC == GetAppDomain()->GetDefaultBinder()->GetAssemblyLoadContext())
     {
-        m_nativeImages[nativeImageIndex]->CheckAssemblyMvid(loadedAssembly);
+        alcName.Set(W("Default"));
+        return;
     }
+
+    OVERRIDE_TYPE_LOAD_LEVEL_LIMIT(CLASS_LOADED);
+
+    GCX_COOP();
+    struct
+    {
+        OBJECTREF obj;
+        STRINGREF alcName;
+    } gc;
+    gc.obj = ObjectToOBJECTREF(*(Object**)managedALC);
+    gc.alcName = NULL;
+
+    GCPROTECT_BEGIN(gc);
+
+    UnmanagedCallersOnlyCaller callToString(METHOD__RUNTIME_HELPERS__CALL_TO_STRING);
+    callToString.InvokeThrowing(&gc.obj, &gc.alcName);
+    gc.alcName->GetSString(alcName);
+
+    GCPROTECT_END();
+}
+
+void AssemblyBinder::GetNameForDiagnostics(/*out*/ SString& alcName)
+{
+    _ASSERTE(this != nullptr);
+
+    if (IsDefault())
+    {
+        alcName.Set(W("Default"));
+    }
+    else
+    {
+        GetNameForDiagnosticsFromManagedALC(GetAssemblyLoadContext(), alcName);
+    }
+}
+
+void AssemblyBinder::GetNameForDiagnosticsFromSpec(AssemblySpec* spec, /*out*/ SString& alcName)
+{
+    _ASSERTE(spec != nullptr);
+
+    AssemblyBinder* binder = spec->GetBinder();
+    if (binder == nullptr)
+        binder = spec->GetInitialBinder();
+
+    binder->GetNameForDiagnostics(alcName);
 }
 
 #endif  //DACCESS_COMPILE

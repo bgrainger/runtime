@@ -3,14 +3,14 @@
 
 using System;
 using System.IO;
+using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
-using Microsoft.CodeAnalysis.Text;
 using SourceGenerators.Tests;
 using Xunit;
 
 namespace Microsoft.Extensions.Logging.Generators.Tests
 {
-    [ActiveIssue("https://github.com/dotnet/runtime/issues/32743", TestRuntimes.Mono)]
     public class LoggerMessageGeneratorEmitterTests
     {
         [Fact]
@@ -20,14 +20,14 @@ namespace Microsoft.Extensions.Logging.Generators.Tests
             string[] sources = Directory.GetFiles("TestClasses");
             foreach (var src in sources)
             {
-                var testSourceCode = await File.ReadAllTextAsync(src).ConfigureAwait(false);
+                var testSourceCode = File.ReadAllText(src);
 
                 var (d, r) = await RoslynTestUtils.RunGenerator(
                     new LoggerMessageGenerator(),
                     new[] { typeof(ILogger).Assembly, typeof(LoggerMessageAttribute).Assembly },
                     new[] { testSourceCode }).ConfigureAwait(false);
 
-                Assert.Empty(d);
+                Assert.True(src.Contains("WithDiagnostics") ? !d.IsEmpty : d.IsEmpty);
                 Assert.Single(r);
             }
         }
@@ -147,6 +147,31 @@ namespace Microsoft.Extensions.Logging.Generators.Tests.TestClasses
             await VerifyAgainstBaselineUsingFile("TestWithNestedClass.generated.txt", testSourceCode);
         }
 
+        [Fact]
+        public async Task TestBaseline_TestWithMultipleClassesStableOrder_Success()
+        {
+            string testSourceCode = @"
+namespace Microsoft.Extensions.Logging.Generators.Tests.TestClasses
+{
+    internal static partial class ClassC
+    {
+        [LoggerMessage(EventId = 3, Level = LogLevel.Warning, Message = ""Message from ClassC"")]
+        static partial void LogC(ILogger logger);
+    }
+    internal static partial class ClassA
+    {
+        [LoggerMessage(EventId = 1, Level = LogLevel.Debug, Message = ""Message from ClassA"")]
+        static partial void LogA(ILogger logger);
+    }
+    internal static partial class ClassB
+    {
+        [LoggerMessage(EventId = 2, Level = LogLevel.Information, Message = ""Message from ClassB"")]
+        static partial void LogB(ILogger logger);
+    }
+}";
+            await VerifyAgainstBaselineUsingFile("TestWithMultipleClassesStableOrder.generated.txt", testSourceCode);
+        }
+
 #if ROSLYN4_0_OR_GREATER
         [Fact]
         public async Task TestBaseline_TestWithFileScopedNamespace_Success()
@@ -163,11 +188,187 @@ internal static partial class TestWithDefaultValues
         }
 #endif
 
+        [Fact]
+        public async Task TestBaseline_TestWithNestedClassWithGenericTypesWithAttributes_Success()
+        {
+            string testSourceCode = @"
+namespace Microsoft.Extensions.Logging.Generators.Tests.TestClasses
+{
+    public partial class GenericTypeWithAttribute<[Foo] A, [Bar] B, C>
+    {
+        public void M0<D>(A a, B b, C c, ILogger logger) => Log<D>.M0(logger, a, b, c);
+        private static partial class Log<[Foo] D>
+        {
+            [LoggerMessage(EventId = 42, Level = LogLevel.Debug, Message = ""a = {a}; b = {b}; c = {c}"")]
+            public static partial void M0(ILogger logger, A a, B b, C c);
+        }
+    }
+
+    [AttributeUsage(AttributeTargets.GenericParameter)]
+    public sealed class FooAttribute : Attribute { }
+    [AttributeUsage(AttributeTargets.GenericParameter)]
+    public sealed class BarAttribute : Attribute { }
+}";
+            await VerifyAgainstBaselineUsingFile("TestWithNestedClassWithGenericTypesWithAttributes.generated.txt", testSourceCode);
+        }
+
+#if ROSLYN4_8_OR_GREATER
+        [Fact]
+        public async Task TestBaseline_TestWithLoggerFromPrimaryConstructor_Success()
+        {
+            string testSourceCode = @"
+namespace Microsoft.Extensions.Logging.Generators.Tests.TestClasses
+{
+    internal partial class TestWithLoggerFromPrimaryConstructor(ILogger logger)
+    {
+        [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M0"")]
+        public partial void M0();
+    }
+}";
+            await VerifyAgainstBaselineUsingFile("TestWithLoggerFromPrimaryConstructor.generated.txt", testSourceCode);
+        }
+
+        [Fact]
+        public async Task TestBaseline_TestWithLoggerFromPrimaryConstructorWithParameterUsedInMethod_Success()
+        {
+            string testSourceCode = @"
+namespace Microsoft.Extensions.Logging.Generators.Tests.TestClasses
+{
+    internal partial class TestWithLoggerFromPrimaryConstructorWithParameterUsedInMethod(ILogger logger)
+    {
+        [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M0"")]
+        public partial void M0();
+
+        private void M1()
+        {
+            logger.LogInformation(""M1"");
+        }
+    }
+}";
+            await VerifyAgainstBaselineUsingFile("TestWithLoggerFromPrimaryConstructorWithParameterUsedInMethod.generated.txt", testSourceCode);
+        }
+
+        [Fact]
+        public async Task TestBaseline_TestWithLoggerInFieldAndFromPrimaryConstructor_UsesField()
+        {
+            string testSourceCode = @"
+namespace Microsoft.Extensions.Logging.Generators.Tests.TestClasses
+{
+    internal partial class TestWithLoggerFromPrimaryConstructor(ILogger logger)
+    {
+        private readonly ILogger _logger = logger;
+
+        [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""M0"")]
+        public partial void M0();
+    }
+}";
+            await VerifyAgainstBaselineUsingFile("TestWithLoggerInFieldAndFromPrimaryConstructor.generated.txt", testSourceCode);
+        }
+
+        [Fact]
+        public async Task TestBaseline_TestWithRefReadOnlyParam_Success()
+        {
+            string testSourceCode = @"
+namespace Microsoft.Extensions.Logging.Generators.Tests.TestClasses
+{
+    internal static partial class TestWithRefReadOnlyParam
+    {
+        [LoggerMessage(EventId = 0, Level = LogLevel.Debug, Message = ""Parameter {p1}"")]
+        public static partial void M(ILogger logger, ref readonly int p1);
+    }
+}";
+            await VerifyAgainstBaselineUsingFile("TestWithRefReadOnlyParam.generated.txt", testSourceCode);
+        }
+#endif
+
+        [Fact]
+        public void GenericTypeParameterAttributesAreRetained()
+        {
+            var type = typeof(TestClasses.NestedClassWithGenericTypesWithAttributesTestsExtensions<,,>).GetTypeInfo();
+
+            Assert.Equal(3, type.GenericTypeParameters.Length);
+            Assert.NotNull(type.GenericTypeParameters[0].GetCustomAttribute<TestClasses.FooAttribute>());
+            Assert.NotNull(type.GenericTypeParameters[1].GetCustomAttribute<TestClasses.BarAttribute>());
+        }
+
+        [Theory]
+        [InlineData(@"Foo \\ bar: {foo}", null)]
+        [InlineData(@"Foo \\\\ bar: {foo}", null)]
+        [InlineData(@"Foo \"" bar: {foo}", null)]
+        [InlineData(@"Foo \x22 bar: {foo}", @"Foo \"" bar: {foo}")]
+        [InlineData(@"Foo \u0022 bar: {foo}", @"Foo \"" bar: {foo}")]
+        [InlineData(@"Foo \r bar: {foo}", null)]
+        [InlineData(@"Foo \x0d bar: {foo}", @"Foo \r bar: {foo}")]
+        [InlineData(@"Foo \u000d bar: {foo}", @"Foo \r bar: {foo}")]
+        [InlineData(@"Foo \n bar: {foo}", null)]
+        [InlineData(@"Foo \x0a bar: {foo}", @"Foo \n bar: {foo}")]
+        [InlineData(@"Foo \u000a bar: {foo}", @"Foo \n bar: {foo}")]
+        [InlineData(@"Foo \0 bar: {foo}", null)]
+        [InlineData(@"Foo \x00 bar: {foo}", @"Foo \0 bar: {foo}")]
+        [InlineData(@"Foo \u0000 bar: {foo}", @"Foo \0 bar: {foo}")]
+        [InlineData(@"Foo \x1f bar: {foo}", @"Foo \u001f bar: {foo}")]
+        [InlineData(@"Foo \u001f bar: {foo}", null)]
+        public async Task EmittedMessageIsWellFormed(string message, string? expectedMessage)
+        {
+            var code =
+                $$"""
+                namespace Test
+                {
+                    using Microsoft.Extensions.Logging;
+
+                    partial class C
+                    {
+                        [LoggerMessage(EventId = 5230, Level = LogLevel.Information, Message = "{{message}}")]
+                        static partial void Test(ILogger logger, string foo);
+                    }
+                }
+                """;
+
+            var (diagnostics, generatedSources) = await RoslynTestUtils
+                .RunGenerator(
+                    new LoggerMessageGenerator(),
+                    new[] { typeof(ILogger).Assembly, typeof(LoggerMessageAttribute).Assembly },
+                    new[] { code },
+                    includeBaseReferences: true)
+                .ConfigureAwait(false);
+
+            Assert.Empty(diagnostics);
+            Assert.Single(generatedSources);
+
+            var generatedSource = generatedSources[0];
+            var src = generatedSource.SourceText.ToString();
+            Assert.Contains($"\"{expectedMessage ?? message}\"", src);
+
+            var generatedSourceDiagnostics = generatedSource.SyntaxTree.GetDiagnostics();
+            Assert.Empty(generatedSourceDiagnostics);
+        }
+
+        [Fact]
+        public async Task TestBaseline_TestWithGenericMethods_Success()
+        {
+            string testSourceCode = @"
+namespace Microsoft.Extensions.Logging.Generators.Tests.TestClasses
+{
+    internal static partial class TestWithGenericMethods
+    {
+        [LoggerMessage(EventId = 0, Level = LogLevel.Trace, Message = ""M0 {code}"")]
+        public static partial void M0<TCode>(ILogger logger, TCode code) where TCode : struct, System.Enum;
+
+        [LoggerMessage(EventId = 1, Level = LogLevel.Debug, Message = ""M1 {value} {extra}"")]
+        public static partial void M1<T1, T2>(ILogger logger, T1 value, T2 extra) where T1 : class where T2 : new();
+
+        [LoggerMessage(EventId = 2, Level = LogLevel.Information, Message = ""M2 {value}"")]
+        public static partial void M2<T>(ILogger logger, T value);
+    }
+}";
+            await VerifyAgainstBaselineUsingFile("TestWithGenericMethods.generated.txt", testSourceCode);
+        }
+
         private async Task VerifyAgainstBaselineUsingFile(string filename, string testSourceCode)
         {
-            string baseline = await File.ReadAllTextAsync(Path.Combine("Baselines", filename)).ConfigureAwait(false);
+            string baseline = LineEndingsHelper.Normalize(File.ReadAllText(Path.Combine("Baselines", filename)));
             string[] expectedLines = baseline.Replace("%VERSION%", typeof(LoggerMessageGenerator).Assembly.GetName().Version?.ToString())
-                                             .Split(Environment.NewLine);
+                                             .Split([Environment.NewLine], StringSplitOptions.None);
 
             var (d, r) = await RoslynTestUtils.RunGenerator(
                 new LoggerMessageGenerator(),
@@ -177,32 +378,15 @@ internal static partial class TestWithDefaultValues
             Assert.Empty(d);
             Assert.Single(r);
 
-            Assert.True(CompareLines(expectedLines, r[0].SourceText,
-                out string errorMessage), errorMessage);
-        }
+            if (PlatformDetection.IsNetFramework)
+            {
+                expectedLines = expectedLines.Select(line => line.Replace(
+                    "string.Create(global::System.Globalization.CultureInfo.InvariantCulture, ",
+                    "global::System.FormattableString.Invariant(")).ToArray();
+            }
 
-        private bool CompareLines(string[] expectedLines, SourceText sourceText, out string message)
-        {
-            if (expectedLines.Length != sourceText.Lines.Count)
-            {
-                message = string.Format("Line numbers do not match. Expected: {0} lines, but generated {1}",
-                    expectedLines.Length, sourceText.Lines.Count);
-                return false;
-            }
-            int index = 0;
-            foreach (TextLine textLine in sourceText.Lines)
-            {
-                string expectedLine = expectedLines[index];
-                if (!expectedLine.Equals(textLine.ToString(), StringComparison.Ordinal))
-                {
-                    message = string.Format("Line {0} does not match.{1}Expected Line:{1}{2}{1}Actual Line:{1}{3}",
-                        textLine.LineNumber, Environment.NewLine, expectedLine, textLine);
-                    return false;
-                }
-                index++;
-            }
-            message = string.Empty;
-            return true;
+            Assert.True(RoslynTestUtils.CompareLines(expectedLines, r[0].SourceText,
+                out string errorMessage), errorMessage);
         }
     }
 }

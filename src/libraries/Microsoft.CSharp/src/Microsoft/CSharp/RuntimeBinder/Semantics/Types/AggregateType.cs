@@ -15,7 +15,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
     //
     // Represents a generic constructed (or instantiated) type. Parent is the AggregateSymbol.
     // ----------------------------------------------------------------------------
-
+    [RequiresDynamicCode(Binder.DynamicCodeWarning)]
     internal sealed class AggregateType : CType
     {
         private AggregateType _baseType;  // This is the result of calling SubstTypeArray on the aggregate's baseClass.
@@ -153,7 +153,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
 
         public TypeArray TypeArgsAll { get; }
 
-        public TypeArray IfacesAll => _ifacesAll ?? (_ifacesAll = TypeManager.SubstTypeArray(OwningAggregate.GetIfacesAll(), TypeArgsAll));
+        public TypeArray IfacesAll => _ifacesAll ??= TypeManager.SubstTypeArray(OwningAggregate.GetIfacesAll(), TypeArgsAll);
 
         private bool IsCollectionType
         {
@@ -303,7 +303,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         public override Type AssociatedSystemType
         {
             [RequiresUnreferencedCode(Binder.TrimmerWarning)]
-            get => _associatedSystemType ?? (_associatedSystemType = CalculateAssociatedSystemType());
+            get => _associatedSystemType ??= CalculateAssociatedSystemType();
         }
 
         [RequiresUnreferencedCode(Binder.TrimmerWarning)]

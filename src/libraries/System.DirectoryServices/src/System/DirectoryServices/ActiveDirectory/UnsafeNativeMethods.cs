@@ -25,8 +25,8 @@
 //}
 
 using System.Runtime.InteropServices;
-using System.Security;
-using System.Text;
+
+using Microsoft.Win32.SafeHandles;
 
 namespace System.DirectoryServices.ActiveDirectory
 {
@@ -65,17 +65,6 @@ namespace System.DirectoryServices.ActiveDirectory
         DS_NAME_ERROR_DOMAIN_ONLY = 5,
         DS_NAME_ERROR_NO_SYNTACTICAL_MAPPING = 6,
         DS_NAME_ERROR_TRUST_REFERRAL = 7
-    }
-
-    [Flags]
-    internal enum DS_DOMAINTRUST_FLAG
-    {
-        DS_DOMAIN_IN_FOREST = 0x0001,
-        DS_DOMAIN_DIRECT_OUTBOUND = 0x0002,
-        DS_DOMAIN_TREE_ROOT = 0x0004,
-        DS_DOMAIN_PRIMARY = 0x0008,
-        DS_DOMAIN_NATIVE_MODE = 0x0010,
-        DS_DOMAIN_DIRECT_INBOUND = 0x0020
     }
 
     internal enum LSA_FOREST_TRUST_RECORD_TYPE
@@ -140,24 +129,6 @@ namespace System.DirectoryServices.ActiveDirectory
         DsRole_ServerWithSharedAccountDomain,
         DsRole_MemberWorkstationWithSharedAccountDomain,
         DsRole_MemberServerWithSharedAccountDomain
-    }
-
-    /*
-    typedef enum
-    {
-        DsRolePrimaryDomainInfoBasic,
-        DsRoleUpgradeStatus,
-        DsRoleOperationState,
-        DsRolePrimaryDomainInfoBasicEx
-    }DSROLE_PRIMARY_DOMAIN_INFO_LEVEL;
-    */
-
-    internal enum DSROLE_PRIMARY_DOMAIN_INFO_LEVEL
-    {
-        DsRolePrimaryDomainInfoBasic = 1,
-        DsRoleUpgradeStatus = 2,
-        DsRoleOperationState = 3,
-        DsRolePrimaryDomainInfoBasicEx = 4
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -371,24 +342,11 @@ namespace System.DirectoryServices.ActiveDirectory
         public IntPtr rItems;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    internal sealed class DS_DOMAIN_TRUSTS
-    {
-        public IntPtr NetbiosDomainName;
-        public IntPtr DnsDomainName;
-        public int Flags;
-        public int ParentIndex;
-        public int TrustType;
-        public int TrustAttributes;
-        public IntPtr DomainSid;
-        public Guid DomainGuid;
-    }
-
     internal sealed class TrustObject
     {
         public string? NetbiosDomainName;
         public string? DnsDomainName;
-        public int Flags;
+        public Interop.Netapi32.DS_DOMAINTRUST_FLAG Flags;
         public int ParentIndex;
         public TrustType TrustType;
         public int TrustAttributes;
@@ -412,11 +370,11 @@ namespace System.DirectoryServices.ActiveDirectory
         [FieldOffset(8)]
         public LARGE_INTEGER Time = null!;
         [FieldOffset(16)]
-        public LSA_UNICODE_STRING TopLevelName = null!;
+        public global::Interop.UNICODE_STRING TopLevelName;
         [FieldOffset(16)]
-        public LSA_FOREST_TRUST_BINARY_DATA Data = null!;
+        public LSA_FOREST_TRUST_BINARY_DATA Data;
         [FieldOffset(16)]
-        public LSA_FOREST_TRUST_DOMAIN_INFO? DomainInfo;
+        public LSA_FOREST_TRUST_DOMAIN_INFO DomainInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -432,16 +390,7 @@ namespace System.DirectoryServices.ActiveDirectory
         }
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    internal sealed class LSA_UNICODE_STRING
-    {
-        public short Length;
-        public short MaximumLength;
-        public IntPtr Buffer;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal sealed class LSA_FOREST_TRUST_DOMAIN_INFO
+    internal struct LSA_FOREST_TRUST_DOMAIN_INFO
     {
         public IntPtr sid;
         public short DNSNameLength;
@@ -452,44 +401,12 @@ namespace System.DirectoryServices.ActiveDirectory
         public IntPtr NetBIOSNameBuffer;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    internal sealed class LSA_FOREST_TRUST_BINARY_DATA
+    internal struct LSA_FOREST_TRUST_BINARY_DATA
     {
         public int Length;
         public IntPtr Buffer;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    internal sealed class LSA_OBJECT_ATTRIBUTES
-    {
-        internal int Length;
-        private readonly IntPtr _rootDirectory;
-        private readonly IntPtr _objectName;
-        internal int Attributes;
-        private readonly IntPtr _securityDescriptor;
-        private readonly IntPtr _securityQualityOfService;
-
-        public LSA_OBJECT_ATTRIBUTES()
-        {
-            Length = 0;
-            _rootDirectory = (IntPtr)0;
-            _objectName = (IntPtr)0;
-            Attributes = 0;
-            _securityDescriptor = (IntPtr)0;
-            _securityQualityOfService = (IntPtr)0;
-        }
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal sealed class TRUSTED_DOMAIN_INFORMATION_EX
-    {
-        public LSA_UNICODE_STRING? Name;
-        public LSA_UNICODE_STRING? FlatName;
-        public IntPtr Sid;
-        public int TrustDirection;
-        public int TrustType;
-        public TRUST_ATTRIBUTE TrustAttributes;
-    }
 
     [StructLayout(LayoutKind.Sequential)]
     internal sealed class LSA_FOREST_TRUST_COLLISION_INFORMATION
@@ -504,7 +421,7 @@ namespace System.DirectoryServices.ActiveDirectory
         public int Index;
         public ForestTrustCollisionType Type;
         public int Flags;
-        public LSA_UNICODE_STRING Name = null!;
+        public global::Interop.UNICODE_STRING Name;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -526,17 +443,6 @@ namespace System.DirectoryServices.ActiveDirectory
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    internal sealed class TRUSTED_DOMAIN_AUTH_INFORMATION
-    {
-        public int IncomingAuthInfos;
-        public IntPtr IncomingAuthenticationInformation;
-        public IntPtr IncomingPreviousAuthenticationInformation;
-        public int OutgoingAuthInfos;
-        public IntPtr OutgoingAuthenticationInformation;
-        public IntPtr OutgoingPreviousAuthenticationInformation;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
     internal sealed class LSA_AUTH_INFORMATION
     {
         public LARGE_INTEGER? LastUpdateTime;
@@ -548,25 +454,11 @@ namespace System.DirectoryServices.ActiveDirectory
     [StructLayout(LayoutKind.Sequential)]
     internal sealed class POLICY_DNS_DOMAIN_INFO
     {
-        public LSA_UNICODE_STRING? Name;
-        public LSA_UNICODE_STRING? DnsDomainName;
-        public LSA_UNICODE_STRING? DnsForestName;
+        public global::Interop.UNICODE_STRING Name;
+        public global::Interop.UNICODE_STRING DnsDomainName;
+        public global::Interop.UNICODE_STRING DnsForestName;
         public Guid DomainGuid;
         public IntPtr Sid;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal sealed class TRUSTED_POSIX_OFFSET_INFO
-    {
-        internal int Offset;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal sealed class TRUSTED_DOMAIN_FULL_INFORMATION
-    {
-        public TRUSTED_DOMAIN_INFORMATION_EX? Information;
-        internal TRUSTED_POSIX_OFFSET_INFO? PosixOffset;
-        public TRUSTED_DOMAIN_AUTH_INFORMATION? AuthInformation;
     }
 
     /*
@@ -595,253 +487,9 @@ namespace System.DirectoryServices.ActiveDirectory
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    internal sealed class SID_AND_ATTR
+    internal struct POLICY_ACCOUNT_DOMAIN_INFO
     {
-        public IntPtr pSid = IntPtr.Zero;
-        public int attrs;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    internal sealed class TOKEN_USER
-    {
-        public SID_AND_ATTR sidAndAttributes = new SID_AND_ATTR();
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    internal sealed class SID_IDENTIFIER_AUTHORITY
-    {
-        public byte b1;
-        public byte b2;
-        public byte b3;
-        public byte b4;
-        public byte b5;
-        public byte b6;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    internal sealed class POLICY_ACCOUNT_DOMAIN_INFO
-    {
-        public LSA_UNICODE_STRING domainName = new LSA_UNICODE_STRING();
-        public IntPtr domainSid = IntPtr.Zero;
-    }
-
-    internal static class UnsafeNativeMethods
-    {
-        public delegate int DsReplicaConsistencyCheck([In]IntPtr handle, int taskID, int flags);
-
-        public delegate int DsReplicaGetInfo2W(IntPtr handle, int type, [MarshalAs(UnmanagedType.LPWStr)] string? objectPath, IntPtr sourceGUID, string? attributeName, string? value, int flag, int context, ref IntPtr info);
-
-        public delegate int DsReplicaGetInfoW(IntPtr handle, int type, [MarshalAs(UnmanagedType.LPWStr)] string? objectPath, IntPtr sourceGUID, ref IntPtr info);
-
-        public delegate int DsReplicaFreeInfo(int type, IntPtr value);
-
-        public delegate int DsReplicaSyncW(IntPtr handle, [MarshalAs(UnmanagedType.LPWStr)] string partition, IntPtr uuid, int option);
-
-        public delegate int DsReplicaSyncAllW(IntPtr handle, [MarshalAs(UnmanagedType.LPWStr)] string partition, int flags, SyncReplicaFromAllServersCallback callback, IntPtr data, ref IntPtr error);
-
-        [DllImport(global::Interop.Libraries.Kernel32, EntryPoint = "LocalFree")]
-        public static extern int LocalFree(IntPtr mem);
-
-        [DllImport(global::Interop.Libraries.Activeds, EntryPoint = "ADsEncodeBinaryData", CharSet = CharSet.Unicode)]
-        public static extern int ADsEncodeBinaryData(byte[] data, int length, ref IntPtr result);
-
-        [DllImport(global::Interop.Libraries.Activeds, EntryPoint = "FreeADsMem")]
-        public static extern bool FreeADsMem(IntPtr pVoid);
-
-        [DllImport(global::Interop.Libraries.Netapi32, EntryPoint = "DsGetSiteNameW", CharSet = CharSet.Unicode)]
-        public static extern int DsGetSiteName(string? dcName, ref IntPtr ptr);
-
-        public delegate int DsListDomainsInSiteW(IntPtr handle, [MarshalAs(UnmanagedType.LPWStr)] string site, ref IntPtr info);
-
-        public delegate void DsFreeNameResultW(IntPtr result);
-
-        [DllImport(global::Interop.Libraries.Netapi32, EntryPoint = "DsEnumerateDomainTrustsW", CharSet = CharSet.Unicode)]
-        public static extern int DsEnumerateDomainTrustsW(string serverName, int flags, out IntPtr domains, out int count);
-
-        [DllImport(global::Interop.Libraries.Netapi32, EntryPoint = "NetApiBufferFree")]
-        public static extern int NetApiBufferFree(IntPtr buffer);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "LogonUserW", CharSet = CharSet.Unicode, SetLastError = true)]
-        public static extern int LogonUserW(string? lpszUsername, string? lpszDomain, string? lpszPassword, int dwLogonType, int dwLogonProvider, ref IntPtr phToken);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "ImpersonateLoggedOnUser", SetLastError = true)]
-        public static extern int ImpersonateLoggedOnUser(IntPtr hToken);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "RevertToSelf", SetLastError = true)]
-        public static extern int RevertToSelf();
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "ConvertSidToStringSidW", CharSet = CharSet.Unicode, SetLastError = true)]
-        public static extern int ConvertSidToStringSidW(IntPtr pSid, ref IntPtr stringSid);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "ConvertStringSidToSidW", CharSet = CharSet.Unicode, SetLastError = true)]
-        public static extern int ConvertStringSidToSidW(IntPtr stringSid, ref IntPtr pSid);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "LsaSetForestTrustInformation")]
-        public static extern int LsaSetForestTrustInformation(PolicySafeHandle handle, LSA_UNICODE_STRING target, IntPtr forestTrustInfo, int checkOnly, out IntPtr collisionInfo);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "LsaOpenPolicy")]
-        public static extern int LsaOpenPolicy(LSA_UNICODE_STRING target, LSA_OBJECT_ATTRIBUTES objectAttributes, int access, out IntPtr handle);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "LsaClose")]
-        public static extern int LsaClose(IntPtr handle);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "LsaQueryForestTrustInformation")]
-        public static extern int LsaQueryForestTrustInformation(PolicySafeHandle handle, LSA_UNICODE_STRING target, ref IntPtr ForestTrustInfo);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "LsaQueryTrustedDomainInfoByName")]
-        public static extern int LsaQueryTrustedDomainInfoByName(PolicySafeHandle handle, LSA_UNICODE_STRING trustedDomain, TRUSTED_INFORMATION_CLASS infoClass, ref IntPtr buffer);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "LsaNtStatusToWinError")]
-        public static extern int LsaNtStatusToWinError(int status);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "LsaFreeMemory")]
-        public static extern int LsaFreeMemory(IntPtr ptr);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "LsaSetTrustedDomainInfoByName")]
-        public static extern int LsaSetTrustedDomainInfoByName(PolicySafeHandle handle, LSA_UNICODE_STRING trustedDomain, TRUSTED_INFORMATION_CLASS infoClass, IntPtr buffer);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "LsaOpenTrustedDomainByName")]
-        public static extern int LsaOpenTrustedDomainByName(PolicySafeHandle policyHandle, LSA_UNICODE_STRING trustedDomain, int access, ref IntPtr trustedDomainHandle);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "LsaDeleteTrustedDomain")]
-        public static extern int LsaDeleteTrustedDomain(PolicySafeHandle handle, IntPtr pSid);
-
-        [DllImport(global::Interop.Libraries.Netapi32, EntryPoint = "I_NetLogonControl2", CharSet = CharSet.Unicode)]
-        public static extern int I_NetLogonControl2(string serverName, int FunctionCode, int QueryLevel, IntPtr data, out IntPtr buffer);
-
-        [DllImport(global::Interop.Libraries.Kernel32, EntryPoint = "GetSystemTimeAsFileTime")]
-        public static extern void GetSystemTimeAsFileTime(IntPtr fileTime);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "LsaQueryInformationPolicy")]
-        public static extern int LsaQueryInformationPolicy(PolicySafeHandle handle, int infoClass, out IntPtr buffer);
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "LsaCreateTrustedDomainEx")]
-        public static extern int LsaCreateTrustedDomainEx(PolicySafeHandle handle, TRUSTED_DOMAIN_INFORMATION_EX domainEx, TRUSTED_DOMAIN_AUTH_INFORMATION authInfo, int classInfo, out IntPtr domainHandle);
-
-        [DllImport(global::Interop.Libraries.Kernel32, EntryPoint = "OpenThread", SetLastError = true)]
-        public static extern IntPtr OpenThread(uint desiredAccess, bool inheirted, int threadID);
-
-        [DllImport(global::Interop.Libraries.Kernel32, EntryPoint = "GetCurrentThreadId")]
-        public static extern int GetCurrentThreadId();
-
-        [DllImport(global::Interop.Libraries.Advapi32, EntryPoint = "ImpersonateAnonymousToken", SetLastError = true)]
-        public static extern int ImpersonateAnonymousToken(IntPtr token);
-
-        [DllImport(global::Interop.Libraries.Kernel32, EntryPoint = "CloseHandle")]
-        public static extern int CloseHandle(IntPtr handle);
-
-        [DllImport(global::Interop.Libraries.NtDll, EntryPoint = "RtlInitUnicodeString")]
-        public static extern int RtlInitUnicodeString(LSA_UNICODE_STRING result, IntPtr s);
-
-        [DllImport(global::Interop.Libraries.Kernel32, EntryPoint = "LoadLibraryW", CharSet = CharSet.Unicode, SetLastError = true)]
-        public static extern IntPtr LoadLibrary(string name);
-
-        [DllImport(global::Interop.Libraries.Kernel32, CharSet = CharSet.Unicode)]
-        public static extern uint FreeLibrary(IntPtr libName);
-
-        [DllImport(global::Interop.Libraries.Kernel32, EntryPoint = "GetProcAddress", SetLastError = true, BestFitMapping = false)]
-        public static extern IntPtr GetProcAddress(LoadLibrarySafeHandle hModule, string entryPoint);
-
-        /*
-        DWORD DsRoleGetPrimaryDomainInformation(
-          LPCWSTR lpServer,
-          DSROLE_PRIMARY_DOMAIN_INFO_LEVEL InfoLevel,
-          PBYTE* Buffer
-        ); */
-
-        [DllImport(global::Interop.Libraries.Netapi32, CallingConvention = CallingConvention.StdCall, EntryPoint = "DsRoleGetPrimaryDomainInformation", CharSet = CharSet.Unicode)]
-        public static extern int DsRoleGetPrimaryDomainInformation(
-            [MarshalAs(UnmanagedType.LPTStr)] string lpServer,
-            [In] DSROLE_PRIMARY_DOMAIN_INFO_LEVEL InfoLevel,
-            out IntPtr Buffer);
-
-        [DllImport(global::Interop.Libraries.Netapi32, CallingConvention = CallingConvention.StdCall, EntryPoint = "DsRoleGetPrimaryDomainInformation", CharSet = CharSet.Unicode)]
-        public static extern int DsRoleGetPrimaryDomainInformation(
-            [In] IntPtr lpServer,
-            [In] DSROLE_PRIMARY_DOMAIN_INFO_LEVEL InfoLevel,
-            out IntPtr Buffer);
-
-        [DllImport(global::Interop.Libraries.Advapi32)]
-        public static extern int GetLengthSid(IntPtr sid);
-
-        [DllImport(global::Interop.Libraries.Advapi32, SetLastError = true)]
-        public static extern bool IsValidSid(IntPtr sid);
-
-        [DllImport(global::Interop.Libraries.Advapi32)]
-        public static extern IntPtr GetSidIdentifierAuthority(IntPtr sid);
-
-        [DllImport(global::Interop.Libraries.Advapi32)]
-        public static extern IntPtr GetSidSubAuthority(IntPtr sid, int index);
-
-        [DllImport(global::Interop.Libraries.Advapi32)]
-        public static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
-
-        [DllImport(global::Interop.Libraries.Advapi32)]
-        public static extern bool EqualDomainSid(IntPtr pSid1, IntPtr pSid2, ref bool equal);
-
-        [DllImport(global::Interop.Libraries.Advapi32, SetLastError = true)]
-        public static extern bool CopySid(int destinationLength, IntPtr pSidDestination, IntPtr pSidSource);
-
-        [DllImport(global::Interop.Libraries.Advapi32, SetLastError = true, CallingConvention = CallingConvention.StdCall, EntryPoint = "OpenThreadToken", CharSet = CharSet.Unicode)]
-        public static extern bool OpenThreadToken(
-                                        IntPtr threadHandle,
-                                        int desiredAccess,
-                                        bool openAsSelf,
-                                        ref IntPtr tokenHandle
-                                        );
-
-        [DllImport(global::Interop.Libraries.Advapi32, SetLastError = true, CallingConvention = CallingConvention.StdCall, EntryPoint = "OpenProcessToken", CharSet = CharSet.Unicode)]
-        public static extern bool OpenProcessToken(
-                                        IntPtr processHandle,
-                                        int desiredAccess,
-                                        ref IntPtr tokenHandle
-                                        );
-
-        [DllImport(global::Interop.Libraries.Kernel32, CallingConvention = CallingConvention.StdCall, EntryPoint = "GetCurrentThread", CharSet = CharSet.Unicode)]
-        public static extern IntPtr GetCurrentThread();
-
-        [DllImport(global::Interop.Libraries.Kernel32, CallingConvention = CallingConvention.StdCall, EntryPoint = "GetCurrentProcess", CharSet = CharSet.Unicode)]
-        public static extern IntPtr GetCurrentProcess();
-
-        [DllImport(global::Interop.Libraries.Advapi32, SetLastError = true, CallingConvention = CallingConvention.StdCall, EntryPoint = "GetTokenInformation", CharSet = CharSet.Unicode)]
-        public static extern bool GetTokenInformation(
-                                        IntPtr tokenHandle,
-                                        int tokenInformationClass,
-                                        IntPtr buffer,
-                                        int bufferSize,
-                                        ref int returnLength
-                                        );
-
-        [DllImport(global::Interop.Libraries.Advapi32, CallingConvention = CallingConvention.StdCall, EntryPoint = "LsaOpenPolicy", CharSet = CharSet.Unicode)]
-        public static extern int LsaOpenPolicy(
-                                        IntPtr lsaUnicodeString,
-                                        IntPtr lsaObjectAttributes,
-                                        int desiredAccess,
-                                        ref IntPtr policyHandle);
-
-        [DllImport(global::Interop.Libraries.Advapi32, CallingConvention = CallingConvention.StdCall, EntryPoint = "LsaQueryInformationPolicy", CharSet = CharSet.Unicode)]
-        public static extern int LsaQueryInformationPolicy(
-                                        IntPtr policyHandle,
-                                        int policyInformationClass,
-                                        ref IntPtr buffer
-                                        );
-
-        [DllImport(global::Interop.Libraries.Advapi32, CallingConvention = CallingConvention.StdCall, EntryPoint = "LsaLookupSids", CharSet = CharSet.Unicode)]
-        public static extern int LsaLookupSids(
-                                        IntPtr policyHandle,
-                                        int count,
-                                        IntPtr[] sids,
-                                        out IntPtr referencedDomains,
-                                        out IntPtr names
-                                        );
-
-        /*
-        void DsRoleFreeMemory(
-          PVOID Buffer
-        );
-        */
-        [DllImport(global::Interop.Libraries.Netapi32)]
-        public static extern int DsRoleFreeMemory(
-            [In] IntPtr buffer);
+        public global::Interop.UNICODE_STRING DomainName;
+        public IntPtr DomainSid;
     }
 }

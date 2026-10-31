@@ -7,6 +7,8 @@
 
 using System;
 using System.Runtime.InteropServices;
+using Xunit;
+using TestLibrary;
 
 #pragma warning disable 618
 [StructLayout(LayoutKind.Explicit)]
@@ -26,7 +28,9 @@ public class Test_explicitStruct_oddSize
         s.b = true;
     }
 
-    public static int Main()
+    [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+    [Fact]
+    public static int TestEntryPoint()
     {
         try
         {

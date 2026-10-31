@@ -28,17 +28,13 @@ public:
     __checkReturn
     STDMETHODIMP    QueryInterface(REFIID riid, void** ppv);
     STDMETHODIMP_(ULONG) AddRef(void);
-    STDMETHODIMP_(ULONG) Release(void);
+    STDMETHODIMP_(ULONG) Release(void) noexcept;
 
     __checkReturn
     STDMETHODIMP TranslateSigWithScope(
-        IMDInternalImport *pAssemImport,    // [IN] import assembly scope.
-        const void  *pbHashValue,           // [IN] hash value for the import assembly.
-        ULONG       cbHashValue,            // [IN] count of bytes in the hash value.
         PCCOR_SIGNATURE pbSigBlob,          // [IN] signature in the importing scope
         ULONG       cbSigBlob,              // [IN] count of bytes of signature
-        IMetaDataAssemblyEmit *pAssemEmit,  // [IN] assembly emit scope.
-        IMetaDataEmit *emit,                // [IN] emit interface
+        IMDInternalEmit *emit,              // [IN] emit interface
         CQuickBytes *pqkSigEmit,            // [OUT] buffer to hold translated signature
         ULONG       *pcbSig)                // [OUT] count of bytes in the translated signature
         DAC_UNEXPECTED();
@@ -64,13 +60,6 @@ public:
             return NULL;
         }
         return static_cast<IMetaModelCommonRO*>(&m_LiteWeightStgdb.m_MiniMd);
-    }
-
-    __checkReturn
-    STDMETHODIMP SetOptimizeAccessForSpeed(
-        BOOL fOptSpeed)
-    {
-        return S_OK;
     }
 
     //*****************************************************************************
@@ -102,20 +91,12 @@ public:
         HENUMInternal   *phEnumBody,        // [IN] MethodBody enumerator.
         HENUMInternal   *phEnumDecl);       // [IN] MethodDecl enumerator.
 
-    STDMETHODIMP_(void) EnumMethodImplReset(
-        HENUMInternal   *phEnumBody,        // [IN] MethodBody enumerator.
-        HENUMInternal   *phEnumDecl);       // [IN] MethodDecl enumerator.
-
     __checkReturn
     STDMETHODIMP EnumMethodImplNext( // return hresult
         HENUMInternal   *phEnumBody,        // [IN] input enum for MethodBody
         HENUMInternal   *phEnumDecl,        // [IN] input enum for MethodDecl
         mdToken         *ptkBody,           // [OUT] return token for MethodBody
         mdToken         *ptkDecl);          // [OUT] return token for MethodDecl
-
-    STDMETHODIMP_(void) EnumMethodImplClose(
-        HENUMInternal   *phEnumBody,        // [IN] MethodBody enumerator.
-        HENUMInternal   *phEnumDecl);       // [IN] MethodDecl enumerator.
 
     //*****************************************
     // Enumerator helpers for memberdef, memberref, interfaceimp,
@@ -186,7 +167,7 @@ public:
     STDMETHODIMP FindMethodDef(
         mdTypeDef   classdef,               // [IN] given typedef
         LPCSTR      szName,                 // [IN] member name
-        PCCOR_SIGNATURE pvSigBlob,          // [IN] point to a blob value of COM+ signature
+        PCCOR_SIGNATURE pvSigBlob,          // [IN] point to a blob value of signature
         ULONG       cbSigBlob,              // [IN] count of bytes in the signature blob
         mdMethodDef *pmd);                  // [OUT] matching memberdef
 
@@ -229,7 +210,7 @@ public:
     __checkReturn
     STDMETHODIMP GetNameAndSigOfMethodDef(
         mdMethodDef      methoddef,     // [IN] given memberdef
-        PCCOR_SIGNATURE *ppvSigBlob,    // [OUT] point to a blob value of COM+ signature
+        PCCOR_SIGNATURE *ppvSigBlob,    // [OUT] point to a blob value of signature
         ULONG           *pcbSigBlob,    // [OUT] count of bytes in the signature blob
         LPCSTR          *pszName);
 
@@ -337,7 +318,7 @@ public:
         mdMethodDef mb);                    // The method for which to get props.
 
     //*****************************************
-    // return method implementation informaiton, like RVA and implflags
+    // return method implementation information, like RVA and implflags
     //*****************************************
     __checkReturn
     STDMETHODIMP GetMethodImplProps(
@@ -427,7 +408,7 @@ public:
     __checkReturn
     STDMETHODIMP GetNameAndSigOfMemberRef(  // return name here
         mdMemberRef      memberref,         // given memberref
-        PCCOR_SIGNATURE *ppvSigBlob,        // [OUT] point to a blob value of COM+ signature
+        PCCOR_SIGNATURE *ppvSigBlob,        // [OUT] point to a blob value of signature
         ULONG           *pcbSigBlob,        // [OUT] count of bytes in the signature blob
         LPCSTR          *pszName);
 
@@ -583,7 +564,6 @@ public:
     STDMETHODIMP GetUserString(
         mdString stk,                   // [IN] the string token.
         ULONG   *pchString,             // [OUT] count of characters in the string.
-        BOOL    *pbIs80Plus,            // [OUT] specifies where there are extended characters >= 0x80.
         LPCWSTR *pwszUserString);
 
     //*****************************************************************************
@@ -687,7 +667,7 @@ public:
     STDMETHODIMP ConvertTextSigToComSig(    // Return hresult.
         BOOL        fCreateTrIfNotFound,    // [IN] create typeref if not found
         LPCSTR      pSignature,             // [IN] class file format signature
-        CQuickBytes *pqbNewSig,             // [OUT] place holder for COM+ signature
+        CQuickBytes *pqbNewSig,             // [OUT] place holder for signature
         ULONG       *pcbCount);             // [OUT] the result size of signature
 
     __checkReturn
@@ -701,9 +681,9 @@ public:
     STDMETHODIMP_(IUnknown *) GetCachedPublicInterface(BOOL fWithLock) { return NULL;}  // return the cached public interface
     __checkReturn
     STDMETHODIMP SetCachedPublicInterface(IUnknown *pUnk) { return E_FAIL;} ;// return hresult
-    STDMETHODIMP_(UTSemReadWrite*) GetReaderWriterLock() {return NULL;}   // return the reader writer lock
+    STDMETHODIMP_(minipal_rwlock*) GetReaderWriterLock() {return NULL;}   // return the reader writer lock
     __checkReturn
-    STDMETHODIMP SetReaderWriterLock(UTSemReadWrite *pSem) { return NOERROR; }
+    STDMETHODIMP SetReaderWriterLock(minipal_rwlock *pLock) { return NOERROR; }
     STDMETHODIMP_(mdModule) GetModuleFromScope(void);
 
     // Find a paticular method and pass in the signature comparison routine. Very
@@ -712,7 +692,7 @@ public:
     STDMETHODIMP FindMethodDefUsingCompare(
         mdTypeDef   classdef,               // [IN] given typedef
         LPCSTR      szName,                 // [IN] member name
-        PCCOR_SIGNATURE pvSigBlob,          // [IN] point to a blob value of COM+ signature
+        PCCOR_SIGNATURE pvSigBlob,          // [IN] point to a blob value of signature
         ULONG       cbSigBlob,              // [IN] count of bytes in the signature blob
         PSIGCOMPARE pSignatureCompare,      // [IN] Routine to compare signatures
         void*       pSignatureArgs,         // [IN] Additional info to supply the compare function
@@ -733,15 +713,6 @@ public:
         void        *pData,                 // [IN] the delta metadata
         ULONG       cbData,                 // [IN] length of pData
         IMDInternalImport **ppv);           // [OUT] the resulting metadata interface
-
-    STDMETHODIMP GetRvaOffsetData(
-        DWORD   *pFirstMethodRvaOffset,     // [OUT] Offset (from start of metadata) to the first RVA field in MethodDef table.
-        DWORD   *pMethodDefRecordSize,      // [OUT] Size of each record in MethodDef table.
-        DWORD   *pMethodDefCount,           // [OUT] Number of records in MethodDef table.
-        DWORD   *pFirstFieldRvaOffset,      // [OUT] Offset (from start of metadata) to the first RVA field in FieldRVA table.
-        DWORD   *pFieldRvaRecordSize,       // [OUT] Size of each record in FieldRVA table.
-        DWORD   *pFieldRvaCount             // [OUT] Number of records in FieldRVA table.
-        );
 
     CLiteWeightStgdb<CMiniMd>   m_LiteWeightStgdb;
 
@@ -784,12 +755,6 @@ public:
         ((DWORD)m_LiteWeightStgdb.m_MiniMd.m_Schema.m_major << 16);
     };
 
-    STDMETHODIMP SetVerifiedByTrustedSource(// return hresult
-        BOOL    fVerified)
-    {
-        m_LiteWeightStgdb.m_MiniMd.SetVerifiedByTrustedSource(fVerified);
-        return S_OK;
-    }
 };  // class MDInternalRO
 
 #endif //FEATURE_METADATA_INTERNAL_APIS

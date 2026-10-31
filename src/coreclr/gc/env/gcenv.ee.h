@@ -12,7 +12,7 @@ class GCToEEInterface
 {
 public:
     static void SuspendEE(SUSPEND_REASON reason);
-    static void RestartEE(bool bFinishedGC); //resume threads.
+    static void RestartEE(bool bUnused); //resume threads.
 
     //
     // The GC roots enumeration callback
@@ -20,7 +20,7 @@ public:
     static void GcScanRoots(promote_func* fn, int condemned, int max_gen, ScanContext* sc);
 
     //
-    // Callbacks issues during GC that the execution engine can do its own bookeeping
+    // Callbacks issues during GC that the execution engine can do its own bookkeeping
     //
 
     // start of GC call back - single threaded
@@ -38,6 +38,10 @@ public:
 
     // Promote refcounted handle callback
     static bool RefCountedHandleCallbacks(Object * pObject);
+
+    static void TriggerClientBridgeProcessing(MarkCrossReferencesArgs* args);
+
+    static bool IsClientBridgeProcessingActive();
 
     // Sync block cache management
     static void SyncBlockCacheWeakPtrScan(HANDLESCANPROC scanProc, uintptr_t lp1, uintptr_t lp2);
@@ -67,7 +71,7 @@ public:
     static void DiagWalkBGCSurvivors(void* gcContext);
     static void StompWriteBarrier(WriteBarrierParameters* args);
 
-    static void EnableFinalization(bool foundFinalizers);
+    static void EnableFinalization(bool gcHasWorkForFinalizerThread);
 
     static void HandleFatalError(unsigned int exitCode);
     static bool EagerFinalized(Object* obj);
@@ -94,6 +98,10 @@ public:
     static uint32_t GetCurrentProcessCpuCount();
 
     static void DiagAddNewRegion(int generation, uint8_t* rangeStart, uint8_t* rangeEnd, uint8_t* rangeEndReserved);
+
+    static void LogErrorToHost(const char *message);
+
+    static uint64_t GetThreadOSThreadId(Thread* thread);
 };
 
 #endif // __GCENV_EE_H__

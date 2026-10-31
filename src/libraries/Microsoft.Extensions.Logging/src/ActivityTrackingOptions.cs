@@ -11,22 +11,22 @@ namespace Microsoft.Extensions.Logging
     public enum ActivityTrackingOptions
     {
         /// <summary>
-        /// None of the trace context part wil be included in the logging.
+        /// None of the trace context part will be included in the logging.
         /// </summary>
         None        = 0x0000,
 
         /// <summary>
-        /// Span Id will be included in the logging.
+        /// Span ID will be included in the logging.
         /// </summary>
         SpanId      = 0x0001,
 
         /// <summary>
-        /// Trace Id will be included in the logging.
+        /// Trace ID will be included in the logging.
         /// </summary>
         TraceId     = 0x0002,
 
         /// <summary>
-        /// Parent Id will be included in the logging.
+        /// Parent ID will be included in the logging.
         /// </summary>
         ParentId    = 0x0004,
 

@@ -1,13 +1,11 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
+
 // CGENCPU.H -
 //
 // Various helper routines for generating AMD64 assembly code.
 //
 // DO NOT INCLUDE THIS FILE DIRECTLY - ALWAYS USE CGENSYS.H INSTEAD
-//
-
-
 
 #ifndef TARGET_AMD64
 #error Should only include "AMD64\cgencpu.h" for AMD64 builds
@@ -31,16 +29,6 @@ class Module;
 struct VASigCookie;
 class ComCallMethodDesc;
 
-//
-// functions implemented in AMD64 assembly
-//
-EXTERN_C void SinglecastDelegateInvokeStub();
-EXTERN_C void FastCallFinalizeWorker(Object *obj, PCODE funcPtr);
-
-#define COMMETHOD_PREPAD                        16   // # extra bytes to allocate in addition to sizeof(ComCallMethodDesc)
-#define COMMETHOD_CALL_PRESTUB_SIZE             6    // 32-bit indirect relative call
-#define COMMETHOD_CALL_PRESTUB_ADDRESS_OFFSET   -10  // the offset of the call target address inside the prestub
-
 #define STACK_ALIGN_SIZE                        16
 
 #define JUMP_ALLOCATE_SIZE                      12   // # bytes to allocate for a 64-bit jump instruction
@@ -48,19 +36,14 @@ EXTERN_C void FastCallFinalizeWorker(Object *obj, PCODE funcPtr);
 #define SIZEOF_LOAD_AND_JUMP_THUNK              22   // # bytes to mov r10, X; jmp Z
 #define SIZEOF_LOAD2_AND_JUMP_THUNK             32   // # bytes to mov r10, X; mov r11, Y; jmp Z
 
-// Also in CorCompile.h, FnTableAccess.h
-#define USE_INDIRECT_CODEHEADER                 // use CodeHeader, RealCodeHeader construct
-
-#define HAS_NDIRECT_IMPORT_PRECODE              1
+#define HAS_PINVOKE_IMPORT_PRECODE              1
 #define HAS_FIXUP_PRECODE                       1
-#define HAS_FIXUP_PRECODE_CHUNKS                1
-#define FIXUP_PRECODE_PREALLOCATE_DYNAMIC_METHOD_JUMP_STUBS 1
 
 // ThisPtrRetBufPrecode one is necessary for closed delegates over static methods with return buffer
 #define HAS_THISPTR_RETBUF_PRECODE              1
 
 #define CODE_SIZE_ALIGN                         16   // must alloc code blocks on 8-byte boundaries; for perf reasons we use 16 byte boundaries
-#define CACHE_LINE_SIZE                         64   // Current AMD64 processors have 64-byte cache lines as per AMD64 optmization manual
+#define CACHE_LINE_SIZE                         64   // Current AMD64 processors have 64-byte cache lines as per AMD64 optimization manual
 #define LOG2SLOT                                LOG2_PTRSIZE
 
 
@@ -74,7 +57,6 @@ EXTERN_C void FastCallFinalizeWorker(Object *obj, PCODE funcPtr);
 #define ENREGISTERED_RETURNTYPE_INTEGER_MAXSIZE 8    // bytes
 #define ENREGISTERED_PARAMTYPE_MAXSIZE          8    // bytes
 #define ENREGISTERED_RETURNTYPE_MAXSIZE         8    // bytes
-#define COM_STUBS_SEPARATE_FP_LOCATIONS
 #define CALLDESCR_REGTYPEMAP                    1
 #endif
 
@@ -190,6 +172,9 @@ struct REGDISPLAY;
 
 #define NUM_CALLEE_SAVED_REGISTERS 6
 
+// No floating point callee saved registers on Unix AMD64
+#define ENUM_FP_CALLEE_SAVED_REGISTERS()
+
 #else // UNIX_AMD64_ABI
 
 #define ENUM_ARGUMENT_REGISTERS() \
@@ -213,6 +198,18 @@ struct REGDISPLAY;
     CALLEE_SAVED_REGISTER(R15)
 
 #define NUM_CALLEE_SAVED_REGISTERS 8
+
+#define ENUM_FP_CALLEE_SAVED_REGISTERS() \
+    CALLEE_SAVED_REGISTER(Xmm6) \
+    CALLEE_SAVED_REGISTER(Xmm7) \
+    CALLEE_SAVED_REGISTER(Xmm8) \
+    CALLEE_SAVED_REGISTER(Xmm9) \
+    CALLEE_SAVED_REGISTER(Xmm10) \
+    CALLEE_SAVED_REGISTER(Xmm11) \
+    CALLEE_SAVED_REGISTER(Xmm12) \
+    CALLEE_SAVED_REGISTER(Xmm13) \
+    CALLEE_SAVED_REGISTER(Xmm14) \
+    CALLEE_SAVED_REGISTER(Xmm15)
 
 #endif // UNIX_AMD64_ABI
 
@@ -279,7 +276,47 @@ struct EHContext {
 
 #include "stublinkeramd64.h"
 
+//**********************************************************************
+// Profiling
+//**********************************************************************
 
+#ifdef PROFILING_SUPPORTED
+
+#define PROFILE_PLATFORM_SPECIFIC_DATA_BUFFER_SIZE 16
+
+typedef struct _PROFILE_PLATFORM_SPECIFIC_DATA
+{
+    FunctionID  functionId;
+    void       *rbp;
+    void       *probeRsp;
+    void       *ip;
+    void       *profiledRsp;
+    UINT64      rax;
+    LPVOID      hiddenArg;
+    UINT64      flt0;   // floats stored as doubles
+    UINT64      flt1;
+    UINT64      flt2;
+    UINT64      flt3;
+#if defined(UNIX_AMD64_ABI)
+    UINT64      flt4;
+    UINT64      flt5;
+    UINT64      flt6;
+    UINT64      flt7;
+    UINT64      rdi;
+    UINT64      rsi;
+    UINT64      rdx;
+    UINT64      rcx;
+    UINT64      r8;
+    UINT64      r9;
+#endif
+    UINT32      flags;
+#if defined(UNIX_AMD64_ABI)
+    // A buffer to copy structs in to so they are sequential for GetFunctionEnter3Info.
+    UINT64      buffer[PROFILE_PLATFORM_SPECIFIC_DATA_BUFFER_SIZE];
+#endif
+} PROFILE_PLATFORM_SPECIFIC_DATA, *PPROFILE_PLATFORM_SPECIFIC_DATA;
+
+#endif  // PROFILING_SUPPORTED
 
 //**********************************************************************
 // Exception handling
@@ -344,7 +381,60 @@ inline void SetSP(CONTEXT *context, TADDR rsp)
     context->Rsp = rsp;
 }
 
-#define SetFP(context, ebp)
+#if !defined(DACCESS_COMPILE)
+inline DWORD64 GetSSP(const CONTEXT * context)
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+
+        PRECONDITION(CheckPointer(context));
+    }
+    CONTRACTL_END;
+#ifdef TARGET_WINDOWS
+    XSAVE_CET_U_FORMAT* pCET = (XSAVE_CET_U_FORMAT*)LocateXStateFeature(const_cast<PCONTEXT>(context), XSTATE_CET_U, NULL);
+    if ((pCET != NULL) && (pCET->Ia32CetUMsr != 0))
+    {
+        return pCET->Ia32Pl3SspMsr;
+    }
+#else
+    // TODO: implement when we enable Intel CET on Unix
+#endif
+    return 0;
+}
+
+inline void SetSSP(CONTEXT *context, DWORD64 ssp)
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+
+        PRECONDITION(CheckPointer(context));
+    }
+    CONTRACTL_END;
+
+#ifdef TARGET_WINDOWS
+    XSAVE_CET_U_FORMAT* pCET = (XSAVE_CET_U_FORMAT*)LocateXStateFeature(context, XSTATE_CET_U, NULL);
+    if (pCET != NULL)
+    {
+        pCET->Ia32Pl3SspMsr = ssp;
+        pCET->Ia32CetUMsr = 1;
+    }
+#else
+    // TODO: implement when we enable Intel CET on Unix
+#endif
+}
+#endif // !DACCESS_COMPILE
+
+inline void SetFP(CONTEXT *context, TADDR rbp)
+{
+    LIMITED_METHOD_DAC_CONTRACT;
+
+    context->Rbp = (DWORD64)rbp;
+}
+
 inline TADDR GetFP(const CONTEXT * context)
 {
     LIMITED_METHOD_CONTRACT;
@@ -352,116 +442,73 @@ inline TADDR GetFP(const CONTEXT * context)
     return (TADDR)(context->Rbp);
 }
 
-extern "C" TADDR GetCurrentSP();
+inline void SetFirstArgReg(CONTEXT *context, TADDR value)
+{
+    LIMITED_METHOD_DAC_CONTRACT;
+#ifdef UNIX_AMD64_ABI
+    context->Rdi = (DWORD64)value;
+#else
+    context->Rcx = (DWORD64)value;
+#endif
+}
 
-// Emits:
-//  mov r10, pv1
-//  mov rax, pTarget
-//  jmp rax
-void EncodeLoadAndJumpThunk (LPBYTE pBuffer, LPVOID pv, LPVOID pTarget);
+inline TADDR GetFirstArgReg(CONTEXT *context)
+{
+    LIMITED_METHOD_DAC_CONTRACT;
+#ifdef UNIX_AMD64_ABI
+    return (TADDR)(context->Rdi);
+#else
+    return (TADDR)(context->Rcx);
+#endif
+}
 
+inline void SetSecondArgReg(CONTEXT *context, TADDR value)
+{
+    LIMITED_METHOD_DAC_CONTRACT;
+#ifdef UNIX_AMD64_ABI
+    context->Rsi = (DWORD64)value;
+#else
+    context->Rdx = (DWORD64)value;
+#endif
+}
 
-// Get Rel32 destination, emit jumpStub if necessary
+inline TADDR GetSecondArgReg(CONTEXT *context)
+{
+    LIMITED_METHOD_DAC_CONTRACT;
+#ifdef UNIX_AMD64_ABI
+    return (TADDR)(context->Rsi);
+#else
+    return (TADDR)(context->Rdx);
+#endif
+}
+
+extern "C" void* GetCurrentSP();
+
+// true when the APX jmpabs instruction is available; set by EEJitManager::SetCpuInfo() at startup. A DAC global.
+GVAL_DECL(bool, g_isJmpAbsAvailable);
+
+inline bool IsJmpAbsAvailable()
+{
+    LIMITED_METHOD_DAC_CONTRACT;
+    return g_isJmpAbsAvailable;
+}
+
+// Get Rel32 destination, emit jumpStub if necessary. Returns 0 if allocation within range fails.
 INT32 rel32UsingJumpStub(INT32 UNALIGNED * pRel32, PCODE target, MethodDesc *pMethod,
-    LoaderAllocator *pLoaderAllocator = NULL, bool throwOnOutOfMemoryWithinRange = true);
+    LoaderAllocator *pLoaderAllocator = NULL);
 
-// Get Rel32 destination, emit jumpStub if necessary into a preallocated location
-INT32 rel32UsingPreallocatedJumpStub(INT32 UNALIGNED * pRel32, PCODE target, PCODE jumpStubAddr, PCODE jumpStubAddrRW, bool emitJump);
+void emitBackToBackJump(LPBYTE pBufferRX, LPBYTE pBufferRW, LPVOID target);
 
-void emitCOMStubCall (ComCallMethodDesc *pCOMMethodRX, ComCallMethodDesc *pCOMMethodRW, PCODE target);
+// Emits raw 11-byte jmpabs instruction
+// Caller must ensure IsJmpAbsAvailable() == true.
+void emitJmpAbsJump(LPBYTE pBufferRX, LPBYTE pBufferRW, LPVOID target);
 
-void emitJump(LPBYTE pBufferRX, LPBYTE pBufferRW, LPVOID target);
-
-BOOL isJumpRel32(PCODE pCode);
-PCODE decodeJump32(PCODE pCode);
-
-BOOL isJumpRel64(PCODE pCode);
-PCODE decodeJump64(PCODE pCode);
-
-//
-// On IA64 back to back jumps should be separated by a nop bundle to get
-// the best performance from the hardware's branch prediction logic.
-// For all other platforms back to back jumps don't require anything special
-// That is why we have these two wrapper functions that call emitJump and decodeJump
-//
-inline void emitBackToBackJump(LPBYTE pBufferRX, LPBYTE pBufferRW, LPVOID target)
-{
-    WRAPPER_NO_CONTRACT;
-
-    emitJump(pBufferRX, pBufferRW, target);
-}
-
-inline BOOL isBackToBackJump(PCODE pCode)
-{
-    WRAPPER_NO_CONTRACT;
-    SUPPORTS_DAC;
-    return isJumpRel32(pCode) || isJumpRel64(pCode);
-}
-
-inline PCODE decodeBackToBackJump(PCODE pCode)
-{
-    WRAPPER_NO_CONTRACT;
-    SUPPORTS_DAC;
-    if (isJumpRel32(pCode))
-        return decodeJump32(pCode);
-    else
-    if (isJumpRel64(pCode))
-        return decodeJump64(pCode);
-    else
-        return NULL;
-}
-
-extern "C" void setFPReturn(int fpSize, INT64 retVal);
-extern "C" void getFPReturn(int fpSize, INT64 *retval);
-
-
-struct ComToManagedExRecord; // defined in cgencpu.cpp
-
-#include <pshpack1.h>
-struct DECLSPEC_ALIGN(8) UMEntryThunkCode
-{
-    // padding                  // CC CC CC CC
-    // mov r10, pUMEntryThunk   // 49 ba xx xx xx xx xx xx xx xx    // METHODDESC_REGISTER
-    // mov rax, pJmpDest        // 48 b8 xx xx xx xx xx xx xx xx    // need to ensure this imm64 is qword aligned
-    // TAILJMP_RAX              // 48 FF E0
-
-    BYTE            m_padding[4];
-    BYTE            m_movR10[2];    // MOV R10,
-    LPVOID          m_uet;          //          pointer to start of this structure
-    BYTE            m_movRAX[2];    // MOV RAX,
-    DECLSPEC_ALIGN(8)
-    const BYTE*     m_execstub;     //          pointer to destination code // ensure this is qword aligned
-    BYTE            m_jmpRAX[3];    // JMP RAX
-    BYTE            m_padding2[5];
-
-    void Encode(UMEntryThunkCode *pEntryThunkCodeRX, BYTE* pTargetCode, void* pvSecretParam);
-    void Poison();
-
-    LPCBYTE GetEntryPoint() const
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        return (LPCBYTE)&m_movR10;
-    }
-
-    static int GetEntryPointOffset()
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        return offsetof(UMEntryThunkCode, m_movR10);
-    }
-};
-#include <poppack.h>
+bool isBackToBackJump(PCODE pCode);
+PCODE decodeBackToBackJump(PCODE pCode);
 
 struct HijackArgs
 {
-#ifndef FEATURE_MULTIREG_RETURN
-    union
-    {
-        ULONG64 Rax;
-        ULONG64 ReturnValue[1];
-    };
-#else // !FEATURE_MULTIREG_RETURN
+#ifdef UNIX_AMD64_ABI
     union
     {
         struct
@@ -471,7 +518,18 @@ struct HijackArgs
         };
         ULONG64 ReturnValue[2];
     };
-#endif // !FEATURE_MULTIREG_RETURN
+#else // UNIX_AMD64_ABI
+    union
+    {
+        ULONG64 Rax;
+        ULONG64 ReturnValue[1];
+    };
+#endif // UNIX_AMD64_ABI
+    union
+    {
+        ULONG64 Rcx;
+        ULONG64 AsyncRet;
+    };
     CalleeSavedRegisters Regs;
 #ifdef TARGET_WINDOWS
     ULONG64 Rsp;
@@ -483,366 +541,23 @@ struct HijackArgs
     };
 };
 
-#ifndef DACCESS_COMPILE
-
-DWORD GetOffsetAtEndOfFunction(ULONGLONG           uImageBase,
-                               PT_RUNTIME_FUNCTION   pFunctionEntry,
-                               int                 offsetNum = 1);
-
-#endif // DACCESS_COMPILE
-
 // ClrFlushInstructionCache is used when we want to call FlushInstructionCache
 // for a specific architecture in the common code, but not for other architectures.
 // We call ClrFlushInstructionCache whenever we create or modify code in the heap.
 // Currently ClrFlushInstructionCache has no effect on AMD64
 //
 
-inline BOOL ClrFlushInstructionCache(LPCVOID pCodeAddr, size_t sizeOfCode)
+inline BOOL ClrFlushInstructionCache(LPCVOID pCodeAddr, size_t sizeOfCode, bool hasCodeExecutedBefore = false)
 {
-    // FlushInstructionCache(GetCurrentProcess(), pCodeAddr, sizeOfCode);
-    MemoryBarrier();
+    if (hasCodeExecutedBefore)
+    {
+        FlushInstructionCache(GetCurrentProcess(), pCodeAddr, sizeOfCode);
+    }
+    else
+    {
+        MemoryBarrier();
+    }
     return TRUE;
 }
-
-//
-// JIT HELPER ALIASING FOR PORTABILITY.
-//
-// Create alias for optimized implementations of helpers provided on this platform
-//
-#define JIT_GetSharedGCStaticBase           JIT_GetSharedGCStaticBase_SingleAppDomain
-#define JIT_GetSharedNonGCStaticBase        JIT_GetSharedNonGCStaticBase_SingleAppDomain
-#define JIT_GetSharedGCStaticBaseNoCtor     JIT_GetSharedGCStaticBaseNoCtor_SingleAppDomain
-#define JIT_GetSharedNonGCStaticBaseNoCtor  JIT_GetSharedNonGCStaticBaseNoCtor_SingleAppDomain
-
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Call counting
-
-#ifdef FEATURE_TIERED_COMPILATION
-
-#define DISABLE_COPY(T) \
-    T(const T &) = delete; \
-    T &operator =(const T &) = delete
-
-typedef UINT16 CallCount;
-typedef DPTR(CallCount) PTR_CallCount;
-
-////////////////////////////////////////////////////////////////
-// CallCountingStub
-
-class CallCountingStub;
-typedef DPTR(const CallCountingStub) PTR_CallCountingStub;
-
-class CallCountingStub
-{
-public:
-    static const SIZE_T Alignment = sizeof(void *);
-
-#ifndef DACCESS_COMPILE
-protected:
-    static const PCODE TargetForThresholdReached;
-
-    CallCountingStub() = default;
-
-public:
-    static const CallCountingStub *From(TADDR stubIdentifyingToken);
-
-    PCODE GetEntryPoint() const
-    {
-        WRAPPER_NO_CONTRACT;
-        return PINSTRToPCODE((TADDR)this);
-    }
-#endif // !DACCESS_COMPILE
-
-public:
-    PTR_CallCount GetRemainingCallCountCell() const;
-    PCODE GetTargetForMethod() const;
-
-#ifndef DACCESS_COMPILE
-protected:
-    template<class T> static INT_PTR GetRelativeOffset(const T *relRef, PCODE target)
-    {
-        WRAPPER_NO_CONTRACT;
-        static_assert_no_msg(sizeof(T) != 0);
-        static_assert_no_msg(sizeof(T) <= sizeof(void *));
-        static_assert_no_msg((sizeof(T) & (sizeof(T) - 1)) == 0); // is a power of 2
-        _ASSERTE(relRef != nullptr);
-
-        TADDR targetAddress = PCODEToPINSTR(target);
-        _ASSERTE(targetAddress != NULL);
-        return (INT_PTR)targetAddress - (INT_PTR)(relRef + 1);
-    }
-#endif
-
-protected:
-    template<class T> static PCODE GetTarget(const T *relRef)
-    {
-        WRAPPER_NO_CONTRACT;
-        static_assert_no_msg(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8);
-        _ASSERTE(relRef != nullptr);
-
-        return PINSTRToPCODE((INT_PTR)(relRef + 1) + *relRef);
-    }
-
-    DISABLE_COPY(CallCountingStub);
-};
-
-////////////////////////////////////////////////////////////////
-// CallCountingStubShort
-
-class CallCountingStubShort;
-typedef DPTR(const CallCountingStubShort) PTR_CallCountingStubShort;
-class CallCountingStubLong;
-typedef DPTR(const CallCountingStubLong) PTR_CallCountingStubLong;
-
-#pragma pack(push, 1)
-class CallCountingStubShort : public CallCountingStub
-{
-private:
-    const UINT8 m_part0[2];
-    CallCount *const m_remainingCallCountCell;
-    const UINT8 m_part1[5];
-    const INT32 m_rel32TargetForMethod;
-    const UINT8 m_part2[1];
-    const INT32 m_rel32TargetForThresholdReached;
-    const UINT8 m_alignmentPadding[0];
-
-#ifndef DACCESS_COMPILE
-public:
-    CallCountingStubShort(CallCountingStubShort* stubRX, CallCount *remainingCallCountCell, PCODE targetForMethod)
-        : m_part0{                                              0x48, 0xb8},            //     mov  rax,
-        m_remainingCallCountCell(remainingCallCountCell),                               //               <imm64>
-        m_part1{                                                0x66, 0xff, 0x08,       //     dec  word ptr [rax]
-                                                                0x0f, 0x85},            //     jnz
-        m_rel32TargetForMethod(                                                         //          <rel32>
-            GetRelative32BitOffset(
-                &stubRX->m_rel32TargetForMethod,
-                targetForMethod)),
-        m_part2{                                                0xe8},                  //     call
-        m_rel32TargetForThresholdReached(                                               //          <rel32>
-            GetRelative32BitOffset(
-                &stubRX->m_rel32TargetForThresholdReached,
-                TargetForThresholdReached)),
-                                                                                        // (rip == stub-identifying token)
-        m_alignmentPadding{}
-    {
-        WRAPPER_NO_CONTRACT;
-        static_assert_no_msg(sizeof(CallCountingStubShort) % Alignment == 0);
-        _ASSERTE(remainingCallCountCell != nullptr);
-        _ASSERTE(PCODEToPINSTR(targetForMethod) != NULL);
-    }
-
-    static bool Is(TADDR stubIdentifyingToken)
-    {
-        WRAPPER_NO_CONTRACT;
-        static_assert_no_msg((offsetof(CallCountingStubShort, m_alignmentPadding[0]) & 1) == 0);
-
-        return (stubIdentifyingToken & 1) == 0;
-    }
-
-    static const CallCountingStubShort *From(TADDR stubIdentifyingToken)
-    {
-        WRAPPER_NO_CONTRACT;
-        _ASSERTE(Is(stubIdentifyingToken));
-        _ASSERTE(stubIdentifyingToken % Alignment == offsetof(CallCountingStubShort, m_alignmentPadding[0]) % Alignment);
-
-        const CallCountingStubShort *stub =
-            (const CallCountingStubShort *)(stubIdentifyingToken - offsetof(CallCountingStubShort, m_alignmentPadding[0]));
-        _ASSERTE(IS_ALIGNED(stub, Alignment));
-        return stub;
-    }
-#endif // !DACCESS_COMPILE
-
-public:
-    static bool Is(PTR_CallCountingStub callCountingStub)
-    {
-        WRAPPER_NO_CONTRACT;
-        return dac_cast<PTR_CallCountingStubShort>(callCountingStub)->m_part1[4] == 0x85;
-    }
-
-    static PTR_CallCountingStubShort From(PTR_CallCountingStub callCountingStub)
-    {
-        WRAPPER_NO_CONTRACT;
-        _ASSERTE(Is(callCountingStub));
-
-        return dac_cast<PTR_CallCountingStubShort>(callCountingStub);
-    }
-
-    PCODE GetTargetForMethod() const
-    {
-        WRAPPER_NO_CONTRACT;
-        return GetTarget(&m_rel32TargetForMethod);
-    }
-
-#ifndef DACCESS_COMPILE
-private:
-    static bool CanUseRelative32BitOffset(const INT32 *rel32Ref, PCODE target)
-    {
-        WRAPPER_NO_CONTRACT;
-
-        INT_PTR relativeOffset = GetRelativeOffset(rel32Ref, target);
-        return (INT32)relativeOffset == relativeOffset;
-    }
-
-public:
-    static bool CanUseFor(const void *allocationAddress, PCODE targetForMethod)
-    {
-        WRAPPER_NO_CONTRACT;
-
-        const CallCountingStubShort *fakeStub = (const CallCountingStubShort *)allocationAddress;
-        return
-            CanUseRelative32BitOffset(&fakeStub->m_rel32TargetForMethod, targetForMethod) &&
-            CanUseRelative32BitOffset(&fakeStub->m_rel32TargetForThresholdReached, TargetForThresholdReached);
-    }
-
-private:
-    static INT32 GetRelative32BitOffset(const INT32 *rel32Ref, PCODE target)
-    {
-        WRAPPER_NO_CONTRACT;
-
-        INT_PTR relativeOffset = GetRelativeOffset(rel32Ref, target);
-        _ASSERTE((INT32)relativeOffset == relativeOffset);
-        return (INT32)relativeOffset;
-    }
-#endif // !DACCESS_COMPILE
-
-    friend CallCountingStub;
-    friend CallCountingStubLong;
-    DISABLE_COPY(CallCountingStubShort);
-};
-#pragma pack(pop)
-
-////////////////////////////////////////////////////////////////
-// CallCountingStubLong
-
-#pragma pack(push, 1)
-class CallCountingStubLong : public CallCountingStub
-{
-private:
-    const UINT8 m_part0[2];
-    CallCount *const m_remainingCallCountCell;
-    const UINT8 m_part1[7];
-    const PCODE m_targetForMethod;
-    const UINT8 m_part2[4];
-    const PCODE m_targetForThresholdReached;
-    const UINT8 m_part3[2];
-    const UINT8 m_alignmentPadding[1];
-
-#ifndef DACCESS_COMPILE
-public:
-    CallCountingStubLong(CallCount *remainingCallCountCell, PCODE targetForMethod)
-        : m_part0{                                              0x48, 0xb8},            //     mov  rax,
-        m_remainingCallCountCell(remainingCallCountCell),                               //               <imm64>
-        m_part1{                                                0x66, 0xff, 0x08,       //     dec  word ptr [rax]
-                                                                0x74, 0x0c,             //     jz   L0
-                                                                0x48, 0xb8},            //     mov  rax,
-        m_targetForMethod(targetForMethod),                                             //               <imm64>
-        m_part2{                                                0xff, 0xe0,             //     jmp  rax
-                                                                0x48, 0xb8},            // L0: mov  rax,
-        m_targetForThresholdReached(TargetForThresholdReached),                         //               <imm64>
-        m_part3{                                                0xff, 0xd0},            //     call rax
-                                                                                        // (rip == stub-identifying token)
-        m_alignmentPadding{                                     0xcc}                   //     int  3
-    {
-        WRAPPER_NO_CONTRACT;
-        static_assert_no_msg(sizeof(CallCountingStubLong) % Alignment == 0);
-        static_assert_no_msg(sizeof(CallCountingStubLong) > sizeof(CallCountingStubShort));
-        _ASSERTE(remainingCallCountCell != nullptr);
-        _ASSERTE(PCODEToPINSTR(targetForMethod) != NULL);
-    }
-
-    static bool Is(TADDR stubIdentifyingToken)
-    {
-        WRAPPER_NO_CONTRACT;
-        static_assert_no_msg((offsetof(CallCountingStubLong, m_alignmentPadding[0]) & 1) != 0);
-
-        return (stubIdentifyingToken & 1) != 0;
-    }
-
-    static const CallCountingStubLong *From(TADDR stubIdentifyingToken)
-    {
-        WRAPPER_NO_CONTRACT;
-        _ASSERTE(Is(stubIdentifyingToken));
-        _ASSERTE(stubIdentifyingToken % Alignment == offsetof(CallCountingStubLong, m_alignmentPadding[0]) % Alignment);
-
-        const CallCountingStubLong *stub =
-            (const CallCountingStubLong *)(stubIdentifyingToken - offsetof(CallCountingStubLong, m_alignmentPadding[0]));
-        _ASSERTE(IS_ALIGNED(stub, Alignment));
-        return stub;
-    }
-#endif // !DACCESS_COMPILE
-
-public:
-    static bool Is(PTR_CallCountingStub callCountingStub)
-    {
-        WRAPPER_NO_CONTRACT;
-        static_assert_no_msg(offsetof(CallCountingStubShort, m_part1[4]) == offsetof(CallCountingStubLong, m_part1[4]));
-        static_assert_no_msg(sizeof(CallCountingStubShort::m_part1[4]) == sizeof(CallCountingStubLong::m_part1[4]));
-
-        return dac_cast<PTR_CallCountingStubLong>(callCountingStub)->m_part1[4] == 0x0c;
-    }
-
-    static PTR_CallCountingStubLong From(PTR_CallCountingStub callCountingStub)
-    {
-        WRAPPER_NO_CONTRACT;
-        _ASSERTE(Is(callCountingStub));
-
-        return dac_cast<PTR_CallCountingStubLong>(callCountingStub);
-    }
-
-    PCODE GetTargetForMethod() const
-    {
-        WRAPPER_NO_CONTRACT;
-        return m_targetForMethod;
-    }
-
-    friend CallCountingStub;
-    DISABLE_COPY(CallCountingStubLong);
-};
-#pragma pack(pop)
-
-////////////////////////////////////////////////////////////////
-// CallCountingStub definitions
-
-#ifndef DACCESS_COMPILE
-inline const CallCountingStub *CallCountingStub::From(TADDR stubIdentifyingToken)
-{
-    WRAPPER_NO_CONTRACT;
-    _ASSERTE(stubIdentifyingToken != NULL);
-
-    return
-        CallCountingStubShort::Is(stubIdentifyingToken)
-            ? (const CallCountingStub *)CallCountingStubShort::From(stubIdentifyingToken)
-            : (const CallCountingStub *)CallCountingStubLong::From(stubIdentifyingToken);
-}
-#endif
-
-inline PTR_CallCount CallCountingStub::GetRemainingCallCountCell() const
-{
-    WRAPPER_NO_CONTRACT;
-    static_assert_no_msg(
-        offsetof(CallCountingStubShort, m_remainingCallCountCell) ==
-        offsetof(CallCountingStubLong, m_remainingCallCountCell));
-
-    return PTR_CallCount(dac_cast<PTR_CallCountingStubShort>(this)->m_remainingCallCountCell);
-}
-
-inline PCODE CallCountingStub::GetTargetForMethod() const
-{
-    WRAPPER_NO_CONTRACT;
-
-    return
-        CallCountingStubShort::Is(PTR_CallCountingStub(this))
-            ? CallCountingStubShort::From(PTR_CallCountingStub(this))->GetTargetForMethod()
-            : CallCountingStubLong::From(PTR_CallCountingStub(this))->GetTargetForMethod();
-}
-
-////////////////////////////////////////////////////////////////
-
-#undef DISABLE_COPY
-
-#endif // FEATURE_TIERED_COMPILATION
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #endif // __cgencpu_h__

@@ -20,14 +20,14 @@ namespace System
         public static bool IsWindows => RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
         public static bool IsNetFramework => RuntimeInformation.FrameworkDescription.StartsWith(".NET Framework", StringComparison.OrdinalIgnoreCase);
         public static bool HasWindowsShell => IsWindows && IsNotWindowsServerCore && IsNotWindowsNanoServer && IsNotWindowsIoTCore;
-        public static bool IsWindows7 => IsWindows && GetWindowsVersion() == 6 && GetWindowsMinorVersion() == 1;
         public static bool IsWindows8x => IsWindows && GetWindowsVersion() == 6 && (GetWindowsMinorVersion() == 2 || GetWindowsMinorVersion() == 3);
-        public static bool IsWindows8xOrLater => IsWindowsVersionOrLater(6, 2);
         public static bool IsWindows10OrLater => IsWindowsVersionOrLater(10, 0);
+        public static bool IsWindowsServer2019 => IsWindows && IsNotWindowsNanoServer && GetWindowsVersion() == 10 && GetWindowsMinorVersion() == 0 && GetWindowsBuildVersion() == 17763;
+        public static bool IsWindowsServer2022 => IsWindows && IsNotWindowsNanoServer && GetWindowsVersion() == 10 && GetWindowsMinorVersion() == 0 && GetWindowsBuildVersion() == 20348;
+        public static bool IsWindowsServer2025 => IsWindows && IsNotWindowsNanoServer && GetWindowsVersion() == 10 && GetWindowsMinorVersion() == 0 && GetWindowsBuildVersion() == 26100;
         public static bool IsWindowsNanoServer => IsWindows && (IsNotWindowsIoTCore && GetWindowsInstallationType().Equals("Nano Server", StringComparison.OrdinalIgnoreCase));
         public static bool IsWindowsServerCore => IsWindows && GetWindowsInstallationType().Equals("Server Core", StringComparison.OrdinalIgnoreCase);
         public static int WindowsVersion => IsWindows ? (int)GetWindowsVersion() : -1;
-        public static bool IsNotWindows7 => !IsWindows7;
         public static bool IsNotWindows8x => !IsWindows8x;
         public static bool IsNotWindowsNanoServer => !IsWindowsNanoServer;
         public static bool IsNotWindowsServerCore => !IsWindowsServerCore;
@@ -56,10 +56,23 @@ namespace System
         // >= Windows 10 20H1 Update
         public static bool IsWindows10Version2004OrGreater => IsWindowsVersionOrLater(10, 0, 19041);
 
-        public static bool IsWindows10Version2004Build19573OrGreater => IsWindowsVersionOrLater(10, 0, 19573);
+        // WinHTTP update
+        public static bool IsWindows10Version19573OrGreater => IsWindowsVersionOrLater(10, 0, 19573);
+
+        // Windows Server 2022
+        public static bool IsWindows10Version20348OrGreater => IsWindowsVersionOrLater(10, 0, 20348);
+        public static bool IsWindows10Version20348OrLower => IsWindowsVersionOrEarlier(10, 0, 20348);
 
         // Windows 11 aka 21H2
         public static bool IsWindows10Version22000OrGreater => IsWindowsVersionOrLater(10, 0, 22000);
+
+        // Windows 11 2024 Update (24H2)
+        public static bool IsWindows10Version26100OrGreater => IsWindowsVersionOrLater(10, 0, 26100);
+
+        // TODO (https://github.com/dotnet/runtime/issues/129787): This build has Composite ML-DSA support but is a preview build.
+        // This should be changed to the next official release build once it is available.
+        // Windows 11 Preview Build 28120 (Experimental Channel)
+        public static bool IsWindows10Version28120OrGreater => IsWindowsVersionOrLater(10, 0, 28120);
 
         public static bool IsWindowsIoTCore
         {
@@ -110,17 +123,15 @@ namespace System
         private static string GetWindowsInstallationType()
         {
             string key = @"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion";
-            string value = "";
 
             try
             {
-                value = (string)Registry.GetValue(key, "InstallationType", defaultValue: "");
+                return Registry.GetValue(key, "InstallationType", defaultValue: "") as string ?? "";
             }
-            catch (Exception e) when (e is SecurityException || e is InvalidCastException)
+            catch (SecurityException)
             {
+                return "";
             }
-
-            return value;
         }
 
         private static int GetWindowsProductType()
@@ -140,8 +151,9 @@ namespace System
         private const int PRODUCT_HOME_PREMIUM = 0x00000003;
         private const int PRODUCT_HOME_PREMIUM_N = 0x0000001A;
 
-        [DllImport("kernel32.dll", SetLastError = false)]
-        private static extern bool GetProductInfo(
+        [LibraryImport("kernel32.dll", SetLastError = false)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static partial bool GetProductInfo(
             int dwOSMajorVersion,
             int dwOSMinorVersion,
             int dwSpMajorVersion,
@@ -149,8 +161,8 @@ namespace System
             out int pdwReturnedProductType
         );
 
-        [DllImport("kernel32.dll", ExactSpelling = true)]
-        private static extern int GetCurrentApplicationUserModelId(ref uint applicationUserModelIdLength, byte[] applicationUserModelId);
+        [LibraryImport("kernel32.dll")]
+        private static partial int GetCurrentApplicationUserModelId(ref uint applicationUserModelIdLength, byte[] applicationUserModelId);
 
         private static volatile Version s_windowsVersionObject;
         internal static Version GetWindowsVersionObject()
@@ -167,10 +179,16 @@ namespace System
 
         internal static uint GetWindowsVersion() => (uint)GetWindowsVersionObject().Major;
         internal static uint GetWindowsMinorVersion() => (uint)GetWindowsVersionObject().Minor;
+        internal static uint GetWindowsBuildVersion() => (uint)GetWindowsVersionObject().Build;
 
         internal static bool IsWindowsVersionOrLater(int major, int minor, int build = -1)
         {
             return IsWindows && GetWindowsVersionObject() >= (build != -1 ? new Version(major, minor, build) : new Version(major, minor));
+        }
+
+        internal static bool IsWindowsVersionOrEarlier(int major, int minor, int build = -1)
+        {
+            return IsWindows && GetWindowsVersionObject() <= (build != -1 ? new Version(major, minor, build) : new Version(major, minor));
         }
 
         private static int s_isInAppContainer = -1;
@@ -185,7 +203,7 @@ namespace System
                 if (s_isInAppContainer != -1)
                     return s_isInAppContainer == 1;
 
-                if (!IsWindows || IsWindows7)
+                if (!IsWindows)
                 {
                     s_isInAppContainer = 0;
                     return false;
@@ -206,7 +224,7 @@ namespace System
                             break;
                         case 0:     // ERROR_SUCCESS
                         case 122:   // ERROR_INSUFFICIENT_BUFFER
-                                    // Success is actually insufficent buffer as we're really only looking for
+                                    // Success is actually insufficient buffer as we're really only looking for
                                     // not NO_APPLICATION and we're not actually giving a buffer here. The
                                     // API will always return NO_APPLICATION if we're not running under a
                                     // WinRT process, no matter what size the buffer is.
@@ -235,24 +253,9 @@ namespace System
             }
         }
 
-        private static int s_isWindowsElevated = -1;
-        public static bool IsWindowsAndElevated
-        {
-            get
-            {
-                if (s_isWindowsElevated != -1)
-                    return s_isWindowsElevated == 1;
+        public static bool CanRunImpersonatedTests => PlatformDetection.IsNotWindowsNanoServer && PlatformDetection.IsWindows && PlatformDetection.IsPrivilegedProcess;
 
-                if (!IsWindows || IsInAppContainer)
-                {
-                    s_isWindowsElevated = 0;
-                    return false;
-                }
+        public static bool IsWindowsX86OrX64 => PlatformDetection.IsWindows && (PlatformDetection.IsX86Process || PlatformDetection.IsX64Process);
 
-                s_isWindowsElevated = AdminHelpers.IsProcessElevated() ? 1 : 0;
-
-                return s_isWindowsElevated == 1;
-            }
-        }
     }
 }

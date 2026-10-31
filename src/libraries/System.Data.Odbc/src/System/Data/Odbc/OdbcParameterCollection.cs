@@ -12,8 +12,6 @@ namespace System.Data.Odbc
     {
         private bool _rebindCollection;   // The collection needs to be (re)bound
 
-        private static readonly Type s_itemType = typeof(OdbcParameter);
-
         internal OdbcParameterCollection() : base()
         {
         }
@@ -64,7 +62,7 @@ namespace System.Data.Odbc
         }
 
         [EditorBrowsableAttribute(EditorBrowsableState.Never)]
-        [ObsoleteAttribute("Add(String parameterName, Object value) has been deprecated. Use AddWithValue(String parameterName, Object value) instead.")]
+        [Obsolete("Add(String parameterName, Object value) has been deprecated. Use AddWithValue(String parameterName, Object value) instead.")]
         public OdbcParameter Add(string? parameterName, object? value)
         {
             // MDAC 59206

@@ -2,23 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 /*++
-
-
-
 Module Name:
-
     debug.c
 
 Abstract:
-
     Implementation of Win32 debugging API functions.
-
-Revision History:
-
-
-
 --*/
-
 
 #include "pal/dbgmsg.h"
 SET_DEFAULT_DEBUG_CHANNEL(DEBUG); // some headers have code with asserts, so do this first
@@ -32,19 +21,19 @@ SET_DEFAULT_DEBUG_CHANNEL(DEBUG); // some headers have code with asserts, so do 
 #include "pal/context.h"
 #include "pal/debug.h"
 #include "pal/environ.h"
-#include "pal/malloc.hpp"
 #include "pal/module.h"
 #include "pal/stackstring.hpp"
-#include "pal/virtual.h"
 #include "pal/utils.h"
+#include <minipal/ospagesize.h>
 
 #include <signal.h>
 #include <unistd.h>
+#include <fcntl.h>
 #if HAVE_PROCFS_CTL
 #include <unistd.h>
-#elif HAVE_TTRACE // HAVE_PROCFS_CTL
+#elif defined(HAVE_TTRACE) // HAVE_PROCFS_CTL
 #include <sys/ttrace.h>
-#else // HAVE_TTRACE
+#elif HAVE_SYS_PTRACE_H
 #include <sys/ptrace.h>
 #endif  // HAVE_PROCFS_CTL
 #if HAVE_VM_READ
@@ -60,8 +49,14 @@ SET_DEFAULT_DEBUG_CHANNEL(DEBUG); // some headers have code with asserts, so do 
 
 #ifdef __APPLE__
 #include <mach/mach.h>
+#if defined(TARGET_OSX)
 #include <mach/mach_vm.h>
+#endif
 #endif // __APPLE__
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten/heap.h>
+#endif // __EMSCRIPTEN__
 
 #if HAVE_MACH_EXCEPTIONS
 #include "../exception/machexception.h"
@@ -70,13 +65,6 @@ SET_DEFAULT_DEBUG_CHANNEL(DEBUG); // some headers have code with asserts, so do 
 using namespace CorUnix;
 
 extern "C" void DBG_DebugBreak_End();
-extern size_t OffsetWithinPage(off_t addr);
-
-#if HAVE_PROCFS_CTL
-#define CTL_ATTACH      "attach"
-#define CTL_DETACH      "detach"
-#define CTL_WAIT        "wait"
-#endif   // HAVE_PROCFS_CTL
 
 /* ------------------- Constant definitions ----------------------------------*/
 
@@ -86,7 +74,7 @@ const BOOL DBG_DETACH       = FALSE;
 #endif
 static const char PAL_OUTPUTDEBUGSTRING[]    = "PAL_OUTPUTDEBUGSTRING";
 
-#ifdef _DEBUG
+#if defined(_DEBUG) && !defined(TARGET_IOS) && !defined(TARGET_TVOS)
 #define ENABLE_RUN_ON_DEBUG_BREAK 1
 #endif // _DEBUG
 
@@ -108,6 +96,9 @@ Remarks
 This is a no-op for x86 architectures where the instruction and data
 caches are coherent in hardware. For non-X86 architectures, this call
 usually maps to a kernel API to flush the D-caches on all processors.
+
+It is also no-op on wasm. We don't have a way to flush the instruction
+cache and it is also not needed.
 
 --*/
 BOOL
@@ -203,7 +194,7 @@ OutputDebugStringW(
     }
 
     /* strLen includes the null terminator */
-    if ((lpOutputStringA = (LPSTR) InternalMalloc((strLen * sizeof(CHAR)))) == NULL)
+    if ((lpOutputStringA = (LPSTR) malloc((strLen * sizeof(CHAR)))) == NULL)
     {
         ERROR("Insufficient memory available !\n");
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
@@ -357,7 +348,7 @@ DebugBreakCommand()
            variables in the child process, but if we do that we can't check
            for errors. putenv/setenv can fail when out of memory */
 
-        if (!EnvironPutenv (pid_buf, FALSE) || !EnvironPutenv (exe_buf, FALSE))
+        if (!EnvironPutenv (pid_buf) || !EnvironPutenv (exe_buf))
         {
             goto FAILED;
         }
@@ -420,7 +411,12 @@ Function:
 BOOL
 IsInDebugBreak(void *addr)
 {
+#ifdef TARGET_WASM
+    _ASSERT("IsInDebugBreak not implemented on wasm");
+    return false;
+#else
     return (addr >= (void *)DBG_DebugBreak) && (addr <= (void *)DBG_DebugBreak_End);
+#endif
 }
 
 /*++
@@ -543,182 +539,6 @@ SetThreadContext(
     return ret;
 }
 
-/*++
-Function:
-  PAL_OpenProcessMemory
-
-Abstract
-  Creates the handle for PAL_ReadProcessMemory.
-
-Parameter
-  processId : process id to read memory
-  pHandle : returns a platform specific handle or UINT32_MAX if failed
-
-Return
-  true successful, false invalid process id or not supported.
---*/
-BOOL
-PALAPI
-PAL_OpenProcessMemory(
-    IN DWORD processId,
-    OUT DWORD* pHandle
-)
-{
-    ENTRY("PAL_OpenProcessMemory(pid=%d)\n", processId);
-    _ASSERTE(pHandle != nullptr);
-    *pHandle = UINT32_MAX;
-#ifdef __APPLE__
-    mach_port_name_t port;
-    kern_return_t result = ::task_for_pid(mach_task_self(), (int)processId, &port);
-    if (result != KERN_SUCCESS)
-    {
-        ERROR("task_for_pid(%d) FAILED %x %s\n", processId, result, mach_error_string(result));
-        LOGEXIT("PAL_OpenProcessMemory FALSE\n");
-        return FALSE;
-    }
-    *pHandle = port;
-#else
-    char memPath[128];
-    _snprintf_s(memPath, sizeof(memPath), sizeof(memPath), "/proc/%lu/mem", processId);
-
-    int fd = open(memPath, O_RDONLY);
-    if (fd == -1)
-    {
-        ERROR("open(%s) FAILED %d (%s)\n", memPath, errno, strerror(errno));
-        LOGEXIT("PAL_OpenProcessMemory FALSE\n");
-        return FALSE;
-    }
-    *pHandle = fd;
-#endif
-    LOGEXIT("PAL_OpenProcessMemory TRUE\n");
-    return TRUE;
-}
-
-/*++
-Function:
-  PAL_CloseProcessMemory
-
-Abstract
-  Closes the PAL_OpenProcessMemory handle.
-
-Parameter
-  handle : from PAL_OpenProcessMemory
-
-Return
-  none
---*/
-VOID
-PALAPI
-PAL_CloseProcessMemory(
-    IN DWORD handle
-)
-{
-    ENTRY("PAL_CloseProcessMemory(handle=%x)\n", handle);
-    if (handle != UINT32_MAX)
-    {
-#ifdef __APPLE__
-        kern_return_t result = ::mach_port_deallocate(mach_task_self(), (mach_port_name_t)handle);
-        if (result != KERN_SUCCESS)
-        {
-            ERROR("mach_port_deallocate FAILED %x %s\n", result, mach_error_string(result));
-        }
-#else
-        close(handle);
-#endif
-    }
-    LOGEXIT("PAL_CloseProcessMemory\n");
-}
-
-/*++
-Function:
-  PAL_ReadProcessMemory
-
-Abstract
-  Reads process memory. 
-
-Parameter
-  handle : from PAL_OpenProcessMemory
-  address : address of memory to read
-  buffer : buffer to read memory to
-  size : number of bytes to read
-  numberOfBytesRead: number of bytes read (optional)
-
-Return
-  true read memory is successful, false if not.
---*/
-BOOL
-PALAPI
-PAL_ReadProcessMemory(
-    IN DWORD handle,
-    IN ULONG64 address,
-    IN LPVOID buffer,
-    IN SIZE_T size,
-    OUT SIZE_T* numberOfBytesRead)
-{
-    ENTRY("PAL_ReadProcessMemory(handle=%x, address=%p buffer=%p size=%d)\n", handle, (void*)address, buffer, size);
-    _ASSERTE(handle != 0);
-    _ASSERTE(numberOfBytesRead != nullptr);
-    BOOL result = TRUE;
-    size_t read = 0;
-#ifdef __APPLE__
-    vm_map_t task = (vm_map_t)handle;
-
-    // vm_read_overwrite usually requires that the address be page-aligned
-    // and the size be a multiple of the page size.  We can't differentiate
-    // between the cases in which that's required and those in which it
-    // isn't, so we do it all the time.
-    const size_t pageSize = GetVirtualPageSize();
-    vm_address_t addressAligned = ALIGN_DOWN(address, pageSize);
-    ssize_t offset = OffsetWithinPage(address);
-    ssize_t bytesLeft = size;
-
-    char *data = (char*)malloc(pageSize);
-    if (data != nullptr)
-    {
-        while (bytesLeft > 0)
-        {
-            vm_size_t bytesRead = pageSize;
-            kern_return_t result = ::vm_read_overwrite(task, addressAligned, pageSize, (vm_address_t)data, &bytesRead);
-            if (result != KERN_SUCCESS || bytesRead != pageSize)
-            {
-                TRACE("PAL_ReadProcessMemory(%p %d): vm_read_overwrite failed bytesLeft %d bytesRead %d from %p: %x %s\n",
-                    (void*)address, size, bytesLeft, bytesRead, (void*)addressAligned, result, mach_error_string(result));
-                break;
-            }
-            ssize_t bytesToCopy = pageSize - offset;
-            if (bytesToCopy > bytesLeft)
-            {
-                bytesToCopy = bytesLeft;
-            }
-            memcpy((LPSTR)buffer + read, data + offset, bytesToCopy);
-            addressAligned = addressAligned + pageSize;
-            read += bytesToCopy;
-            bytesLeft -= bytesToCopy;
-            offset = 0;
-        }
-        result = size == 0 || read > 0;
-    }
-    else
-    {
-        ERROR("malloc(%d) FAILED\n", pageSize);
-        result = FALSE;
-    }
-
-    if (data != nullptr)
-    {
-        free(data);
-    }
-#else
-    read = pread(handle, buffer, size, address);
-    if (read == (size_t)-1)
-    {
-        result = FALSE;
-    }
-#endif
-    *numberOfBytesRead = read;
-    LOGEXIT("PAL_ReadProcessMemory result=%d bytes read=%d\n", result, read);
-    return result;
-}
 
 /*++
 Function:
@@ -741,6 +561,13 @@ PAL_ProbeMemory(
     DWORD cbBuffer,
     BOOL fWriteAccess)
 {
+#if defined(TARGET_BROWSER)
+    if ((uintptr_t)((PBYTE)pBuffer + cbBuffer) <= emscripten_get_heap_size())
+    {
+        return TRUE;
+    }
+    return FALSE;
+#else // TARGET_BROWSER
     int fds[2];
     int flags;
 
@@ -752,7 +579,7 @@ PAL_ProbeMemory(
 
     flags = fcntl(fds[0], F_GETFL, 0);
     fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
-    
+
     flags = fcntl(fds[1], F_GETFL, 0);
     fcntl(fds[1], F_SETFL, flags | O_NONBLOCK);
 
@@ -790,13 +617,14 @@ PAL_ProbeMemory(
         }
 
         // Round to the beginning of the next page
-        pBuffer = PVOID(ALIGN_DOWN((SIZE_T)pBuffer, GetVirtualPageSize()) + GetVirtualPageSize());
+        pBuffer = PVOID(ALIGN_DOWN((SIZE_T)pBuffer, minipal_getpagesize()) + minipal_getpagesize());
     }
 
     close(fds[0]);
     close(fds[1]);
 
     return result;
+#endif // TARGET_BROWSER
 }
 
 } // extern "C"

@@ -13,7 +13,9 @@ internal static partial class Interop
             return CryptEncodeObject(dwCertEncodingType, (nint)lpszStructType, pvStructInfo, pbEncoded, ref pcbEncoded);
         }
 
-        [GeneratedDllImport(Libraries.Crypt32, SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.Crypt32, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
         private static unsafe partial bool CryptEncodeObject(
             MsgEncodingType dwCertEncodingType,
             nint lpszStructType,

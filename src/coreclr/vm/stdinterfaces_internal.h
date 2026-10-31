@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-
 #ifndef _H_INTERNAL_STDINTERFACES
 #define _H_INTERNAL_STDINTERFACES
 
@@ -13,8 +12,6 @@
 // prototypes IUnknown methods
 HRESULT Unknown_QueryInterface_Internal (
                         ComCallWrapper* pWrap, IUnknown* pUnk, REFIID riid, void** ppv);
-HRESULT __stdcall   Unknown_QueryInterface_IErrorInfo_Simple (
-                        IUnknown* pUnk, REFIID riid, void** ppv);
 
 ULONG __stdcall     Unknown_AddRef_Internal(IUnknown* pUnk);
 ULONG __stdcall     Unknown_Release_Internal(IUnknown* pUnk);
@@ -55,7 +52,7 @@ HRESULT __stdcall ErrorInfo_GetSource(IUnknown* pUnk, BSTR* pbstrSource);
 
 
 //------------------------------------------------------------------------------------------
-//      IDispatch methods for COM+ objects. These methods dispatch to the appropriate
+//      IDispatch methods for CLR objects. These methods dispatch to the appropriate
 //      implementation based on the flags of the class that implements them.
 
 
@@ -76,7 +73,7 @@ HRESULT __stdcall   Dispatch_GetTypeInfo (
 HRESULT __stdcall   Dispatch_GetIDsOfNames (
                                     IDispatch* pDisp,
                                     REFIID riid,
-                                    __in_ecount(cNames) OLECHAR **rgszNames,
+                                    _In_reads_(cNames) OLECHAR **rgszNames,
                                     unsigned int cNames,
                                     LCID lcid,
                                     DISPID *rgdispid);
@@ -93,43 +90,15 @@ HRESULT __stdcall   Dispatch_Invoke (
                                     EXCEPINFO *pexcepinfo,
                                     unsigned int *puArgErr);
 
-
 //------------------------------------------------------------------------------------------
-//      IDispatch methods for COM+ objects that use our OleAut's implementation.
-
-
-// IDispatch::GetIDsofNames
-HRESULT __stdcall   OleAutDispatchImpl_GetIDsOfNames (
-                                    IDispatch* pDisp,
-                                    REFIID riid,
-                                    __in_ecount(cNames) OLECHAR **rgszNames,
-                                    unsigned int cNames,
-                                    LCID lcid,
-                                    DISPID *rgdispid);
-
-// IDispatch::Invoke
-HRESULT __stdcall   OleAutDispatchImpl_Invoke (
-                                    IDispatch* pDisp,
-                                    DISPID dispidMember,
-                                    REFIID riid,
-                                    LCID lcid,
-                                    unsigned short wFlags,
-                                    DISPPARAMS *pdispparams,
-                                    VARIANT *pvarResult,
-                                    EXCEPINFO *pexcepinfo,
-                                    unsigned int *puArgErr);
-
-
-
-//------------------------------------------------------------------------------------------
-//      IDispatch methods for COM+ objects that use our internal implementation.
+//      IDispatch methods for CLR objects that use our internal implementation.
 
 
 // IDispatch::GetIDsofNames
 HRESULT __stdcall   InternalDispatchImpl_GetIDsOfNames (
                                     IDispatch* pDisp,
                                     REFIID riid,
-                                    __in_ecount(cNames) OLECHAR **rgszNames,
+                                    _In_reads_(cNames) OLECHAR **rgszNames,
                                     unsigned int cNames,
                                     LCID lcid,
                                     DISPID *rgdispid);
@@ -148,7 +117,7 @@ HRESULT __stdcall   InternalDispatchImpl_Invoke (
 
 
 //------------------------------------------------------------------------------------------
-//      IDispatchEx methods for COM+ objects
+//      IDispatchEx methods for CLR objects
 
 
 // IDispatchEx::GetTypeInfoCount
@@ -168,7 +137,7 @@ HRESULT __stdcall   DispatchEx_GetTypeInfo (
 HRESULT __stdcall   DispatchEx_GetIDsOfNames (
                                     IDispatchEx* pDisp,
                                     REFIID riid,
-                                    __in_ecount(cNames) OLECHAR **rgszNames,
+                                    _In_reads_(cNames) OLECHAR **rgszNames,
                                     unsigned int cNames,
                                     LCID lcid,
                                     DISPID *rgdispid);
@@ -240,7 +209,7 @@ HRESULT __stdcall   DispatchEx_InvokeEx (
                                     IServiceProvider *pspCaller);
 
 //------------------------------------------------------------------------------------------
-//      IMarshal methods for COM+ objects
+//      IMarshal methods for CLR objects
 
 HRESULT __stdcall Marshal_GetUnmarshalClass (
                                     IMarshal* pMarsh,
@@ -271,7 +240,7 @@ HRESULT __stdcall Marshal_DisconnectObject (IMarshal* pMarsh, ULONG dwReserved);
 
 
 //------------------------------------------------------------------------------------------
-//      IConnectionPointContainer methods for COM+ objects
+//      IConnectionPointContainer methods for CLR objects
 
 interface IEnumConnectionPoints;
 
@@ -283,7 +252,7 @@ HRESULT __stdcall ConnectionPointContainer_FindConnectionPoint(IUnknown* pUnk,
                                     IConnectionPoint **ppCP);
 
 //------------------------------------------------------------------------------------------
-//      IObjectSafety methods for COM+ objects
+//      IObjectSafety methods for CLR objects
 
 interface IObjectSafety;
 

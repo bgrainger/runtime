@@ -1,6 +1,6 @@
 /**
  * \file
- * these are based on bob smith's csharp routines 
+ * these are based on bob smith's csharp routines
  *
  * Author:
  *	Mono Project (http://www.mono-project.com)
@@ -17,7 +17,8 @@
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 //
 // Files:
-//  - src/classlibnative/float/floatnative.cpp
+//  - src/coreclr/vm/floatdouble.cpp
+//  - src/coreclr/vm/floatsingle.cpp
 //  - src/pal/src/cruntime/floatnative.cpp
 //
 // Ported from C++ to C and adjusted to Mono runtime
@@ -44,60 +45,54 @@ ves_icall_System_Math_Round (gdouble x)
 }
 
 gdouble
-ves_icall_System_Math_FMod (gdouble x, gdouble y)
-{
-	return fmod (x, y);
-}
-
-gdouble
 ves_icall_System_Math_ModF (gdouble x, gdouble *d)
 {
 	return modf (x, d);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Sin (gdouble x)
 {
 	return sin (x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Cos (gdouble x)
 {
 	return cos (x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Cbrt (gdouble x)
 {
 	return cbrt (x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Tan (gdouble x)
 {
 	return tan (x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Sinh (gdouble x)
 {
 	return sinh (x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Cosh (gdouble x)
 {
 	return cosh (x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Tanh (gdouble x)
 {
 	return tanh (x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Acos (gdouble x)
 {
 	return acos (x);
@@ -109,76 +104,64 @@ ves_icall_System_Math_Acosh (gdouble x)
 	return acosh (x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Asin (gdouble x)
 {
 	return asin (x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Asinh (gdouble x)
 {
 	return asinh (x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Atan (gdouble x)
 {
 	return atan (x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Atan2 (gdouble y, gdouble x)
 {
 	return atan2 (y, x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Atanh (gdouble x)
 {
 	return atanh (x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Exp (gdouble x)
 {
 	return exp (x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Log (gdouble x)
 {
 	return log (x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Log10 (gdouble x)
 {
 	return log10 (x);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Pow (gdouble x, gdouble y)
 {
 	return pow (x, y);
 }
 
-gdouble 
+gdouble
 ves_icall_System_Math_Sqrt (gdouble x)
 {
 	return sqrt (x);
-}
-
-gdouble
-ves_icall_System_Math_Abs_double (gdouble v)
-{
-	return fabs (v);
-}
-
-float
-ves_icall_System_Math_Abs_single (float v)
-{
-	return fabsf (v);
 }
 
 gdouble
@@ -226,7 +209,7 @@ ves_icall_System_MathF_Asinh  (float x)
 float
 ves_icall_System_MathF_Atan  (float x)
 {
-	return atan (x);
+	return atanf (x);
 }
 
 float
@@ -304,7 +287,7 @@ ves_icall_System_MathF_Sin (float x)
 float
 ves_icall_System_MathF_Sinh (float x)
 {
-	return sinh (x);
+	return sinhf (x);
 }
 
 float
@@ -322,13 +305,7 @@ ves_icall_System_MathF_Tan (float x)
 float
 ves_icall_System_MathF_Tanh (float x)
 {
-	return tanh (x);
-}
-
-float
-ves_icall_System_MathF_FMod (float x, float y)
-{
-	return fmodf (x, y);
+	return tanhf (x);
 }
 
 float

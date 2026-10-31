@@ -2,11 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.Xml;
-using System.Xml.Schema;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text;
+using System.Xml;
+using System.Xml.Schema;
 
 namespace System.Xml.Xsl
 {
@@ -54,7 +54,7 @@ namespace System.Xml.Xsl
             }
             else
             {
-                return new XmlQualifiedNameTest(name == null ? wildcard : name, ns == null ? wildcard : ns, false);
+                return new XmlQualifiedNameTest(name ?? wildcard, ns ?? wildcard, false);
             }
         }
 
@@ -189,7 +189,7 @@ namespace System.Xml.Xsl
         /// True if neither name nor namespace is a wildcard
         /// </summary>
         public bool IsSingleName {
-            get { return (object)this.Name != (object)wildcard && (object)this.Namespace != (object)wildcard  && this.exclude == false; }
+            get { return (object)this.Name != (object)wildcard && (object)this.Namespace != (object)wildcard  && !this.exclude; }
         }
 
         /// <summary>

@@ -2,7 +2,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 //
 
+namespace JitTest_Generics_TypeParameters_default_struct01;
+
 using System;
+using Xunit;
 
 public struct ValX0 { }
 public struct ValY0 { }
@@ -54,7 +57,9 @@ public class Test_default_struct01
 
     }
 
-    public static int Main()
+    [OuterLoop]
+    [Fact]
+    public static int TestEntryPoint()
     {
         Eval(new Gen<int>().DefaultTest(false));
         Eval(new Gen<double>().DefaultTest(false));

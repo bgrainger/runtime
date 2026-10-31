@@ -28,7 +28,7 @@ LEAF_ENTRY JIT_WriteBarrier_Debug, _TEXT
         add     r10, [rax]
         PREPARE_EXTERNAL_VAR g_GCShadowEnd, r11
         cmp     r10, [r11]
-        ja      NoShadow
+        jnb     NoShadow
 
         // Write ref into real GC// see comment below about possibility of AV
         mov     [rdi], rsi
@@ -74,7 +74,7 @@ LEAF_ENTRY JIT_WriteBarrier_Debug, _TEXT
         je      CheckCardTable_Debug
         mov     r10, rdi
         shr     r10, 0xC // SoftwareWriteWatch::AddressToTableByteIndexShift
-        PREPARE_EXTERNAL_VAR g_sw_ww_table, r11
+        PREPARE_EXTERNAL_VAR g_write_watch_table, r11
         add     r10, qword ptr [r11]
         cmp     byte ptr [r10], 0x0
         jne     CheckCardTable_Debug

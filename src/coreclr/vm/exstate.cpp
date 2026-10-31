@@ -13,28 +13,24 @@
 #include "comutilnative.h"      // for assertions only
 #endif
 
-OBJECTHANDLE ThreadExceptionState::GetThrowableAsHandle()
-{
-    WRAPPER_NO_CONTRACT;
 
-#ifdef FEATURE_EH_FUNCLETS
+// See ExInfo::GetThrowableAsPseudoHandle for details on the pseudo-handle.
+OBJECTHANDLE ThreadExceptionState::GetThrowableAsPseudoHandle()
+{
+    LIMITED_METHOD_DAC_CONTRACT;
+
     if (m_pCurrentTracker)
     {
-        return m_pCurrentTracker->m_hThrowable;
+        return m_pCurrentTracker->GetThrowableAsPseudoHandle();
     }
 
-    return NULL;
-#else // FEATURE_EH_FUNCLETS
-    return m_currentExInfo.m_hThrowable;
-#endif // FEATURE_EH_FUNCLETS
+    return (OBJECTHANDLE)NULL;
 }
 
 
 ThreadExceptionState::ThreadExceptionState()
 {
-#ifdef FEATURE_EH_FUNCLETS
     m_pCurrentTracker = NULL;
-#endif // FEATURE_EH_FUNCLETS
 
     m_flag = TEF_None;
 
@@ -52,48 +48,6 @@ ThreadExceptionState::~ThreadExceptionState()
 #endif // !TARGET_UNIX
 }
 
-#if defined(_DEBUG)
-void ThreadExceptionState::AssertStackTraceInfo(StackTraceInfo *pSTI)
-{
-    LIMITED_METHOD_CONTRACT;
-#if defined(FEATURE_EH_FUNCLETS)
-
-    _ASSERTE(pSTI == &(m_pCurrentTracker->m_StackTraceInfo) || pSTI == &(m_OOMTracker.m_StackTraceInfo));
-
-#else  // !FEATURE_EH_FUNCLETS
-
-    _ASSERTE(pSTI == &(m_currentExInfo.m_StackTraceInfo));
-
-#endif // !FEATURE_EH_FUNCLETS
-} // void ThreadExceptionState::AssertStackTraceInfo()
-#endif // _debug
-
-#ifndef DACCESS_COMPILE
-
-Thread* ThreadExceptionState::GetMyThread()
-{
-    return (Thread*)(((BYTE*)this) - offsetof(Thread, m_ExceptionState));
-}
-
-
-void ThreadExceptionState::FreeAllStackTraces()
-{
-    WRAPPER_NO_CONTRACT;
-
-#ifdef FEATURE_EH_FUNCLETS
-    ExceptionTracker* pNode = m_pCurrentTracker;
-#else // FEATURE_EH_FUNCLETS
-    ExInfo*           pNode = &m_currentExInfo;
-#endif // FEATURE_EH_FUNCLETS
-
-    for ( ;
-          pNode != NULL;
-          pNode = pNode->m_pPrevNestedInfo)
-    {
-        pNode->m_StackTraceInfo.FreeStackTrace();
-    }
-}
-
 OBJECTREF ThreadExceptionState::GetThrowable()
 {
     CONTRACTL
@@ -104,108 +58,39 @@ OBJECTREF ThreadExceptionState::GetThrowable()
     }
     CONTRACTL_END;
 
-#ifdef FEATURE_EH_FUNCLETS
-    if (m_pCurrentTracker && m_pCurrentTracker->m_hThrowable)
+    if (m_pCurrentTracker)
     {
-        return ObjectFromHandle(m_pCurrentTracker->m_hThrowable);
+        return m_pCurrentTracker->m_exception;
     }
-#else // FEATURE_EH_FUNCLETS
-    if (m_currentExInfo.m_hThrowable)
-    {
-        return ObjectFromHandle(m_currentExInfo.m_hThrowable);
-    }
-#endif // FEATURE_EH_FUNCLETS
 
     return NULL;
 }
 
-void ThreadExceptionState::SetThrowable(OBJECTREF throwable DEBUG_ARG(SetThrowableErrorChecking stecFlags))
+BOOL ThreadExceptionState::IsThrowableNull()
 {
-    CONTRACTL
-    {
-        if ((throwable == NULL) || CLRException::IsPreallocatedExceptionObject(throwable)) NOTHROW; else THROWS; // From CreateHandle
-        GC_NOTRIGGER;
-        if (throwable == NULL) MODE_ANY; else MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
+    LIMITED_METHOD_DAC_CONTRACT;
 
-#ifdef FEATURE_EH_FUNCLETS
-    if (m_pCurrentTracker)
-    {
-        m_pCurrentTracker->DestroyExceptionHandle();
-    }
-#else // FEATURE_EH_FUNCLETS
-    m_currentExInfo.DestroyExceptionHandle();
-#endif // FEATURE_EH_FUNCLETS
+    if (m_pCurrentTracker == NULL)
+        return TRUE;
 
-    if (throwable != NULL)
-    {
-        // Non-compliant exceptions are always wrapped.
-        // The use of the ExceptionNative:: helper here (rather than the global ::IsException helper)
-        // is hokey, but we need a GC_NOTRIGGER version and it's only for an ASSERT.
-        _ASSERTE(IsException(throwable->GetMethodTable()));
-
-        OBJECTHANDLE hNewThrowable;
-
-        // If we're tracking one of the preallocated exception objects, then just use the global handle that
-        // matches it rather than creating a new one.
-        if (CLRException::IsPreallocatedExceptionObject(throwable))
-        {
-            hNewThrowable = CLRException::GetPreallocatedHandleForObject(throwable);
-        }
-        else
-        {
-            AppDomain* pDomain = GetMyThread()->GetDomain();
-            PREFIX_ASSUME(pDomain != NULL);
-            hNewThrowable = pDomain->CreateHandle(throwable);
-        }
-
-#ifdef FEATURE_EH_FUNCLETS
-#ifdef _DEBUG
-        //
-        // Fatal stack overflow policy ends up short-circuiting the normal exception handling
-        // flow such that there could be no Tracker for this SO that is in flight.  In this
-        // situation there is no place to store the throwable in the exception state, and instead
-        // it is presumed that the handle to the SO exception is elsewhere.  (Current knowledge
-        // as of 7/15/05 is that it is stored in Thread::m_LastThrownObjectHandle;
-        //
-        if (stecFlags != STEC_CurrentTrackerEqualNullOkHackForFatalStackOverflow
-#ifdef FEATURE_INTERPRETER
-            && stecFlags != STEC_CurrentTrackerEqualNullOkForInterpreter
-#endif // FEATURE_INTERPRETER
-            )
-        {
-            CONSISTENCY_CHECK(CheckPointer(m_pCurrentTracker));
-        }
-#endif
-
-        if (m_pCurrentTracker != NULL)
-        {
-            m_pCurrentTracker->m_hThrowable = hNewThrowable;
-        }
-#else // FEATURE_EH_FUNCLETS
-        m_currentExInfo.m_hThrowable = hNewThrowable;
-#endif // FEATURE_EH_FUNCLETS
-    }
+    return m_pCurrentTracker->m_exception == NULL;
 }
+
+#ifndef DACCESS_COMPILE
+
 
 DWORD ThreadExceptionState::GetExceptionCode()
 {
     LIMITED_METHOD_CONTRACT;
 
-#ifdef FEATURE_EH_FUNCLETS
     _ASSERTE(m_pCurrentTracker);
     return m_pCurrentTracker->m_ExceptionCode;
-#else // FEATURE_EH_FUNCLETS
-    return m_currentExInfo.m_ExceptionCode;
-#endif // FEATURE_EH_FUNCLETS
 }
 
 BOOL ThreadExceptionState::IsComPlusException()
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     if (GetExceptionCode() != EXCEPTION_COMPLUS)
     {
@@ -226,31 +111,15 @@ BOOL ThreadExceptionState::IsExceptionInProgress()
 {
     LIMITED_METHOD_DAC_CONTRACT;
 
-#ifdef FEATURE_EH_FUNCLETS
     return (m_pCurrentTracker != NULL);
-#else // FEATURE_EH_FUNCLETS
-    return (m_currentExInfo.m_pBottomMostHandler != NULL);
-#endif // FEATURE_EH_FUNCLETS
 }
 
 #if !defined(DACCESS_COMPILE)
-
-void ThreadExceptionState::GetLeafFrameInfo(StackTraceElement* pStackTraceElement)
-{
-    WRAPPER_NO_CONTRACT;
-
-#ifdef FEATURE_EH_FUNCLETS
-    m_pCurrentTracker->m_StackTraceInfo.GetLeafFrameInfo(pStackTraceElement);
-#else
-    m_currentExInfo.m_StackTraceInfo.GetLeafFrameInfo(pStackTraceElement);
-#endif
-}
 
 EXCEPTION_POINTERS* ThreadExceptionState::GetExceptionPointers()
 {
     LIMITED_METHOD_CONTRACT;
 
-#ifdef FEATURE_EH_FUNCLETS
     if (m_pCurrentTracker)
     {
         return (EXCEPTION_POINTERS*)&(m_pCurrentTracker->m_ptrs);
@@ -259,24 +128,7 @@ EXCEPTION_POINTERS* ThreadExceptionState::GetExceptionPointers()
     {
         return NULL;
     }
-#else // FEATURE_EH_FUNCLETS
-    return m_currentExInfo.m_pExceptionPointers;
-#endif // FEATURE_EH_FUNCLETS
 }
-
-//-----------------------------------------------------------------------------
-// SetExceptionPointers -- accessor to set pointer to EXCEPTION_POINTERS
-//   member.
-//
-//  only x86
-//
-#if !defined(FEATURE_EH_FUNCLETS)
-void ThreadExceptionState::SetExceptionPointers(
-    EXCEPTION_POINTERS *pExceptionPointers) // Value to set
-{
-    m_currentExInfo.m_pExceptionPointers = pExceptionPointers;
-} // void ThreadExceptionState::SetExceptionPointers()
-#endif
 
 #endif // !DACCESS_COMPILE
 
@@ -284,7 +136,6 @@ PTR_EXCEPTION_RECORD ThreadExceptionState::GetExceptionRecord()
 {
     LIMITED_METHOD_DAC_CONTRACT;
 
-#ifdef FEATURE_EH_FUNCLETS
     if (m_pCurrentTracker)
     {
         return m_pCurrentTracker->m_ptrs.ExceptionRecord;
@@ -293,16 +144,12 @@ PTR_EXCEPTION_RECORD ThreadExceptionState::GetExceptionRecord()
     {
         return NULL;
     }
-#else // FEATURE_EH_FUNCLETS
-    return m_currentExInfo.m_pExceptionRecord;
-#endif // FEATURE_EH_FUNCLETS
 }
 
 PTR_CONTEXT ThreadExceptionState::GetContextRecord()
 {
     LIMITED_METHOD_DAC_CONTRACT;
 
-#ifdef FEATURE_EH_FUNCLETS
     if (m_pCurrentTracker)
     {
         return m_pCurrentTracker->m_ptrs.ContextRecord;
@@ -311,14 +158,10 @@ PTR_CONTEXT ThreadExceptionState::GetContextRecord()
     {
         return NULL;
     }
-#else // FEATURE_EH_FUNCLETS
-    return m_currentExInfo.m_pContext;
-#endif // FEATURE_EH_FUNCLETS
 }
 
 ExceptionFlags* ThreadExceptionState::GetFlags()
 {
-#ifdef FEATURE_EH_FUNCLETS
 
     if (m_pCurrentTracker)
     {
@@ -330,19 +173,15 @@ ExceptionFlags* ThreadExceptionState::GetFlags()
         return NULL;
     }
 
-#else // FEATURE_EH_FUNCLETS
-
-    return &(m_currentExInfo.m_ExceptionFlags);
-
-#endif // FEATURE_EH_FUNCLETS
 }
 
 #if !defined(DACCESS_COMPILE)
 
 #ifdef DEBUGGING_SUPPORTED
+static DebuggerExState   s_emptyDebuggerExState;
+
 DebuggerExState*    ThreadExceptionState::GetDebuggerState()
 {
-#ifdef FEATURE_EH_FUNCLETS
     if (m_pCurrentTracker)
     {
         return &(m_pCurrentTracker->m_DebuggerExState);
@@ -350,19 +189,21 @@ DebuggerExState*    ThreadExceptionState::GetDebuggerState()
     else
     {
         _ASSERTE(!"unexpected use of GetDebuggerState() when no exception in flight");
-#if defined(_MSC_VER)
-        #pragma warning(disable : 4640)
-#endif
-        static DebuggerExState   m_emptyDebuggerExState;
-
-#if defined(_MSC_VER)
-        #pragma warning(default : 4640)
-#endif
-        return &m_emptyDebuggerExState;
+        return &s_emptyDebuggerExState;
     }
-#else // FEATURE_EH_FUNCLETS
-    return &(m_currentExInfo.m_DebuggerExState);
-#endif // FEATURE_EH_FUNCLETS
+}
+
+void ThreadExceptionState::SetDebuggerIndicatedFramePointer(LPVOID indicatedFramePointer)
+{
+    WRAPPER_NO_CONTRACT;
+    if (m_pCurrentTracker)
+    {
+        m_pCurrentTracker->m_DebuggerExState.SetDebuggerIndicatedFramePointer(indicatedFramePointer);
+    }
+    else
+    {
+        _ASSERTE(!"unexpected use of SetDebuggerIndicatedFramePointer() when no exception in flight");
+    }
 }
 
 BOOL ThreadExceptionState::IsDebuggerInterceptable()
@@ -394,7 +235,7 @@ PEXCEPTION_REGISTRATION_RECORD GetClrSEHRecordServicingStackPointer(Thread *pThr
 //    natOffset     - the native offset at which we are going to resume execution
 //    sfDebuggerInterceptFramePointer
 //                  - the frame pointer of the interception method frame
-//    pFlags        - flags on the current exception (ExInfo on x86 and ExceptionTracker on WIN64);
+//    pFlags        - flags on the current exception (ExInfo);
 //                    to be set by this function to indicate that an interception is going on
 //
 // Return Value:
@@ -442,27 +283,6 @@ BOOL DebuggerExState::SetDebuggerInterceptInfo(IJitManager *pJitManager,
 
     int nestingLevel = 0;
 
-#ifndef FEATURE_EH_FUNCLETS
-    //
-    // Get the SEH frame that covers this location on the stack. Note: we pass a skip count of 1. We know that when
-    // this is called, there is a nested exception handler on pThread's stack that is only there during exception
-    // processing, and it won't be there when we go to do the interception. Therefore, we skip that nested record,
-    // and pick the next valid record above it.
-    //
-    m_pDebuggerInterceptFrame = GetClrSEHRecordServicingStackPointer(pThread, (LPVOID)sfDebuggerInterceptFramePointer.SP);
-    if (m_pDebuggerInterceptFrame == EXCEPTION_CHAIN_END)
-    {
-        return FALSE;
-    }
-
-    //
-    // Now we need to search and find the function information for this entry on the stack.
-    //
-    nestingLevel = ComputeEnclosingHandlerNestingLevel(pJitManager,
-                                                           methodToken,
-                                                           natOffset);
-#endif // !FEATURE_EH_FUNCLETS
-
     //
     // These values will override the normal information used by the EH subsystem to handle the exception.
     // They are retrieved by GetDebuggerInterceptInfo().
@@ -482,7 +302,6 @@ BOOL DebuggerExState::SetDebuggerInterceptInfo(IJitManager *pJitManager,
 
 EHClauseInfo* ThreadExceptionState::GetCurrentEHClauseInfo()
 {
-#ifdef FEATURE_EH_FUNCLETS
     if (m_pCurrentTracker)
     {
         return &(m_pCurrentTracker->m_EHClauseInfo);
@@ -502,9 +321,6 @@ EHClauseInfo* ThreadExceptionState::GetCurrentEHClauseInfo()
 
         return &m_emptyEHClauseInfo;
     }
-#else // FEATURE_EH_FUNCLETS
-    return &(m_currentExInfo.m_EHClauseInfo);
-#endif // FEATURE_EH_FUNCLETS
 }
 
 void ThreadExceptionState::SetThreadExceptionFlag(ThreadExceptionFlag flag)
@@ -552,17 +368,12 @@ ThreadExceptionFlagHolder::~ThreadExceptionFlagHolder()
 void
 ThreadExceptionState::EnumChainMemoryRegions(CLRDataEnumMemoryFlags flags)
 {
-#ifdef FEATURE_EH_FUNCLETS
-    ExceptionTracker* head = m_pCurrentTracker;
+    ExInfo*           head = m_pCurrentTracker;
 
     if (head == NULL)
     {
         return;
     }
-
-#else // FEATURE_EH_FUNCLETS
-    ExInfo*           head = &m_currentExInfo;
-#endif // FEATURE_EH_FUNCLETS
 
     for (;;)
     {

@@ -6,7 +6,7 @@ using System.Runtime.CompilerServices;
 
 namespace System.Runtime.InteropServices
 {
-    public readonly struct ArrayWithOffset
+    public readonly struct ArrayWithOffset : IEquatable<ArrayWithOffset>
     {
         private readonly object? m_array;
         private readonly int m_offset;
@@ -20,7 +20,7 @@ namespace System.Runtime.InteropServices
             int totalSize = 0;
             if (array != null)
             {
-                if (!(array is Array arrayObj) || (arrayObj.Rank != 1) || !Marshal.IsPinnable(arrayObj))
+                if (array is not Array arrayObj || (arrayObj.Rank != 1) || !Marshal.IsPinnable(arrayObj))
                 {
                     throw new ArgumentException(SR.ArgumentException_NotIsomorphic);
                 }
@@ -52,7 +52,7 @@ namespace System.Runtime.InteropServices
 
         public override bool Equals([NotNullWhen(true)] object? obj)
         {
-            return obj is ArrayWithOffset && Equals((ArrayWithOffset)obj);
+            return obj is ArrayWithOffset awo && Equals(awo);
         }
 
         public bool Equals(ArrayWithOffset obj)

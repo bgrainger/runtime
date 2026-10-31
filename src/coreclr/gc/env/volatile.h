@@ -66,14 +66,18 @@
 #error The Volatile type is currently only defined for Visual C++ and GNU C++
 #endif
 
-#if defined(__GNUC__) && !defined(HOST_X86) && !defined(HOST_AMD64) && !defined(HOST_ARM) && !defined(HOST_ARM64) && !defined(HOST_WASM)
-#error The Volatile type is currently only defined for GCC when targeting x86, AMD64, ARM, ARM64 or Wasm
+#if defined(__GNUC__) && !defined(HOST_X86) && !defined(HOST_AMD64) && !defined(HOST_ARM) && !defined(HOST_ARM64) && !defined(HOST_LOONGARCH64) && !defined(HOST_WASM) && !defined(HOST_RISCV64)
+#error The Volatile type is currently only defined for GCC when targeting x86, AMD64, ARM, ARM64, LOONGARCH64, Wasm, RISCV64
 #endif
 
 #if defined(__GNUC__)
 #if defined(HOST_ARM) || defined(HOST_ARM64)
 // This is functionally equivalent to the MemoryBarrier() macro used on ARM on Windows.
 #define VOLATILE_MEMORY_BARRIER() asm volatile ("dmb ish" : : : "memory")
+#elif defined(HOST_LOONGARCH64)
+#define VOLATILE_MEMORY_BARRIER() asm volatile ("dbar 0 " : : : "memory")
+#elif defined(HOST_RISCV64)
+#define VOLATILE_MEMORY_BARRIER() asm volatile ("fence rw,rw" : : : "memory")
 #else
 //
 // For GCC, we prevent reordering by the compiler by inserting the following after a volatile
@@ -86,7 +90,7 @@
 // Please do not use this macro outside of this file.  It is subject to change or removal without
 // notice.
 //
-#define VOLATILE_MEMORY_BARRIER() asm volatile ("" : : : "memory")
+#define VOLATILE_MEMORY_BARRIER() __atomic_signal_fence(__ATOMIC_SEQ_CST)
 #endif // HOST_ARM || HOST_ARM64
 #elif (defined(HOST_ARM) || defined(HOST_ARM64)) && _ISO_VOLATILE
 // ARM & ARM64 have a very weak memory model and very few tools to control that model. We're forced to perform a full
@@ -150,7 +154,6 @@ T VolatileLoad(T const * pt)
 #elif defined(HOST_ARM64) && defined(_MSC_VER)
 // silence warnings on casts in branches that are not taken.
 #pragma warning(push)
-#pragma warning(disable : 4302)
 #pragma warning(disable : 4311)
 #pragma warning(disable : 4312)
     T val;
@@ -158,16 +161,16 @@ T VolatileLoad(T const * pt)
     switch (sizeof(T))
     {
     case 1:
-        *(unsigned __int8* )pv = __ldar8 ((unsigned __int8   volatile*)pt);
+        *(uint8_t* )pv = __ldar8 ((uint8_t   volatile*)pt);
         break;
     case 2:
-        *(unsigned __int16*)pv = __ldar16((unsigned __int16  volatile*)pt);
+        *(uint16_t*)pv = __ldar16((uint16_t  volatile*)pt);
         break;
     case 4:
-        *(unsigned __int32*)pv = __ldar32((unsigned __int32  volatile*)pt);
+        *(uint32_t*)pv = __ldar32((uint32_t  volatile*)pt);
         break;
     case 8:
-        *(unsigned __int64*)pv = __ldar64((unsigned __int64  volatile*)pt);
+        *(uint64_t*)pv = __ldar64((uint64_t  volatile*)pt);
         break;
     default:
         val = *(T volatile const*)pt;
@@ -187,6 +190,11 @@ T VolatileLoad(T const * pt)
 template<typename T>
 inline
 T VolatileLoadWithoutBarrier(T const * pt)
+#ifndef DACCESS_COMPILE
+    noexcept(noexcept(T(*(T volatile const*)pt)))
+#else
+    noexcept(noexcept(T(*pt)))
+#endif
 {
 #ifndef DACCESS_COMPILE
     T val = *(T volatile const *)pt;
@@ -206,7 +214,7 @@ T VolatileLoad(Volatile<T> const * pt)
 }
 
 //
-// VolatileStore stores a T into the target of a pointer to T.  Is is guaranteed that this store will
+// VolatileStore stores a T into the target of a pointer to T.  It is guaranteed that this store will
 // not be optimized away by the compiler, and that any operation that occurs before this store, in program
 // order, will not be moved after this store.  In general, it is not guaranteed that the store will be
 // atomic, though this is the case for most aligned scalar data types.  If you need atomic loads or stores,
@@ -231,23 +239,22 @@ void VolatileStore(T* pt, T val)
 #elif defined(HOST_ARM64) && defined(_MSC_VER)
 // silence warnings on casts in branches that are not taken.
 #pragma warning(push)
-#pragma warning(disable : 4302)
 #pragma warning(disable : 4311)
 #pragma warning(disable : 4312)
     T* pv = &val;
     switch (sizeof(T))
     {
     case 1:
-        __stlr8 ((unsigned __int8  volatile*)pt, *(unsigned __int8* )pv);
+        __stlr8 ((uint8_t  volatile*)pt, *(uint8_t* )pv);
         break;
     case 2:
-        __stlr16((unsigned __int16 volatile*)pt, *(unsigned __int16*)pv);
+        __stlr16((uint16_t volatile*)pt, *(uint16_t*)pv);
         break;
     case 4:
-        __stlr32((unsigned __int32 volatile*)pt, *(unsigned __int32*)pv);
+        __stlr32((uint32_t volatile*)pt, *(uint32_t*)pv);
         break;
     case 8:
-        __stlr64((unsigned __int64 volatile*)pt, *(unsigned __int64*)pv);
+        __stlr64((uint64_t volatile*)pt, *(uint64_t*)pv);
         break;
     default:
         __dmb(_ARM64_BARRIER_ISH);
@@ -266,6 +273,11 @@ void VolatileStore(T* pt, T val)
 template<typename T>
 inline
 void VolatileStoreWithoutBarrier(T* pt, T val)
+#ifndef DACCESS_COMPILE
+    noexcept(noexcept(*(T volatile*)pt = val))
+#else
+    noexcept(noexcept(*pt = val))
+#endif
 {
 #ifndef DACCESS_COMPILE
     *(T volatile *)pt = val;
@@ -285,12 +297,6 @@ void VolatileStoreWithoutBarrier(T* pt, T val)
 // cast the result to a float.  In general, calling Load or Store explicitly will work around
 // any problems that can't be solved by operator overloading.
 //
-// @TODO: it's not clear that we actually *want* any operator overloading here.  It's in here primarily
-// to ease the task of converting all of the old uses of the volatile keyword, but in the long
-// run it's probably better if users of this class are forced to call Load() and Store() explicitly.
-// This would make it much more clear where the memory barriers are, and which operations are actually
-// being performed, but it will have to wait for another cleanup effort.
-//
 template <typename T>
 class Volatile
 {
@@ -302,11 +308,9 @@ private:
 
 public:
     //
-    // Default constructor.  Results in an unitialized value!
+    // Default constructor.
     //
-    inline Volatile()
-    {
-    }
+    inline Volatile() = default;
 
     //
     // Allow initialization of Volatile<T> from a T
@@ -336,6 +340,9 @@ public:
     // Loads the value of the volatile variable atomically without erecting the memory barrier.
     //
     inline T LoadWithoutBarrier() const
+#ifndef DACCESS_COMPILE
+        noexcept(noexcept(T((volatile T&)m_val)))
+#endif
     {
         return ((volatile T &)m_val);
     }
@@ -354,6 +361,9 @@ public:
     // Stores a new value to the volatile variable atomically without erecting the memory barrier.
     //
     inline void StoreWithoutBarrier(const T& val) const
+#ifndef DACCESS_COMPILE
+        noexcept(noexcept(((volatile T&)m_val) = val))
+#endif
     {
         ((volatile T &)m_val) = val;
     }
@@ -364,7 +374,7 @@ public:
     // accessed without using Load and Store, but it is necessary for passing Volatile<T> to APIs like
     // InterlockedIncrement.
     //
-    inline volatile T* GetPointer() { return (volatile T*)&m_val; }
+    inline constexpr volatile T* GetPointer() { return (volatile T*)&m_val; }
 
 
     //
@@ -394,46 +404,7 @@ public:
     // a pointer to a volatile T here, so we cannot accidentally pass this pointer to an API that
     // expects a normal pointer.
     //
-    inline T volatile * operator&() {return this->GetPointer();}
-    inline T volatile const * operator&() const {return this->GetPointer();}
-
-    //
-    // Comparison operators
-    //
-    template<typename TOther>
-    inline bool operator==(const TOther& other) const {return this->Load() == other;}
-
-    template<typename TOther>
-    inline bool operator!=(const TOther& other) const {return this->Load() != other;}
-
-    //
-    // Miscellaneous operators.  Add more as necessary.
-    //
-	inline Volatile<T>& operator+=(T val) {Store(this->Load() + val); return *this;}
-	inline Volatile<T>& operator-=(T val) {Store(this->Load() - val); return *this;}
-    inline Volatile<T>& operator|=(T val) {Store(this->Load() | val); return *this;}
-    inline Volatile<T>& operator&=(T val) {Store(this->Load() & val); return *this;}
-    inline bool operator!() const { return !this->Load();}
-
-    //
-    // Prefix increment
-    //
-    inline Volatile& operator++() {this->Store(this->Load()+1); return *this;}
-
-    //
-    // Postfix increment
-    //
-    inline T operator++(int) {T val = this->Load(); this->Store(val+1); return val;}
-
-    //
-    // Prefix decrement
-    //
-    inline Volatile& operator--() {this->Store(this->Load()-1); return *this;}
-
-    //
-    // Postfix decrement
-    //
-    inline T operator--(int) {T val = this->Load(); this->Store(val-1); return val;}
+    inline constexpr T volatile * operator&() {return this->GetPointer();}
 };
 
 //
@@ -468,6 +439,16 @@ public:
     inline VolatilePtr(const VolatilePtr& other) : Volatile<P>(other)
     {
     }
+
+    //
+    // Bring the base class operator= into scope.
+    //
+    using Volatile<P>::operator=;
+
+    //
+    // Copy assignment operator.
+    //
+    inline VolatilePtr<T,P>& operator=(const VolatilePtr<T,P>& other) {this->Store(other.Load()); return *this;}
 
     //
     // Cast to the pointer type

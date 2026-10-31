@@ -13,23 +13,10 @@
 #ifndef __DACIMPL_H__
 #define __DACIMPL_H__
 
+#include <minipal/mutex.h>
 #include "gcinterface.dac.h"
-
-#if defined(TARGET_ARM) || defined(FEATURE_CORESYSTEM) // @ARMTODO: STL breaks the build with current VC headers
 //---------------------------------------------------------------------------------------
-// Setting DAC_HASHTABLE tells the DAC to use the hand rolled hashtable for
-// storing code:DAC_INSTANCE .  Otherwise, the DAC uses the STL unordered_map to.
-
-#define DAC_HASHTABLE
-#endif // TARGET_ARM|| FEATURE_CORESYSTEM
-
-#ifndef DAC_HASHTABLE
-#pragma push_macro("return")
-#undef return
-#include <unordered_map>
-#pragma pop_macro("return")
-#endif //DAC_HASHTABLE
-extern CRITICAL_SECTION g_dacCritSec;
+extern minipal_mutex g_dacMutex;
 
 // Convert between CLRDATA_ADDRESS and TADDR.
 // Note that CLRDATA_ADDRESS is sign-extended (for compat with Windbg and OS conventions).  Converting
@@ -59,7 +46,7 @@ inline TADDR CLRDATA_ADDRESS_TO_TADDR(CLRDATA_ADDRESS cdAddr)
 {
     SUPPORTS_DAC;
 #ifndef HOST_64BIT
-    static_assert_no_msg(sizeof(TADDR)==sizeof(UINT));
+    static_assert(sizeof(TADDR)==sizeof(UINT));
     INT64 iSignedAddr = (INT64)cdAddr;
     if (iSignedAddr > INT_MAX || iSignedAddr < INT_MIN)
     {
@@ -76,7 +63,7 @@ inline HRESULT TRY_CLRDATA_ADDRESS_TO_TADDR(CLRDATA_ADDRESS cdAddr, TADDR* pOutT
 {
     SUPPORTS_DAC;
 #ifndef HOST_64BIT
-    static_assert_no_msg(sizeof(TADDR)==sizeof(UINT));
+    static_assert(sizeof(TADDR)==sizeof(UINT));
     INT64 iSignedAddr = (INT64)cdAddr;
     if (iSignedAddr > INT_MAX || iSignedAddr < INT_MIN)
     {
@@ -93,7 +80,7 @@ inline TADDR CORDB_ADDRESS_TO_TADDR(CORDB_ADDRESS cdbAddr)
 {
     SUPPORTS_DAC;
 #ifndef HOST_64BIT
-    static_assert_no_msg(sizeof(TADDR)==sizeof(UINT));
+    static_assert(sizeof(TADDR)==sizeof(UINT));
     if (cdbAddr > UINT_MAX)
     {
         _ASSERTE_MSG(false, "CORDB_ADDRESS out of range for this platform");
@@ -134,16 +121,13 @@ struct DAC_MD_IMPORT
     DAC_MD_IMPORT* next;       // list link field
     TADDR peFile;              // a TADDR for a PEAssembly* or a ReflectionModule*
     IMDInternalImport* impl;   // Associated metadata interface
-    bool isAlternate;          // for NGEN images set to true if the metadata corresponds to the IL image
 
     DAC_MD_IMPORT(TADDR peFile_,
         IMDInternalImport* impl_,
-        bool isAlt_ = false,
         DAC_MD_IMPORT* next_ = NULL)
         : next(next_)
         , peFile(peFile_)
         , impl(impl_)
-        , isAlternate(isAlt_)
     {
         SUPPORTS_DAC_HOST_ONLY;
     }
@@ -182,10 +166,10 @@ public:
     }
 
     FORCEINLINE
-    DAC_MD_IMPORT* Add(TADDR peFile, IMDInternalImport* impl, bool isAlt)
+    DAC_MD_IMPORT* Add(TADDR peFile, IMDInternalImport* impl)
     {
         SUPPORTS_DAC;
-        DAC_MD_IMPORT* importList = new (nothrow) DAC_MD_IMPORT(peFile, impl, isAlt, m_head);
+        DAC_MD_IMPORT* importList = new (nothrow) DAC_MD_IMPORT(peFile, impl, m_head);
         if (!importList)
         {
             return NULL;
@@ -222,22 +206,22 @@ struct METH_EXTENTS
     CLRDATA_ADDRESS_RANGE extents[1];
 };
 
-HRESULT ConvertUtf8(__in LPCUTF8 utf8,
+HRESULT ConvertUtf8(_In_ LPCUTF8 utf8,
                     ULONG32 bufLen,
                     ULONG32* nameLen,
-                    __out_ecount_part_opt(bufLen, *nameLen) PWSTR buffer);
-HRESULT AllocUtf8(__in_opt LPCWSTR wstr,
+                    _Out_writes_to_opt_(bufLen, *nameLen) PWSTR buffer);
+HRESULT AllocUtf8(_In_opt_ LPCWSTR wstr,
                   ULONG32 srcChars,
-                  __deref_out LPUTF8* utf8);
+                  _Outptr_ LPUTF8* utf8);
 
 HRESULT GetFullClassNameFromMetadata(IMDInternalImport* mdImport,
                                      mdTypeDef classToken,
                                      ULONG32 bufferChars,
-                                     __inout_ecount(bufferChars) LPUTF8 buffer);
+                                     _Inout_updates_(bufferChars) LPUTF8 buffer);
 HRESULT GetFullMethodNameFromMetadata(IMDInternalImport* mdImport,
                                       mdMethodDef methodToken,
                                       ULONG32 bufferChars,
-                                      __inout_ecount(bufferChars) LPUTF8 buffer);
+                                      _Inout_updates_(bufferChars) LPUTF8 buffer);
 
 enum SplitSyntax
 {
@@ -247,15 +231,15 @@ enum SplitSyntax
     SPLIT_NO_NAME,
 };
 
-HRESULT SplitFullName(__in_z __in PCWSTR fullName,
+HRESULT SplitFullName(_In_z_ PCWSTR fullName,
                       SplitSyntax syntax,
                       ULONG32 memberDots,
-                      __deref_out_opt LPUTF8* namespaceName,
-                      __deref_out_opt LPUTF8* typeName,
-                      __deref_out_opt LPUTF8* memberName,
-                      __deref_out_opt LPUTF8* params);
+                      _Outptr_opt_ LPUTF8* namespaceName,
+                      _Outptr_opt_ LPUTF8* typeName,
+                      _Outptr_opt_ LPUTF8* memberName,
+                      _Outptr_opt_ LPUTF8* params);
 
-int CompareUtf8(__in LPCUTF8 str1, __in LPCUTF8 str2, __in ULONG32 nameFlags);
+int CompareUtf8(_In_ LPCUTF8 str1, _In_ LPCUTF8 str2, _In_ ULONG32 nameFlags);
 
 #define INH_STATIC \
     (CLRDATA_VALUE_ALL_KINDS | \
@@ -282,7 +266,6 @@ class MetaEnum
 {
 public:
     MetaEnum(void)
-        : m_domainIter(FALSE)
     {
         Clear();
         m_appDomain = NULL;
@@ -304,16 +287,16 @@ public:
     void End(void);
 
     HRESULT NextToken(mdToken* token,
-                      __deref_opt_out_opt LPCUTF8* namespaceName,
-                      __deref_opt_out_opt LPCUTF8* name);
+                      _Outptr_opt_result_maybenull_ LPCUTF8* namespaceName,
+                      _Outptr_opt_result_maybenull_ LPCUTF8* name);
     HRESULT NextDomainToken(AppDomain** appDomain,
                             mdToken* token);
-    HRESULT NextTokenByName(__in_opt LPCUTF8 namespaceName,
-                            __in_opt LPCUTF8 name,
+    HRESULT NextTokenByName(_In_opt_ LPCUTF8 namespaceName,
+                            _In_opt_ LPCUTF8 name,
                             ULONG32 nameFlags,
                             mdToken* token);
-    HRESULT NextDomainTokenByName(__in_opt LPCUTF8 namespaceName,
-                                  __in_opt LPCUTF8 name,
+    HRESULT NextDomainTokenByName(_In_opt_ LPCUTF8 namespaceName,
+                                  _In_opt_ LPCUTF8 name,
                                   ULONG32 nameFlags,
                                   AppDomain** appDomain, mdToken* token);
 
@@ -358,7 +341,6 @@ public:
     ULONG32 m_kind;
     HENUMInternal m_enum;
     AppDomain* m_appDomain;
-    AppDomainIterator m_domainIter;
     mdToken m_lastToken;
 
     static HRESULT New(Module* mod,
@@ -410,7 +392,7 @@ public:
     void Delete(void);
     void Clear(void);
 
-    HRESULT SplitString(__in_opt PCWSTR fullName);
+    HRESULT SplitString(_In_opt_ PCWSTR fullName);
 
     bool FindType(IMDInternalImport* mdInternal);
     bool FindMethod(IMDInternalImport* mdInternal);
@@ -421,13 +403,13 @@ public:
         return CompareUtf8(str1, str2, m_nameFlags);
     }
 
-    static HRESULT AllocAndSplitString(__in_opt PCWSTR fullName,
+    static HRESULT AllocAndSplitString(_In_opt_ PCWSTR fullName,
                                        SplitSyntax syntax,
                                        ULONG32 nameFlags,
                                        ULONG32 memberDots,
                                        SplitName** split);
 
-    static HRESULT CdStartMethod(__in_opt PCWSTR fullName,
+    static HRESULT CdStartMethod(_In_opt_ PCWSTR fullName,
                                  ULONG32 nameFlags,
                                  Module* mod,
                                  mdTypeDef typeToken,
@@ -441,7 +423,7 @@ public:
                                       AppDomain** appDomain,
                                       mdMethodDef* token);
 
-    static HRESULT CdStartField(__in_opt PCWSTR fullName,
+    static HRESULT CdStartField(_In_opt_ PCWSTR fullName,
                                 ULONG32 nameFlags,
                                 ULONG32 fieldFlags,
                                 IXCLRDataTypeInstance* fromTypeInst,
@@ -462,14 +444,14 @@ public:
                                IXCLRDataValue** value,
                                ULONG32 nameBufRetLen,
                                ULONG32* nameLenRet,
-                               __out_ecount_part_opt(nameBufRetLen, *nameLenRet) WCHAR nameBufRet[  ],
+                               _Out_writes_to_opt_(nameBufRetLen, *nameLenRet) WCHAR nameBufRet[  ],
                                IXCLRDataModule** tokenScopeRet,
                                mdFieldDef* tokenRet);
     static HRESULT CdNextDomainField(ClrDataAccess* dac,
                                      CLRDATA_ENUM* handle,
                                      IXCLRDataValue** value);
 
-    static HRESULT CdStartType(__in_opt PCWSTR fullName,
+    static HRESULT CdStartType(_In_opt_ PCWSTR fullName,
                                ULONG32 nameFlags,
                                Module* mod,
                                AppDomain* appDomain,
@@ -505,14 +487,11 @@ public:
 
 struct ProcessModIter
 {
-    AppDomainIterator m_domainIter;
     bool m_nextDomain;
     AppDomain::AssemblyIterator m_assemIter;
     Assembly* m_curAssem;
-    Assembly::ModuleIterator m_modIter;
 
     ProcessModIter(void)
-        : m_domainIter(FALSE)
     {
         SUPPORTS_DAC;
         m_nextDomain = true;
@@ -522,59 +501,39 @@ struct ProcessModIter
     Assembly * NextAssem()
     {
         SUPPORTS_DAC;
-        for (;;)
+
+        if (m_nextDomain)
         {
-            if (m_nextDomain)
+            m_nextDomain = false;
+
+            if (AppDomain::GetCurrentDomain() == nullptr)
             {
-                if (!m_domainIter.Next())
-                {
-                    break;
-                }
-
-                m_nextDomain = false;
-
-                m_assemIter = m_domainIter.GetDomain()->IterateAssembliesEx((AssemblyIterationFlags)(
-                    kIncludeLoaded | kIncludeExecution));
+                return NULL;
             }
 
-            CollectibleAssemblyHolder<DomainAssembly *> pDomainAssembly;
-            if (!m_assemIter.Next(pDomainAssembly.This()))
-            {
-                m_nextDomain = true;
-                continue;
-            }
-
-            // Note: DAC doesn't need to keep the assembly alive - see code:CollectibleAssemblyHolder#CAH_DAC
-            CollectibleAssemblyHolder<Assembly *> pAssembly = pDomainAssembly->GetLoadedAssembly();
-            return pAssembly;
+            m_assemIter = AppDomain::GetCurrentDomain()->IterateAssembliesEx((AssemblyIterationFlags)(
+                kIncludeLoaded | kIncludeExecution));
         }
-        return NULL;
+
+        CollectibleAssemblyHolder<Assembly *> pAssembly;
+        if (!m_assemIter.Next(pAssembly.This()))
+        {
+            return NULL;
+        }
+
+        return pAssembly;
     }
 
     Module* NextModule(void)
     {
         SUPPORTS_DAC;
-        for (;;)
+        m_curAssem = NextAssem();
+        if (!m_curAssem)
         {
-            if (!m_curAssem)
-            {
-                m_curAssem = NextAssem();
-                if (!m_curAssem)
-                {
-                    return NULL;
-                }
-
-                m_modIter = m_curAssem->IterateModules();
-            }
-
-            if (!m_modIter.Next())
-            {
-                m_curAssem = NULL;
-                continue;
-            }
-
-            return m_modIter.GetModule();
+            return NULL;
         }
+
+        return m_curAssem->GetModule();
     }
 };
 
@@ -654,13 +613,7 @@ struct DAC_INSTANCE_PUSH
 // Not all the way down to the LSB, though, as there generally
 // won't be individual accesses at the byte level.  Assume that
 // most accesses will be natural-word aligned.
-#define DAC_INSTANCE_HASH_BITS 10
 #define DAC_INSTANCE_HASH_SHIFT 2
-
-#define DAC_INSTANCE_HASH(addr) \
-    (((ULONG32)(ULONG_PTR)(addr) >> DAC_INSTANCE_HASH_SHIFT) & \
-     ((1 << DAC_INSTANCE_HASH_BITS) - 1))
-#define DAC_INSTANCE_HASH_SIZE (1 << DAC_INSTANCE_HASH_BITS)
 
 
 struct DumpMemoryReportStatics
@@ -670,7 +623,7 @@ struct DumpMemoryReportStatics
     TSIZE_T    m_cbModuleList;         // number of bytes that we report for module list directly
     TSIZE_T    m_cbClrStatics;         // number of bytes that we report for CLR statics
     TSIZE_T    m_cbClrHeapStatics;     // number of bytes that we report for CLR heap statics
-    TSIZE_T    m_cbImplicity;          // number of bytes that we report implicitly
+    TSIZE_T    m_cbImplicitly;          // number of bytes that we report implicitly
 };
 
 
@@ -713,40 +666,9 @@ private:
         m_blockMemUsage = 0;
         m_numInst = 0;
         m_instMemUsage = 0;
-#ifdef DAC_HASHTABLE
-        ZeroMemory(m_hash, sizeof(m_hash));
-#endif
         m_superseded = NULL;
         m_instPushed = NULL;
     }
-
-#if defined(DAC_HASHTABLE)
-
-    typedef struct _HashInstanceKey {
-        TADDR addr;
-        DAC_INSTANCE* instance;
-    } HashInstanceKey;
-
-    typedef struct _HashInstanceKeyBlock {
-        // Blocks are chained in reverse order of allocation so that the most recently allocated
-        // block is searched first.
-        _HashInstanceKeyBlock* next;
-
-        // Entries to a block are added from the max index on down so that recently added
-        // entries are at the start of the block.
-        DWORD firstElement;
-        HashInstanceKey instanceKeys[] ;
-    } HashInstanceKeyBlock;
-
-// The hashing function does a good job of distributing the entries across buckets. To handle a
-// SO on x86, we have under 250 entries in a bucket. A 4K block size allows 511 entries on x86 and
-// about half that on x64. On x64, the number of entries added to the hash table is significantly
-// smaller than on x86 (and the max recursion depth for default stack sizes is also far less), so
-// 4K is generally adequate.
-
-#define HASH_INSTANCE_BLOCK_ALLOC_SIZE (4 * 1024)
-#define HASH_INSTANCE_BLOCK_NUM_ELEMENTS ((HASH_INSTANCE_BLOCK_ALLOC_SIZE - offsetof(_HashInstanceKeyBlock, instanceKeys))/sizeof(HashInstanceKey))
-#endif // #if defined(DAC_HASHTABLE)
 
     DAC_INSTANCE_BLOCK* m_blocks;
     DAC_INSTANCE_BLOCK* m_unusedBlock;
@@ -754,60 +676,29 @@ private:
     ULONG32 m_numInst;
     ULONG64 m_instMemUsage;
 
-#if defined(DAC_HASHTABLE)
-    HashInstanceKeyBlock* m_hash[DAC_INSTANCE_HASH_SIZE];
-#else //DAC_HASHTABLE
-
-    // We're going to use the STL unordered_map for our instance hash.
-    // This has the benefit of scaling to different workloads appropriately (as opposed to having a
-    // fixed number of buckets).
-
-    class DacHashCompare : public std::hash_compare<TADDR>
+    // SHash-based hash table for DAC instances, keyed by target address.
+    // The custom hash function avoids pseudo-randomizing in favor of a simple
+    // shift that clusters nearby addresses together.  This improves access
+    // locality and has a significant positive impact on minidump library
+    // performance when enumerating entries during dump generation (as dbghelp
+    // has to coalesce adjacent memory regions).
+    class DacInstanceSHashTraits : public NonDacAwareSHashTraits<MapSHashTraits<TADDR, DAC_INSTANCE*>>
     {
     public:
-        // Custom hash function
-        // The default hash function uses a pseudo-randomizing function to get a random
-        // distribution.  In our case, we'd actually like a more even distribution to get
-        // better access locality (see comments for DAC_INSTANCE_HASH_BITS).
-        //
-        // Also, when enumerating the hash during dump generation, clustering nearby addresses
-        // together can have a significant positive impact on the performance of the minidump
-        // library (at least the un-optimized version 6.5 linked into our dw20.exe - on Vista+
-        // we use the OS's version 6.7+ with radically improved perf characteristics).  Having
-        // a random distribution is actually the worst-case because it means most blocks won't
-        // be merged until near the end, and a large number of intermediate blocks will have to
-        // be searched with each call.
-        //
-        // The default pseudo-randomizing function also requires a call to ldiv which shows up as
-        // a 3%-5% perf hit in most perf-sensitive scenarios, so this should also always be
-        // faster.
-        inline size_t operator()(const TADDR& keyval) const
+        typedef MapSHashTraits<TADDR, DAC_INSTANCE*> PARENT;
+        typedef PARENT::element_t element_t;
+        typedef PARENT::count_t count_t;
+        typedef PARENT::key_t key_t;
+
+        static count_t Hash(key_t k)
         {
-            return (unsigned)(keyval >>DAC_INSTANCE_HASH_SHIFT);
+            return (count_t)(k >> DAC_INSTANCE_HASH_SHIFT);
         }
-
-        // Explicitly bring in the two-argument comparison function from the base class (just less-than)
-        // This is necessary because once we override one form of operator() above, we don't automatically
-        // get the others by C++ inheritance rules.
-    using std::hash_compare<TADDR>::operator();
-
-#ifdef NIDUMP_CUSTOMIZED_DAC_HASH   // not set
-        //this particular number is supposed to be roughly the same amount of
-        //memory as the old code (buckets * number of entries in the old
-        //blocks.)
-        //disabled for now.  May tweak implementation later.  It turns out that
-        //having a large number of initial buckets is excellent for nidump, but it
-        // is terrible for most other scenarios due to the cost of clearing them at
-        // every Flush.  Once there is a better perf suite, we can tweak these values more.
-        static const size_t min_buckets = DAC_INSTANCE_HASH_SIZE * 256;
-#endif
-
     };
-    typedef std::unordered_map<TADDR, DAC_INSTANCE*, DacHashCompare > DacInstanceHash;
-    typedef DacInstanceHash::value_type DacInstanceHashValue;
-    typedef DacInstanceHash::iterator DacInstanceHashIterator;
+
+    typedef SHash<DacInstanceSHashTraits> DacInstanceHash;
+    typedef DacInstanceHash::Iterator DacInstanceHashIterator;
     DacInstanceHash m_hash;
-#endif //DAC_HASHTABLE
 
     DAC_INSTANCE* m_superseded;
     DAC_INSTANCE_PUSH* m_instPushed;
@@ -820,6 +711,49 @@ class DacStreamManager;
 
 #endif // FEATURE_MINIMETADATA_IN_TRIAGEDUMPS
 
+#include "cdac.h"
+
+//----------------------------------------------------------------------------
+//
+// DacPatchCache - Caches debugger breakpoint patches from the target process.
+//
+// DacReplacePatchesInHostMemory needs to iterate the target's patch hash table
+// to replace breakpoint instructions with original opcodes. This iteration is
+// expensive because it walks all hash buckets and entries and it will hit either a
+// hash lookup in the instance cache or a cache miss + remote read. Since the target
+// is not running during DAC operations, the patches should not change while we are performing
+// memory enumeration, but if they do we'll miss them until the next time Flush() gets called.
+//
+//----------------------------------------------------------------------------
+
+struct DacPatchCacheEntry
+{
+    CORDB_ADDRESS address;
+    PRD_TYPE opcode;
+};
+
+class DacPatchCache
+{
+public:
+    DacPatchCache()
+        : m_isPopulated(false)
+    {
+    }
+
+    const SArray<DacPatchCacheEntry>& GetEntries();
+
+    void Flush()
+    {
+        m_entries.Clear();
+        m_isPopulated = false;
+    }
+
+private:
+    void Populate();
+
+    SArray<DacPatchCacheEntry> m_entries;
+    bool m_isPopulated;
+};
 
 //----------------------------------------------------------------------------
 //
@@ -840,7 +774,12 @@ class ClrDataAccess
       public ISOSDacInterface8,
       public ISOSDacInterface9,
       public ISOSDacInterface10,
-      public ISOSDacInterface11
+      public ISOSDacInterface11,
+      public ISOSDacInterface12,
+      public ISOSDacInterface13,
+      public ISOSDacInterface14,
+      public ISOSDacInterface15,
+      public ISOSDacInterface16
 {
 public:
     ClrDataAccess(ICorDebugDataTarget * pTarget, ICLRDataTarget * pLegacyTarget=0);
@@ -901,7 +840,7 @@ public:
         /* [in] */ ULONG32 flags,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_opt(bufLen) WCHAR nameBuf[  ],
+        /* [size_is][out] */ _Out_writes_bytes_opt_(bufLen) WCHAR nameBuf[  ],
         /* [out] */ CLRDATA_ADDRESS* displacement);
 
     virtual HRESULT STDMETHODCALLTYPE StartEnumAppDomains(
@@ -972,7 +911,7 @@ public:
         /* [in] */ IXCLRDataTask* tlsTask,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR nameBuf[  ],
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR nameBuf[  ],
         /* [out] */ IXCLRDataValue **value,
         /* [out] */ CLRDATA_ADDRESS *displacement);
 
@@ -1080,10 +1019,10 @@ public:
     virtual HRESULT STDMETHODCALLTYPE GetAppDomainStoreData(struct DacpAppDomainStoreData *data);
     virtual HRESULT STDMETHODCALLTYPE GetAppDomainList(unsigned int count, CLRDATA_ADDRESS values[], unsigned int *pNeeded);
     virtual HRESULT STDMETHODCALLTYPE GetAppDomainData(CLRDATA_ADDRESS addr, struct DacpAppDomainData *data);
-    virtual HRESULT STDMETHODCALLTYPE GetAppDomainName(CLRDATA_ADDRESS addr, unsigned int count, __out_z __inout_ecount(count) WCHAR *name, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetAppDomainName(CLRDATA_ADDRESS addr, unsigned int count, _Inout_updates_z_(count) WCHAR *name, unsigned int *pNeeded);
     virtual HRESULT STDMETHODCALLTYPE GetAssemblyList(CLRDATA_ADDRESS appDomain, int count, CLRDATA_ADDRESS values[], int *fetched);
-    virtual HRESULT STDMETHODCALLTYPE GetAssemblyData(CLRDATA_ADDRESS baseDomainPtr, CLRDATA_ADDRESS assembly, struct DacpAssemblyData *data);
-    virtual HRESULT STDMETHODCALLTYPE GetAssemblyName(CLRDATA_ADDRESS assembly, unsigned int count, __out_z __inout_ecount(count) WCHAR *name, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetAssemblyData(CLRDATA_ADDRESS domainPtr, CLRDATA_ADDRESS assembly, struct DacpAssemblyData *data);
+    virtual HRESULT STDMETHODCALLTYPE GetAssemblyName(CLRDATA_ADDRESS assembly, unsigned int count, _Inout_updates_z_(count) WCHAR *name, unsigned int *pNeeded);
     virtual HRESULT STDMETHODCALLTYPE GetThreadData(CLRDATA_ADDRESS thread, struct DacpThreadData *data);
     virtual HRESULT STDMETHODCALLTYPE GetThreadFromThinlockID(UINT thinLockId, CLRDATA_ADDRESS *pThread);
     virtual HRESULT STDMETHODCALLTYPE GetStackLimits(CLRDATA_ADDRESS threadPtr, CLRDATA_ADDRESS *lower, CLRDATA_ADDRESS *upper, CLRDATA_ADDRESS *fp);
@@ -1091,27 +1030,27 @@ public:
 
     virtual HRESULT STDMETHODCALLTYPE GetMethodDescData(CLRDATA_ADDRESS methodDesc, CLRDATA_ADDRESS ip, struct DacpMethodDescData *data, ULONG cRevertedRejitVersions, DacpReJitData * rgRevertedRejitData, ULONG * pcNeededRevertedRejitData);
     virtual HRESULT STDMETHODCALLTYPE GetMethodDescPtrFromIP(CLRDATA_ADDRESS ip, CLRDATA_ADDRESS * ppMD);
-    virtual HRESULT STDMETHODCALLTYPE GetMethodDescName(CLRDATA_ADDRESS methodDesc, unsigned int count, __out_z __inout_ecount(count) WCHAR *name, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetMethodDescName(CLRDATA_ADDRESS methodDesc, unsigned int count, _Inout_updates_z_(count) WCHAR *name, unsigned int *pNeeded);
     virtual HRESULT STDMETHODCALLTYPE GetMethodDescPtrFromFrame(CLRDATA_ADDRESS frameAddr, CLRDATA_ADDRESS * ppMD);
     virtual HRESULT STDMETHODCALLTYPE GetCodeHeaderData(CLRDATA_ADDRESS ip, struct DacpCodeHeaderData *data);
     virtual HRESULT STDMETHODCALLTYPE GetThreadpoolData(struct DacpThreadpoolData *data);
     virtual HRESULT STDMETHODCALLTYPE GetWorkRequestData(CLRDATA_ADDRESS addrWorkRequest, struct DacpWorkRequestData *data);
     virtual HRESULT STDMETHODCALLTYPE GetObjectData(CLRDATA_ADDRESS objAddr, struct DacpObjectData *data);
-    virtual HRESULT STDMETHODCALLTYPE GetObjectStringData(CLRDATA_ADDRESS obj, unsigned int count, __out_z __inout_ecount(count) WCHAR *stringData, unsigned int *pNeeded);
-    virtual HRESULT STDMETHODCALLTYPE GetObjectClassName(CLRDATA_ADDRESS obj, unsigned int count, __out_z __inout_ecount(count) WCHAR *className, unsigned int *pNeeded);
-    virtual HRESULT STDMETHODCALLTYPE GetMethodTableName(CLRDATA_ADDRESS mt, unsigned int count, __out_z __inout_ecount(count) WCHAR *mtName, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetObjectStringData(CLRDATA_ADDRESS obj, unsigned int count, _Inout_updates_z_(count) WCHAR *stringData, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetObjectClassName(CLRDATA_ADDRESS obj, unsigned int count, _Inout_updates_z_(count) WCHAR *className, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetMethodTableName(CLRDATA_ADDRESS mt, unsigned int count, _Inout_updates_z_(count) WCHAR *mtName, unsigned int *pNeeded);
     virtual HRESULT STDMETHODCALLTYPE GetMethodTableData(CLRDATA_ADDRESS mt, struct DacpMethodTableData *data);
     virtual HRESULT STDMETHODCALLTYPE GetMethodTableFieldData(CLRDATA_ADDRESS mt, struct DacpMethodTableFieldData *data);
     virtual HRESULT STDMETHODCALLTYPE GetMethodTableTransparencyData(CLRDATA_ADDRESS mt, struct DacpMethodTableTransparencyData *data);
     virtual HRESULT STDMETHODCALLTYPE GetMethodTableForEEClass(CLRDATA_ADDRESS eeClass, CLRDATA_ADDRESS *value);
     virtual HRESULT STDMETHODCALLTYPE GetFieldDescData(CLRDATA_ADDRESS fieldDesc, struct DacpFieldDescData *data);
-    virtual HRESULT STDMETHODCALLTYPE GetFrameName(CLRDATA_ADDRESS vtable, unsigned int count, __out_z __inout_ecount(count) WCHAR *frameName, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetFrameName(CLRDATA_ADDRESS vtable, unsigned int count, _Inout_updates_z_(count) WCHAR *frameName, unsigned int *pNeeded);
     virtual HRESULT STDMETHODCALLTYPE GetModule(CLRDATA_ADDRESS addr, IXCLRDataModule **mod);
     virtual HRESULT STDMETHODCALLTYPE GetModuleData(CLRDATA_ADDRESS moduleAddr, struct DacpModuleData *data);
     virtual HRESULT STDMETHODCALLTYPE TraverseModuleMap(ModuleMapType mmt, CLRDATA_ADDRESS moduleAddr, MODULEMAPTRAVERSE pCallback, LPVOID token);
     virtual HRESULT STDMETHODCALLTYPE GetMethodDescFromToken(CLRDATA_ADDRESS moduleAddr, mdToken token, CLRDATA_ADDRESS *methodDesc);
-    virtual HRESULT STDMETHODCALLTYPE GetPEFileBase(CLRDATA_ADDRESS addr, CLRDATA_ADDRESS *base);
-    virtual HRESULT STDMETHODCALLTYPE GetPEFileName(CLRDATA_ADDRESS addr, unsigned int count, __out_z __inout_ecount(count) WCHAR *fileName, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetPEFileBase(CLRDATA_ADDRESS moduleAddr, CLRDATA_ADDRESS *base);
+    virtual HRESULT STDMETHODCALLTYPE GetPEFileName(CLRDATA_ADDRESS moduleAddr, unsigned int count, _Inout_updates_z_(count) WCHAR *fileName, unsigned int *pNeeded);
     virtual HRESULT STDMETHODCALLTYPE GetAssemblyModuleList(CLRDATA_ADDRESS assembly, unsigned int count, CLRDATA_ADDRESS modules[], unsigned int *pNeeded);
     virtual HRESULT STDMETHODCALLTYPE GetGCHeapData(struct DacpGcHeapData *data);
     virtual HRESULT STDMETHODCALLTYPE GetGCHeapList(unsigned int count, CLRDATA_ADDRESS heaps[], unsigned int *pNeeded);
@@ -1127,7 +1066,7 @@ public:
     virtual HRESULT STDMETHODCALLTYPE TraverseEHInfo(CLRDATA_ADDRESS ip, DUMPEHINFO pCallback, LPVOID token);
     virtual HRESULT STDMETHODCALLTYPE GetStressLogAddress(CLRDATA_ADDRESS *stressLog);
     virtual HRESULT STDMETHODCALLTYPE GetJitManagerList(unsigned int count, struct DacpJitManagerInfo managers[], unsigned int *pNeeded);
-    virtual HRESULT STDMETHODCALLTYPE GetJitHelperFunctionName(CLRDATA_ADDRESS ip, unsigned int count, __out_z __inout_ecount(count) char *name, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetJitHelperFunctionName(CLRDATA_ADDRESS ip, unsigned int count, _Inout_updates_z_(count) char *name, unsigned int *pNeeded);
     virtual HRESULT STDMETHODCALLTYPE GetJumpThunkTarget(T_CONTEXT *ctx, CLRDATA_ADDRESS *targetIP, CLRDATA_ADDRESS *targetMD);
     virtual HRESULT STDMETHODCALLTYPE TraverseLoaderHeap(CLRDATA_ADDRESS loaderHeapAddr, VISITHEAP pCallback);
     virtual HRESULT STDMETHODCALLTYPE GetCodeHeapList(CLRDATA_ADDRESS jitManager, unsigned int count, struct DacpJitCodeHeapInfo codeHeaps[], unsigned int *pNeeded);
@@ -1152,17 +1091,17 @@ public:
     virtual HRESULT STDMETHODCALLTYPE GetDacModuleHandle(HMODULE *phModule);
 
     virtual HRESULT STDMETHODCALLTYPE GetFailedAssemblyList(CLRDATA_ADDRESS appDomain, int count, CLRDATA_ADDRESS values[], unsigned int *pNeeded);
-    virtual HRESULT STDMETHODCALLTYPE GetPrivateBinPaths(CLRDATA_ADDRESS appDomain, int count, __out_z __inout_ecount(count) WCHAR *paths, unsigned int *pNeeded);
-    virtual HRESULT STDMETHODCALLTYPE GetAssemblyLocation(CLRDATA_ADDRESS assembly, int count, __out_z __inout_ecount(count) WCHAR *location, unsigned int *pNeeded);
-    virtual HRESULT STDMETHODCALLTYPE GetAppDomainConfigFile(CLRDATA_ADDRESS appDomain, int count, __out_z __inout_ecount(count) WCHAR *configFile, unsigned int *pNeeded);
-    virtual HRESULT STDMETHODCALLTYPE GetApplicationBase(CLRDATA_ADDRESS appDomain, int count, __out_z __inout_ecount(count) WCHAR *base, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetPrivateBinPaths(CLRDATA_ADDRESS appDomain, int count, _Inout_updates_z_(count) WCHAR *paths, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetAssemblyLocation(CLRDATA_ADDRESS assembly, int count, _Inout_updates_z_(count) WCHAR *location, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetAppDomainConfigFile(CLRDATA_ADDRESS appDomain, int count, _Inout_updates_z_(count) WCHAR *configFile, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetApplicationBase(CLRDATA_ADDRESS appDomain, int count, _Inout_updates_z_(count) WCHAR *base, unsigned int *pNeeded);
 
     virtual HRESULT STDMETHODCALLTYPE GetFailedAssemblyData(CLRDATA_ADDRESS assembly, unsigned int *pContext, HRESULT *pResult);
-    virtual HRESULT STDMETHODCALLTYPE GetFailedAssemblyLocation(CLRDATA_ADDRESS assembly, unsigned int count, __out_z __inout_ecount(count) WCHAR *location, unsigned int *pNeeded);
-    virtual HRESULT STDMETHODCALLTYPE GetFailedAssemblyDisplayName(CLRDATA_ADDRESS assembly, unsigned int count, __out_z __inout_ecount(count) WCHAR *name, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetFailedAssemblyLocation(CLRDATA_ADDRESS assembly, unsigned int count, _Inout_updates_z_(count) WCHAR *location, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetFailedAssemblyDisplayName(CLRDATA_ADDRESS assembly, unsigned int count, _Inout_updates_z_(count) WCHAR *name, unsigned int *pNeeded);
 
     virtual HRESULT STDMETHODCALLTYPE GetStackReferences(DWORD osThreadID, ISOSStackRefEnum **ppEnum);
-    virtual HRESULT STDMETHODCALLTYPE GetRegisterName(int regNum, unsigned int count, __out_z __inout_ecount(count) WCHAR *buffer, unsigned int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetRegisterName(int regNum, unsigned int count, _Inout_updates_z_(count) WCHAR *buffer, unsigned int *pNeeded);
 
     virtual HRESULT STDMETHODCALLTYPE GetHandleEnum(ISOSHandleEnum **ppHandleEnum);
     virtual HRESULT STDMETHODCALLTYPE GetHandleEnumForTypes(unsigned int types[], unsigned int count, ISOSHandleEnum **ppHandleEnum);
@@ -1224,6 +1163,33 @@ public:
         CLRDATA_ADDRESS objAddr,
         CLRDATA_ADDRESS *taggedMemory,
         size_t *taggedMemorySizeInBytes);
+
+    // ISOSDacInterface12
+    virtual HRESULT STDMETHODCALLTYPE GetGlobalAllocationContext(
+        CLRDATA_ADDRESS *allocPtr,
+        CLRDATA_ADDRESS *allocLimit);
+
+    // ISOSDacInterface13
+    virtual HRESULT STDMETHODCALLTYPE TraverseLoaderHeap(CLRDATA_ADDRESS loaderHeapAddr, LoaderHeapKind kind, VISITHEAP pCallback);
+    virtual HRESULT STDMETHODCALLTYPE GetDomainLoaderAllocator(CLRDATA_ADDRESS domainAddress, CLRDATA_ADDRESS *pLoaderAllocator);
+    virtual HRESULT STDMETHODCALLTYPE GetLoaderAllocatorHeapNames(int count, const char **ppNames, int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetLoaderAllocatorHeaps(CLRDATA_ADDRESS loaderAllocator, int count, CLRDATA_ADDRESS *pLoaderHeaps, LoaderHeapKind *pKinds, int *pNeeded);
+    virtual HRESULT STDMETHODCALLTYPE GetHandleTableMemoryRegions(ISOSMemoryEnum **ppEnum);
+    virtual HRESULT STDMETHODCALLTYPE GetGCBookkeepingMemoryRegions(ISOSMemoryEnum **ppEnum);
+    virtual HRESULT STDMETHODCALLTYPE GetGCFreeRegions(ISOSMemoryEnum **ppEnum);
+    virtual HRESULT STDMETHODCALLTYPE LockedFlush();
+
+    // ISOSDacInterface14
+    virtual HRESULT STDMETHODCALLTYPE GetStaticBaseAddress(CLRDATA_ADDRESS methodTable, CLRDATA_ADDRESS *nonGCStaticsAddress, CLRDATA_ADDRESS *GCStaticsAddress);
+    virtual HRESULT STDMETHODCALLTYPE GetThreadStaticBaseAddress(CLRDATA_ADDRESS methodTable, CLRDATA_ADDRESS thread, CLRDATA_ADDRESS *nonGCStaticsAddress, CLRDATA_ADDRESS *GCStaticsAddress);
+    virtual HRESULT STDMETHODCALLTYPE GetMethodTableInitializationFlags(CLRDATA_ADDRESS methodTable, MethodTableInitializationFlags *initializationStatus);
+
+    // ISOSDacInterface15
+    virtual HRESULT STDMETHODCALLTYPE GetMethodTableSlotEnumerator(CLRDATA_ADDRESS mt, ISOSMethodEnum **enumerator);
+
+    // ISOSDacInterface16
+    virtual HRESULT STDMETHODCALLTYPE GetGCDynamicAdaptationMode(int* pDynamicAdaptationMode);
+
     //
     // ClrDataAccess.
     //
@@ -1239,17 +1205,16 @@ public:
     Thread* FindClrThreadByTaskId(ULONG64 taskId);
     HRESULT IsPossibleCodeAddress(IN TADDR address);
 
-    PCSTR GetJitHelperName(IN TADDR address,
-                           IN bool dynamicHelpersOnly = false);
+    PCSTR GetJitHelperName(IN TADDR address);
     HRESULT GetFullMethodName(IN MethodDesc* methodDesc,
                               IN ULONG32 symbolChars,
                               IN ULONG32* symbolLen,
-                              __out_ecount_part_opt(symbolChars, *symbolLen) LPWSTR symbol);
+                              _Out_writes_to_opt_(symbolChars, *symbolLen) LPWSTR symbol);
     HRESULT RawGetMethodName(/* [in] */ CLRDATA_ADDRESS address,
                              /* [in] */ ULONG32 flags,
                              /* [in] */ ULONG32 bufLen,
                              /* [out] */ ULONG32 *nameLen,
-                             /* [size_is][out] */ __out_ecount_opt(bufLen) WCHAR nameBuf[  ],
+                             /* [size_is][out] */ _Out_writes_bytes_opt_(bufLen) WCHAR nameBuf[  ],
                              /* [out] */ CLRDATA_ADDRESS* displacement);
 
     HRESULT FollowStubStep(
@@ -1260,17 +1225,6 @@ public:
         /* [out] */ TADDR* outAddr,
         /* [out] */ union STUB_BUF* outBuffer,
         /* [out] */ ULONG32* outFlags);
-
-    DebuggerJitInfo* GetDebuggerJitInfo(MethodDesc* methodDesc,
-                                        TADDR addr)
-    {
-        if (g_pDebugger)
-        {
-            return g_pDebugger->GetJitInfo(methodDesc, (PBYTE)addr, NULL);
-        }
-
-        return NULL;
-    }
 
     HRESULT GetMethodExtents(MethodDesc* methodDesc,
                              METH_EXTENTS** extents);
@@ -1339,21 +1293,36 @@ public:
 
     HRESULT EnumMemCollectImages();
     HRESULT EnumMemCLRStatic(CLRDataEnumMemoryFlags flags);
+    HRESULT EnumMemDumpJitManagerInfo(IN CLRDataEnumMemoryFlags flags);
     HRESULT EnumMemCLRHeapCrticalStatic(CLRDataEnumMemoryFlags flags);
     HRESULT EnumMemDumpModuleList(CLRDataEnumMemoryFlags flags);
     HRESULT EnumMemDumpAppDomainInfo(CLRDataEnumMemoryFlags flags);
     HRESULT EnumMemDumpAllThreadsStack(CLRDataEnumMemoryFlags flags);
     HRESULT EnumMemCLRMainModuleInfo();
+    HRESULT EnumMemDataDescriptors(CLRDataEnumMemoryFlags flags);
+
+    void EnumDataDescriptorHelper(TADDR dataDescriptorAddr);
 
     bool ReportMem(TADDR addr, TSIZE_T size, bool fExpectSuccess = true);
     bool DacUpdateMemoryRegion(TADDR addr, TSIZE_T bufferSize, BYTE* buffer);
 
+    inline bool IsLogMessageEnabled()
+    {
+        return m_logMessageCb != NULL;
+    }
+
+    void LogMessage(LPCSTR message)
+    {
+        if (m_logMessageCb != NULL)
+        {
+            m_logMessageCb->LogMessage(message);
+        }
+    }
+
     void ClearDumpStats();
     JITNotification* GetHostJitNotificationTable();
-    GcNotification*  GetHostGcNotificationTable();
 
-    void* GetMetaDataFromHost(PEAssembly* pPEAssembly,
-                              bool* isAlternate);
+    void* GetMetaDataFromHost(PEAssembly* pPEAssembly);
 
     virtual
     interface IMDInternalImport* GetMDImport(const PEAssembly* pPEAssembly,
@@ -1408,9 +1377,16 @@ public:
     ICorDebugMutableDataTarget * m_pMutableTarget;
 
     TADDR m_globalBase;
+    DacGlobals m_dacGlobals;
     DacInstanceManager m_instances;
     ULONG32 m_instanceAge;
     bool m_debugMode;
+
+    DacPatchCache m_patchCache;
+
+    // This currently exists on the DAC as a way of managing lifetime of loading/freeing the cdac
+    // TODO: [cdac] Remove when cDAC deploys with SOS - https://github.com/dotnet/runtime/issues/108720
+    CDAC m_cdac;
 
 #ifdef FEATURE_MINIMETADATA_IN_TRIAGEDUMPS
 
@@ -1438,11 +1414,8 @@ public:
 #endif // FEATURE_MINIMETADATA_IN_TRIAGEDUMPS
 
 private:
-    // Read the DAC table and initialize g_dacGlobals
-    HRESULT GetDacGlobals();
-
-    // Verify the target mscorwks.dll matches the version expected
-    HRESULT VerifyDlls();
+    // Read the DAC table and initialize m_dacGlobals
+    HRESULT GetDacGlobalValues();
 
     // Check whether a region of memory is fully readable.
     bool IsFullyReadable(TADDR addr, TSIZE_T size);
@@ -1458,21 +1431,14 @@ private:
     MDImportsCache m_mdImports;
     ICLRDataEnumMemoryRegionsCallback* m_enumMemCb;
     ICLRDataEnumMemoryRegionsCallback2* m_updateMemCb;
+    ICLRDataLoggingCallback* m_logMessageCb;
     CLRDataEnumMemoryFlags m_enumMemFlags;
     JITNotification* m_jitNotificationTable;
-    GcNotification*  m_gcNotificationTable;
     TSIZE_T m_cbMemoryReported;
     DumpMemoryReportStatics m_dumpStats;
 
     // If true, inconsistencies in the target will cause ASSERTs to be raised in DEBUG builds
     bool m_fEnableTargetConsistencyAsserts;
-
-#ifdef _DEBUG
-protected:
-    // If true, a mscorwks/mscordacwks mismatch will trigger a nice assert dialog
-    bool m_fEnableDllVerificationAsserts;
-private:
-#endif
 
 protected:
     // Populates a DacpJitCodeHeapInfo with proper information about the
@@ -1494,9 +1460,8 @@ private:
     BOOL DACIsComWrappersCCW(CLRDATA_ADDRESS ccwPtr);
     TADDR DACGetManagedObjectWrapperFromCCW(CLRDATA_ADDRESS ccwPtr);
     HRESULT DACTryGetComWrappersObjectFromCCW(CLRDATA_ADDRESS ccwPtr, OBJECTREF* objRef);
+    TADDR GetIdentityForManagedObjectWrapper(TADDR mow);
 #endif
-
-    static LONG s_procInit;
 
 protected:
 #ifdef FEATURE_COMWRAPPERS
@@ -1504,27 +1469,22 @@ protected:
 #endif
 
 public:
-    // APIs for picking up the info needed for a debugger to look up an ngen image or IL image
-    // from it's search path.
+    // API for picking up the info needed for a debugger to look up an image from its search path.
     static bool GetMetaDataFileInfoFromPEFile(PEAssembly *pPEAssembly,
                                               DWORD &dwImageTimestamp,
                                               DWORD &dwImageSize,
                                               DWORD &dwDataSize,
                                               DWORD &dwRvaHint,
-                                              bool  &isNGEN,
-                                              __out_ecount(cchFilePath) LPWSTR wszFilePath,
+                                              _Out_writes_(cchFilePath) LPWSTR wszFilePath,
                                               DWORD cchFilePath);
 
-    static bool GetILImageInfoFromNgenPEFile(PEAssembly *pPEAssembly,
-                                             DWORD &dwTimeStamp,
-                                             DWORD &dwSize,
-                                             __out_ecount(cchPath) LPWSTR wszPath,
-                                             const DWORD cchPath);
-#if defined(FEATURE_CORESYSTEM)
-    static bool GetILImageNameFromNgenImage(LPCWSTR ilExtension,
-                                            __out_ecount(cchFilePath) LPWSTR wszFilePath,
-                                            const DWORD cchFilePath);
-#endif // FEATURE_CORESYSTEM
+    static bool GetMetaDataFileInfoFromModule(Module *pModule,
+                                              DWORD &dwTimeStamp,
+                                              DWORD &dwSize,
+                                              DWORD &dwDataSize,
+                                              DWORD &dwRvaHint,
+                                              _Out_writes_(cchFilePath) LPWSTR wszFilePath,
+                                              const DWORD cchFilePath);
 };
 
 extern ClrDataAccess* g_dacImpl;
@@ -1546,7 +1506,7 @@ extern ClrDataAccess* g_dacImpl;
  *     all handles, or filled the array.
  * 3.  Storage variables to hold the overflow.  That is, we were walking the handle
  *     table, filled the array that the user gave us, then needed to store the extra
- *     handles the handle table continued to enumerate to us.  This is implmeneted
+ *     handles the handle table continued to enumerate to us.  This is implemented
  *     as a linked list of arrays (mHead, mHead.Next, etc).
  * 4.  Variables which store the location of where we are in the overflow data.
  *
@@ -1576,7 +1536,7 @@ public:
 
     ULONG STDMETHODCALLTYPE Release()
     {
-        ULONG res = mRef--;
+        ULONG res = --mRef;
         if (res == 0)
             delete this;
         return res;
@@ -1609,7 +1569,7 @@ private:
 };
 
 
-// A stuct representing a thread's allocation context.
+// A struct representing a thread's allocation context.
 struct AllocInfo
 {
     CORDB_ADDRESS Ptr;
@@ -1759,9 +1719,6 @@ DWORD DacGetNumHeaps();
  *   the event that we find heap corruption on a segment, or if the background
  *   GC is modifying a segment, the remainder of that segment will be skipped
  *   by design.
- * - The GC heap must be in a walkable state before you attempt to use this
- *   class on it.  The IDacDbiInterface::AreGCStructuresValid function will
- *   tell you whether it is safe to walk the heap or not.
  */
 class DacHeapWalker
 {
@@ -1806,8 +1763,6 @@ public:
     HRESULT ListNearObjects(CORDB_ADDRESS obj, CORDB_ADDRESS *pPrev, CORDB_ADDRESS *pContaining, CORDB_ADDRESS *pNext);
 
 private:
-    HRESULT MoveToNextObject();
-
     bool GetSize(TADDR tMT, size_t &size);
 
     inline static size_t Align(size_t size)
@@ -1829,21 +1784,18 @@ private:
         int count = 0;
         while (seg_start)
         {
-            // If we find this many segments, something is seriously wrong.
-            if (count++ > 4096)
-                break;
-
             seg_start = seg_start->next;
+            count++;
         }
 
         return count;
     }
 
-    HRESULT NextSegment();
+    HRESULT AdvanceToNextValidSegment();
     void CheckAllocAndSegmentRange();
 
 private:
-    int mThreadCount;
+    int mAllocContextCount;
     AllocInfo *mAllocInfo;
 
     size_t mHeapCount;
@@ -1863,7 +1815,6 @@ private:
     static CORDB_ADDRESS sFreeMT;
 };
 
-struct DacGcReference;
 struct SOSStackErrorList
 {
     SOSStackRefError error;
@@ -1897,6 +1848,144 @@ private:
 // For GCCONTEXT
 #include "gcenv.h"
 
+
+template <class T>
+class DacReferenceList
+{
+    public:
+        DacReferenceList()
+            : _array(0), _count(0), _capacity(0)
+        {
+        }
+
+        ~DacReferenceList()
+        {
+            if (_array)
+                delete[] _array;
+        }
+
+        bool Add(const T& value)
+        {
+            if (_count == _capacity)
+            {
+                unsigned int newCapacity = (int)(_capacity * 1.5);
+                if (newCapacity < 256)
+                    newCapacity = 256;
+
+                T* newArray = new (nothrow) T[newCapacity];
+                if (!newArray)
+                    return false;
+
+                if (_array)
+                {
+                    memcpy(newArray, _array, _capacity * sizeof(T));
+                    delete[] _array;
+                }
+
+                _array = newArray;
+                _capacity = newCapacity;
+            }
+
+            _array[_count++] = value;
+            return true;
+        }
+
+        unsigned int GetCount() const
+        {
+            return _count;
+        }
+
+        const T& Get(unsigned int index) const
+        {
+            _ASSERTE(index < _count);
+            return _array[index];
+        }
+
+        void Clear()
+        {
+            _count = 0;
+        }
+
+    private:
+        T *_array;
+        unsigned int _count;
+        unsigned int _capacity;
+};
+
+
+class DacMemoryEnumerator : public DefaultCOMImpl<ISOSMemoryEnum, IID_ISOSMemoryEnum>
+{
+public:
+    DacMemoryEnumerator()
+        : mIteratorIndex(0)
+    {
+    }
+
+    virtual ~DacMemoryEnumerator() {}
+    virtual HRESULT Init() = 0;
+
+    HRESULT STDMETHODCALLTYPE Skip(unsigned int count);
+    HRESULT STDMETHODCALLTYPE Reset();
+    HRESULT STDMETHODCALLTYPE GetCount(unsigned int *pCount);
+    HRESULT STDMETHODCALLTYPE Next(unsigned int count,
+                                   SOSMemoryRegion regions[],
+                                   unsigned int *pFetched);
+
+protected:
+    DacReferenceList<SOSMemoryRegion> mRegions;
+
+private:
+    unsigned int mIteratorIndex;
+};
+
+class DacMethodTableSlotEnumerator : public DefaultCOMImpl<ISOSMethodEnum, IID_ISOSMethodEnum>
+{
+public:
+    DacMethodTableSlotEnumerator() : mIteratorIndex(0)
+    {
+    }
+
+    virtual ~DacMethodTableSlotEnumerator() {}
+
+    HRESULT Init(PTR_MethodTable mTable);
+
+    HRESULT STDMETHODCALLTYPE Skip(unsigned int count);
+    HRESULT STDMETHODCALLTYPE Reset();
+    HRESULT STDMETHODCALLTYPE GetCount(unsigned int *pCount);
+    HRESULT STDMETHODCALLTYPE Next(unsigned int count, SOSMethodData methods[], unsigned int *pFetched);
+
+protected:
+    DacReferenceList<SOSMethodData> mMethods;
+
+private:
+    unsigned int mIteratorIndex;
+};
+
+class DacHandleTableMemoryEnumerator : public DacMemoryEnumerator
+{
+public:
+    virtual HRESULT Init();
+};
+
+class DacGCBookkeepingEnumerator : public DacMemoryEnumerator
+{
+public:
+    virtual HRESULT Init();
+};
+
+class DacFreeRegionEnumerator : public DacMemoryEnumerator
+{
+public:
+    virtual HRESULT Init();
+
+private:
+    void AddSingleSegment(const dac_heap_segment &seg, FreeRegionKind kind, int heap);
+    void AddSegmentList(DPTR(dac_heap_segment) seg, FreeRegionKind kind, int heap = 0);
+    void AddFreeList(DPTR(dac_region_free_list) freeList, FreeRegionKind kind);
+    void AddServerRegions();
+};
+
+struct DacGcReference;
  /* DacStackReferenceWalker.
  */
 class DacStackReferenceWalker : public DefaultCOMImpl<ISOSStackRefEnum, IID_ISOSStackRefEnum>
@@ -1904,44 +1993,23 @@ class DacStackReferenceWalker : public DefaultCOMImpl<ISOSStackRefEnum, IID_ISOS
     struct DacScanContext : public ScanContext
     {
         DacStackReferenceWalker *pWalker;
+        DacReferenceList<SOSStackRefData> *pList;
         Frame *pFrame;
         TADDR sp, pc;
         bool stop;
+        bool resolvePointers;
         GCEnumCallback pEnumFunc;
 
-        DacScanContext()
-            : pWalker(NULL), pFrame(0), sp(0), pc(0), stop(false), pEnumFunc(0)
+        DacScanContext(DacStackReferenceWalker *walker, DacReferenceList<SOSStackRefData> *list, bool resolveInteriorPointers)
+            : pWalker(walker), pList(list), pFrame(0), sp(0), pc(0), stop(false), resolvePointers(resolveInteriorPointers), pEnumFunc(0)
         {
+            _ASSERTE(pWalker);
+            _ASSERTE(pList);
         }
     };
 
-    typedef struct _StackRefChunkHead
-    {
-        struct _StackRefChunkHead *next;  // Next chunk
-        unsigned int count;               // The count of how many StackRefs were written to pData
-        unsigned int size;                // The capacity of pData (in bytes)
-        void *pData;                      // The overflow data
-
-        _StackRefChunkHead()
-            : next(0), count(0), size(0), pData(0)
-        {
-        }
-    } StackRefChunkHead;
-
-    // The actual struct used for storing overflow StackRefs
-    typedef struct _StackRefChunk : public StackRefChunkHead
-    {
-        SOSStackRefData data[64];
-
-        _StackRefChunk()
-        {
-            pData = data;
-            size = sizeof(data);
-        }
-    } StackRefChunk;
 public:
-    DacStackReferenceWalker(ClrDataAccess *dac, DWORD osThreadID);
-    virtual ~DacStackReferenceWalker();
+    DacStackReferenceWalker(ClrDataAccess *dac, DWORD osThreadID, bool resolveInteriorPointers);
 
     HRESULT Init();
 
@@ -1963,234 +2031,48 @@ public:
 
 private:
     static StackWalkAction Callback(CrawlFrame *pCF, VOID *pData);
-    static void GCEnumCallbackSOS(LPVOID hCallback, OBJECTREF *pObject, uint32_t flags, DacSlotLocation loc);
-    static void GCReportCallbackSOS(PTR_PTR_Object ppObj, ScanContext *sc, uint32_t flags);
-    static void GCEnumCallbackDac(LPVOID hCallback, OBJECTREF *pObject, uint32_t flags, DacSlotLocation loc);
-    static void GCReportCallbackDac(PTR_PTR_Object ppObj, ScanContext *sc, uint32_t flags);
+    static void GCEnumCallbackFunc(LPVOID hCallback, OBJECTREF *pObject, uint32_t flags, DacSlotLocation loc);
+    static void GCReportCallback(PTR_PTR_Object ppObj, ScanContext *sc, uint32_t flags);
 
     CLRDATA_ADDRESS ReadPointer(TADDR addr);
 
-    template <class StructType>
-    StructType *GetNextObject(DacScanContext *ctx)
-    {
-        SUPPORTS_DAC;
-
-        // If we failed on a previous call (OOM) don't keep trying to allocate, it's not going to work.
-        if (ctx->stop || !mCurr)
-            return NULL;
-
-        // We've moved past the size of the current chunk.  We'll allocate a new chunk
-        // and stuff the references there.  These are cleaned up by the destructor.
-        if (mCurr->count >= mCurr->size/sizeof(StructType))
-        {
-            if (mCurr->next == NULL)
-            {
-                StackRefChunk *next = new (nothrow) StackRefChunk;
-                if (next != NULL)
-                {
-                    mCurr->next = next;
-                }
-                else
-                {
-                    ctx->stop = true;
-                    return NULL;
-                }
-            }
-
-            mCurr = mCurr->next;
-        }
-
-        // Fill the current ref.
-        StructType *pData = (StructType*)mCurr->pData;
-        return &pData[mCurr->count++];
-    }
-
-    template <class IntType, class StructType>
-    IntType WalkStack(IntType count, StructType refs[], promote_func promote, GCEnumCallback enumFunc)
-    {
-        _ASSERTE(mThread);
-        _ASSERTE(!mEnumerated);
-
-        // If this is the first time we were called, fill local data structures.
-        // This will fill out the user's handles as well.
-        _ASSERTE(mCurr == NULL);
-        _ASSERTE(mHead.next == NULL);
-
-        class ProfilerFilterContextHolder
-        {
-            Thread* m_pThread;
-
-        public:
-            ProfilerFilterContextHolder() : m_pThread(NULL)
-            {
-            }
-
-            void Activate(Thread* pThread)
-            {
-                m_pThread = pThread;
-            }
-
-            ~ProfilerFilterContextHolder()
-            {
-                if (m_pThread != NULL)
-                    m_pThread->SetProfilerFilterContext(NULL);
-            }
-        };
-
-        ProfilerFilterContextHolder contextHolder;
-        T_CONTEXT ctx;
-
-        // Get the current thread's context and set that as the filter context
-        if (mThread->GetFilterContext() == NULL && mThread->GetProfilerFilterContext() == NULL)
-        {
-            mDac->m_pTarget->GetThreadContext(mThread->GetOSThreadId(), CONTEXT_FULL, sizeof(ctx), (BYTE*)&ctx);
-            mThread->SetProfilerFilterContext(&ctx);
-            contextHolder.Activate(mThread);
-        }
-
-        // Setup GCCONTEXT structs for the stackwalk.
-        GCCONTEXT gcctx;
-        DacScanContext dsc;
-        dsc.pWalker = this;
-        dsc.pEnumFunc = enumFunc;
-        gcctx.f = promote;
-        gcctx.sc = &dsc;
-
-        // Put the user's array/count in the
-        mHead.size = count*sizeof(StructType);
-        mHead.pData = refs;
-        mHead.count = 0;
-
-        mCurr = &mHead;
-
-        // Walk the stack, set mEnumerated to true to ensure we don't do it again.
-        unsigned int flagsStackWalk = ALLOW_INVALID_OBJECTS|ALLOW_ASYNC_STACK_WALK|SKIP_GSCOOKIE_CHECK;
-#if defined(FEATURE_EH_FUNCLETS)
-        flagsStackWalk |= GC_FUNCLET_REFERENCE_REPORTING;
-#endif // defined(FEATURE_EH_FUNCLETS)
-
-        mEnumerated = true;
-        mThread->StackWalkFrames(DacStackReferenceWalker::Callback, &gcctx, flagsStackWalk);
-
-        // We have filled the user's array as much as we could.  If there's more data than
-        // could fit, mHead.Next will contain a linked list of refs to enumerate.
-        mCurr = mHead.next;
-
-        // Return how many we put in the user's array.
-        return mHead.count;
-    }
-
-    template <class IntType, class StructType, promote_func PromoteFunc, GCEnumCallback EnumFunc>
-    HRESULT DoStackWalk(IntType count, StructType stackRefs[], IntType *pFetched)
-    {
-        HRESULT hr = S_OK;
-        IntType fetched = 0;
-        if (!mEnumerated)
-        {
-            // If this is the first time we were called, fill local data structures.
-            // This will fill out the user's handles as well.
-            fetched = (IntType)WalkStack((unsigned int)count, stackRefs, PromoteFunc, EnumFunc);
-        }
-
-        while (fetched < count)
-        {
-            if (mCurr == NULL)
-            {
-                // Case 1: We have no more refs to walk.
-                hr = S_FALSE;
-                break;
-            }
-            else if (mChunkIndex >= mCurr->count)
-            {
-                // Case 2: We have exhausted the current chunk.
-                mCurr = mCurr->next;
-                mChunkIndex = 0;
-            }
-            else
-            {
-                // Case 3:  The last call to "Next" filled the user's array and had some ref
-                // data leftover.  Walk the linked-list of arrays copying them into the user's
-                // buffer until we have either exhausted the user's array or the leftover data.
-                IntType toCopy = count - fetched;  // Fill the user's buffer...
-
-                // ...unless that would go past the bounds of the current chunk.
-                if (toCopy + mChunkIndex > mCurr->count)
-                    toCopy = mCurr->count - mChunkIndex;
-
-                memcpy(stackRefs+fetched, (StructType*)mCurr->pData+mChunkIndex, toCopy*sizeof(StructType));
-                mChunkIndex += toCopy;
-                fetched += toCopy;
-            }
-        }
-
-        *pFetched = fetched;
-
-        return hr;
-    }
+    void WalkStack();
 
 private:
     // Dac variables required for entering/leaving the dac.
     ClrDataAccess *mDac;
     ULONG32 m_instanceAge;
 
+    // Storage
+    DacReferenceList<SOSStackRefData> mList;
+
     // Operational variables
     Thread *mThread;
     SOSStackErrorList *mErrors;
+    bool mResolvePointers;
     bool mEnumerated;
 
-    // Storage variables
-    StackRefChunkHead mHead;
-    unsigned int mChunkIndex;
-
     // Iterator variables
-    StackRefChunkHead *mCurr;
-    int mIteratorIndex;
+    unsigned int mIteratorIndex;
 
     // Heap.  Used to resolve interior pointers.
     DacHeapWalker mHeap;
 };
 
-
-
-struct DacGcReference;
 class DacHandleWalker : public DefaultCOMImpl<ISOSHandleEnum, IID_ISOSHandleEnum>
 {
-    typedef struct _HandleChunkHead
-    {
-        struct _HandleChunkHead *Next;  // Next chunk
-        unsigned int Count;             // The count of how many handles were written to pData
-        unsigned int Size;              // The capacity of pData
-        void *pData;           // The overflow data
-
-        _HandleChunkHead()
-            : Next(0), Count(0), Size(0), pData(0)
-        {
-        }
-    } HandleChunkHead;
-
-    // The actual struct used for storing overflow handles
-    typedef struct _HandleChunk : public HandleChunkHead
-    {
-        SOSHandleData Data[128];
-
-        _HandleChunk()
-        {
-            pData = Data;
-            Size = sizeof(Data);
-        }
-    } HandleChunk;
-
     // Parameter used in HndEnumHandles callback.
     struct DacHandleWalkerParam
     {
-        HandleChunkHead *Curr;      // The current chunk to write to
-        HRESULT Result;             // HRESULT of the current enumeration
-        CLRDATA_ADDRESS AppDomain;  // The AppDomain for the current bucket we are walking
-        unsigned int Type;          // The type of handle we are currently walking
+        DacReferenceList<SOSHandleData> *List; // The list to write to.
+        HRESULT Result;                        // HRESULT of the current enumeration
+        CLRDATA_ADDRESS AppDomain;             // The AppDomain for the current bucket we are walking
+        unsigned int Type;                     // The type of handle we are currently walking
 
-        DacHandleWalkerParam(HandleChunk *curr)
-            : Curr(curr), Result(S_OK), AppDomain(0), Type(0)
+        DacHandleWalkerParam(DacReferenceList<SOSHandleData> *list)
+            : List(list), Result(S_OK), AppDomain(0), Type(0)
         {
+            _ASSERTE(list);
         }
     };
 
@@ -2213,88 +2095,17 @@ public:
    // Dac-Dbi Functions
    HRESULT Next(ULONG celt, DacGcReference roots[], ULONG *pceltFetched);
 private:
-    static void CALLBACK EnumCallback(PTR_UNCHECKED_OBJECTREF pref, LPARAM *pExtraInfo, LPARAM userParam, LPARAM type);
+    static void CALLBACK EnumCallback(PTR_UNCHECKED_OBJECTREF pref, uintptr_t *pExtraInfo, uintptr_t userParam, uintptr_t type);
     static void GetRefCountedHandleInfo(
         OBJECTREF oref, unsigned int uType,
         unsigned int *pRefCount, unsigned int *pJupiterRefCount, BOOL *pIsPegged, BOOL *pIsStrong);
     static UINT32 BuildTypemask(UINT types[], UINT typeCount);
 
 private:
-    static void CALLBACK EnumCallbackSOS(PTR_UNCHECKED_OBJECTREF pref, uintptr_t *pExtraInfo, uintptr_t userParam, uintptr_t type);
-    static void CALLBACK EnumCallbackDac(PTR_UNCHECKED_OBJECTREF pref, uintptr_t *pExtraInfo, uintptr_t userParam, uintptr_t type);
-
-    bool FetchMoreHandles(HANDLESCANPROC proc);
+    void WalkHandles();
     static inline bool IsAlwaysStrongReference(unsigned int type)
     {
-        return type == HNDTYPE_STRONG || type == HNDTYPE_PINNED || type == HNDTYPE_ASYNCPINNED || type == HNDTYPE_SIZEDREF;
-    }
-
-    template <class StructType, class IntType, HANDLESCANPROC EnumFunc>
-    HRESULT DoHandleWalk(IntType celt, StructType handles[], IntType *pceltFetched)
-    {
-        SUPPORTS_DAC;
-
-        if (handles == NULL || pceltFetched == NULL)
-            return E_POINTER;
-
-        HRESULT hr = S_OK;
-        IntType fetched = 0;
-        bool done = false;
-
-        // On each iteration of the loop, either fetch more handles (filling in
-        // the user's data structure), or copy handles from previous calls to
-        // FetchMoreHandles which we could not store in the user's data (or simply
-        // advance the current chunk to the next chunk).
-        while (fetched < celt)
-        {
-            if (mCurr == NULL)
-            {
-                // Case 1:  We have no overflow data.  Stuff the user's array/size into
-                // mHead, fetch more handles.  Additionally, if the previous call to
-                // FetchMoreHandles returned false (mMap == NULL), break.
-                if (mMap == NULL)
-                    break;
-
-                mHead.pData = handles+fetched;
-                mHead.Size = (celt - fetched)*sizeof(StructType);
-
-                done = !FetchMoreHandles(EnumFunc);
-                fetched += mHead.Count;
-
-                // Sanity check to make sure we haven't overflowed.  This should not happen.
-                _ASSERTE(fetched <= celt);
-            }
-            else if (mChunkIndex >= mCurr->Count)
-            {
-                // Case 2:  We have overflow data, but the current index into the current
-                // chunk is past the bounds.  Move to the next.  This could set mCurr to
-                // null, which we'll catch on the next iteration.
-                mCurr = mCurr->Next;
-                mChunkIndex = 0;
-            }
-            else
-            {
-                // Case 3:  The last call to "Next" filled the user's array and had some handle
-                // data leftover.  Walk the linked-list of arrays copying them into the user's
-                // buffer until we have either exhausted the user's array or the leftover data.
-                unsigned int toCopy = celt - fetched;  // Fill the user's buffer...
-
-                // ...unless that would go past the bounds of the current chunk.
-                if (toCopy + mChunkIndex > mCurr->Count)
-                    toCopy = mCurr->Count - mChunkIndex;
-
-                memcpy(handles+fetched, ((StructType*)(mCurr->pData))+mChunkIndex, toCopy*sizeof(StructType));
-                mChunkIndex += toCopy;
-                fetched += toCopy;
-            }
-        }
-
-        if (fetched < celt)
-            hr = S_FALSE;
-
-        *pceltFetched = fetched;
-
-        return hr;
+        return type == HNDTYPE_STRONG || type == HNDTYPE_PINNED;
     }
 
 private:
@@ -2303,18 +2114,15 @@ private:
     ULONG32 m_instanceAge;
 
     // Handle table walking variables.
-    dac_handle_table_map *mMap;
-    int mIndex;
     UINT32 mTypeMask;
     int mGenerationFilter;
 
     // Storage variables
-    HandleChunk mHead;
-    unsigned int mChunkIndex;
+    DacReferenceList<SOSHandleData> mList;
+    bool mEnumerated;
 
     // Iterator variables
-    HandleChunkHead *mCurr;
-    int mIteratorIndex;
+    unsigned int mIteratorIndex;
 };
 
 
@@ -2348,7 +2156,7 @@ public:
     virtual HRESULT STDMETHODCALLTYPE GetName(
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR name[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetUniqueID(
         /* [out] */ ULONG64 *id);
@@ -2429,17 +2237,17 @@ public:
     virtual HRESULT STDMETHODCALLTYPE GetName(
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR name[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetFileName(
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR name[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetDisplayName(
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR name[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetFlags(
         /* [out] */ ULONG32 *flags);
@@ -2601,12 +2409,12 @@ public:
     virtual HRESULT STDMETHODCALLTYPE GetName(
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR name[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetFileName(
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part(bufLen, *nameLen) WCHAR name[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetVersionId(
         /* [out] */ GUID* vid);
@@ -2747,7 +2555,7 @@ public:
         /* [out][in] */ CLRDATA_ENUM *handle,
         /* [in] */ ULONG32 nameBufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(nameBufLen, *nameLen) WCHAR nameBuf[  ],
+        /* [size_is][out] */ _Out_writes_to_opt_(nameBufLen, *nameLen) WCHAR nameBuf[  ],
         /* [out] */ IXCLRDataTypeDefinition **type,
         /* [out] */ ULONG32 *flags,
         /* [out] */ mdFieldDef *token);
@@ -2756,7 +2564,7 @@ public:
         /* [out][in] */ CLRDATA_ENUM *handle,
         /* [in] */ ULONG32 nameBufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(nameBufLen, *nameLen) WCHAR nameBuf[  ],
+        /* [size_is][out] */ _Out_writes_to_opt_(nameBufLen, *nameLen) WCHAR nameBuf[  ],
         /* [out] */ IXCLRDataTypeDefinition **type,
         /* [out] */ ULONG32 *flags,
         /* [out] */ IXCLRDataModule** tokenScope,
@@ -2791,7 +2599,7 @@ public:
         /* [in] */ mdFieldDef token,
         /* [in] */ ULONG32 nameBufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(nameBufLen, *nameLen) WCHAR nameBuf[  ],
+        /* [size_is][out] */ _Out_writes_to_opt_(nameBufLen, *nameLen) WCHAR nameBuf[  ],
         /* [out] */ IXCLRDataTypeDefinition **type,
         /* [out] */ ULONG32* flags);
 
@@ -2800,7 +2608,7 @@ public:
         /* [in] */ mdFieldDef token,
         /* [in] */ ULONG32 nameBufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(nameBufLen, *nameLen) WCHAR nameBuf[  ],
+        /* [size_is][out] */ _Out_writes_to_opt_(nameBufLen, *nameLen) WCHAR nameBuf[  ],
         /* [out] */ IXCLRDataTypeDefinition **type,
         /* [out] */ ULONG32* flags);
 
@@ -2808,7 +2616,7 @@ public:
         /* [in] */ ULONG32 flags,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR nameBuf[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR nameBuf[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetTokenAndScope(
         /* [out] */ mdTypeDef *token,
@@ -2918,7 +2726,7 @@ public:
         /* [out] */ IXCLRDataValue **field,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR nameBuf[  ],
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR nameBuf[  ],
         /* [out] */ mdFieldDef *token);
 
     virtual HRESULT STDMETHODCALLTYPE StartEnumStaticFieldsByName(
@@ -2952,7 +2760,7 @@ public:
         /* [out] */ IXCLRDataValue **value,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR nameBuf[  ],
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR nameBuf[  ],
         /* [out] */ IXCLRDataModule** tokenScope,
         /* [out] */ mdFieldDef *token);
 
@@ -2985,7 +2793,7 @@ public:
         /* [out] */ IXCLRDataValue **field,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR nameBuf[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR nameBuf[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetStaticFieldByToken2(
         /* [in] */ IXCLRDataModule* tokenScope,
@@ -2994,13 +2802,13 @@ public:
         /* [out] */ IXCLRDataValue **field,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR nameBuf[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR nameBuf[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetName(
         /* [in] */ ULONG32 flags,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR nameBuf[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR nameBuf[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetModule(
         /* [out] */ IXCLRDataModule **mod);
@@ -3095,7 +2903,7 @@ public:
         /* [in] */ ULONG32 flags,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR name[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetTokenAndScope(
         /* [out] */ mdMethodDef *token,
@@ -3200,7 +3008,7 @@ public:
         /* [in] */ ULONG32 flags,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part(bufLen, *nameLen) WCHAR name[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetFlags(
         /* [out] */ ULONG32 *flags);
@@ -3304,7 +3112,7 @@ public:
     virtual HRESULT STDMETHODCALLTYPE GetName(
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR name[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetUniqueID(
         /* [out] */ ULONG64 *id);
@@ -3500,7 +3308,7 @@ public:
         /* [out] */ IXCLRDataValue **arg,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part(bufLen, *nameLen) WCHAR name[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetNumLocalVariables(
         /* [out] */ ULONG32 *numLocals);
@@ -3510,7 +3318,7 @@ public:
         /* [out] */ IXCLRDataValue **localVariable,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part(bufLen, *nameLen) WCHAR name[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetNumTypeArguments(
         /* [out] */ ULONG32 *numTypeArgs);
@@ -3523,7 +3331,7 @@ public:
         /* [in] */ ULONG32 flags,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_opt(bufLen) WCHAR nameBuf[  ]);
+        /* [size_is][out] */ _Out_writes_bytes_opt_(bufLen) WCHAR nameBuf[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetMethodInstance(
         /* [out] */ IXCLRDataMethodInstance **method);
@@ -3572,12 +3380,7 @@ private:
 //
 //----------------------------------------------------------------------------
 
-#ifdef FEATURE_EH_FUNCLETS
-typedef ExceptionTracker ClrDataExStateType;
-#else // FEATURE_EH_FUNCLETS
 typedef ExInfo ClrDataExStateType;
-#endif // FEATURE_EH_FUNCLETS
-
 
 class ClrDataExceptionState : public IXCLRDataExceptionState
 {
@@ -3620,7 +3423,7 @@ public:
     virtual HRESULT STDMETHODCALLTYPE GetString(
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *strLen,
-        /* [size_is][out] */ __out_ecount_part(bufLen, *strLen) WCHAR str[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *strLen) WCHAR str[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE IsSameState(
         /* [in] */ EXCEPTION_RECORD64 *exRecord,
@@ -3724,7 +3527,7 @@ public:
         /* [out] */ IXCLRDataValue **field,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR nameBuf[  ],
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR nameBuf[  ],
         /* [out] */ mdFieldDef *token);
 
     virtual HRESULT STDMETHODCALLTYPE GetNumFields2(
@@ -3742,7 +3545,7 @@ public:
         /* [out] */ IXCLRDataValue **field,
         /* [in] */ ULONG32 nameBufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(nameBufLen, *nameLen) WCHAR nameBuf[  ],
+        /* [size_is][out] */ _Out_writes_to_opt_(nameBufLen, *nameLen) WCHAR nameBuf[  ],
         /* [out] */ mdFieldDef *token);
 
     virtual HRESULT STDMETHODCALLTYPE EnumField2(
@@ -3750,7 +3553,7 @@ public:
         /* [out] */ IXCLRDataValue **field,
         /* [in] */ ULONG32 nameBufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(nameBufLen, *nameLen) WCHAR nameBuf[  ],
+        /* [size_is][out] */ _Out_writes_to_opt_(nameBufLen, *nameLen) WCHAR nameBuf[  ],
         /* [out] */ IXCLRDataModule** tokenScope,
         /* [out] */ mdFieldDef *token);
 
@@ -3783,7 +3586,7 @@ public:
         /* [out] */ IXCLRDataValue **field,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR nameBuf[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR nameBuf[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetFieldByToken2(
         /* [in] */ IXCLRDataModule* tokenScope,
@@ -3791,7 +3594,7 @@ public:
         /* [out] */ IXCLRDataValue **field,
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *nameLen,
-        /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR nameBuf[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR nameBuf[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetAssociatedValue(
         /* [out] */ IXCLRDataValue **assocValue);
@@ -3802,7 +3605,7 @@ public:
     virtual HRESULT STDMETHODCALLTYPE GetString(
         /* [in] */ ULONG32 bufLen,
         /* [out] */ ULONG32 *strLen,
-        /* [size_is][out] */ __out_ecount_part(bufLen, *strLen) WCHAR str[  ]);
+        /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *strLen) WCHAR str[  ]);
 
     virtual HRESULT STDMETHODCALLTYPE GetArrayProperties(
         /* [out] */ ULONG32 *rank,
@@ -3844,7 +3647,7 @@ public:
                                     IXCLRDataValue** pubValue,
                                     ULONG32 nameBufRetLen,
                                     ULONG32* nameLenRet,
-                                    __out_ecount_part_opt(nameBufRetLen, *nameLenRet) WCHAR nameBufRet[  ],
+                                    _Out_writes_to_opt_(nameBufRetLen, *nameLenRet) WCHAR nameBufRet[  ],
                                     IXCLRDataModule** tokenScopeRet,
                                     mdFieldDef* tokenRet);
 
@@ -3854,7 +3657,7 @@ public:
                             IXCLRDataValue** pubValue,
                             ULONG32 nameBufRetLen,
                             ULONG32* nameLenRet,
-                            __out_ecount_part_opt(nameBufRetLen, *nameLenRet) WCHAR nameBufRet[  ],
+                            _Out_writes_to_opt_(nameBufRetLen, *nameLenRet) WCHAR nameBufRet[  ],
                             IXCLRDataModule** tokenScopeRet,
                             mdFieldDef* tokenRet)
     {
@@ -3953,9 +3756,7 @@ public:
     static HRESULT CdEnd(CLRDATA_ENUM handle);
 
     MethodDesc* m_methodDesc;
-    AppDomain* m_givenAppDomain;
-    bool m_givenAppDomainUsed;
-    AppDomainIterator m_domainIter;
+    bool m_appDomainUsed;
     AppDomain* m_appDomain;
     LoadedMethodDescIterator m_methodIter;
 };
@@ -3967,7 +3768,7 @@ public:
 //----------------------------------------------------------------------------
 
 #define DAC_ENTER() \
-    EnterCriticalSection(&g_dacCritSec); \
+    minipal_mutex_enter(&g_dacMutex); \
     ClrDataAccess* __prevDacImpl = g_dacImpl; \
     g_dacImpl = this;
 
@@ -3975,10 +3776,10 @@ public:
 // the process's host instance cache hasn't been flushed
 // since the child was created.
 #define DAC_ENTER_SUB(dac) \
-    EnterCriticalSection(&g_dacCritSec); \
+    minipal_mutex_enter(&g_dacMutex); \
     if (dac->m_instanceAge != m_instanceAge) \
     { \
-        LeaveCriticalSection(&g_dacCritSec); \
+        minipal_mutex_leave(&g_dacMutex); \
         return E_INVALIDARG; \
     } \
     ClrDataAccess* __prevDacImpl = g_dacImpl; \
@@ -3986,7 +3787,7 @@ public:
 
 #define DAC_LEAVE() \
     g_dacImpl = __prevDacImpl; \
-    LeaveCriticalSection(&g_dacCritSec)
+    minipal_mutex_leave(&g_dacMutex)
 
 
 #define SOSHelperEnter() \
@@ -4004,7 +3805,7 @@ public:
             EX_RETHROW; \
         }               \
     }                   \
-    EX_END_CATCH(SwallowAllExceptions) \
+    EX_END_CATCH \
     DAC_LEAVE();
 
 HRESULT DacGetHostVtPtrs(void);
@@ -4029,7 +3830,7 @@ HRESULT GetServerHeaps(CLRDATA_ADDRESS pGCHeaps[], ICorDebugDataTarget* pTarget)
 
 #pragma warning( disable: 4035 )        /* Don't complain about lack of return value */
 
-__inline unsigned __int64 GetCycleCount ()
+__inline uint64_t GetCycleCount ()
 {
 __asm   _emit   0x0F
 __asm   _emit   0x31    /* rdtsc */
@@ -4053,7 +3854,7 @@ __asm   pop     EDX
 
 #define CCNT_OVERHEAD    0 // Don't know
 
-__inline unsigned __int64 GetCycleCount()
+__inline uint64_t GetCycleCount()
 {
     LIMITED_METHOD_CONTRACT;
 
@@ -4064,16 +3865,16 @@ __inline unsigned __int64 GetCycleCount()
 
 #endif  // #if defined(TARGET_X86)
 
-extern unsigned __int64 g_nTotalTime;
-extern unsigned __int64 g_nStackTotalTime;
-extern unsigned __int64 g_nReadVirtualTotalTime;
-extern unsigned __int64 g_nFindTotalTime;
-extern unsigned __int64 g_nFindHashTotalTime;
-extern unsigned __int64 g_nFindHits;
-extern unsigned __int64 g_nFindCalls;
-extern unsigned __int64 g_nFindFails;
-extern unsigned __int64 g_nStackWalk;
-extern unsigned __int64 g_nFindStackTotalTime;
+extern uint64_t g_nTotalTime;
+extern uint64_t g_nStackTotalTime;
+extern uint64_t g_nReadVirtualTotalTime;
+extern uint64_t g_nFindTotalTime;
+extern uint64_t g_nFindHashTotalTime;
+extern uint64_t g_nFindHits;
+extern uint64_t g_nFindCalls;
+extern uint64_t g_nFindFails;
+extern uint64_t g_nStackWalk;
+extern uint64_t g_nFindStackTotalTime;
 
 #endif // #if defined(DAC_MEASURE_PERF)
 

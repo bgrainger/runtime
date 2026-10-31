@@ -5,6 +5,8 @@
 
 using System;
 using System.Runtime.CompilerServices;
+using Xunit;
+using TestLibrary;
 
 namespace Benchstone.MDBenchF
 {
@@ -103,7 +105,9 @@ public static class MDInvMt
         return result;
     }
 
-    public static int Main()
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+    [Fact]
+    public static int TestEntryPoint()
     {
         bool result = TestBase();
         return (result ? 100 : -1);

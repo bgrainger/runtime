@@ -20,6 +20,7 @@ public class GenerateIClassX
     public DateTime FieldValueType;
 }
 
+[ActiveIssue("https://github.com/dotnet/runtime/issues/91388", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
 partial class Test_VariantTest
 {
     private const byte NumericValue = 15;
@@ -376,5 +377,21 @@ partial class Test_VariantTest
                         Marshal_Struct_ByRef_Object_IUnknown(ref wrapper);
                     });
         }
+    }
+
+    private unsafe static void TestBSTRWithTrailingByte()
+    {
+        // Get a VARIANT containing a BSTR from native code that has a trailing byte after the null terminator
+        GetBSTRWithTrailingByteInVariant(out object variant);
+
+        // The VARIANT should unmarshal as a string
+        Assert.IsType<string>(variant);
+        string bstr = (string)variant;
+
+        // Verify the string content is correct
+        Assert.Equal("Test", bstr);
+
+        // Pass the string back to native code wrapped in a VARIANT to verify the trailing byte is preserved
+        Assert.True(VerifyBSTRWithTrailingByteInVariant(new BStrWrapper(bstr)));
     }
 }

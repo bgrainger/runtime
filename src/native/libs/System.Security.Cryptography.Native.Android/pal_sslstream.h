@@ -8,8 +8,10 @@
 
 #include <pal_ssl_types.h>
 
-typedef void (*STREAM_WRITER)(uint8_t*, int32_t);
-typedef int32_t (*STREAM_READER)(uint8_t*, int32_t*);
+typedef intptr_t ManagedContextHandle;
+typedef void (*STREAM_WRITER)(ManagedContextHandle, uint8_t*, int32_t);
+typedef int32_t (*STREAM_READER)(ManagedContextHandle, uint8_t*, int32_t*);
+typedef void (*MANAGED_CONTEXT_CLEANUP)(ManagedContextHandle);
 
 typedef struct SSLStream
 {
@@ -20,8 +22,10 @@ typedef struct SSLStream
     jobject netOutBuffer;
     jobject appInBuffer;
     jobject netInBuffer;
+    ManagedContextHandle managedContextHandle;
     STREAM_READER streamReader;
     STREAM_WRITER streamWriter;
+    MANAGED_CONTEXT_CLEANUP managedContextCleanup;
 } SSLStream;
 
 typedef struct ApplicationProtocolData_t ApplicationProtocolData;
@@ -42,30 +46,44 @@ Create an SSL context
 
 Returns NULL on failure
 */
-PALEXPORT SSLStream* AndroidCryptoNative_SSLStreamCreate(void);
+PALEXPORT SSLStream* AndroidCryptoNative_SSLStreamCreate(
+    intptr_t sslStreamProxyHandle,
+    const char* targetHost,
+    jobjectArray keyManagers);
 
 /*
-Create an SSL context with the specified certificates
+Create key managers from a PKCS8 private key and certificate chain.
+The returned KeyManager[] should be passed to SSLStreamCreate.
 
 Returns NULL on failure
 */
-PALEXPORT SSLStream* AndroidCryptoNative_SSLStreamCreateWithCertificates(uint8_t* pkcs8PrivateKey,
-                                                                         int32_t pkcs8PrivateKeyLen,
-                                                                         PAL_KeyAlgorithm algorithm,
-                                                                         jobject* /*X509Certificate[]*/ certs,
-                                                                         int32_t certsLen);
+PALEXPORT jobjectArray AndroidCryptoNative_SSLStreamCreateKeyManagers(
+    uint8_t* pkcs8PrivateKey,
+    int32_t pkcs8PrivateKeyLen,
+    PAL_KeyAlgorithm algorithm,
+    jobject* /*X509Certificate[]*/ certs,
+    int32_t certsLen);
+
+/*
+Create key managers from a KeyStore PrivateKeyEntry.
+The returned KeyManager[] should be passed to SSLStreamCreate.
+
+Returns NULL on failure
+*/
+PALEXPORT jobjectArray AndroidCryptoNative_SSLStreamCreateKeyManagersFromKeyStoreEntry(jobject privateKeyEntry);
 
 /*
 Initialize an SSL context
-  - isServer      : true if the context should be created in server mode
-  - streamReader  : callback for reading data from the connection
-  - streamWriter  : callback for writing data to the connection
-  - appBufferSize : initial buffer size for applicaiton data
+  - isServer                : true if the context should be created in server mode
+  - streamReader            : callback for reading data from the connection
+  - streamWriter            : callback for writing data to the connection
+  - managedContextCleanup   : callback for cleaning up the managed context
+  - appBufferSize           : initial buffer size for application data
 
 Returns 1 on success, 0 otherwise
 */
 PALEXPORT int32_t AndroidCryptoNative_SSLStreamInitialize(
-    SSLStream* sslStream, bool isServer, STREAM_READER streamReader, STREAM_WRITER streamWriter, int32_t appBufferSize);
+    SSLStream* sslStream, bool isServer, ManagedContextHandle managedContextHandle, STREAM_READER streamReader, STREAM_WRITER streamWriter, MANAGED_CONTEXT_CLEANUP managedContextCleanup, int32_t appBufferSize, const char* peerHost);
 
 /*
 Set target host
@@ -73,7 +91,14 @@ Set target host
 
 Returns 1 on success, 0 otherwise
 */
-PALEXPORT int32_t AndroidCryptoNative_SSLStreamSetTargetHost(SSLStream* sslStream, char* targetHost);
+PALEXPORT int32_t AndroidCryptoNative_SSLStreamSetTargetHost(SSLStream* sslStream, const char* targetHost);
+
+/*
+Check if the local certificate has been sent to the peer during the TLS handshake.
+
+Returns true if the local certificate has been sent to the peer, false otherwise.
+*/
+PALEXPORT bool AndroidCryptoNative_SSLStreamIsLocalCertificateUsed(SSLStream* sslStream);
 
 /*
 Start or continue the TLS handshake

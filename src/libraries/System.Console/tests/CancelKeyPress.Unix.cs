@@ -42,6 +42,8 @@ public partial class CancelKeyPressTests
         HandlerInvokedForSignal(SIGQUIT, redirectStandardInput);
     }
 
+    private static readonly int WaitFailTestTimeoutSeconds = 30 * PlatformDetection.SlowRuntimeTimeoutModifier;
+
     [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
     public void ExitDetectionNotBlockedByHandler()
     {
@@ -76,8 +78,12 @@ public partial class CancelKeyPressTests
                 Assert.Equal(RemoteExecutor.SuccessExitCode, handle.ExitCode);
             }
 
-            // Release CancelKeyPress
+            // Release CancelKeyPress, and give it time to return and tear down the app
             mre.Set();
+            Thread.Sleep(WaitFailTestTimeoutSeconds * 1000);
+        }, new RemoteInvokeOptions() {
+            ExpectedExitCode = 130,
+            TimeOut = RemoteExecutor.FailWaitTimeoutMilliseconds * PlatformDetection.SlowRuntimeTimeoutModifier
         }).Dispose();
     }
 
@@ -133,11 +139,11 @@ public partial class CancelKeyPressTests
         }
     }
 
-    [DllImport("libc", SetLastError = true)]
-    private static extern int kill(int pid, int sig);
+    [LibraryImport("libc", SetLastError = true)]
+    private static partial int kill(int pid, int sig);
 
-    [DllImport("libc", SetLastError = true)]
-    private static unsafe extern int sigaction(int signum, struct_sigaction* act, struct_sigaction* oldact);
+    [LibraryImport("libc", SetLastError = true)]
+    private static unsafe partial int sigaction(int signum, struct_sigaction* act, struct_sigaction* oldact);
 
     private const int SIGINT = 2;
     private const int SIGQUIT = 3;

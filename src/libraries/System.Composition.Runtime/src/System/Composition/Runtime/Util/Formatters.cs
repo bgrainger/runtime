@@ -11,31 +11,23 @@ namespace System.Composition.Runtime.Util
     {
         public static string Format(object value)
         {
-            if (value == null)
-                throw new ArgumentNullException(nameof(value));
-
-            if (value is string)
-                return "\"" + value + "\"";
-
-            return value.ToString();
+            ArgumentNullException.ThrowIfNull(value);
+            return value is string ? $"\"{value}\"" : value.ToString();
         }
 
         public static string Format(Type type)
         {
-            if (type == null) throw new ArgumentNullException(nameof(type));
-
-            if (type.IsConstructedGenericType)
-                return FormatClosedGeneric(type);
-
-            return type.Name;
+            ArgumentNullException.ThrowIfNull(type);
+            return type.IsConstructedGenericType ? FormatClosedGeneric(type) : type.Name;
         }
 
         private static string FormatClosedGeneric(Type closedGenericType)
         {
             Debug.Assert(closedGenericType != null);
             Debug.Assert(closedGenericType.IsConstructedGenericType);
+
             var name = closedGenericType.Name.Substring(0, closedGenericType.Name.IndexOf('`'));
-            IEnumerable<string> args = closedGenericType.GenericTypeArguments.Select(t => Format(t));
+            IEnumerable<string> args = closedGenericType.GenericTypeArguments.Select(Format);
             return $"{name}<{string.Join(SR.Formatter_ListSeparatorWithSpace, args)}>";
         }
     }

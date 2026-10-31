@@ -11,7 +11,7 @@
 #define __ILSTUBRESOLVER_H__
 
 #include "stubgen.h"
-class ILStubResolver : DynamicResolver
+class ILStubResolver : public DynamicResolver
 {
     friend class ILStubCache;
     friend class ILStubLinker;
@@ -26,94 +26,69 @@ public:
     void GetJitContext(SecurityControlFlags* pSecurityControlFlags,
                        TypeHandle* pTypeOwner);
     ChunkAllocator* GetJitMetaHeap();
+    bool RequiresAccessCheck();
+    CORJIT_FLAGS GetJitFlags();
 
     BYTE* GetCodeInfo(unsigned* pCodeSize, unsigned* pStackSize, CorInfoOptions* pOptions, unsigned* pEHSize);
     SigPointer GetLocalSig();
 
-    OBJECTHANDLE ConstructStringLiteral(mdToken metaTok);
+    STRINGREF* ConstructStringLiteral(mdToken metaTok);
     BOOL IsValidStringRef(mdToken metaTok);
-    int GetStringLiteralLength(mdToken metaTok);
-    void ResolveToken(mdToken token, TypeHandle * pTH, MethodDesc ** ppMD, FieldDesc ** ppFD);
+    STRINGREF GetStringLiteral(mdToken metaTok);
+    void ResolveToken(mdToken token, ResolvedToken* resolvedToken);
     SigPointer ResolveSignature(mdToken token);
     SigPointer ResolveSignatureForVarArg(mdToken token);
     void GetEHInfo(unsigned EHnumber, CORINFO_EH_CLAUSE* clause);
 
     static LPCUTF8 GetStubClassName(MethodDesc* pMD);
-    LPCUTF8 GetStubMethodName();
 
     MethodDesc* GetDynamicMethod() { LIMITED_METHOD_CONTRACT; return m_pStubMD; }
 
     // -----------------------------------
     // ILStubResolver-specific methods
     // -----------------------------------
-    MethodDesc* GetStubMethodDesc();
-    MethodDesc* GetStubTargetMethodDesc();
-    void SetStubTargetMethodDesc(MethodDesc* pStubTargetMD);
-    void SetStubTargetMethodSig(PCCOR_SIGNATURE pStubTargetMethodSig, DWORD cbStubTargetSigLength);
-    void SetStubMethodDesc(MethodDesc* pStubMD);
-
-    void CreateILHeader(COR_ILMETHOD_DECODER* pILHeader, size_t cbCode, UINT maxStack, BYTE* pNewILCodeBuffer, BYTE* pNewLocalSig, DWORD cbLocalSig);
-
-    COR_ILMETHOD_DECODER * AllocGeneratedIL(size_t cbCode, DWORD cbLocalSig, UINT maxStack);
-    COR_ILMETHOD_DECODER * GetILHeader();
-    COR_ILMETHOD_SECT_EH* AllocEHSect(size_t nClauses);
+    ILStubResolver();
 
     bool IsCompiled();
     bool IsILGenerated();
 
-    ILStubResolver();
+    MethodDesc* GetStubMethodDesc();
+    MethodDesc* GetStubTargetMethodDesc();
+    COR_ILMETHOD_DECODER* GetILHeader();
 
+#ifndef DACCESS_COMPILE
     void SetTokenLookupMap(TokenLookupMap* pMap);
-
     void SetJitFlags(CORJIT_FLAGS jitFlags);
-    CORJIT_FLAGS GetJitFlags();
+    void SetStubMethodDesc(MethodDesc* pStubMD);
+    void SetStubTargetMethodDesc(MethodDesc* pStubTargetMD);
+    void SetStubTargetMethodSig(PCCOR_SIGNATURE pStubTargetMethodSig, DWORD cbStubTargetSigLength);
 
-    void SetLoaderHeap(PTR_LoaderHeap pLoaderHeap);
+    COR_ILMETHOD_DECODER* AllocGeneratedIL(size_t cbCode, DWORD cbLocalSig, UINT maxStack);
+    COR_ILMETHOD_SECT_EH* AllocEHSect(size_t nClauses);
+
+    COR_ILMETHOD_DECODER* FinalizeILStub(ILStubLinker* sl, CORJIT_FLAGS corJitFlags = CORJIT_FLAGS(CORJIT_FLAGS::CORJIT_FLAG_IL_STUB));
+#endif // !DACCESS_COMPILE
 
     static void StubGenFailed(ILStubResolver* pResolver);
-
-    enum ILStubType
-    {
-        Unassigned = 0,
-        CLRToNativeInteropStub,
-        CLRToCOMInteropStub,
-        NativeToCLRInteropStub,
-        COMToCLRInteropStub,
-        StructMarshalInteropStub,
-#ifdef FEATURE_ARRAYSTUB_AS_IL
-        ArrayOpStub,
-#endif
-#ifdef FEATURE_MULTICASTSTUB_AS_IL
-        MulticastDelegateStub,
-#endif
-        WrapperDelegateStub,
-#ifdef FEATURE_INSTANTIATINGSTUB_AS_IL
-        UnboxingILStub,
-        InstantiatingStub,
-#endif
-        TailCallStoreArgsStub,
-        TailCallCallTargetStub,
-    };
-
-    ILStubType GetStubType();
 
 protected:
 
     enum CompileTimeStatePtrSpecialValues
     {
-        ILNotYetGenerated   = NULL,
+        ILNotYetGenerated   = 0,
         ILGeneratedAndFreed = 1,
     };
 
     void ClearCompileTimeState(CompileTimeStatePtrSpecialValues newState);
-    void SetStubType(ILStubType stubType);
-    bool UseLoaderHeap();
 
     //
     // This stuff is only needed during JIT
     //
     struct CompileTimeState
     {
+        CompileTimeState() = default;
+        ~CompileTimeState() = default;
+
         COR_ILMETHOD_DECODER   m_ILHeader;
         COR_ILMETHOD_SECT_EH * m_pEHSect;
         SigPointer             m_StubTargetMethodSig;
@@ -125,12 +100,9 @@ protected:
 
     PTR_MethodDesc          m_pStubMD;
     PTR_MethodDesc          m_pStubTargetMD;
-    ILStubType              m_type;
     CORJIT_FLAGS            m_jitFlags;
-    PTR_LoaderHeap          m_loaderHeap;
 };
 
-typedef Holder<ILStubResolver*, DoNothing<ILStubResolver*>, ILStubResolver::StubGenFailed, NULL> ILStubGenHolder;
-
+typedef Holder<ILStubResolver*, DoNothing<ILStubResolver*>, ILStubResolver::StubGenFailed, 0> ILStubGenHolder;
 
 #endif // __ILSTUBRESOLVER_H__

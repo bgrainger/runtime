@@ -183,6 +183,16 @@ namespace System.Net.Http.Functional.Tests
             Assert.Throws<ArgumentNullException>(() => { rm.Version = null; });
         }
 
+        [Theory]
+        [InlineData((HttpVersionPolicy)(-1))]
+        [InlineData((HttpVersionPolicy)3)]
+        [InlineData((HttpVersionPolicy)int.MaxValue)]
+        public void VersionPolicy_SetInvalidValue_ThrowsArgumentException(HttpVersionPolicy invalidValue)
+        {
+            var rm = new HttpRequestMessage();
+            AssertExtensions.Throws<ArgumentException>("value", () => rm.VersionPolicy = invalidValue);
+        }
+
         [Fact]
         public void Method_SetToNull_ThrowsArgumentNullException()
         {
@@ -224,8 +234,7 @@ namespace System.Net.Http.Functional.Tests
                 Assert.Equal(
                     "Method: PUT, RequestUri: 'http://a.com/', Version: 1.0, Content: " + typeof(StringContent).ToString() + ", Headers:" + Environment.NewLine +
                     "{" + Environment.NewLine +
-                    "  Accept: text/plain; q=0.2" + Environment.NewLine +
-                    "  Accept: text/xml; q=0.1" + Environment.NewLine +
+                    "  Accept: text/plain; q=0.2, text/xml; q=0.1" + Environment.NewLine +
                     "  Accept-Language: en-US,en;q=0.5" + Environment.NewLine +
                     "  Custom-Request-Header: value1" + Environment.NewLine +
                     "  Content-Type: text/plain; charset=utf-8" + Environment.NewLine +
@@ -234,10 +243,33 @@ namespace System.Net.Http.Functional.Tests
             }
         }
 
+        [Fact]
+        public void ToString_HeadersDumpIsEquivalentToHttpHeadersDump()
+        {
+            var m = new HttpRequestMessage(HttpMethod.Get, "http://a.org/x");
+            m.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/plain", 0.2));
+            m.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/xml", 0.1));
+            m.Headers.ConnectionClose = true;
+            m.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.5");
+            m.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip");
+            m.Headers.TryAddWithoutValidation("Accept-Encoding", "deflate");
+
+            _output.WriteLine(m.Headers.ToString());
+            _output.WriteLine(m.ToString());
+
+            // Add indentation:
+            string expected = string.Join(Environment.NewLine, m.Headers.ToString().Split(Environment.NewLine).Where(s => s.Length > 0).Select(s => "  " + s));
+            _output.WriteLine(expected);
+
+            Assert.Contains(expected, m.ToString());
+        }
+
         [Theory]
         [InlineData("DELETE")]
         [InlineData("OPTIONS")]
         [InlineData("HEAD")]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/86317", typeof(PlatformDetection), nameof(PlatformDetection.IsNodeJS))]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/101115", typeof(PlatformDetection), nameof(PlatformDetection.IsFirefox))]
         public async Task HttpRequest_BodylessMethod_NoContentLength(string method)
         {
             using (HttpClient client = CreateHttpClient())
@@ -257,6 +289,33 @@ namespace System.Net.Http.Functional.Tests
 #endif
 
                         Assert.DoesNotContain(requestData.Headers, line => line.Name.StartsWith("Content-length"));
+
+                        await connection.SendResponseAsync();
+                        await requestTask;
+                    });
+                });
+            }
+        }
+
+        [Fact]
+        public async Task HttpRequest_StringContent_WithoutMediaType()
+        {
+            using (HttpClient client = CreateHttpClient())
+            {
+                await LoopbackServer.CreateServerAsync(async (server, uri) =>
+                {
+                    var request = new HttpRequestMessage(HttpMethod.Post, uri);
+                    request.Content = new StringContent("", null, (MediaTypeHeaderValue)null);
+
+                    Task<HttpResponseMessage> requestTask = client.SendAsync(request);
+                    await server.AcceptConnectionAsync(async connection =>
+                    {
+                        var requestData = await connection.ReadRequestDataAsync().ConfigureAwait(false);
+#if TARGET_BROWSER
+                        requestData = await connection.HandleCORSPreFlight(requestData);
+#endif
+
+                        Assert.DoesNotContain(requestData.Headers, line => line.Name.StartsWith("Content-Type"));
 
                         await connection.SendResponseAsync();
                         await requestTask;

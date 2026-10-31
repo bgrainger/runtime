@@ -2,18 +2,19 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // ===========================================================================
 
-#if defined(__linux__)
-#define JITDUMP_SUPPORTED
-#endif
-
 #include "pal/palinternal.h"
 #include "pal/dbgmsg.h"
 
 #include <cstddef>
 
+#if defined(__linux__) || defined(__APPLE__)
+#define JITDUMP_SUPPORTED
+#endif
+
 #ifdef JITDUMP_SUPPORTED
 
 #include <fcntl.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -25,9 +26,14 @@
 #include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
-#include <linux/limits.h>
+#include <limits.h>
+#include "minipal/time.h"
 
 #include "../inc/llvm/ELF.h"
+
+#if defined(HOST_AMD64)
+#include <x86intrin.h>
+#endif
 
 SET_DEFAULT_DEBUG_CHANNEL(MISC);
 
@@ -37,6 +43,7 @@ namespace
     {
         JIT_DUMP_MAGIC = 0x4A695444,
         JIT_DUMP_VERSION = 1,
+        JITDUMP_FLAGS_ARCH_TIMESTAMP = 1 << 0,
 
 #if defined(HOST_X86)
         ELF_MACHINE = EM_386,
@@ -46,8 +53,14 @@ namespace
         ELF_MACHINE = EM_X86_64,
 #elif defined(HOST_ARM64)
         ELF_MACHINE = EM_AARCH64,
+#elif defined(HOST_LOONGARCH64)
+        ELF_MACHINE = EM_LOONGARCH,
+#elif defined(HOST_RISCV64)
+        ELF_MACHINE = EM_RISCV,
 #elif defined(HOST_S390X)
         ELF_MACHINE = EM_S390,
+#elif defined(HOST_POWERPC64)
+	ELF_MACHINE = EM_PPC64,
 #else
 #error ELF_MACHINE unsupported for target
 #endif
@@ -55,25 +68,33 @@ namespace
         JIT_CODE_LOAD = 0,
     };
 
-    uint64_t GetTimeStampNS()
+    static bool UseArchTimeStamp()
     {
-#if HAVE_CLOCK_MONOTONIC
-        struct timespec ts;
-        int result = clock_gettime(CLOCK_MONOTONIC, &ts);
+        static bool initialized = false;
+        static bool useArchTimestamp = false;
 
-        if (result != 0)
+        if (!initialized)
         {
-            ASSERT("clock_gettime(CLOCK_MONOTONIC) failed: %d\n", result);
-            return 0;
-        }
-        else
-        {
-            return  ts.tv_sec * 1000000000ULL + ts.tv_nsec;
-        }
-#else
-    #error "The PAL jitdump requires clock_gettime(CLOCK_MONOTONIC) to be supported."
+#if defined(HOST_AMD64)
+            const char* archTimestamp = getenv("JITDUMP_USE_ARCH_TIMESTAMP");
+            useArchTimestamp = (archTimestamp != nullptr && strcmp(archTimestamp, "1") == 0);
 #endif
+            initialized = true;
+        }
+
+        return useArchTimestamp;
     }
+
+    static uint64_t GetTimeStampNS()
+    {
+#if defined(HOST_AMD64)
+        if (UseArchTimeStamp()) {
+            return static_cast<uint64_t>(__rdtsc());
+        }
+#endif
+        return (uint64_t)minipal_hires_ticks();
+    }
+
 
     struct FileHeader
     {
@@ -85,7 +106,7 @@ namespace
             pad1(0),
             pid(getpid()),
             timestamp(GetTimeStampNS()),
-            flags(0)
+            flags(UseArchTimeStamp() ? JITDUMP_FLAGS_ARCH_TIMESTAMP : 0)
         {}
 
         uint32_t magic;
@@ -109,7 +130,7 @@ namespace
     {
         JitCodeLoadRecord() :
             pid(getpid()),
-            tid(syscall(SYS_gettid))
+            tid((uint32_t)THREADSilentGetCurrentThreadId())
         {
             header.id = JIT_CODE_LOAD;
             header.timestamp = GetTimeStampNS();
@@ -133,17 +154,15 @@ struct PerfJitDumpState
         enabled(false),
         fd(-1),
         mmapAddr(MAP_FAILED),
-        mutex(PTHREAD_MUTEX_INITIALIZER),
         codeIndex(0)
     {}
 
     volatile bool enabled;
     int fd;
     void *mmapAddr;
-    pthread_mutex_t mutex;
     volatile uint64_t codeIndex;
 
-    int FatalError(bool locked)
+    int FatalError()
     {
         enabled = false;
 
@@ -159,11 +178,6 @@ struct PerfJitDumpState
             fd = -1;
         }
 
-        if (locked)
-        {
-            pthread_mutex_unlock(&mutex);
-        }
-
         return -1;
     }
 
@@ -171,13 +185,21 @@ struct PerfJitDumpState
     {
         int result = 0;
 
+        // On platforms where JITDUMP is used, minipal_hires_tick_frequency()
+        // returns tccSecondsToNanoSeconds. If this isn't true,
+        // then some other method will need to be used to implement GetTimeStampNS.
+        // Validate this is true once in Start here.
+        if (minipal_hires_tick_frequency() != tccSecondsToNanoSeconds)
+        {
+            _ASSERTE(!"minipal_hires_tick_frequency() does not return tccSecondsToNanoSeconds. Implement JITDUMP GetTimeStampNS directly for this platform.\n");
+            FatalError();
+        }
+
         // Write file header
         FileHeader header;
 
-        result = pthread_mutex_lock(&mutex);
-
         if (result != 0)
-            return FatalError(false);
+            return FatalError();
 
         if (enabled)
             goto exit;
@@ -187,44 +209,45 @@ struct PerfJitDumpState
         result = snprintf(jitdumpPath, sizeof(jitdumpPath), "%s/jit-%i.dump", path, getpid());
 
         if (result >= PATH_MAX)
-            return FatalError(true);
+            return FatalError();
 
         result = open(jitdumpPath, O_CREAT|O_TRUNC|O_RDWR|O_CLOEXEC, S_IRUSR|S_IWUSR );
 
         if (result == -1)
-            return FatalError(true);
+            return FatalError();
 
         fd = result;
 
         result = write(fd, &header, sizeof(FileHeader));
 
         if (result == -1)
-            return FatalError(true);
+            return FatalError();
 
         result = fsync(fd);
 
         if (result == -1)
-            return FatalError(true);
+            return FatalError();
 
+#if !defined(__APPLE__)
         // mmap jitdump file
-        // this is a marker for perf inject to find the jitdumpfile
+        // this is a marker for perf inject to find the jitdumpfile on linux.
+        // On OSX, samply and others hook open and mmap is not needed. It also fails on OSX,
+        // likely because of PROT_EXEC and hardened runtime
         mmapAddr = mmap(nullptr, sizeof(FileHeader), PROT_READ | PROT_EXEC, MAP_PRIVATE, fd, 0);
 
         if (mmapAddr == MAP_FAILED)
-            return FatalError(true);
+            return FatalError();
+#else
+        mmapAddr = NULL;
+#endif
 
         enabled = true;
 
 exit:
-        result = pthread_mutex_unlock(&mutex);
-
-        if (result != 0)
-            return FatalError(false);
-
         return 0;
     }
 
-    int LogMethod(void* pCode, size_t codeSize, const char* symbol, void* debugInfo, void* unwindInfo)
+    int LogMethod(void* pCode, size_t codeSize, const char* symbol, void* debugInfo, void* unwindInfo, bool reportCodeBlock)
     {
         int result = 0;
 
@@ -234,7 +257,9 @@ exit:
 
             JitCodeLoadRecord record;
 
-            size_t bytesRemaining = sizeof(JitCodeLoadRecord) + symbolLen + 1 + codeSize;
+            size_t reportedCodeSize = reportCodeBlock ? codeSize : 0;
+
+            size_t bytesRemaining = sizeof(JitCodeLoadRecord) + symbolLen + 1 + reportedCodeSize;
 
             record.header.timestamp = GetTimeStampNS();
             record.vma = (uint64_t) pCode;
@@ -246,16 +271,11 @@ exit:
                 // ToDo insert debugInfo and unwindInfo record items immediately before the JitCodeLoadRecord.
                 { &record, sizeof(JitCodeLoadRecord) },
                 { (void *)symbol, symbolLen + 1 },
-                { pCode, codeSize },
+                { pCode, reportedCodeSize },
             };
             size_t itemsCount = sizeof(items) / sizeof(items[0]);
 
             size_t itemsWritten = 0;
-
-            result = pthread_mutex_lock(&mutex);
-
-            if (result != 0)
-                return FatalError(false);
 
             if (!enabled)
                 goto exit;
@@ -275,7 +295,7 @@ exit:
                     if (errno == EINTR)
                         continue;
 
-                    return FatalError(true);
+                    return FatalError();
                 }
 
                 // Detect unexpected failure cases.
@@ -305,12 +325,8 @@ exit:
                 } while (result > 0);
             } while (true);
 
-exit:
-            result = pthread_mutex_unlock(&mutex);
-
-            if (result != 0)
-                return FatalError(false);
         }
+exit:
         return 0;
     }
 
@@ -322,39 +338,29 @@ exit:
         {
             enabled = false;
 
-            // Lock the mutex
-            result = pthread_mutex_lock(&mutex);
+            if (mmapAddr != NULL)
+            {
+                result = munmap(mmapAddr, sizeof(FileHeader));
 
-            if (result != 0)
-                return FatalError(false);
-
-            if (!enabled)
-                goto exit;
-
-            result = munmap(mmapAddr, sizeof(FileHeader));
-
-            if (result == -1)
-                return FatalError(true);
+                if (result == -1)
+                    return FatalError();
+            }
 
             mmapAddr = MAP_FAILED;
 
             result = fsync(fd);
 
             if (result == -1)
-                return FatalError(true);
+                return FatalError();
 
             result = close(fd);
 
-            if (result == -1)
-                return FatalError(true);
+            if (result == -1 && errno != EINTR)
+                return FatalError();
 
             fd = -1;
-exit:
-            result = pthread_mutex_unlock(&mutex);
-
-            if (result != 0)
-                return -1;
         }
+
         return 0;
     }
 };
@@ -374,11 +380,18 @@ PAL_PerfJitDump_Start(const char* path)
     return GetState().Start(path);
 }
 
+bool
+PALAPI
+PAL_PerfJitDump_IsStarted()
+{
+    return GetState().enabled;
+}
+
 int
 PALAPI
-PAL_PerfJitDump_LogMethod(void* pCode, size_t codeSize, const char* symbol, void* debugInfo, void* unwindInfo)
+PAL_PerfJitDump_LogMethod(void* pCode, size_t codeSize, const char* symbol, void* debugInfo, void* unwindInfo, bool reportCodeBlock)
 {
-    return GetState().LogMethod(pCode, codeSize, symbol, debugInfo, unwindInfo);
+    return GetState().LogMethod(pCode, codeSize, symbol, debugInfo, unwindInfo, reportCodeBlock);
 }
 
 int
@@ -397,9 +410,16 @@ PAL_PerfJitDump_Start(const char* path)
     return 0;
 }
 
+bool
+PALAPI
+PAL_PerfJitDump_IsStarted()
+{
+    return false;
+}
+
 int
 PALAPI
-PAL_PerfJitDump_LogMethod(void* pCode, size_t codeSize, const char* symbol, void* debugInfo, void* unwindInfo)
+PAL_PerfJitDump_LogMethod(void* pCode, size_t codeSize, const char* symbol, void* debugInfo, void* unwindInfo, bool reportCodeBlock)
 {
     return 0;
 }

@@ -8,7 +8,8 @@ internal static partial class Interop
 {
     internal static partial class User32
     {
-        [GeneratedDllImport(Libraries.User32, ExactSpelling = true, SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.User32, SetLastError = true)]
         public static partial int GetWindowTextLengthW(IntPtr hWnd);
     }
 }

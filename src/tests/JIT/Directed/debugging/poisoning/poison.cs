@@ -1,10 +1,16 @@
 using System;
 using System.Runtime.CompilerServices;
+using TestLibrary;
+using Xunit;
 
 public class Program
 {
     [SkipLocalsInit]
-    public static unsafe int Main()
+    [ActiveIssue("Tests coreclr JIT's debug poisoning of address taken variables", TestRuntimes.Mono)]
+    [Fact]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/91923", typeof(PlatformDetection), nameof(PlatformDetection.IsAppleMobile))]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/118965", typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsCoreClrInterpreter))]
+    public static unsafe int TestEntryPoint()
     {
         bool result = true;
 
@@ -14,12 +20,12 @@ public class Program
 
         GCRef zeroed;
         Unsafe.SkipInit(out zeroed);
-        result &= VerifyZero(Unsafe.AsPointer(ref zeroed), Unsafe.SizeOf<GCRef>());
+        result &= VerifyZero(&zeroed, sizeof(GCRef));
 
         WithoutGCRef poisoned2;
         Unsafe.SkipInit(out poisoned2);
         result &= VerifyPoison(&poisoned2, sizeof(WithoutGCRef));
-        
+
         Massive poisoned3;
         Unsafe.SkipInit(out poisoned3);
         result &= VerifyPoison(&poisoned3, sizeof(Massive));
@@ -34,7 +40,7 @@ public class Program
 
         GCRef zeroed2;
         Unsafe.SkipInit(out zeroed2);
-        result &= VerifyZero(Unsafe.AsPointer(ref zeroed2), Unsafe.SizeOf<GCRef>());
+        result &= VerifyZero(&zeroed2, sizeof(GCRef));
 
         return result ? 100 : 101;
     }
@@ -69,7 +75,7 @@ public class Program
         public int ANumber;
         public float AFloat;
     }
-    
+
     private unsafe struct Massive
     {
         public fixed byte Bytes[0x10008];

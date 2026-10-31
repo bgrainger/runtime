@@ -12,18 +12,13 @@ namespace Microsoft.Internal.Collections
 {
     internal static partial class CollectionServices
     {
-        private static readonly Type StringType = typeof(string);
-        private static readonly Type IEnumerableType = typeof(IEnumerable);
-        private static readonly Type IEnumerableOfTType = typeof(IEnumerable<>);
-        private static readonly Type ICollectionOfTType = typeof(ICollection<>);
-
         public static bool IsEnumerableOfT(Type type)
         {
             if (type.IsGenericType)
             {
                 Type genericType = type.GetGenericTypeDefinition().UnderlyingSystemType;
 
-                if (genericType == IEnumerableOfTType)
+                if (genericType == typeof(IEnumerable<>))
                 {
                     return true;
                 }
@@ -33,12 +28,12 @@ namespace Microsoft.Internal.Collections
 
         public static Type? GetEnumerableElementType(Type type)
         {
-            if (type.UnderlyingSystemType == StringType || !IEnumerableType.IsAssignableFrom(type))
+            if (type.UnderlyingSystemType == typeof(string) || !typeof(IEnumerable).IsAssignableFrom(type))
             {
                 return null;
             }
 
-            if (ReflectionServices.TryGetGenericInterfaceType(type, IEnumerableOfTType, out Type? closedType))
+            if (ReflectionServices.TryGetGenericInterfaceType(type, typeof(IEnumerable<>), out Type? closedType))
             {
                 return closedType.GetGenericArguments()[0];
             }
@@ -48,7 +43,7 @@ namespace Microsoft.Internal.Collections
 
         public static Type? GetCollectionElementType(Type type)
         {
-            if (ReflectionServices.TryGetGenericInterfaceType(type, ICollectionOfTType, out Type? closedType))
+            if (ReflectionServices.TryGetGenericInterfaceType(type, typeof(ICollection<>), out Type? closedType))
             {
                 return closedType.GetGenericArguments()[0];
             }
@@ -58,12 +53,9 @@ namespace Microsoft.Internal.Collections
 
         public static ReadOnlyCollection<T> ToReadOnlyCollection<T>(this IEnumerable<T> source)
         {
-            if (source == null)
-            {
-                throw new ArgumentNullException(nameof(source));
-            }
+            ArgumentNullException.ThrowIfNull(source);
 
-            return new ReadOnlyCollection<T>(source.AsArray());
+            return Array.AsReadOnly(source.AsArray());
         }
 
         public static IEnumerable<T>? ConcatAllowingNull<T>(this IEnumerable<T>? source, IEnumerable<T>? second)
@@ -134,10 +126,7 @@ namespace Microsoft.Internal.Collections
 
         private static List<T> FastAppendToListAllowNulls<T>(this List<T>? source, T value)
         {
-            if (source == null)
-            {
-                source = new List<T>();
-            }
+            source ??= new List<T>();
             source.Add(value);
 
             return source;
@@ -170,10 +159,7 @@ namespace Microsoft.Internal.Collections
 
         public static EnumerableCardinality GetCardinality<T>(this IEnumerable<T> source)
         {
-            if (source == null)
-            {
-                throw new ArgumentNullException(nameof(source));
-            }
+            ArgumentNullException.ThrowIfNull(source);
 
             // Cast to ICollection instead of ICollection<T> for performance reasons.
             if (source is ICollection collection)
@@ -204,10 +190,7 @@ namespace Microsoft.Internal.Collections
 
         public static Stack<T> Copy<T>(this Stack<T> stack)
         {
-            if (stack == null)
-            {
-                throw new ArgumentNullException(nameof(stack));
-            }
+            ArgumentNullException.ThrowIfNull(stack);
 
             // Stack<T>.GetEnumerator walks from top to bottom
             // of the stack, whereas Stack<T>(IEnumerable<T>)

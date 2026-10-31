@@ -2,7 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections;
-using System.DirectoryServices.Interop;
 
 namespace System.DirectoryServices
 {
@@ -34,7 +33,7 @@ namespace System.DirectoryServices
             _changeList = ArrayList.Synchronized(tempList);
             _allowMultipleChange = entry.allowMultipleChange;
             string tempPath = entry.Path;
-            if (tempPath == null || tempPath.Length == 0)
+            if (string.IsNullOrEmpty(tempPath))
             {
                 // user does not specify path, so we bind to default naming context using LDAP provider.
                 _needNewBehavior = true;
@@ -137,10 +136,7 @@ namespace System.DirectoryServices
         /// </devdoc>
         public void AddRange(object?[] value)
         {
-            if (value == null)
-            {
-                throw new ArgumentNullException(nameof(value));
-            }
+            ArgumentNullException.ThrowIfNull(value);
             for (int i = 0; ((i) < (value.Length)); i = ((i) + (1)))
             {
                 this.Add(value[i]);
@@ -152,10 +148,7 @@ namespace System.DirectoryServices
         /// </devdoc>
         public void AddRange(PropertyValueCollection value)
         {
-            if (value == null)
-            {
-                throw new ArgumentNullException(nameof(value));
-            }
+            ArgumentNullException.ThrowIfNull(value);
             int currentCount = value.Count;
             for (int i = 0; i < currentCount; i = ((i) + (1)))
             {

@@ -8,7 +8,7 @@ namespace System.Runtime.InteropServices.Tests
     [ProgId("pizza")]
     public class ProgIdAttributeTests
     {
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsBuiltInComEnabled))]
         public void Exists()
         {
             Type type = typeof(ProgIdAttributeTests);
@@ -16,10 +16,10 @@ namespace System.Runtime.InteropServices.Tests
             Assert.Equal("pizza", attribute.Value);
         }
 
-        [Theory]
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsBuiltInComEnabled))]
         [InlineData(null)]
         [InlineData("ProgId")]
-        public void Ctor_ProgId(string progId)
+        public void Ctor_ProgId(string? progId)
         {
             var attribute = new ProgIdAttribute(progId);
             Assert.Equal(progId, attribute.Value);

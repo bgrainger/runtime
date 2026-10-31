@@ -18,9 +18,9 @@
 #include "mdutil.h"
 #include "rwutil.h"
 #include "mdlog.h"
+#include "memorystreams.h"
 #include "importhelper.h"
 #include "filtermanager.h"
-#include "mdperf.h"
 #include "switches.h"
 #include "posterror.h"
 #include "stgio.h"
@@ -28,18 +28,10 @@
 
 #include <metamodelrw.h>
 
-#define DEFINE_CUSTOM_NODUPCHECK    1
-#define DEFINE_CUSTOM_DUPCHECK      2
-#define SET_CUSTOM                  3
-
-#if defined(_DEBUG) && defined(_TRACE_REMAPS)
+#if defined(_DEBUG) && defined(FEATURE_METADATA_PUBLIC_INTERFACES)
 #define LOGGING
 #endif
 #include <log.h>
-
-#ifdef _MSC_VER
-#pragma warning(disable: 4102)
-#endif
 
 #ifdef FEATURE_METADATA_EMIT
 
@@ -51,14 +43,8 @@ STDMETHODIMP RegMeta::SetModuleProps(   // S_OK or error.
 {
     HRESULT     hr = S_OK;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     ModuleRec   *pModule;               // The module record to modify.
 
-    LOG((LOGMD, "RegMeta::SetModuleProps(%S)\n", MDSTR(szName)));
-
-
-    START_MD_PERF()
     LOCKWRITE();
 
     IfFailGo(m_pStgdb->m_MiniMd.PreUpdate());
@@ -76,13 +62,10 @@ STDMETHODIMP RegMeta::SetModuleProps(   // S_OK or error.
     IfFailGo(UpdateENCLog(TokenFromRid(1, mdtModule)));
 
 ErrExit:
-
-    STOP_MD_PERF(SetModuleProps);
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 } // STDMETHODIMP RegMeta::SetModuleProps()
 
+#ifdef FEATURE_METADATA_PERSISTENCE
 //*****************************************************************************
 // Saves a scope to a file of a given name.
 //*****************************************************************************
@@ -92,10 +75,6 @@ STDMETHODIMP RegMeta::Save(                     // S_OK or error.
 {
     HRESULT     hr=S_OK;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
-    LOG((LOGMD, "RegMeta::Save(%S, 0x%08x)\n", MDSTR(szFile), dwSaveFlags));
-    START_MD_PERF()
     LOCKWRITE();
 
     // Check reserved param..
@@ -115,13 +94,9 @@ STDMETHODIMP RegMeta::Save(                     // S_OK or error.
         int DumpMD_impl(RegMeta *pMD);
         DumpMD_impl(this);
     }
-#endif // _DEBUG
+#endif // _DEBUG && FEATURE_METADATA_PUBLIC_INTERFACES
 
 ErrExit:
-
-    STOP_MD_PERF(Save);
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 } // STDMETHODIMP RegMeta::Save()
 
@@ -134,31 +109,22 @@ STDMETHODIMP RegMeta::SaveToStream(     // S_OK or error.
 {
     HRESULT     hr=S_OK;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     LOCKWRITE();
-
-    LOG((LOGMD, "RegMeta::SaveToStream(0x%08x, 0x%08x)\n", pIStream, dwSaveFlags));
-    START_MD_PERF()
 
     IfFailGo(m_pStgdb->m_MiniMd.PreUpdate());
 
     hr = _SaveToStream(pIStream, dwSaveFlags);
 
-    STOP_MD_PERF(SaveToStream);
 
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(FEATURE_METADATA_PUBLIC_INTERFACES)
     if (CLRConfig::GetConfigValue(CLRConfig::INTERNAL_MD_RegMetaDump))
     {
         int DumpMD_impl(RegMeta *pMD);
         DumpMD_impl(this);
     }
-#endif // _DEBUG
+#endif // _DEBUG && FEATURE_METADATA_PUBLIC_INTERFACES
 
 ErrExit:
-
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 } // STDMETHODIMP RegMeta::SaveToStream()
 
@@ -172,7 +138,7 @@ HRESULT RegMeta::_SaveToStream(         // S_OK or error.
     HRESULT     hr=S_OK;
 
     IfFailGo(PreSave());
-    IfFailGo( m_pStgdb->SaveToStream(pIStream, m_ReorderingOptions, m_pCorProfileData) );
+    IfFailGo( m_pStgdb->SaveToStream(pIStream, m_ReorderingOptions) );
 
     // Reset m_bSaveOptimized, this is to handle the incremental and ENC
     // scenerios where one may do multiple saves.
@@ -194,13 +160,7 @@ STDMETHODIMP RegMeta::SaveToMemory(           // S_OK or error.
 {
     HRESULT     hr;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     IStream     *pStream = 0;           // Working pointer for save.
-
-    LOG((LOGMD, "MD RegMeta::SaveToMemory(0x%08x, 0x%08x)\n",
-        pbData, cbData));
-    START_MD_PERF();
 
 #ifdef _DEBUG
     ULONG       cbActual;               // Size of the real data.
@@ -219,8 +179,6 @@ STDMETHODIMP RegMeta::SaveToMemory(           // S_OK or error.
 ErrExit:
     if (pStream)
         pStream->Release();
-    STOP_MD_PERF(SaveToMemory);
-    END_ENTRYPOINT_NOTHROW;
 
     return (hr);
 } // STDMETHODIMP RegMeta::SaveToMemory()
@@ -234,12 +192,8 @@ STDMETHODIMP RegMeta::GetSaveSize(      // S_OK or error.
 {
     HRESULT     hr=S_OK;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     FilterTable *ft = NULL;
 
-    LOG((LOGMD, "RegMeta::GetSaveSize(0x%08x, 0x%08x)\n", fSave, pdwSaveSize));
-    START_MD_PERF();
     LOCKWRITE();
 
     ft = m_pStgdb->m_MiniMd.GetFilterTable();
@@ -263,7 +217,6 @@ STDMETHODIMP RegMeta::GetSaveSize(      // S_OK or error.
         }
     }
 
-
     if (ft->Count() != 0)
     {
         int iCount;
@@ -281,15 +234,40 @@ STDMETHODIMP RegMeta::GetSaveSize(      // S_OK or error.
 
     IfFailGo(PreSave());
 
-    hr = m_pStgdb->GetSaveSize(fSave, (UINT32 *)pdwSaveSize, m_ReorderingOptions, m_pCorProfileData);
+    hr = m_pStgdb->GetSaveSize(fSave, (UINT32 *)pdwSaveSize, m_ReorderingOptions);
 
 ErrExit:
-    STOP_MD_PERF(GetSaveSize);
-
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 } // RegMeta::GetSaveSize
+#else
+STDMETHODIMP RegMeta::Save(
+    LPCWSTR szFile,
+    DWORD dwSaveFlags)
+{
+    return E_NOTIMPL;
+}
+
+STDMETHODIMP RegMeta::SaveToStream(
+    IStream *pIStream,
+    DWORD dwSaveFlags)
+{
+    return E_NOTIMPL;
+}
+
+STDMETHODIMP RegMeta::SaveToMemory(
+    void *pbData,
+    ULONG cbData)
+{
+    return E_NOTIMPL;
+}
+
+STDMETHODIMP RegMeta::GetSaveSize(
+    CorSaveSize fSave,
+    DWORD *pdwSaveSize)
+{
+    return E_NOTIMPL;
+}
+#endif
 
 #ifdef FEATURE_METADATA_EMIT_ALL
 
@@ -302,7 +280,6 @@ HRESULT RegMeta::UnmarkAll()
 {
     HRESULT         hr = S_OK;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
     int             i;
     int             iCount;
     TypeDefRec      *pRec;
@@ -312,9 +289,6 @@ HRESULT RegMeta::UnmarkAll()
     mdToken         tkParent;
     int             iStart, iEnd;
 
-    LOG((LOGMD, "RegMeta::UnmarkAll\n"));
-
-    START_MD_PERF();
     LOCKWRITE();
 
 #if 0
@@ -362,7 +336,7 @@ HRESULT RegMeta::UnmarkAll()
                       IsTdNestedFamORAssem(pRec->GetFlags()) )
             {
                 // This nested class would potentially be visible outside, either
-                // directly or through inheritence.  If the enclosing class is
+                // directly or through inheritance.  If the enclosing class is
                 // marked, this nested class must be marked.
                 //
                 IfFailGo(m_pStgdb->m_MiniMd.FindNestedClassHelper(TokenFromRid(i, mdtTypeDef), &ulEncloser));
@@ -428,11 +402,6 @@ HRESULT RegMeta::UnmarkAll()
         }
     }
 ErrExit:
-
-    STOP_MD_PERF(UnmarkAll);
-
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 } // RegMeta::UnmarkAll
 
@@ -472,10 +441,6 @@ STDMETHODIMP RegMeta::MarkToken(        // Return code.
 {
     HRESULT     hr = NOERROR;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
-    // LOG((LOGMD, "RegMeta::MarkToken(0x%08x)\n", tk));
-    START_MD_PERF();
     LOCKWRITE();
 
     if (m_pStgdb->m_MiniMd.GetFilterTable() == NULL || m_pFilterManager == NULL)
@@ -550,10 +515,6 @@ STDMETHODIMP RegMeta::MarkToken(        // Return code.
         break;
     }
 ErrExit:
-
-    STOP_MD_PERF(MarkToken);
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 } // RegMeta::MarkToken
 
@@ -569,12 +530,8 @@ HRESULT RegMeta::IsTokenMarked(
 {
     HRESULT hr = S_OK;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     FilterTable *pFilter = NULL;
 
-    LOG((LOGMD, "RegMeta::IsTokenMarked(0x%08x)\n", tk));
-    START_MD_PERF();
     LOCKREAD();
 
     pFilter = m_pStgdb->m_MiniMd.GetFilterTable();
@@ -634,10 +591,6 @@ HRESULT RegMeta::IsTokenMarked(
         break;
     }
 ErrExit:
-
-    STOP_MD_PERF(IsTokenMarked);
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 } // RegMeta::IsTokenMarked
 
@@ -655,12 +608,6 @@ STDMETHODIMP RegMeta::DefineTypeDef(                // S_OK or error.
 {
     HRESULT     hr = S_OK;              // A result.
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
-    LOG((LOGMD, "RegMeta::DefineTypeDef(%S, 0x%08x, 0x%08x, 0x%08x, 0x%08x)\n",
-            MDSTR(szTypeDef), dwTypeDefFlags, tkExtends,
-            rtkImplements, ptd));
-    START_MD_PERF();
     LOCKWRITE();
 
     IfFailGo(m_pStgdb->m_MiniMd.PreUpdate());
@@ -670,10 +617,6 @@ STDMETHODIMP RegMeta::DefineTypeDef(                // S_OK or error.
     IfFailGo(_DefineTypeDef(szTypeDef, dwTypeDefFlags,
                 tkExtends, rtkImplements, mdTokenNil, ptd));
 ErrExit:
-    STOP_MD_PERF(DefineTypeDef);
-
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 } // STDMETHODIMP RegMeta::DefineTypeDef()
 
@@ -686,12 +629,8 @@ STDMETHODIMP RegMeta::SetHandler(       // S_OK.
 {
     HRESULT     hr = S_OK;              // A result.
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     IMapToken *pIMap = NULL;
 
-    LOG((LOGMD, "RegMeta::SetHandler(0x%08x)\n", pUnk));
-    START_MD_PERF();
     LOCKWRITE();
 
     m_pHandler = pUnk;
@@ -707,10 +646,6 @@ STDMETHODIMP RegMeta::SetHandler(       // S_OK.
         pIMap->Release();
 
 ErrExit:
-
-    STOP_MD_PERF(SetHandler);
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 } // STDMETHODIMP RegMeta::SetHandler()
 
@@ -718,6 +653,7 @@ ErrExit:
 // Internal helper functions.
 //*******************************************************************************
 
+#ifdef FEATURE_METADATA_PERSISTENCE
 //*******************************************************************************
 // Perform optimizations of the metadata prior to saving.
 //*******************************************************************************
@@ -792,13 +728,14 @@ HRESULT RegMeta::PreSave()              // Return code.
     m_bSaveOptimized = true;
 
     // call get save size to trigger the PreSaveXXX on MetaModelRW class.
-    IfFailGo(m_pStgdb->m_MiniMd.PreSave(m_ReorderingOptions, m_pCorProfileData));
+    IfFailGo(m_pStgdb->m_MiniMd.PreSave(m_ReorderingOptions));
 
 ErrExit:
     m_bRemap =  bRemapOld;
 
     return hr;
 } // RegMeta::PreSave
+#endif
 
 //*******************************************************************************
 // Perform optimizations of ref to def
@@ -817,7 +754,6 @@ HRESULT RegMeta::RefToDefOptimization()
 
 
 
-    START_MD_PERF();
 
     // the Ref to Def map is still up-to-date
     if (IsMemberDefDirty() == false && IsTypeDefDirty() == false && m_hasOptimizedRefToDef == true)
@@ -890,7 +826,7 @@ HRESULT RegMeta::RefToDefOptimization()
             }
 
             // In the case of global function, we have tkParent as m_tdModule.
-            // We will always do the optmization.
+            // We will always do the optimization.
             if (TypeFromToken(tkParent) == mdtTypeRef)
             {
                 // If we're preserving local typerefs, skip this token
@@ -920,15 +856,13 @@ HRESULT RegMeta::RefToDefOptimization()
 
             // Look for a member with the same def.  Might not be found if it is
             // inherited from a base class.
-            //<TODO>@future: this should support inheritence checking.
+            //<TODO>@future: this should support inheritance checking.
             // Look for a member with the same name and signature.</TODO>
             hr = ImportHelper::FindMember(pMiniMd, tkParent, szName, pvSig, cbSig, &mfdef);
             if (hr != S_OK)
             {
-    #if _TRACE_REMAPS
-            // Log the failure.
-            LOG((LF_METADATA, LL_INFO10, "Member %S//%S.%S not found\n", szNamespace, szTDName, rcMRName));
-    #endif
+                // Log the failure.
+                LOG((LF_METADATA, LL_INFO10, "Member %s (0x%p, %u) not found on 0x%x\n", szName, pvSig, cbSig, tkParent));
                 continue;
             }
 
@@ -960,7 +894,6 @@ HRESULT RegMeta::RefToDefOptimization()
     SetTypeDefDirty(false);
     m_hasOptimizedRefToDef = true;
 ErrExit:
-    STOP_MD_PERF(RefToDefOptimization);
 
     return hr;
 } // RegMeta::RefToDefOptimization
@@ -972,8 +905,7 @@ HRESULT RegMeta::_DefineTypeRef(
     mdToken     tkResolutionScope,          // [IN] ModuleRef or AssemblyRef.
     const void  *szName,                    // [IN] Name of the TypeRef.
     BOOL        isUnicode,                  // [IN] Specifies whether the URL is unicode.
-    mdTypeRef   *ptk,                       // [OUT] Put mdTypeRef here.
-    eCheckDups  eCheck)                     // [IN] Specifies whether to check for duplicates.
+    mdTypeRef   *ptk)                       // [OUT] Put mdTypeRef here.
 {
     HRESULT     hr = S_OK;
     LPUTF8      szUTF8FullQualName;
@@ -1000,7 +932,7 @@ HRESULT RegMeta::_DefineTypeRef(
     {
         szUTF8FullQualName = (LPUTF8)szName;
     }
-    PREFIX_ASSUME(szUTF8FullQualName != NULL);
+    _ASSERTE(szUTF8FullQualName != NULL);
 
     ulStringLen = (ULONG)(strlen(szUTF8FullQualName) + 1);
     IfFailGo(qbNamespace.ReSizeNoThrow(ulStringLen));
@@ -1013,7 +945,7 @@ HRESULT RegMeta::_DefineTypeRef(
     _ASSERTE(bSuccess);
 
     // Search for existing TypeRef record.
-    if (eCheck==eCheckYes || (eCheck==eCheckDefault && CheckDups(MDDupTypeRef)))
+    if (CheckDups(MDDupTypeRef))
     {
         hr = ImportHelper::FindTypeRefByName(&(m_pStgdb->m_MiniMd), tkResolutionScope,
                                              (LPCUTF8)qbNamespace.Ptr(),
@@ -1076,26 +1008,25 @@ HRESULT RegMeta::_DefineMethodSemantics(    // S_OK or error.
     USHORT      usAttr,                     // [IN] CorMethodSemanticsAttr.
     mdMethodDef md,                         // [IN] Method.
     mdToken     tkAssoc,                    // [IN] Association.
-    BOOL        bClear)                     // [IN] Specifies whether to delete the exisiting entries.
+    BOOL        bClear)                     // [IN] Specifies whether to delete the existing entries.
 {
-    HRESULT      hr = S_OK;
-    MethodSemanticsRec *pRecord = 0;
-    MethodSemanticsRec *pRecord1;           // Use this to recycle a MethodSemantics record.
-    RID         iRecord;
-    HENUMInternal hEnum;
-
-
+    HRESULT             hr          = S_OK;
+    MethodSemanticsRec *pRecord     = NULL;
+    MethodSemanticsRec *pRecord1    = NULL; // Use this to recycle a MethodSemantics record.
+    RID                 iRecord     = 0;
 
     _ASSERTE(TypeFromToken(md) == mdtMethodDef || IsNilToken(md));
     _ASSERTE(RidFromToken(tkAssoc));
+
+    HENUMInternal hEnum;
     HENUMInternal::ZeroEnum(&hEnum);
 
     // Clear all matching records by setting association to a Nil token.
     if (bClear)
     {
-        RID         i;
+        IfFailGo( m_pStgdb->m_MiniMd.FindMethodSemanticsHelper(tkAssoc, &hEnum));
 
-        IfFailGo( m_pStgdb->m_MiniMd.FindMethodSemanticsHelper(tkAssoc, &hEnum) );
+        RID i;
         while (HENUMInternal::EnumNext(&hEnum, (mdToken *)&i))
         {
             IfFailGo(m_pStgdb->m_MiniMd.GetMethodSemanticsRecord(i, &pRecord1));
@@ -1142,7 +1073,7 @@ ErrExit:
 // Turn the specified internal flags on.
 //*******************************************************************************
 HRESULT RegMeta::_TurnInternalFlagsOn(  // S_OK or error.
-    mdToken     tkObj,                  // [IN] Target object whose internal flags are targetted.
+    mdToken     tkObj,                  // [IN] Target object whose internal flags are targeted.
     DWORD       flags)                  // [IN] Specifies flags to be turned on.
 {
     HRESULT     hr;
@@ -1243,7 +1174,7 @@ HRESULT RegMeta::_SetImplements(        // S_OK or error.
     _ASSERTE(TypeFromToken(td) == mdtTypeDef && rTk);
     _ASSERTE(!m_bSaveOptimized && "Cannot change records after PreSave() and before Save().");
 
-    // Clear all exising InterfaceImpl records by setting the parent to Nil.
+    // Clear all existing InterfaceImpl records by setting the parent to Nil.
     if (bClear)
     {
         IfFailGo(m_pStgdb->m_MiniMd.GetInterfaceImplsForTypeDef(
@@ -1295,7 +1226,7 @@ HRESULT RegMeta::_SetImplements(        // S_OK or error.
 
         i++;
 
-        IfFailGo(UpdateENCLog(TokenFromRid(mdtInterfaceImpl, iInterfaceImpl)));
+        IfFailGo(UpdateENCLog(TokenFromRid(iInterfaceImpl, mdtInterfaceImpl)));
     }
 ErrExit:
 
@@ -1369,7 +1300,7 @@ HRESULT RegMeta::_DefineEvent(          // Return hresult.
     mdEvent     mdEv;
     LPUTF8      szUTF8Event;
     UTF8STR(szEvent, szUTF8Event);
-    PREFIX_ASSUME(szUTF8Event != NULL);
+    _ASSERTE(szUTF8Event != NULL);
 
 
 
@@ -1432,10 +1363,6 @@ HRESULT RegMeta::_DefineEvent(          // Return hresult.
     // Set data
     IfFailGo(m_pStgdb->m_MiniMd.PutString(TBL_Event, EventRec::COL_Name, pEventRec, szUTF8Event));
     IfFailGo(_SetEventProps1(*pmdEvent, dwEventFlags, tkEventType));
-
-    // Add the <Event token, typedef token> to the lookup table
-    if (m_pStgdb->m_MiniMd.HasIndirectTable(TBL_Event))
-        IfFailGo( m_pStgdb->m_MiniMd.AddEventToLookUpTable(*pmdEvent, td) );
 
     IfFailGo(UpdateENCLog(*pmdEvent));
 
@@ -1581,10 +1508,10 @@ HRESULT RegMeta::_DefineSetConstant(    // Return hresult.
         (pValue || (pValue == 0 && (dwCPlusTypeFlag == ELEMENT_TYPE_STRING ||
                                     dwCPlusTypeFlag == ELEMENT_TYPE_CLASS))))
     {
-        ConstantRec *pConstRec = 0;
-        RID         iConstRec;
-        ULONG       cbBlob;
-        ULONG       ulValue = 0;
+        ConstantRec* pConstRec  = 0;
+        RID          iConstRec  = 0;
+        ULONG        ulValue    = 0;
+        ULONG        cbBlob;
 
         if (bSearch)
         {
@@ -1917,10 +1844,6 @@ HRESULT RegMeta::_DefineTypeDef(        // S_OK or error.
     ULONG       ulStringLen;            // Length of the TypeDef string.
     int         bSuccess;               // Return value for SplitPath().
 
-
-
-    _ASSERTE(IsTdAutoLayout(dwTypeDefFlags) || IsTdSequentialLayout(dwTypeDefFlags) || IsTdExplicitLayout(dwTypeDefFlags));
-
     _ASSERTE(ptd);
     _ASSERTE(TypeFromToken(tkExtends) == mdtTypeRef || TypeFromToken(tkExtends) == mdtTypeDef || TypeFromToken(tkExtends) == mdtTypeSpec
               || IsNilToken(tkExtends));
@@ -1928,7 +1851,7 @@ HRESULT RegMeta::_DefineTypeDef(        // S_OK or error.
     _ASSERTE(IsNilToken(tdEncloser) || IsTdNested(dwTypeDefFlags));
 
     UTF8STR(szTypeDef, szTypeDefUTF8);
-    PREFIX_ASSUME(szTypeDefUTF8 != NULL);
+    _ASSERTE(szTypeDefUTF8 != NULL);
 
     ulStringLen = (ULONG)(strlen(szTypeDefUTF8) + 1);
     IfFailGo(qbNamespace.ReSizeNoThrow(ulStringLen));
@@ -2012,4 +1935,3 @@ ErrExit:
 } // RegMeta::_DefineTypeDef
 
 #endif //FEATURE_METADATA_EMIT
-

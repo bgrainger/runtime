@@ -4,6 +4,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel.Design.Serialization;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Reflection;
@@ -20,12 +21,16 @@ namespace System.ComponentModel
         /// Initializes a new instance of the <see cref='System.ComponentModel.EnumConverter'/> class for the given
         /// type.
         /// </summary>
-        public EnumConverter([DynamicallyAccessedMembers(TypeDescriptor.ReflectTypesDynamicallyAccessedMembers)] Type type)
+        public EnumConverter(Type type)
         {
+            if (!type.IsEnum && !type.Equals(typeof(Enum)))
+            {
+                throw new ArgumentException(SR.EnumInvalidValue);
+            }
+
             EnumType = type;
         }
 
-        [DynamicallyAccessedMembers(TypeDescriptor.ReflectTypesDynamicallyAccessedMembers)]
         protected Type EnumType { get; }
 
         protected StandardValuesCollection? Values { get; set; }
@@ -47,7 +52,7 @@ namespace System.ComponentModel
         /// Gets a value indicating whether this converter can convert an object to the
         /// given destination type using the context.
         /// </summary>
-        public override bool CanConvertTo(ITypeDescriptorContext? context, Type? destinationType)
+        public override bool CanConvertTo(ITypeDescriptorContext? context, [NotNullWhen(true)] Type? destinationType)
         {
             if (destinationType == typeof(Enum[]) || destinationType == typeof(InstanceDescriptor))
             {
@@ -62,7 +67,7 @@ namespace System.ComponentModel
         /// </summary>
         protected virtual IComparer Comparer => InvariantComparer.Default;
 
-        private static long GetEnumValue(bool isUnderlyingTypeUInt64, Enum enumVal, CultureInfo? culture)
+        private static long GetEnumValue(bool isUnderlyingTypeUInt64, object enumVal, CultureInfo? culture)
         {
             return isUnderlyingTypeUInt64 ?
                 unchecked((long)Convert.ToUInt64(enumVal, culture)) :
@@ -82,10 +87,9 @@ namespace System.ComponentModel
                     {
                         bool isUnderlyingTypeUInt64 = Enum.GetUnderlyingType(EnumType) == typeof(ulong);
                         long convertedValue = 0;
-                        string[] values = strValue.Split(',');
-                        foreach (string v in values)
+                        foreach (Range v in strValue.AsSpan().Split(','))
                         {
-                            convertedValue |= GetEnumValue(isUnderlyingTypeUInt64, (Enum)Enum.Parse(EnumType, v, true), culture);
+                            convertedValue |= GetEnumValue(isUnderlyingTypeUInt64, Enum.Parse(EnumType, strValue.AsSpan(v), true), culture);
                         }
                         return Enum.ToObject(EnumType, convertedValue);
                     }
@@ -117,10 +121,7 @@ namespace System.ComponentModel
         /// </summary>
         public override object? ConvertTo(ITypeDescriptorContext? context, CultureInfo? culture, object? value, Type destinationType)
         {
-            if (destinationType == null)
-            {
-                throw new ArgumentNullException(nameof(destinationType));
-            }
+            ArgumentNullException.ThrowIfNull(destinationType);
 
             if (destinationType == typeof(string) && value != null)
             {
@@ -159,7 +160,10 @@ namespace System.ComponentModel
                 }
                 else
                 {
-                    FieldInfo? info = EnumType.GetField(enumName);
+                    [UnconditionalSuppressMessage("Trimming", "IL2075:", Justification = "Trimmer does not trim Enums")]
+                    FieldInfo? GetEnumField(string name) => EnumType.GetField(name);
+
+                    FieldInfo? info = GetEnumField(enumName);
                     if (info != null)
                     {
                         return new InstanceDescriptor(info, null);
@@ -174,14 +178,14 @@ namespace System.ComponentModel
                     bool isUnderlyingTypeUInt64 = Enum.GetUnderlyingType(EnumType) == typeof(ulong);
                     List<Enum> flagValues = new List<Enum>();
 
-                    Array objValues = Enum.GetValues(EnumType);
+                    Array objValues = Enum.GetValuesAsUnderlyingType(EnumType);
                     long[] ulValues = new long[objValues.Length];
                     for (int idx = 0; idx < objValues.Length; idx++)
                     {
-                        ulValues[idx] = GetEnumValue(isUnderlyingTypeUInt64, (Enum)objValues.GetValue(idx)!, culture);
+                        ulValues[idx] = GetEnumValue(isUnderlyingTypeUInt64, objValues.GetValue(idx)!, culture);
                     }
 
-                    long longValue = GetEnumValue(isUnderlyingTypeUInt64, (Enum)value, culture);
+                    long longValue = GetEnumValue(isUnderlyingTypeUInt64, value, culture);
                     bool valueFound = true;
                     while (valueFound)
                     {
@@ -230,9 +234,27 @@ namespace System.ComponentModel
                 // We need to get the enum values in this rather round-about way so we can filter
                 // out fields marked Browsable(false). Note that if multiple fields have the same value,
                 // the behavior is undefined, since what we return are just enum values, not names.
-                Type reflectType = TypeDescriptor.GetReflectionType(EnumType) ?? EnumType;
+                // Given that EnumType is constrained to be an enum, we suppress calls for reflection with Enum.
 
-                FieldInfo[]? fields = reflectType.GetFields(BindingFlags.Public | BindingFlags.Static);
+                [UnconditionalSuppressMessage("Trimming", "IL2067:", Justification = "Trimmer does not trim Enums")]
+                [return: DynamicallyAccessedMembers(TypeDescriptor.ReflectTypesDynamicallyAccessedMembers)]
+                static Type GetTypeDescriptorReflectionType(Type enumType) => TypeDescriptor.GetReflectionType(enumType);
+
+                Type _reflectType = GetTypeDescriptorReflectionType(EnumType);
+                FieldInfo[]? fields;
+
+                if (_reflectType == null)
+                {
+                    [UnconditionalSuppressMessage("Trimming", "IL2070:", Justification = "Trimmer does not trim Enums")]
+                    static FieldInfo[]? GetPublicStaticEnumFields(Type type) => type.GetFields(BindingFlags.Public | BindingFlags.Static);
+
+                    fields = GetPublicStaticEnumFields(EnumType);
+                }
+                else
+                {
+                    fields = _reflectType.GetFields(BindingFlags.Public | BindingFlags.Static);
+                }
+
                 ArrayList? objValues = null;
 
                 if (fields != null && fields.Length > 0)

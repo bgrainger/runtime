@@ -8,6 +8,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using Xunit;
+using TestLibrary;
 
 public enum T0 { }
 public enum T1 { }
@@ -1011,7 +1013,9 @@ public enum T998 { }
 public enum T999 { }
 
 public class Test_nullenum1000 {
-  public static int Main() 
+  [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+  [Fact]
+  public static int TestEntryPoint() 
   {
   	try
   	{

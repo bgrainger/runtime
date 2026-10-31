@@ -138,6 +138,139 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
         }
 
         [Fact]
+        public void ServiceProvider_UsesDeclarationOrderForSameArityConstructorsWithSameParameterTypes()
+        {
+            var collection = new ServiceCollection();
+            collection.AddTransient<TypeWithSameArityConstructorsWithSameParameterTypes>();
+            collection.AddTransient<IFakeService, FakeService>();
+            collection.AddTransient<IFakeMultipleService, FakeService>();
+
+            using ServiceProvider provider = collection.BuildServiceProvider();
+            var service = provider.GetRequiredService<TypeWithSameArityConstructorsWithSameParameterTypes>();
+
+            Assert.Equal(1, service.SelectedConstructor);
+        }
+
+        [Fact]
+        public void CreateCallSite_ThrowsIfMultipleSameArityDisjointConstructorsCanBeResolved()
+        {
+            // Arrange
+            var type = typeof(TypeWithSameArityDisjointConstructors);
+            var expectedMessage =
+                string.Join(
+                    Environment.NewLine,
+                    $"Unable to activate type '{type}'. The following constructors are ambiguous:",
+                    GetConstructor(type, new[] { typeof(IFakeService), typeof(IFakeScopedService) }),
+                    GetConstructor(type, new[] { typeof(IFactoryService), typeof(IFakeMultipleService) }));
+
+            var callSiteFactory = GetCallSiteFactory(
+                new ServiceDescriptor(type, type, ServiceLifetime.Transient),
+                new ServiceDescriptor(typeof(IFakeService), typeof(FakeService), ServiceLifetime.Transient),
+                new ServiceDescriptor(typeof(IFakeScopedService), typeof(FakeService), ServiceLifetime.Transient),
+                new ServiceDescriptor(typeof(IFactoryService), typeof(TransientFactoryService), ServiceLifetime.Transient),
+                new ServiceDescriptor(typeof(IFakeMultipleService), typeof(FakeService), ServiceLifetime.Transient));
+
+            // Act and Assert
+            var ex = Assert.Throws<InvalidOperationException>(
+                () => callSiteFactory(type));
+            Assert.Equal(expectedMessage, ex.Message);
+        }
+
+        [Theory]
+        [InlineData(typeof(TypeWithCrossArityDisjointConstructorsLongFirst))]
+        [InlineData(typeof(TypeWithCrossArityDisjointConstructorsShortFirst))]
+        public void CreateCallSite_ThrowsIfCrossArityDisjointConstructorsCanBeResolved(Type type)
+        {
+            // Arrange
+            var expectedMessage =
+                string.Join(
+                    Environment.NewLine,
+                    $"Unable to activate type '{type}'. The following constructors are ambiguous:",
+                    GetConstructor(type, new[] { typeof(IFakeService), typeof(IFactoryService), typeof(IFakeScopedService) }),
+                    GetConstructor(type, new[] { typeof(IFakeOuterService) }));
+
+            var callSiteFactory = GetCallSiteFactory(
+                new ServiceDescriptor(type, type, ServiceLifetime.Transient),
+                new ServiceDescriptor(typeof(IFakeService), typeof(FakeService), ServiceLifetime.Transient),
+                new ServiceDescriptor(typeof(IFactoryService), typeof(TransientFactoryService), ServiceLifetime.Transient));
+
+            // Act and Assert
+            var ex = Assert.Throws<InvalidOperationException>(
+                () => callSiteFactory(type));
+            Assert.Equal(expectedMessage, ex.Message);
+        }
+
+        [Fact]
+        public void CreateCallSite_ThrowsIfSameTypeParametersUseDifferentServiceKeys()
+        {
+            // Arrange
+            var type = typeof(TypeWithSameTypeDifferentServiceKeyConstructors);
+            var callSiteFactory = GetCallSiteFactory(
+                new ServiceDescriptor(type, type, ServiceLifetime.Transient),
+                ServiceDescriptor.KeyedTransient<IFakeService, FakeService>("a"),
+                ServiceDescriptor.KeyedTransient<IFakeService, FakeService>("b"),
+                new ServiceDescriptor(typeof(IFakeScopedService), typeof(FakeService), ServiceLifetime.Transient));
+
+            // Act and Assert
+            var ex = Assert.Throws<InvalidOperationException>(() => callSiteFactory(type));
+            Assert.StartsWith($"Unable to activate type '{type}'. The following constructors are ambiguous:", ex.Message);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void CreateCallSite_IgnoresSmallerConstructorWhenBestUsesDefaultAndSmallerNeedsContainer(bool registerScopedService)
+        {
+            // Arrange
+            var type = typeof(TypeWithDefaultInBestAndNonDefaultInSmallerConstructors);
+            ServiceDescriptor[] descriptors = registerScopedService
+                ? new[]
+                {
+                    new ServiceDescriptor(type, type, ServiceLifetime.Transient),
+                    new ServiceDescriptor(typeof(IFakeService), typeof(FakeService), ServiceLifetime.Transient),
+                    new ServiceDescriptor(typeof(IFakeScopedService), typeof(FakeService), ServiceLifetime.Transient),
+                }
+                : new[]
+                {
+                    new ServiceDescriptor(type, type, ServiceLifetime.Transient),
+                    new ServiceDescriptor(typeof(IFakeService), typeof(FakeService), ServiceLifetime.Transient),
+                };
+            var callSiteFactory = GetCallSiteFactory(descriptors);
+
+            // Act
+            var callSite = callSiteFactory(type);
+
+            // Assert
+            var constructorCallSite = Assert.IsType<ConstructorCallSite>(callSite);
+            Assert.Equal(new[] { typeof(IFakeService), typeof(IFakeScopedService) }, GetParameters(constructorCallSite));
+        }
+
+        [Theory]
+        [InlineData(typeof(TypeWithShortThenLongResolvableConstructors), true)]
+        [InlineData(typeof(TypeWithShortThenLongUnresolvableConstructors), false)]
+        public void CreateCallSite_UsesLongestResolvableConstructorWhenDeclaredAfterShorter(Type type, bool expectLongConstructor)
+        {
+            // Arrange
+            var descriptor = new ServiceDescriptor(type, type, ServiceLifetime.Transient);
+            var callSiteFactory = GetCallSiteFactory(
+                descriptor,
+                new ServiceDescriptor(typeof(IFakeService), typeof(FakeService), ServiceLifetime.Transient),
+                new ServiceDescriptor(typeof(IFactoryService), typeof(TransientFactoryService), ServiceLifetime.Transient));
+
+            Type[] expectedParameters = expectLongConstructor
+                ? new[] { typeof(IFakeService), typeof(IFactoryService) }
+                : new[] { typeof(IFakeService) };
+
+            // Act
+            var callSite = callSiteFactory(type);
+
+            // Assert
+            Assert.Equal(CallSiteResultCacheLocation.Dispose, callSite.Cache.Location);
+            var constructorCallSite = Assert.IsType<ConstructorCallSite>(callSite);
+            Assert.Equal(expectedParameters, GetParameters(constructorCallSite));
+        }
+
+        [Fact]
         public void CreateCallSite_Throws_IfClosedTypeDoesNotSatisfyStructGenericConstraint()
         {
             // Arrange
@@ -423,8 +556,8 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
             Assert.Equal(matchingImplementationTypes, enumerableCall.ServiceCallSites.Select(scs => scs.ImplementationType).ToArray());
         }
 
-        public static TheoryData CreateCallSite_PicksConstructorWithTheMostNumberOfResolvedParametersData =>
-            new TheoryData<Type, Func<Type, ServiceCallSite>, Type[]>
+        public static TheoryData<Type, Func<Type, object>, Type[]> CreateCallSite_PicksConstructorWithTheMostNumberOfResolvedParametersData =>
+            new TheoryData<Type, Func<Type, object>, Type[]>
             {
                 {
                     typeof(TypeWithSupersetConstructors),
@@ -508,11 +641,11 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
         [MemberData(nameof(CreateCallSite_PicksConstructorWithTheMostNumberOfResolvedParametersData))]
         private void CreateCallSite_PicksConstructorWithTheMostNumberOfResolvedParameters(
             Type type,
-            Func<Type, ServiceCallSite> callSiteFactory,
+            Func<Type, object> callSiteFactory,
             Type[] expectedConstructorParameters)
         {
             // Act
-            var callSite = callSiteFactory(type);
+            var callSite = (ServiceCallSite)callSiteFactory(type);
 
             // Assert
             Assert.Equal(CallSiteResultCacheLocation.Dispose, callSite.Cache.Location);
@@ -520,7 +653,7 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
             Assert.Equal(expectedConstructorParameters, GetParameters(constructorCallSite));
         }
 
-        public static TheoryData CreateCallSite_ConsidersConstructorsWithDefaultValuesData =>
+        public static TheoryData<Func<Type, object>, Type[]> CreateCallSite_ConsidersConstructorsWithDefaultValuesData =>
             new TheoryData<Func<Type, object>, Type[]>
             {
                 {
@@ -550,14 +683,14 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
         [Theory]
         [MemberData(nameof(CreateCallSite_ConsidersConstructorsWithDefaultValuesData))]
         private void CreateCallSite_ConsidersConstructorsWithDefaultValues(
-            Func<Type, ServiceCallSite> callSiteFactory,
+            Func<Type, object> callSiteFactory,
             Type[] expectedConstructorParameters)
         {
             // Arrange
             var type = typeof(TypeWithDefaultConstructorParameters);
 
             // Act
-            var callSite = callSiteFactory(type);
+            var callSite = (ServiceCallSite)callSiteFactory(type);
 
             // Assert
             Assert.Equal(CallSiteResultCacheLocation.Dispose, callSite.Cache.Location);
@@ -636,7 +769,7 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
                 ex.Message);
         }
 
-        public static TheoryData CreateCallSite_ThrowsIfMultipleNonOverlappingConstructorsCanBeResolvedData =>
+        public static TheoryData<Type, Func<Type, object>, Type[][]> CreateCallSite_ThrowsIfMultipleNonOverlappingConstructorsCanBeResolvedData =>
             new TheoryData<Type, Func<Type, object>, Type[][]>
             {
                 {
@@ -786,20 +919,13 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
             var callSite = factory(typeof(IEnumerable<FakeService>));
 
             var expectedLocation = (CallSiteResultCacheLocation)expectedCacheLocation;
-            Assert.Equal(expectedLocation, callSite.Cache.Location);
 
-            if (expectedLocation != CallSiteResultCacheLocation.None)
-            {
-                Assert.Equal(0, callSite.Cache.Key.Slot);
-                Assert.Equal(typeof(IEnumerable<FakeService>), callSite.Cache.Key.Type);
-            }
-            else
-            {
-                Assert.Equal(ResultCache.None, callSite.Cache);
-            }
+            Assert.Equal(expectedLocation, callSite.Cache.Location);
+            Assert.Equal(0, callSite.Cache.Key.Slot);
+            Assert.Equal(typeof(IEnumerable<FakeService>), callSite.Cache.Key.ServiceIdentifier.ServiceType);
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public void CallSitesAreUniquePerServiceTypeAndSlot()
         {
             // Connected graph
@@ -835,7 +961,7 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
             }
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public void CallSitesAreUniquePerServiceTypeAndSlotWithOpenGenericInGraph()
         {
             // Connected graph
@@ -919,6 +1045,85 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
             }, options);
         }
 
+        [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
+        [SkipOnTargetFramework(TargetFrameworkMonikers.NetFramework)] // RuntimeConfigurationOptions are not supported on .NET Framework (and neither is NativeAOT)
+        public void VerifyDynamicCodeNotSupportedChecks()
+        {
+            Func<Type, ServiceCallSite> CreateAotCompatibilityCallSiteFactory()
+            {
+                ServiceDescriptor[] descriptors = new[]
+                {
+                    new ServiceDescriptor(typeof(IFakeOpenGenericService<>), typeof(ClassWithNoConstraints<>), ServiceLifetime.Transient),
+                    new ServiceDescriptor(typeof(IServiceWithTwoGenerics<,>), typeof(ServiceWithTwoGenericsValid<,>), ServiceLifetime.Transient),
+
+                    new ServiceDescriptor(typeof(Struct1), new Struct1(1)),
+                    new ServiceDescriptor(typeof(Struct1), new Struct1(2)),
+                };
+
+                return GetCallSiteFactory(descriptors);
+            }
+
+            RemoteInvokeOptions options = new RemoteInvokeOptions();
+            options.RuntimeConfigurationOptions.Add("System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "false");
+            options.RuntimeConfigurationOptions.Add("System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeCompiled", "false");
+
+            using RemoteInvokeHandle remoteHandle = RemoteExecutor.Invoke(() =>
+            {
+                Func<Type, ServiceCallSite> callSiteFactory = CreateAotCompatibilityCallSiteFactory();
+
+                // Verify open generics throw when passing ValueTypes
+                Assert.Throws<InvalidOperationException>(() => callSiteFactory(typeof(IFakeOpenGenericService<Struct1>)));
+                Assert.Throws<InvalidOperationException>(() => callSiteFactory(typeof(IFakeOpenGenericService<int>)));
+                Assert.Throws<InvalidOperationException>(() => callSiteFactory(typeof(IServiceWithTwoGenerics<Class3, int>)));
+                Assert.Throws<InvalidOperationException>(() => callSiteFactory(typeof(IServiceWithTwoGenerics<int, Class3>)));
+
+                ServiceCallSite callSite = callSiteFactory(typeof(IFakeOpenGenericService<Class3>));
+                Assert.Equal(CallSiteKind.Constructor, callSite.Kind);
+                Assert.Equal(typeof(ClassWithNoConstraints<Class3>), callSite.ImplementationType);
+
+                callSite = callSiteFactory(typeof(IServiceWithTwoGenerics<Class3, Class3>));
+                Assert.Equal(CallSiteKind.Constructor, callSite.Kind);
+                Assert.Equal(typeof(ServiceWithTwoGenericsValid<Class3, Class3>), callSite.ImplementationType);
+
+                // Verify Enumerable services throw when passing ValueTypes
+                Assert.Throws<InvalidOperationException>(() => callSiteFactory(typeof(IEnumerable<Struct1>)));
+
+                callSite = callSiteFactory(typeof(Struct1));
+                Assert.Equal(CallSiteKind.Constant, callSite.Kind);
+                Assert.Equal(2, ((Struct1)callSite.Value).Value);
+            }, options);
+
+            // Verify the above scenarios work when IsDynamicCodeSupported + IsDynamicCodeCompiled are not set
+            Func<Type, ServiceCallSite> callSiteFactory = CreateAotCompatibilityCallSiteFactory();
+
+            // Open Generics
+            ServiceCallSite callSite = callSiteFactory(typeof(IFakeOpenGenericService<Struct1>));
+            Assert.Equal(CallSiteKind.Constructor, callSite.Kind);
+            Assert.Equal(typeof(ClassWithNoConstraints<Struct1>), callSite.ImplementationType);
+
+            callSite = callSiteFactory(typeof(IFakeOpenGenericService<int>));
+            Assert.Equal(CallSiteKind.Constructor, callSite.Kind);
+            Assert.Equal(typeof(ClassWithNoConstraints<int>), callSite.ImplementationType);
+
+            callSite = callSiteFactory(typeof(IServiceWithTwoGenerics<Class3, int>));
+            Assert.Equal(CallSiteKind.Constructor, callSite.Kind);
+            Assert.Equal(typeof(ServiceWithTwoGenericsValid<Class3, int>), callSite.ImplementationType);
+
+            callSite = callSiteFactory(typeof(IServiceWithTwoGenerics<int, Class3>));
+            Assert.Equal(CallSiteKind.Constructor, callSite.Kind);
+            Assert.Equal(typeof(ServiceWithTwoGenericsValid<int, Class3>), callSite.ImplementationType);
+
+            // Enumerable 
+            callSite = callSiteFactory(typeof(IEnumerable<Struct1>));
+            Assert.Equal(CallSiteKind.IEnumerable, callSite.Kind);
+            IEnumerableCallSite enumerableCallSite = (IEnumerableCallSite)callSite;
+            Assert.Equal(2, enumerableCallSite.ServiceCallSites.Length);
+            Assert.Equal(CallSiteKind.Constant, enumerableCallSite.ServiceCallSites[0].Kind);
+            Assert.Equal(1, ((Struct1)enumerableCallSite.ServiceCallSites[0].Value).Value);
+            Assert.Equal(CallSiteKind.Constant, enumerableCallSite.ServiceCallSites[1].Kind);
+            Assert.Equal(2, ((Struct1)enumerableCallSite.ServiceCallSites[1].Value).Value);
+        }
+
         private static Func<Type, ServiceCallSite> GetCallSiteFactory(params ServiceDescriptor[] descriptors)
         {
             var collection = new ServiceCollection();
@@ -929,7 +1134,7 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
 
             var callSiteFactory = new CallSiteFactory(collection.ToArray());
 
-            return type => callSiteFactory.GetCallSite(type, new CallSiteChain());
+            return type => callSiteFactory.GetCallSite(ServiceIdentifier.FromServiceType(type), new CallSiteChain());
         }
 
         private static IEnumerable<Type> GetParameters(ConstructorCallSite constructorCallSite) =>
@@ -944,12 +1149,104 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
                     c.GetParameters().Select(p => p.ParameterType),
                     parameterTypes));
 
-
         private class Class1 { public Class1(Class2 c2) { } }
         private class Class2 { public Class2(Class3 c3) { } }
         private class Class3 { }
         private class Class4 { public Class4(Class3 c3) { } }
         private class Class5 { public Class5(Class2 c2) { } }
+        private class TypeWithSameArityConstructorsWithSameParameterTypes
+        {
+            public TypeWithSameArityConstructorsWithSameParameterTypes(IFakeService fakeService, IFakeMultipleService fakeMultipleService)
+            {
+                SelectedConstructor = 1;
+            }
+
+            public TypeWithSameArityConstructorsWithSameParameterTypes(IFakeMultipleService fakeMultipleService, IFakeService fakeService)
+            {
+                SelectedConstructor = 2;
+            }
+
+            public int SelectedConstructor { get; }
+        }
+
+        private class TypeWithSameArityDisjointConstructors
+        {
+            public TypeWithSameArityDisjointConstructors(IFakeService fakeService, IFakeScopedService fakeScopedService)
+            {
+            }
+
+            public TypeWithSameArityDisjointConstructors(IFactoryService factoryService, IFakeMultipleService fakeMultipleService)
+            {
+            }
+        }
+
+        private class TypeWithShortThenLongResolvableConstructors
+        {
+            public TypeWithShortThenLongResolvableConstructors(IFakeService fakeService)
+            {
+            }
+
+            public TypeWithShortThenLongResolvableConstructors(IFakeService fakeService, IFactoryService factoryService)
+            {
+            }
+        }
+
+        private class TypeWithShortThenLongUnresolvableConstructors
+        {
+            public TypeWithShortThenLongUnresolvableConstructors(IFakeService fakeService)
+            {
+            }
+
+            public TypeWithShortThenLongUnresolvableConstructors(IFakeService fakeService, IFakeOuterService fakeOuterService)
+            {
+            }
+        }
+
+        private class TypeWithCrossArityDisjointConstructorsLongFirst
+        {
+            public TypeWithCrossArityDisjointConstructorsLongFirst(IFakeService fakeService, IFactoryService factoryService, IFakeScopedService fakeScopedService = null)
+            {
+            }
+
+            public TypeWithCrossArityDisjointConstructorsLongFirst(IFakeOuterService fakeOuterService = null)
+            {
+            }
+        }
+
+        private class TypeWithCrossArityDisjointConstructorsShortFirst
+        {
+            public TypeWithCrossArityDisjointConstructorsShortFirst(IFakeOuterService fakeOuterService = null)
+            {
+            }
+
+            public TypeWithCrossArityDisjointConstructorsShortFirst(IFakeService fakeService, IFactoryService factoryService, IFakeScopedService fakeScopedService = null)
+            {
+            }
+        }
+
+        private class TypeWithSameTypeDifferentServiceKeyConstructors
+        {
+            public TypeWithSameTypeDifferentServiceKeyConstructors([FromKeyedServices("a")] IFakeService service, IFakeScopedService scoped)
+            {
+            }
+
+            public TypeWithSameTypeDifferentServiceKeyConstructors([FromKeyedServices("b")] IFakeService service, IFakeScopedService scoped, int dummy = 0)
+            {
+            }
+        }
+
+        private class TypeWithDefaultInBestAndNonDefaultInSmallerConstructors
+        {
+            public TypeWithDefaultInBestAndNonDefaultInSmallerConstructors(IFakeService fakeService, IFakeScopedService fakeScopedService = null)
+            {
+            }
+
+            public TypeWithDefaultInBestAndNonDefaultInSmallerConstructors(IFakeScopedService fakeScopedService)
+            {
+            }
+        }
+
+        private record struct Struct1(int Value) { }
 
         // Open generic
         private class ClassA { public ClassA(ClassB cb) { } }

@@ -1,6 +1,5 @@
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
-add_definitions(-D__TODO_PORT_TO_WRAPPERS__)
 include_directories("../inc")
 
 set(CEEFILEGEN_SOURCES
@@ -25,11 +24,8 @@ if (CLR_CMAKE_TARGET_WIN32)
     list(APPEND CEEFILEGEN_SOURCES ${CEEFILEGEN_HEADERS})
 endif (CLR_CMAKE_TARGET_WIN32)
 
-add_library_clr(ceefgen_obj
-    OBJECT
-    ${CEEFILEGEN_SOURCES}
-)
-target_precompile_headers(ceefgen_obj PRIVATE stdafx.h)
-
-add_library(ceefgen INTERFACE)
-target_sources(ceefgen INTERFACE $<TARGET_OBJECTS:ceefgen_obj>)
+# SELF_NO_HOST disables the hosted contract machinery
+# so these tools do not require the contract implementation at link time.
+add_library_clr(ceefgen_nohost OBJECT ${CEEFILEGEN_SOURCES})
+target_compile_definitions(ceefgen_nohost PRIVATE SELF_NO_HOST)
+target_precompile_headers(ceefgen_nohost PRIVATE stdafx.h)

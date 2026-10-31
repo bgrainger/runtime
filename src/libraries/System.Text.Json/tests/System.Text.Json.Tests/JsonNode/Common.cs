@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
+using Xunit;
 
 namespace System.Text.Json.Nodes.Tests
 {
@@ -11,30 +12,32 @@ namespace System.Text.Json.Nodes.Tests
             "\"MyInt\":43,\"MyDateTime\":\"2020-07-08T00:00:00\",\"MyGuid\":\"ed957609-cdfe-412f-88c1-02daca1b4f51\"," +
             "\"MyObject\":{\"MyString\":\"Hello!!\"},\"Child\":{\"ChildProp\":1}}";
 
-        internal const string Linq_Query_Json = @"
-        [
-          {
-            ""OrderId"":100, ""Customer"":
-            {
-              ""Name"":""Customer1"",
-              ""City"":""Fargo""
-            }
-          },
-          {
-            ""OrderId"":200, ""Customer"":
-            {
-              ""Name"":""Customer2"",
-              ""City"":""Redmond""
-            }
-          },
-          {
-            ""OrderId"":300, ""Customer"":
-            {
-              ""Name"":""Customer3"",
-              ""City"":""Fargo""
-            }
-          }
-        ]";
+        internal const string Linq_Query_Json = """
+
+                [
+                  {
+                    "OrderId":100, "Customer":
+                    {
+                      "Name":"Customer1",
+                      "City":"Fargo"
+                    }
+                  },
+                  {
+                    "OrderId":200, "Customer":
+                    {
+                      "Name":"Customer2",
+                      "City":"Redmond"
+                    }
+                  },
+                  {
+                    "OrderId":300, "Customer":
+                    {
+                      "Name":"Customer3",
+                      "City":"Fargo"
+                    }
+                  }
+                ]
+            """;
 
         /// <summary>
         /// Helper class simulating external library
@@ -126,6 +129,32 @@ namespace System.Text.Json.Nodes.Tests
 
                 return manager;
             }
+        }
+
+        internal static void AssertDeepEqual(JsonNode? left, JsonNode? right)
+        {
+            // Assert Reflexivity
+            Assert.True(JsonNode.DeepEquals(left, left));
+            Assert.True(JsonNode.DeepEquals(right, right));
+
+            // Core Assertion
+            Assert.True(JsonNode.DeepEquals(left, right));
+
+            // Assert Symmetry
+            Assert.True(JsonNode.DeepEquals(right, left));
+        }
+
+        internal static void AssertNotDeepEqual(JsonNode? left, JsonNode? right)
+        {
+            // Assert Reflexivity
+            Assert.True(JsonNode.DeepEquals(left, left));
+            Assert.True(JsonNode.DeepEquals(right, right));
+
+            // Core assertion
+            Assert.False(JsonNode.DeepEquals(left, right));
+
+            // Assert Symmetry
+            Assert.False(JsonNode.DeepEquals(right, left));
         }
     }
 }

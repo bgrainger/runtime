@@ -86,6 +86,7 @@ namespace System.Text.Json.Tests
         [OuterLoop]
         [InlineData(3_200_000)]
         [InlineData(int.MaxValue / 32 + 1)]    // 67_108_864
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/129973", typeof(PlatformDetection), nameof(PlatformDetection.IsWasm), nameof(PlatformDetection.IsCoreCLR))]
         public static void BitStackPushPopLarge(int bitLength)
         {
             BitStack bitStack = default;
@@ -128,7 +129,7 @@ namespace System.Text.Json.Tests
                 Assert.Equal(expectedDepth, bitStack.CurrentDepth);
             }
 
-            Assert.Equal(expectedDepth, IterationCapacity * 2);
+            Assert.Equal(IterationCapacity * 2, expectedDepth);
 
             // Loop backwards when popping.
             for (int i = bitLength - 1; i >= bitLength - IterationCapacity; i--)

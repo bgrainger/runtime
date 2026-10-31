@@ -1,30 +1,32 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Reflection;
 using System.Text.Json.Serialization.Metadata;
 using FSharpKind = System.Text.Json.Serialization.Metadata.FSharpCoreReflectionProxy.FSharpKind;
 
 namespace System.Text.Json.Serialization.Converters
 {
+    [RequiresDynamicCode(FSharpCoreReflectionProxy.FSharpCoreUnreferencedCodeMessage)]
     internal sealed class FSharpTypeConverterFactory : JsonConverterFactory
     {
-        // Temporary solution to account for not implemented support for type-level attributes
-        // TODO remove once addressed https://github.com/mono/linker/issues/1742#issuecomment-875036480
         [RequiresUnreferencedCode(FSharpCoreReflectionProxy.FSharpCoreUnreferencedCodeMessage)]
         public FSharpTypeConverterFactory() { }
 
         private ObjectConverterFactory? _recordConverterFactory;
 
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
-            Justification = "The ctor is marked with RequiresUnreferencedCode.")]
+            Justification = "The ctor is marked RequiresUnreferencedCode.")]
         public override bool CanConvert(Type typeToConvert) =>
             FSharpCoreReflectionProxy.IsFSharpType(typeToConvert) &&
                 FSharpCoreReflectionProxy.Instance.DetectFSharpKind(typeToConvert) is not FSharpKind.Unrecognized;
 
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
-            Justification = "The ctor is marked with RequiresUnreferencedCode.")]
+            Justification = "The ctor is marked RequiresUnreferencedCode.")]
+        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2055:MakeGenericType",
+            Justification = "The ctor is marked RequiresUnreferencedCode.")]
         public override JsonConverter? CreateConverter(Type typeToConvert, JsonSerializerOptions options)
         {
             Debug.Assert(CanConvert(typeToConvert));
@@ -65,13 +67,40 @@ namespace System.Text.Json.Serialization.Converters
                     Debug.Assert(objectFactory.CanConvert(typeToConvert));
                     return objectFactory.CreateConverter(typeToConvert, options);
                 case FSharpKind.Union:
-                    throw new NotSupportedException(SR.FSharpDiscriminatedUnionsNotSupported);
+                    return CreateFSharpUnionConverter(typeToConvert, options);
                 default:
                     Debug.Fail("Unrecognized F# type.");
                     throw new Exception();
             }
 
             return (JsonConverter)Activator.CreateInstance(converterFactoryType, constructorArguments)!;
+        }
+
+        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
+            Justification = "The ctor is marked RequiresUnreferencedCode.")]
+        private static JsonConverter CreateFSharpUnionConverter(Type typeToConvert, JsonSerializerOptions options)
+        {
+            FSharpCoreReflectionProxy proxy = FSharpCoreReflectionProxy.Instance;
+            FSharpCoreReflectionProxy.FSharpUnionCaseInfo[] caseInfos = proxy.GetUnionCaseInfos(typeToConvert);
+            Func<object, int> tagReader = proxy.CreateUnionTagReader(typeToConvert);
+
+            // Read [JsonPolymorphic] for TypeDiscriminatorPropertyName customization.
+            string typeDiscriminatorPropertyName = typeToConvert
+                .GetCustomAttribute<JsonPolymorphicAttribute>(inherit: false)?.TypeDiscriminatorPropertyName
+                ?? JsonSerializer.TypePropertyName;
+
+            // Validate the discriminator property name doesn't conflict with reserved metadata properties ($id, $ref, $values).
+            if (!typeDiscriminatorPropertyName.Equals(JsonSerializer.TypePropertyName, StringComparison.Ordinal))
+            {
+                byte[] utf8EncodedName = System.Text.Encoding.UTF8.GetBytes(typeDiscriminatorPropertyName);
+                if ((JsonSerializer.GetMetadataPropertyName(utf8EncodedName, resolver: null) & ~MetadataPropertyName.Type) != 0)
+                {
+                    ThrowHelper.ThrowInvalidOperationException_InvalidCustomTypeDiscriminatorPropertyName();
+                }
+            }
+
+            Type converterType = typeof(FSharpUnionConverter<>).MakeGenericType(typeToConvert);
+            return (JsonConverter)Activator.CreateInstance(converterType, new object[] { caseInfos, tagReader, options, typeDiscriminatorPropertyName })!;
         }
     }
 }

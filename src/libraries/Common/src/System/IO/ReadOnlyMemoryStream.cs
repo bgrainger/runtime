@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// On net11.0+, the public ReadOnlyMemoryStream in System.Runtime (CoreLib) supersedes this internal copy.
+#if !NET11_0_OR_GREATER
+
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -143,12 +146,12 @@ namespace System.IO
 #endif
 
         public override IAsyncResult BeginRead(byte[] buffer, int offset, int count, AsyncCallback? callback, object? state) =>
-            TaskToApm.Begin(ReadAsync(buffer, offset, count), callback, state);
+            TaskToAsyncResult.Begin(ReadAsync(buffer, offset, count), callback, state);
 
         public override int EndRead(IAsyncResult asyncResult)
         {
             EnsureNotClosed();
-            return TaskToApm.End<int>(asyncResult);
+            return TaskToAsyncResult.End<int>(asyncResult);
         }
 
 #if !NETFRAMEWORK && !NETSTANDARD2_0
@@ -159,6 +162,7 @@ namespace System.IO
             if (_content.Length > _position)
             {
                 destination.Write(_content.Span.Slice(_position));
+                _position = _content.Length;
             }
         }
 
@@ -166,9 +170,16 @@ namespace System.IO
         {
             ValidateCopyToArguments(destination, bufferSize);
             EnsureNotClosed();
-            return _content.Length > _position ?
-                destination.WriteAsync(_content.Slice(_position), cancellationToken).AsTask() :
-                Task.CompletedTask;
+            if (_content.Length > _position)
+            {
+                ReadOnlyMemory<byte> content = _content.Slice(_position);
+                _position = _content.Length;
+                return destination.WriteAsync(content, cancellationToken).AsTask();
+            }
+            else
+            {
+                return Task.CompletedTask;
+            }
         }
 #endif
 
@@ -190,10 +201,7 @@ namespace System.IO
 #if NETFRAMEWORK || NETSTANDARD2_0
         private static void ValidateBufferArguments(byte[] buffer, int offset, int count)
         {
-            if (buffer is null)
-            {
-                throw new ArgumentNullException(nameof(buffer));
-            }
+            ArgumentNullException.ThrowIfNull(buffer);
 
             if (offset < 0)
             {
@@ -208,3 +216,5 @@ namespace System.IO
 #endif
     }
 }
+
+#endif // !NET11_0_OR_GREATER

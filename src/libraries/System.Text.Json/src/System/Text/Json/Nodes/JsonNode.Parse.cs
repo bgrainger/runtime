@@ -1,8 +1,11 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Text.Json.Serialization.Converters;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace System.Text.Json.Nodes
 {
@@ -65,16 +68,13 @@ namespace System.Text.Json.Nodes
         ///   <paramref name="json"/> does not represent a valid single JSON value.
         /// </exception>
         public static JsonNode? Parse(
-            string json,
+            [StringSyntax(StringSyntaxAttribute.Json)] string json,
             JsonNodeOptions? nodeOptions = null,
             JsonDocumentOptions documentOptions = default(JsonDocumentOptions))
         {
-            if (json == null)
-            {
-                throw new ArgumentNullException(nameof(json));
-            }
+            ArgumentNullException.ThrowIfNull(json);
 
-            JsonElement element = JsonElement.ParseValue(json, documentOptions);
+            JsonElement element = JsonElement.Parse(json, documentOptions);
             return JsonNodeConverter.Create(element, nodeOptions);
         }
 
@@ -95,12 +95,12 @@ namespace System.Text.Json.Nodes
             JsonNodeOptions? nodeOptions = null,
             JsonDocumentOptions documentOptions = default(JsonDocumentOptions))
         {
-            JsonElement element = JsonElement.ParseValue(utf8Json, documentOptions);
+            JsonElement element = JsonElement.Parse(utf8Json, documentOptions);
             return JsonNodeConverter.Create(element, nodeOptions);
         }
 
         /// <summary>
-        ///   Parse a <see cref="Stream"/> as UTF-8-encoded data representing a single JSON value into a
+        ///   Parse a <see cref="Stream"/> as UTF-8 encoded data representing a single JSON value into a
         ///   <see cref="JsonNode"/>.  The Stream will be read to completion.
         /// </summary>
         /// <param name="utf8Json">JSON text to parse.</param>
@@ -117,13 +117,36 @@ namespace System.Text.Json.Nodes
             JsonNodeOptions? nodeOptions = null,
             JsonDocumentOptions documentOptions = default)
         {
-            if (utf8Json == null)
-            {
-                throw new ArgumentNullException(nameof(utf8Json));
-            }
+            ArgumentNullException.ThrowIfNull(utf8Json);
 
             JsonElement element = JsonElement.ParseValue(utf8Json, documentOptions);
             return JsonNodeConverter.Create(element, nodeOptions);
+        }
+
+        /// <summary>
+        ///   Parse a <see cref="Stream"/> as UTF-8 encoded data representing a single JSON value into a
+        ///   <see cref="JsonNode"/>.  The Stream will be read to completion.
+        /// </summary>
+        /// <param name="utf8Json">JSON text to parse.</param>
+        /// <param name="nodeOptions">Options to control the node behavior after parsing.</param>
+        /// <param name="documentOptions">Options to control the document behavior during parsing.</param>
+        /// <param name="cancellationToken">The token to monitor for cancellation requests.</param>
+        /// <returns>
+        ///   A <see cref="Task"/> to produce a <see cref="JsonNode"/> representation of the JSON value.
+        /// </returns>
+        /// <exception cref="JsonException">
+        ///   <paramref name="utf8Json"/> does not represent a valid single JSON value.
+        /// </exception>
+        public static async Task<JsonNode?> ParseAsync(
+            Stream utf8Json,
+            JsonNodeOptions? nodeOptions = null,
+            JsonDocumentOptions documentOptions = default,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(utf8Json);
+
+            JsonDocument document = await JsonDocument.ParseAsyncCoreUnrented(utf8Json, documentOptions, cancellationToken).ConfigureAwait(false);
+            return JsonNodeConverter.Create(document.RootElement, nodeOptions);
         }
     }
 }

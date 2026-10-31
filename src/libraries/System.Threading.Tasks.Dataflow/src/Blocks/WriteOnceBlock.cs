@@ -62,8 +62,7 @@ namespace System.Threading.Tasks.Dataflow
         /// <exception cref="System.ArgumentNullException">The <paramref name="dataflowBlockOptions"/> is null (Nothing in Visual Basic).</exception>
         public WriteOnceBlock(Func<T, T>? cloningFunction, DataflowBlockOptions dataflowBlockOptions)
         {
-            // Validate arguments
-            if (dataflowBlockOptions == null) throw new ArgumentNullException(nameof(dataflowBlockOptions));
+            ArgumentNullException.ThrowIfNull(dataflowBlockOptions);
 
             // Store the option
             _cloningFunction = cloningFunction;
@@ -78,7 +77,7 @@ namespace System.Threading.Tasks.Dataflow
             // we need to initialize the completion task's TCS now.
             if (dataflowBlockOptions.CancellationToken.CanBeCanceled)
             {
-                _lazyCompletionTaskSource = new TaskCompletionSource<VoidResult>();
+                _lazyCompletionTaskSource = new TaskCompletionSource<VoidResult>(TaskCreationOptions.RunContinuationsAsynchronously);
 
                 // If we've already had cancellation requested, do as little work as we have to
                 // in order to be done.
@@ -87,13 +86,13 @@ namespace System.Threading.Tasks.Dataflow
                     _completionReserved = _decliningPermanently = true;
 
                     // Cancel the completion task's TCS
-                    _lazyCompletionTaskSource.SetCanceled();
+                    _lazyCompletionTaskSource.TrySetCanceled(dataflowBlockOptions.CancellationToken);
                 }
                 else
                 {
                     // Handle async cancellation requests by declining on the target
                     Common.WireCancellationToComplete(
-                        dataflowBlockOptions.CancellationToken, _lazyCompletionTaskSource.Task, state => ((WriteOnceBlock<T>)state!).Complete(), this);
+                        dataflowBlockOptions.CancellationToken, _lazyCompletionTaskSource.Task, static (state, _) => ((WriteOnceBlock<T>)state!).Complete(), this);
                 }
             }
             DataflowEtwProvider etwLog = DataflowEtwProvider.Log;
@@ -118,7 +117,7 @@ namespace System.Threading.Tasks.Dataflow
             if (exceptions == null)
             {
                 // Offer the message to any linked targets and complete the block asynchronously to avoid blocking the caller
-                var taskForOutputProcessing = new Task(state => ((WriteOnceBlock<T>)state!).OfferToTargetsAndCompleteBlock(), this,
+                var taskForOutputProcessing = new Task(static state => ((WriteOnceBlock<T>)state!).OfferToTargetsAndCompleteBlock(), this,
                                                         Common.GetCreationOptionsForTask());
 
                 DataflowEtwProvider etwLog = DataflowEtwProvider.Log;
@@ -135,7 +134,7 @@ namespace System.Threading.Tasks.Dataflow
             else
             {
                 // Complete the block asynchronously to avoid blocking the caller
-                Task.Factory.StartNew(state =>
+                Task.Factory.StartNew(static state =>
                 {
                     Tuple<WriteOnceBlock<T>, IList<Exception>> blockAndList = (Tuple<WriteOnceBlock<T>, IList<Exception>>)state!;
                     blockAndList.Item1.CompleteBlock(blockAndList.Item2);
@@ -180,7 +179,7 @@ namespace System.Threading.Tasks.Dataflow
             }
             else if (_dataflowBlockOptions.CancellationToken.IsCancellationRequested)
             {
-                CompletionTaskSource.TrySetCanceled();
+                CompletionTaskSource.TrySetCanceled(_dataflowBlockOptions.CancellationToken);
             }
             else
             {
@@ -206,7 +205,7 @@ namespace System.Threading.Tasks.Dataflow
         /// <include file='XmlDocs/CommonXmlDocComments.xml' path='CommonXmlDocComments/Blocks/Member[@name="Fault"]/*' />
         void IDataflowBlock.Fault(Exception exception)
         {
-            if (exception == null) throw new ArgumentNullException(nameof(exception));
+            ArgumentNullException.ThrowIfNull(exception);
 
             CompleteCore(exception, storeExceptionEvenIfAlreadyCompleting: false);
         }
@@ -297,9 +296,8 @@ namespace System.Threading.Tasks.Dataflow
         /// <include file='XmlDocs/CommonXmlDocComments.xml' path='CommonXmlDocComments/Sources/Member[@name="LinkTo"]/*' />
         public IDisposable LinkTo(ITargetBlock<T> target, DataflowLinkOptions linkOptions)
         {
-            // Validate arguments
-            if (target == null) throw new ArgumentNullException(nameof(target));
-            if (linkOptions == null) throw new ArgumentNullException(nameof(linkOptions));
+            ArgumentNullException.ThrowIfNull(target);
+            ArgumentNullException.ThrowIfNull(linkOptions);
 
             bool hasValue;
             bool isCompleted;
@@ -355,9 +353,14 @@ namespace System.Threading.Tasks.Dataflow
                     if (!consumed) return DataflowMessageStatus.NotAvailable;
                 }
 
-                // Update the header and the value
-                _header = Common.SingleMessageHeader;
+                // Update the value and then the header.
+                // The header is used to determine whether a value is available, so it's important
+                // to set the value before the header to avoid a race condition where another thread
+                // sees HasValue as true but reads a default value because _value hasn't been set yet.
+                // The memory barrier ensures the write to _value is visible before _header.IsValid becomes true.
                 _value = messageValue;
+                Interlocked.MemoryBarrier();
+                _header = Common.SingleMessageHeader;
 
                 // We got what we needed. Start declining permanently.
                 _decliningPermanently = true;
@@ -378,7 +381,7 @@ namespace System.Threading.Tasks.Dataflow
         {
             // Validate arguments
             if (!messageHeader.IsValid) throw new ArgumentException(SR.Argument_InvalidMessageHeader, nameof(messageHeader));
-            if (target == null) throw new ArgumentNullException(nameof(target));
+            ArgumentNullException.ThrowIfNull(target);
 
             // As long as the message being requested is the one we have, allow it to be consumed,
             // but make a copy using the provided cloning function.
@@ -399,7 +402,7 @@ namespace System.Threading.Tasks.Dataflow
         {
             // Validate arguments
             if (!messageHeader.IsValid) throw new ArgumentException(SR.Argument_InvalidMessageHeader, nameof(messageHeader));
-            if (target == null) throw new ArgumentNullException(nameof(target));
+            ArgumentNullException.ThrowIfNull(target);
 
             // As long as the message is the one we have, it can be "reserved."
             // Reservations on a WriteOnceBlock are not exclusive, because
@@ -412,7 +415,7 @@ namespace System.Threading.Tasks.Dataflow
         {
             // Validate arguments
             if (!messageHeader.IsValid) throw new ArgumentException(SR.Argument_InvalidMessageHeader, nameof(messageHeader));
-            if (target == null) throw new ArgumentNullException(nameof(target));
+            ArgumentNullException.ThrowIfNull(target);
 
             // As long as the message is the one we have, everything's fine.
             if (_header.Id != messageHeader.Id) throw new InvalidOperationException(SR.InvalidOperation_MessageNotReservedByTarget);
@@ -489,7 +492,7 @@ namespace System.Threading.Tasks.Dataflow
                 // it remains the block's completion task.
                 if (_lazyCompletionTaskSource == null)
                 {
-                    Interlocked.CompareExchange(ref _lazyCompletionTaskSource, new TaskCompletionSource<VoidResult>(), null);
+                    Interlocked.CompareExchange(ref _lazyCompletionTaskSource, new TaskCompletionSource<VoidResult>(TaskCreationOptions.RunContinuationsAsynchronously), null);
                 }
 
                 return _lazyCompletionTaskSource;
@@ -506,7 +509,7 @@ namespace System.Threading.Tasks.Dataflow
 
         /// <summary>The data to display in the debugger display attribute.</summary>
         private object DebuggerDisplayContent =>
-            $"{Common.GetNameForDebugger(this, _dataflowBlockOptions)}, HasValue={HasValue}, Value={Value}";
+            $"{Common.GetNameForDebugger(this, _dataflowBlockOptions)}, HasValue = {HasValue}, Value = {Value}";
 
         /// <summary>Gets the data to display in the debugger display attribute for this instance.</summary>
         object IDebuggerDisplay.Content { get { return DebuggerDisplayContent; } }

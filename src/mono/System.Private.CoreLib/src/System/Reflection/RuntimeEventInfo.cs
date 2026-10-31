@@ -87,15 +87,13 @@ namespace System.Reflection
             return GetDeclaringTypeInternal().GetRuntimeModule();
         }
 
+        public override bool IsCollectible => false;
+
         internal BindingFlags GetBindingFlags()
         {
             MonoEventInfo info = GetEventInfo(this);
 
-            MethodInfo method = info.add_method;
-            if (method == null)
-                method = info.remove_method;
-            if (method == null)
-                method = info.raise_method;
+            MethodInfo method = info.add_method ?? info.remove_method ?? info.raise_method;
 
             return RuntimeType.FilterPreCalculate(method != null && method.IsPublic, GetDeclaringTypeInternal() != ReflectedType, method != null && method.IsStatic);
         }
@@ -186,17 +184,17 @@ namespace System.Reflection
 
         public override bool IsDefined(Type attributeType, bool inherit)
         {
-            return CustomAttribute.IsDefined(this, attributeType, inherit);
+            return RuntimeCustomAttribute.IsDefined(this, attributeType, inherit);
         }
 
         public override object[] GetCustomAttributes(bool inherit)
         {
-            return CustomAttribute.GetCustomAttributes(this, inherit);
+            return RuntimeCustomAttribute.GetCustomAttributes(this, inherit);
         }
 
         public override object[] GetCustomAttributes(Type attributeType, bool inherit)
         {
-            return CustomAttribute.GetCustomAttributes(this, attributeType, inherit);
+            return RuntimeCustomAttribute.GetCustomAttributes(this, attributeType, inherit);
         }
 
         public override IList<CustomAttributeData> GetCustomAttributesData()
@@ -223,10 +221,10 @@ namespace System.Reflection
         internal static EventInfo GetEventFromHandle(Mono.RuntimeEventHandle handle, RuntimeTypeHandle reflectedType)
         {
             if (handle.Value == IntPtr.Zero)
-                throw new ArgumentException("The handle is invalid.");
+                throw new ArgumentException(SR.Argument_InvalidHandle);
             EventInfo ei = internal_from_handle_type(handle.Value, reflectedType.Value);
             if (ei == null)
-                throw new ArgumentException("The event handle and the type handle are incompatible.");
+                throw new ArgumentException(SR.Argument_FieldPropertyEventAndTypeHandleIncompatibility);
             return ei;
         }
     }

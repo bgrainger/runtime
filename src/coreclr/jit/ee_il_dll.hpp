@@ -10,14 +10,12 @@ class CILJit : public ICorJitCompiler
                                unsigned             flags,           /* IN */
                                uint8_t**            nativeEntry,     /* OUT */
                                uint32_t*            nativeSizeOfCode /* OUT */
-                               );
+    );
 
     void ProcessShutdownWork(ICorStaticInfo* statInfo);
 
     void getVersionIdentifier(GUID* versionIdentifier /* OUT */
-                              );
-
-    unsigned getMaxIntrinsicSIMDVectorLength(CORJIT_FLAGS cpuCompileFlags);
+    );
 
     void setTargetOS(CORINFO_OS os);
 };
@@ -56,9 +54,21 @@ bool Compiler::eeIsValueClass(CORINFO_CLASS_HANDLE clsHnd)
 }
 
 FORCEINLINE
-bool Compiler::eeIsJitIntrinsic(CORINFO_METHOD_HANDLE ftn)
+bool Compiler::eeIsByRefLike(CORINFO_CLASS_HANDLE clsHnd)
 {
-    return info.compCompHnd->isJitIntrinsic(ftn);
+    return info.compCompHnd->isByRefLike(clsHnd);
+}
+
+FORCEINLINE
+bool Compiler::eeIsSharedInst(CORINFO_CLASS_HANDLE clsHnd)
+{
+    return info.compCompHnd->isSharedInst(clsHnd);
+}
+
+FORCEINLINE
+bool Compiler::eeIsIntrinsic(CORINFO_METHOD_HANDLE ftn)
+{
+    return info.compCompHnd->isIntrinsic(ftn);
 }
 
 FORCEINLINE
@@ -68,9 +78,11 @@ bool Compiler::eeIsFieldStatic(CORINFO_FIELD_HANDLE fldHnd)
 }
 
 FORCEINLINE
-var_types Compiler::eeGetFieldType(CORINFO_FIELD_HANDLE fldHnd, CORINFO_CLASS_HANDLE* pStructHnd)
+var_types Compiler::eeGetFieldType(CORINFO_FIELD_HANDLE  fldHnd,
+                                   CORINFO_CLASS_HANDLE* pStructHnd,
+                                   CORINFO_CLASS_HANDLE  fieldOwnerHint)
 {
-    return JITtype2varType(info.compCompHnd->getFieldType(fldHnd, pStructHnd));
+    return JITtype2varType(info.compCompHnd->getFieldType(fldHnd, pStructHnd, fieldOwnerHint));
 }
 
 FORCEINLINE
@@ -164,6 +176,30 @@ inline CORINFO_EE_INFO* Compiler::eeGetEEInfo()
     return &eeInfo;
 }
 
+inline CORINFO_ASYNC_INFO* Compiler::eeGetAsyncInfo()
+{
+    if (!asyncInfoInitialized)
+    {
+        info.compCompHnd->getAsyncInfo(&asyncInfo);
+        asyncInfoInitialized = true;
+    }
+
+    return &asyncInfo;
+}
+
+#if defined(TARGET_WASM)
+inline CORINFO_WASM_WELLKNOWN_GLOBALS* Compiler::eeGetWasmWellKnownGlobals()
+{
+    if (!wasmWellKnownGlobalsInitialized)
+    {
+        info.compCompHnd->getWasmWellKnownGlobals(&wasmWellKnownGlobals);
+        wasmWellKnownGlobalsInitialized = true;
+    }
+
+    return &wasmWellKnownGlobals;
+}
+#endif // defined(TARGET_WASM)
+
 /*****************************************************************************
  *
  *  Convert the type returned from the VM to a var_type.
@@ -176,7 +212,7 @@ inline var_types JITtype2varType(CorInfoType type)
         // see the definition of enum CorInfoType in file inc/corinfo.h
         TYP_UNDEF,  // CORINFO_TYPE_UNDEF           = 0x0,
         TYP_VOID,   // CORINFO_TYPE_VOID            = 0x1,
-        TYP_BOOL,   // CORINFO_TYPE_BOOL            = 0x2,
+        TYP_UBYTE,  // CORINFO_TYPE_BOOL            = 0x2,
         TYP_USHORT, // CORINFO_TYPE_CHAR            = 0x3,
         TYP_BYTE,   // CORINFO_TYPE_BYTE            = 0x4,
         TYP_UBYTE,  // CORINFO_TYPE_UBYTE           = 0x5,
@@ -190,25 +226,10 @@ inline var_types JITtype2varType(CorInfoType type)
         TYP_I_IMPL, // CORINFO_TYPE_NATIVEUINT      = 0xd,
         TYP_FLOAT,  // CORINFO_TYPE_FLOAT           = 0xe,
         TYP_DOUBLE, // CORINFO_TYPE_DOUBLE          = 0xf,
-        TYP_REF,    // CORINFO_TYPE_STRING          = 0x10,         // Not used, should remove
-        TYP_I_IMPL, // CORINFO_TYPE_PTR             = 0x11,
-        TYP_BYREF,  // CORINFO_TYPE_BYREF           = 0x12,
-        TYP_STRUCT, // CORINFO_TYPE_VALUECLASS      = 0x13,
-        TYP_REF,    // CORINFO_TYPE_CLASS           = 0x14,
-        TYP_STRUCT, // CORINFO_TYPE_REFANY          = 0x15,
-
-        // Generic type variables only appear when we're doing
-        // verification of generic code, in which case we're running
-        // in "import only" mode.  Annoyingly the "import only"
-        // mode of the JIT actually does a fair bit of compilation,
-        // so we have to trick the compiler into thinking it's compiling
-        // a real instantiation.  We do that by just pretending we're
-        // compiling the "object" instantiation of the code, i.e. by
-        // turing all generic type variables refs, except for a few
-        // choice places to do with verification, where we use
-        // verification types and CLASS_HANDLEs to track the difference.
-
-        TYP_REF, // CORINFO_TYPE_VAR             = 0x16,
+        TYP_I_IMPL, // CORINFO_TYPE_PTR             = 0x10,
+        TYP_BYREF,  // CORINFO_TYPE_BYREF           = 0x11,
+        TYP_STRUCT, // CORINFO_TYPE_VALUECLASS      = 0x12,
+        TYP_REF,    // CORINFO_TYPE_CLASS           = 0x13,
     };
 
     // spot check to make certain enumerations have not changed
@@ -221,7 +242,6 @@ inline var_types JITtype2varType(CorInfoType type)
     assert(varTypeMap[CORINFO_TYPE_DOUBLE] == TYP_DOUBLE);
     assert(varTypeMap[CORINFO_TYPE_VOID] == TYP_VOID);
     assert(varTypeMap[CORINFO_TYPE_VALUECLASS] == TYP_STRUCT);
-    assert(varTypeMap[CORINFO_TYPE_REFANY] == TYP_STRUCT);
 
     assert(type < CORINFO_TYPE_COUNT);
     assert(varTypeMap[type] != TYP_UNDEF);
@@ -237,7 +257,7 @@ inline var_types JitType2PreciseVarType(CorInfoType type)
         // see the definition of enum CorInfoType in file inc/corinfo.h
         TYP_UNDEF,  // CORINFO_TYPE_UNDEF           = 0x0,
         TYP_VOID,   // CORINFO_TYPE_VOID            = 0x1,
-        TYP_BOOL,   // CORINFO_TYPE_BOOL            = 0x2,
+        TYP_UBYTE,  // CORINFO_TYPE_BOOL            = 0x2,
         TYP_USHORT, // CORINFO_TYPE_CHAR            = 0x3,
         TYP_BYTE,   // CORINFO_TYPE_BYTE            = 0x4,
         TYP_UBYTE,  // CORINFO_TYPE_UBYTE           = 0x5,
@@ -251,25 +271,11 @@ inline var_types JitType2PreciseVarType(CorInfoType type)
         TYP_U_IMPL, // CORINFO_TYPE_NATIVEUINT      = 0xd,
         TYP_FLOAT,  // CORINFO_TYPE_FLOAT           = 0xe,
         TYP_DOUBLE, // CORINFO_TYPE_DOUBLE          = 0xf,
-        TYP_REF,    // CORINFO_TYPE_STRING          = 0x10,         // Not used, should remove
-        TYP_U_IMPL, // CORINFO_TYPE_PTR             = 0x11,
-        TYP_BYREF,  // CORINFO_TYPE_BYREF           = 0x12,
-        TYP_STRUCT, // CORINFO_TYPE_VALUECLASS      = 0x13,
-        TYP_REF,    // CORINFO_TYPE_CLASS           = 0x14,
-        TYP_STRUCT, // CORINFO_TYPE_REFANY          = 0x15,
+        TYP_U_IMPL, // CORINFO_TYPE_PTR             = 0x10,
+        TYP_BYREF,  // CORINFO_TYPE_BYREF           = 0x11,
+        TYP_STRUCT, // CORINFO_TYPE_VALUECLASS      = 0x12,
+        TYP_REF,    // CORINFO_TYPE_CLASS           = 0x13,
 
-        // Generic type variables only appear when we're doing
-        // verification of generic code, in which case we're running
-        // in "import only" mode.  Annoyingly the "import only"
-        // mode of the JIT actually does a fair bit of compilation,
-        // so we have to trick the compiler into thinking it's compiling
-        // a real instantiation.  We do that by just pretending we're
-        // compiling the "object" instantiation of the code, i.e. by
-        // turing all generic type variables refs, except for a few
-        // choice places to do with verification, where we use
-        // verification types and CLASS_HANDLEs to track the difference.
-
-        TYP_REF, // CORINFO_TYPE_VAR             = 0x16,
     };
 
     // spot check to make certain enumerations have not changed
@@ -282,7 +288,6 @@ inline var_types JitType2PreciseVarType(CorInfoType type)
     assert(preciseVarTypeMap[CORINFO_TYPE_DOUBLE] == TYP_DOUBLE);
     assert(preciseVarTypeMap[CORINFO_TYPE_VOID] == TYP_VOID);
     assert(preciseVarTypeMap[CORINFO_TYPE_VALUECLASS] == TYP_STRUCT);
-    assert(preciseVarTypeMap[CORINFO_TYPE_REFANY] == TYP_STRUCT);
 
     assert(type < CORINFO_TYPE_COUNT);
     assert(preciseVarTypeMap[type] != TYP_UNDEF);
@@ -290,15 +295,38 @@ inline var_types JitType2PreciseVarType(CorInfoType type)
     return ((var_types)preciseVarTypeMap[type]);
 };
 
-inline CORINFO_CALLINFO_FLAGS combine(CORINFO_CALLINFO_FLAGS flag1, CORINFO_CALLINFO_FLAGS flag2)
+inline var_types Compiler::TypeHandleToVarType(CORINFO_CLASS_HANDLE handle, ClassLayout** pLayout)
 {
-    return (CORINFO_CALLINFO_FLAGS)(flag1 | flag2);
+    CorInfoType jitType = info.compCompHnd->asCorInfoType(handle);
+    var_types   type    = TypeHandleToVarType(jitType, handle, pLayout);
+
+    return type;
 }
-inline CORINFO_CALLINFO_FLAGS Compiler::addVerifyFlag(CORINFO_CALLINFO_FLAGS flags)
+
+inline var_types Compiler::TypeHandleToVarType(CorInfoType jitType, CORINFO_CLASS_HANDLE handle, ClassLayout** pLayout)
 {
-    if (tiVerificationNeeded)
+    ClassLayout* layout = nullptr;
+    var_types    type   = JITtype2varType(jitType);
+    if (type == TYP_STRUCT)
     {
-        flags = combine(flags, CORINFO_CALLINFO_VERIFICATION);
+        layout = typGetObjLayout(handle);
+        type   = layout->GetType();
     }
-    return flags;
+
+    if (pLayout != nullptr)
+    {
+        *pLayout = layout;
+    }
+
+    return type;
+}
+
+constexpr CORINFO_CALLINFO_FLAGS operator|(CORINFO_CALLINFO_FLAGS a, CORINFO_CALLINFO_FLAGS b)
+{
+    return (CORINFO_CALLINFO_FLAGS)((uint32_t)a | (uint32_t)b);
+}
+
+inline CORINFO_CALLINFO_FLAGS& operator|=(CORINFO_CALLINFO_FLAGS& a, CORINFO_CALLINFO_FLAGS b)
+{
+    return a = (CORINFO_CALLINFO_FLAGS)((uint32_t)a | (uint32_t)b);
 }

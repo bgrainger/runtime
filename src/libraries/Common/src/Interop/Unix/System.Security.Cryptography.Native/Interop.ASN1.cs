@@ -4,7 +4,9 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using System.Security.Cryptography;
+using System.Text;
 
 using Microsoft.Win32.SafeHandles;
 
@@ -12,13 +14,13 @@ internal static partial class Interop
 {
     internal static partial class Crypto
     {
-        [GeneratedDllImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_ObjTxt2Obj", CharSet = CharSet.Ansi)]
+        [LibraryImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_ObjTxt2Obj", StringMarshalling = StringMarshalling.Utf8)]
         internal static partial SafeAsn1ObjectHandle ObjTxt2Obj(string s);
 
-        [GeneratedDllImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_ObjObj2Txt")]
+        [LibraryImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_ObjObj2Txt")]
         private static unsafe partial int ObjObj2Txt(byte* buf, int buf_len, IntPtr a);
 
-        [GeneratedDllImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_GetObjectDefinitionByName", CharSet = CharSet.Ansi)]
+        [LibraryImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_GetObjectDefinitionByName", StringMarshalling = StringMarshalling.Utf8)]
         private static partial IntPtr CryptoNative_GetObjectDefinitionByName(string friendlyName);
         internal static IntPtr GetObjectDefinitionByName(string friendlyName)
         {
@@ -32,30 +34,21 @@ internal static partial class Interop
         }
 
         // Returns shared pointers, should not be tracked as a SafeHandle.
-        [GeneratedDllImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_ObjNid2Obj")]
+        [LibraryImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_ObjNid2Obj")]
         internal static partial IntPtr ObjNid2Obj(int nid);
 
-        [GeneratedDllImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_Asn1ObjectFree")]
+        [LibraryImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_Asn1ObjectFree")]
         internal static partial void Asn1ObjectFree(IntPtr o);
 
-        [GeneratedDllImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_DecodeAsn1BitString")]
-        internal static partial SafeAsn1BitStringHandle DecodeAsn1BitString(byte[] buf, int len);
-
-        [GeneratedDllImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_Asn1BitStringFree")]
-        internal static partial void Asn1BitStringFree(IntPtr o);
-
-        [GeneratedDllImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_Asn1OctetStringNew")]
+        [LibraryImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_Asn1OctetStringNew")]
         internal static partial SafeAsn1OctetStringHandle Asn1OctetStringNew();
 
-        [GeneratedDllImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_Asn1OctetStringSet")]
+        [LibraryImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_Asn1OctetStringSet")]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static partial bool Asn1OctetStringSet(SafeAsn1OctetStringHandle o, byte[] d, int len);
 
-        [GeneratedDllImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_Asn1OctetStringFree")]
+        [LibraryImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_Asn1OctetStringFree")]
         internal static partial void Asn1OctetStringFree(IntPtr o);
-
-        [GeneratedDllImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_Asn1StringFree")]
-        internal static partial void Asn1StringFree(IntPtr o);
 
         internal static unsafe string GetOidValue(IntPtr asn1ObjectPtr)
         {
@@ -76,7 +69,7 @@ internal static partial class Interop
 
             if (bytesNeeded < StackCapacity)
             {
-                return Marshal.PtrToStringAnsi((IntPtr)bufStack, bytesNeeded);
+                return Encoding.UTF8.GetString(bufStack, bytesNeeded);
             }
 
             // bytesNeeded does not count the \0 which will be written on the end (based on OpenSSL 1.0.1f),
@@ -102,7 +95,7 @@ internal static partial class Interop
                     throw new CryptographicException();
                 }
 
-                return Marshal.PtrToStringAnsi((IntPtr)buf, bytesNeeded);
+                return Encoding.UTF8.GetString(buf, bytesNeeded);
             }
         }
     }

@@ -5,30 +5,15 @@ if(CLR_CMAKE_HOST_WIN32)
   set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreaded)
 endif(CLR_CMAKE_HOST_WIN32)
 
-if(CLR_CMAKE_HOST_WIN32 OR CLR_CMAKE_HOST_OSX)
+if(CLR_CMAKE_HOST_WIN32 OR CLR_CMAKE_HOST_APPLE)
   include_directories(${CLR_DIR}/inc/llvm)
-endif(CLR_CMAKE_HOST_WIN32 OR CLR_CMAKE_HOST_OSX)
-
-add_definitions(-DPAL_STDCPP_COMPAT)
-
-if(CLR_CMAKE_TARGET_ALPINE_LINUX)
-    add_definitions(-DTARGET_ALPINE_LINUX)
-endif(CLR_CMAKE_TARGET_ALPINE_LINUX)
+endif()
 
 set(DBGUTIL_SOURCES
     dbgutil.cpp
+    elfreader.cpp
+    machoreader.cpp
+    symbol.cpp
 )
-
-if(CLR_CMAKE_TARGET_LINUX)
-    list(APPEND DBGUTIL_SOURCES
-        elfreader.cpp
-    )
-endif(CLR_CMAKE_TARGET_LINUX)
-
-if(CLR_CMAKE_TARGET_OSX)
-    list(APPEND DBGUTIL_SOURCES
-        machoreader.cpp
-    )
-endif(CLR_CMAKE_TARGET_OSX)
 
 add_library_clr(dbgutil STATIC ${DBGUTIL_SOURCES})

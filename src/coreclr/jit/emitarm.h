@@ -27,10 +27,8 @@ unsigned emitOutput_Thumb2Instr(BYTE* dst, code_t code);
 /*             Debug-only routines to display instructions              */
 /************************************************************************/
 
-#ifdef DEBUG
-
 void emitDispInst(instruction ins, insFlags flags);
-void emitDispImm(int imm, bool addComma, bool alwaysHex = false);
+void emitDispImm(int imm, bool addComma, bool alwaysHex = false, bool isAddrOffset = false);
 void emitDispReloc(BYTE* addr);
 void emitDispCond(int cond);
 void emitDispShiftOpts(insOpts opt);
@@ -43,6 +41,14 @@ void emitDispAddrRR(regNumber reg1, regNumber reg2, emitAttr attr);
 void emitDispAddrRRI(regNumber reg1, regNumber reg2, int imm, emitAttr attr);
 void emitDispAddrPUW(regNumber reg, int imm, insOpts opt, emitAttr attr);
 void emitDispGC(emitAttr attr);
+void emitDispLargeJmp(instrDesc* id,
+                      bool       isNew,
+                      bool       doffs,
+                      bool       asmfm,
+                      unsigned   offs = 0,
+                      BYTE*      code = 0,
+                      size_t     sz   = 0,
+                      insGroup*  ig   = NULL);
 
 void emitDispInsHelp(instrDesc* id,
                      bool       isNew,
@@ -53,18 +59,21 @@ void emitDispInsHelp(instrDesc* id,
                      size_t     sz   = 0,
                      insGroup*  ig   = NULL);
 
-#endif // DEBUG
-
 /************************************************************************/
 /*  Private members that deal with target-dependent instr. descriptors  */
 /************************************************************************/
 
 private:
 instrDesc* emitNewInstrCallDir(
-    int argCnt, VARSET_VALARG_TP GCvars, regMaskTP gcrefRegs, regMaskTP byrefRegs, emitAttr retSize);
+    int argCnt, VARSET_VALARG_TP GCvars, regMaskTP gcrefRegs, regMaskTP byrefRegs, emitAttr retSize, bool hasAsyncRet);
 
-instrDesc* emitNewInstrCallInd(
-    int argCnt, ssize_t disp, VARSET_VALARG_TP GCvars, regMaskTP gcrefRegs, regMaskTP byrefRegs, emitAttr retSize);
+instrDesc* emitNewInstrCallInd(int              argCnt,
+                               ssize_t          disp,
+                               VARSET_VALARG_TP GCvars,
+                               regMaskTP        gcrefRegs,
+                               regMaskTP        byrefRegs,
+                               emitAttr         retSize,
+                               bool             hasAsyncRet);
 
 /************************************************************************/
 /*               Private helpers for instruction output                 */
@@ -77,7 +86,7 @@ bool emitInsIsStore(instruction ins);
 bool emitInsIsLoadOrStore(instruction ins);
 
 emitter::insFormat emitInsFormat(instruction ins);
-emitter::code_t emitInsCode(instruction ins, insFormat fmt);
+emitter::code_t    emitInsCode(instruction ins, insFormat fmt);
 
 // Generate code for a load or store operation and handle the case
 // of contained GT_LEA op1 with [base + index<<scale + offset]
@@ -86,7 +95,7 @@ void emitInsLoadStoreOp(instruction ins, emitAttr attr, regNumber dataReg, GenTr
 
 static bool IsMovInstruction(instruction ins);
 static bool isModImmConst(int imm);
-static int encodeModImmConst(int imm);
+static int  encodeModImmConst(int imm);
 
 static int insUnscaleImm(instruction ins, int imm);
 
@@ -191,6 +200,12 @@ inline static unsigned getBitWidth(emitAttr size)
     assert(size <= EA_8BYTE);
     return (unsigned)size * BITS_PER_BYTE;
 }
+
+/************************************************************************/
+/*                   Output target-independent instructions             */
+/************************************************************************/
+
+void emitIns_J(instruction ins, BasicBlock* dst, bool keepShort = false);
 
 /************************************************************************/
 /*           The public entry points to output instructions             */
@@ -304,29 +319,6 @@ void emitIns_ARR_R(instruction ins, emitAttr attr, regNumber ireg, regNumber reg
 void emitIns_R_ARX(
     instruction ins, emitAttr attr, regNumber ireg, regNumber reg, regNumber rg2, unsigned mul, int disp);
 
-enum EmitCallType
-{
-    EC_FUNC_TOKEN, // Direct call to a helper/static/nonvirtual/global method
-    EC_INDIR_R,    // Indirect call via register
-    EC_COUNT
-};
-
-void emitIns_Call(EmitCallType          callType,
-                  CORINFO_METHOD_HANDLE methHnd,                   // used for pretty printing
-                  INDEBUG_LDISASM_COMMA(CORINFO_SIG_INFO* sigInfo) // used to report call sites to the EE
-                  void*            addr,
-                  int              argSize,
-                  emitAttr         retSize,
-                  VARSET_VALARG_TP ptrVars,
-                  regMaskTP        gcrefRegs,
-                  regMaskTP        byrefRegs,
-                  const DebugInfo& di     = DebugInfo(),
-                  regNumber        ireg   = REG_NA,
-                  regNumber        xreg   = REG_NA,
-                  unsigned         xmul   = 0,
-                  ssize_t          disp   = 0,
-                  bool             isJump = false);
-
 /*****************************************************************************
  *
  *  Given an instrDesc, return true if it's a conditional jump.
@@ -339,7 +331,7 @@ inline bool emitIsCondJump(instrDesc* jmp)
 
 /*****************************************************************************
  *
- *  Given an instrDesc, return true if it's a comapre and jump.
+ *  Given an instrDesc, return true if it's a compare and jump.
  */
 
 inline bool emitIsCmpJump(instrDesc* jmp)

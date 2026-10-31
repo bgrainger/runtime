@@ -10,14 +10,15 @@ internal static partial class Interop
     {
         // https://msdn.microsoft.com/en-us/library/windows/hardware/ff556633.aspx
         // https://msdn.microsoft.com/en-us/library/windows/hardware/ff567047.aspx
-        [GeneratedDllImport(Libraries.NtDll, CharSet = CharSet.Unicode, ExactSpelling = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.NtDll)]
         public static unsafe partial int NtQueryDirectoryFile(
             IntPtr FileHandle,
             IntPtr Event,
             IntPtr ApcRoutine,
             IntPtr ApcContext,
             IO_STATUS_BLOCK* IoStatusBlock,
-            IntPtr FileInformation,
+            void* FileInformation,
             uint Length,
             FILE_INFORMATION_CLASS FileInformationClass,
             BOOLEAN ReturnSingleEntry,

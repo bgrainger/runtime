@@ -1,12 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-// ==++==
-//
-
-//
-// ==--==
-
 #include "unixasmmacros.inc"
 #include "asmconstants.h"
 
@@ -23,8 +17,8 @@
 // WARNING!!  to occur when the stack is unwalkable
 //
 
-        // GSCookie + alignment padding
-OFFSET_OF_FRAME=(4 + SIZEOF__GSCookie)
+        // alignment padding
+OFFSET_OF_FRAME=0
 
         .macro GenerateRedirectedStubWithFrame STUB, TARGET
 
@@ -74,6 +68,31 @@ OFFSET_OF_FRAME=(4 + SIZEOF__GSCookie)
         .endm
 
 // ------------------------------------------------------------------
+//
+// Helpers for ThreadAbort exceptions
+//
+
+        NESTED_ENTRY RedirectForThreadAbort2, _TEXT, NoHandler
+        PROLOG_PUSH  "{r7, lr}"
+
+        // stack must be 8 byte aligned
+        CHECK_STACK_ALIGNMENT
+
+        // On entry:
+        //
+        // r0 = address of FaultingExceptionFrame
+        //
+        // Invoke the helper to setup the FaultingExceptionFrame and raise the exception
+        bl              C_FUNC(ThrowControlForThread)
+
+        // ThrowControlForThread doesn't return.
+        EMIT_BREAKPOINT
+
+        NESTED_END RedirectForThreadAbort2, _TEXT
+
+GenerateRedirectedStubWithFrame RedirectForThreadAbort, RedirectForThreadAbort2
+
+// ------------------------------------------------------------------
 
         // This helper enables us to call into a funclet after applying the non-volatiles
         NESTED_ENTRY CallEHFunclet, _TEXT, NoHandler
@@ -86,12 +105,13 @@ OFFSET_OF_FRAME=(4 + SIZEOF__GSCookie)
         //
         // R0 = throwable
         // R1 = PC to invoke
-        // R2 = address of R4 register in CONTEXT record// used to restore the non-volatile registers of CrawlFrame
+        // R2 = address of CONTEXT record; used to restore the non-volatile registers of CrawlFrame
         // R3 = address of the location where the SP of funclet's caller (i.e. this helper) should be saved.
         //
         // Save the SP of this function
         str sp, [r3]
         // apply the non-volatiles corresponding to the CrawlFrame
+        add r2, r2, OFFSETOF__CONTEXT__R4
         ldm r2!, {r4-r6}
         add r2, r2, #4
         ldm r2!, {r8-r11}
@@ -107,21 +127,22 @@ OFFSET_OF_FRAME=(4 + SIZEOF__GSCookie)
         // frame pointer for accessing the locals in the parent method.
         NESTED_ENTRY CallEHFilterFunclet, _TEXT, NoHandler
 
-        PROLOG_PUSH  "{r7, lr}"
-        PROLOG_STACK_SAVE r7
+        PROLOG_PUSH  "{r11, lr}"
 
         // On entry:
         //
         // R0 = throwable
-        // R1 = SP of the caller of the method/funclet containing the filter
+        // R1 = FP of main method
         // R2 = PC to invoke
         // R3 = address of the location where the SP of funclet's caller (i.e. this helper) should be saved.
         //
         // Save the SP of this function
         str sp, [r3]
+        // Restore frame pointer
+        mov r11, r1
         // Invoke the filter funclet
         blx r2
 
-        EPILOG_POP   "{r7, pc}"
+        EPILOG_POP   "{r11, pc}"
 
         NESTED_END CallEHFilterFunclet, _TEXT

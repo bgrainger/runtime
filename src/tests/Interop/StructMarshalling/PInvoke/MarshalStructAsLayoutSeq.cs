@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Security;
+using Xunit;
 
 public class Managed
 {
@@ -55,7 +56,10 @@ public class Managed
     }
 
     [SecuritySafeCritical]
-    public static int Main()
+    [Fact]
+    [ActiveIssue("needs triage", TestRuntimes.Mono)]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/91388", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+    public static int TestEntryPoint()
     {
         RunMarshalSeqStructAsParamByVal();
         RunMarshalSeqStructAsParamByRef();
@@ -66,7 +70,11 @@ public class Managed
         RunMarshalSeqStructAsParamByValInOut();
         RunMarshalSeqStructAsParamByRefInOut();
         RunMarshalSeqStructAsReturn();
-        RunMarshalSeqStructDelegateField();
+        // System.Delegate fields: https://github.com/dotnet/runtime/issues/69919
+        if (!TestLibrary.Utilities.IsNativeAot)
+        {
+            RunMarshalSeqStructDelegateField();
+        }
 
         if (failures > 0)
         {
@@ -329,6 +337,10 @@ public class Managed
     static extern bool MarshalStructAsParam_AsSeqByValFixedBufferClassificationTest(FixedBufferClassificationTestBlittable str, float f);
     [DllImport("MarshalStructAsParam")]
     static extern bool MarshalStructAsParam_AsSeqByValFixedBufferClassificationTest(FixedArrayClassificationTest str, float f);
+    [DllImport("MarshalStructAsParam")]
+    static extern bool MarshalStructAsParam_AsSeqByValFixedBufferClassificationTest(InlineArrayClassificationTest str, float f);
+    [DllImport("MarshalStructAsParam")]
+    static extern bool MarshalStructAsParam_AsSeqByValFixedBufferClassificationTest(InlineArrayWithWrappedIntClassificationTest str, float f);
     [DllImport("MarshalStructAsParam")]
     static extern bool MarshalStructAsParam_AsSeqByValUnicodeCharArrayClassification(UnicodeCharArrayClassification str, float f);
     [DllImport("MarshalStructAsParam")]
@@ -688,10 +700,45 @@ public class Managed
                         },
                         f = 56.789f
                     };
+
                     if (!MarshalStructAsParam_AsSeqByValFixedBufferClassificationTest(fixedArrayTest, fixedArrayTest.f))
                     {
                         Console.WriteLine("\tFAILED! Managed to Native failed in MarshalStructAsParam_AsSeqByValFixedBufferClassificationTest. Expected:True;Actual:False");
                         failures++;
+                    }
+
+                    Console.WriteLine("\tCalling MarshalStructAsParam_AsSeqByValFixedBufferClassificationTest with inline array...");
+                    {
+                        InlineArrayClassificationTest inlineArrayTest = new()
+                        {
+                            f = 56.789f
+                        };
+                        inlineArrayTest.arr[0] = 123456;
+                        inlineArrayTest.arr[1] = 78910;
+                        inlineArrayTest.arr[2] = 1234;
+
+                        if (!MarshalStructAsParam_AsSeqByValFixedBufferClassificationTest(inlineArrayTest, inlineArrayTest.f))
+                        {
+                            Console.WriteLine("\tFAILED! Managed to Native failed in MarshalStructAsParam_AsSeqByValFixedBufferClassificationTest. Expected:True;Actual:False");
+                            failures++;
+                        }
+                    }
+
+                    Console.WriteLine("\tCalling MarshalStructAsParam_AsSeqByValFixedBufferClassificationTest with inline array...");
+                    {
+                        InlineArrayWithWrappedIntClassificationTest inlineArrayTest = new()
+                        {
+                            f = 56.789f
+                        };
+                        inlineArrayTest.arr[0] = new(123456);
+                        inlineArrayTest.arr[1] = new(78910);
+                        inlineArrayTest.arr[2] = new(1234);
+
+                        if (!MarshalStructAsParam_AsSeqByValFixedBufferClassificationTest(inlineArrayTest, inlineArrayTest.f))
+                        {
+                            Console.WriteLine("\tFAILED! Managed to Native failed in MarshalStructAsParam_AsSeqByValFixedBufferClassificationTest. Expected:True;Actual:False");
+                            failures++;
+                        }
                     }
                     break;
                 case StructID.UnicodeCharArrayClassificationId:
@@ -2390,8 +2437,12 @@ public class Managed
 #endif
         MarshalStructAsParam_AsSeqByVal(StructID.StringStructSequentialAnsiId);
         MarshalStructAsParam_AsSeqByVal(StructID.StringStructSequentialUnicodeId);
-        MarshalStructAsParam_AsSeqByVal(StructID.S8Id);
-        MarshalStructAsParam_AsSeqByVal(StructID.S9Id);
+        // UnmanagedType.Error: https://github.com/dotnet/runtime/issues/69919
+        if (!TestLibrary.Utilities.IsNativeAot)
+        {
+            MarshalStructAsParam_AsSeqByVal(StructID.S8Id);
+            MarshalStructAsParam_AsSeqByVal(StructID.S9Id);
+        }
         MarshalStructAsParam_AsSeqByVal(StructID.IncludeOuterIntegerStructSequentialId);
         MarshalStructAsParam_AsSeqByVal(StructID.S11Id);
         MarshalStructAsParam_AsSeqByVal(StructID.AutoStringId);
@@ -2423,8 +2474,12 @@ public class Managed
 #endif
         MarshalStructAsParam_AsSeqByRef(StructID.StringStructSequentialAnsiId);
         MarshalStructAsParam_AsSeqByRef(StructID.StringStructSequentialUnicodeId);
-        MarshalStructAsParam_AsSeqByRef(StructID.S8Id);
-        MarshalStructAsParam_AsSeqByRef(StructID.S9Id);
+        // UnmanagedType.Error: https://github.com/dotnet/runtime/issues/69919
+        if (!TestLibrary.Utilities.IsNativeAot)
+        {
+            MarshalStructAsParam_AsSeqByRef(StructID.S8Id);
+            MarshalStructAsParam_AsSeqByRef(StructID.S9Id);
+        }
         MarshalStructAsParam_AsSeqByRef(StructID.IncludeOuterIntegerStructSequentialId);
         MarshalStructAsParam_AsSeqByRef(StructID.S11Id);
     }
@@ -2446,8 +2501,12 @@ public class Managed
 #endif
         MarshalStructAsParam_AsSeqByValIn(StructID.StringStructSequentialAnsiId);
         MarshalStructAsParam_AsSeqByValIn(StructID.StringStructSequentialUnicodeId);
-        MarshalStructAsParam_AsSeqByValIn(StructID.S8Id);
-        MarshalStructAsParam_AsSeqByValIn(StructID.S9Id);
+        // UnmanagedType.Error: https://github.com/dotnet/runtime/issues/69919
+        if (!TestLibrary.Utilities.IsNativeAot)
+        {
+            MarshalStructAsParam_AsSeqByValIn(StructID.S8Id);
+            MarshalStructAsParam_AsSeqByValIn(StructID.S9Id);
+        }
         MarshalStructAsParam_AsSeqByValIn(StructID.IncludeOuterIntegerStructSequentialId);
         MarshalStructAsParam_AsSeqByValIn(StructID.S11Id);
     }
@@ -2469,8 +2528,12 @@ public class Managed
 #endif
         MarshalStructAsParam_AsSeqByRefIn(StructID.StringStructSequentialAnsiId);
         MarshalStructAsParam_AsSeqByRefIn(StructID.StringStructSequentialUnicodeId);
-        MarshalStructAsParam_AsSeqByRefIn(StructID.S8Id);
-        MarshalStructAsParam_AsSeqByRefIn(StructID.S9Id);
+        // UnmanagedType.Error: https://github.com/dotnet/runtime/issues/69919
+        if (!TestLibrary.Utilities.IsNativeAot)
+        {
+            MarshalStructAsParam_AsSeqByRefIn(StructID.S8Id);
+            MarshalStructAsParam_AsSeqByRefIn(StructID.S9Id);
+        }
         MarshalStructAsParam_AsSeqByRefIn(StructID.IncludeOuterIntegerStructSequentialId);
         MarshalStructAsParam_AsSeqByRefIn(StructID.S11Id);
     }
@@ -2492,8 +2555,12 @@ public class Managed
 #endif
         MarshalStructAsParam_AsSeqByValOut(StructID.StringStructSequentialAnsiId);
         MarshalStructAsParam_AsSeqByValOut(StructID.StringStructSequentialUnicodeId);
-        MarshalStructAsParam_AsSeqByValOut(StructID.S8Id);
-        MarshalStructAsParam_AsSeqByValOut(StructID.S9Id);
+        // UnmanagedType.Error: https://github.com/dotnet/runtime/issues/69919
+        if (!TestLibrary.Utilities.IsNativeAot)
+        {
+            MarshalStructAsParam_AsSeqByValOut(StructID.S8Id);
+            MarshalStructAsParam_AsSeqByValOut(StructID.S9Id);
+        }
         MarshalStructAsParam_AsSeqByValOut(StructID.IncludeOuterIntegerStructSequentialId);
         MarshalStructAsParam_AsSeqByValOut(StructID.S11Id);
     }
@@ -2515,8 +2582,12 @@ public class Managed
 #endif
         MarshalStructAsParam_AsSeqByRefOut(StructID.StringStructSequentialAnsiId);
         MarshalStructAsParam_AsSeqByRefOut(StructID.StringStructSequentialUnicodeId);
-        MarshalStructAsParam_AsSeqByRefOut(StructID.S8Id);
-        MarshalStructAsParam_AsSeqByRefOut(StructID.S9Id);
+        // UnmanagedType.Error: https://github.com/dotnet/runtime/issues/69919
+        if (!TestLibrary.Utilities.IsNativeAot)
+        {
+            MarshalStructAsParam_AsSeqByRefOut(StructID.S8Id);
+            MarshalStructAsParam_AsSeqByRefOut(StructID.S9Id);
+        }
         MarshalStructAsParam_AsSeqByRefOut(StructID.IncludeOuterIntegerStructSequentialId);
         MarshalStructAsParam_AsSeqByRefOut(StructID.S11Id);
     }
@@ -2538,8 +2609,12 @@ public class Managed
 #endif
         MarshalStructAsParam_AsSeqByValInOut(StructID.StringStructSequentialAnsiId);
         MarshalStructAsParam_AsSeqByValInOut(StructID.StringStructSequentialUnicodeId);
-        MarshalStructAsParam_AsSeqByValInOut(StructID.S8Id);
-        MarshalStructAsParam_AsSeqByValInOut(StructID.S9Id);
+        // UnmanagedType.Error: https://github.com/dotnet/runtime/issues/69919
+        if (!TestLibrary.Utilities.IsNativeAot)
+        {
+            MarshalStructAsParam_AsSeqByValInOut(StructID.S8Id);
+            MarshalStructAsParam_AsSeqByValInOut(StructID.S9Id);
+        }
         MarshalStructAsParam_AsSeqByValInOut(StructID.IncludeOuterIntegerStructSequentialId);
         MarshalStructAsParam_AsSeqByValInOut(StructID.S11Id);
     }
@@ -2561,8 +2636,12 @@ public class Managed
 #endif
         MarshalStructAsParam_AsSeqByRefInOut(StructID.StringStructSequentialAnsiId);
         MarshalStructAsParam_AsSeqByRefInOut(StructID.StringStructSequentialUnicodeId);
-        MarshalStructAsParam_AsSeqByRefInOut(StructID.S8Id);
-        MarshalStructAsParam_AsSeqByRefInOut(StructID.S9Id);
+        // UnmanagedType.Error: https://github.com/dotnet/runtime/issues/69919
+        if (!TestLibrary.Utilities.IsNativeAot)
+        {
+            MarshalStructAsParam_AsSeqByRefInOut(StructID.S8Id);
+            MarshalStructAsParam_AsSeqByRefInOut(StructID.S9Id);
+        }
         MarshalStructAsParam_AsSeqByRefInOut(StructID.IncludeOuterIntegerStructSequentialId);
         MarshalStructAsParam_AsSeqByRefInOut(StructID.S11Id);
     }
@@ -2574,6 +2653,7 @@ public class Managed
         HFA hfa = GetHFA(12.34f, 52.12f, 64.124f, 675.452351322f);
         if (hfa.f1 != 12.34f || hfa.f2 != 52.12f || hfa.f3 != 64.124f || hfa.f4 != 675.452351322f)
         {
+            failures++;
             Console.WriteLine("4-float structure returned from native to managed failed.");
         }
 
@@ -2585,14 +2665,23 @@ public class Managed
             if (multiple != 2 * i)
             {
                 Console.WriteLine("Structure of 20 ints returned from native to managed failed.");
+                failures++;
             }
             i++;
         }
 
         MultipleBool bools = GetBools(true, true);
-        if (!bools.b1 || !bools.b2)
+        if (!bools[0] || !bools[1])
         {
             Console.WriteLine("Structure of two bools marshalled to BOOLs returned from native to managed failed");
+            failures++;
+        }
+
+        bools = GetBools(true, false);
+        if (!bools[0] || bools[1])
+        {
+            Console.WriteLine("Structure of two bools marshalled to BOOLs returned from native to managed failed");
+            failures++;
         }
     }
 

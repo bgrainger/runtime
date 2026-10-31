@@ -5,6 +5,8 @@
 #include "pal_compiler.h"
 #include "pal_crypto_types.h"
 
+extern int g_x509_ocsp_index;
+
 /*
 These values should be kept in sync with System.Security.Cryptography.X509Certificates.X509RevocationFlag.
 */
@@ -129,13 +131,6 @@ Always succeeds.
 PALEXPORT void CryptoNative_X509Destroy(X509* a);
 
 /*
-Shims the X509_dup method.
-
-Returns the duplicated X509 instance.
-*/
-PALEXPORT X509* CryptoNative_X509Duplicate(X509* x509);
-
-/*
 Shims the PEM_read_bio_X509 method.
 
 Returns the read X509 instance.
@@ -159,16 +154,16 @@ PALEXPORT ASN1_INTEGER* CryptoNative_X509GetSerialNumber(X509* x509);
 /*
 Shims the X509_get_issuer_name method.
 
-Returns the ASN1_INTEGER for the issuer name.
+Returns the X509_NAME for the issuer name.
 */
-PALEXPORT X509_NAME* CryptoNative_X509GetIssuerName(X509* x509);
+PALEXPORT const X509_NAME* CryptoNative_X509GetIssuerName(X509* x509);
 
 /*
 Shims the X509_get_subject_name method.
 
 Returns the X509_NAME for the subject name.
 */
-PALEXPORT X509_NAME* CryptoNative_X509GetSubjectName(X509* x509);
+PALEXPORT const X509_NAME* CryptoNative_X509GetSubjectName(X509* x509);
 
 /*
 Shims the X509_check_purpose method.
@@ -188,17 +183,17 @@ PALEXPORT int32_t CryptoNative_X509GetExtCount(X509* x);
 /*
 Shims the X509_get_ext method.
 */
-PALEXPORT X509_EXTENSION* CryptoNative_X509GetExt(X509* x, int32_t loc);
+PALEXPORT const X509_EXTENSION* CryptoNative_X509GetExt(X509* x, int32_t loc);
 
 /*
 Shims the X509_EXTENSION_get_object method.
 */
-PALEXPORT ASN1_OBJECT* CryptoNative_X509ExtensionGetOid(X509_EXTENSION* x);
+PALEXPORT const ASN1_OBJECT* CryptoNative_X509ExtensionGetOid(X509_EXTENSION* x);
 
 /*
 Shims the X509_EXTENSION_get_data method.
 */
-PALEXPORT ASN1_OCTET_STRING* CryptoNative_X509ExtensionGetData(X509_EXTENSION* x);
+PALEXPORT const ASN1_OCTET_STRING* CryptoNative_X509ExtensionGetData(X509_EXTENSION* x);
 
 /*
 Shims the X509_EXTENSION_get_critical method.
@@ -208,12 +203,12 @@ PALEXPORT int32_t CryptoNative_X509ExtensionGetCritical(X509_EXTENSION* x);
 /*
 Returns the data portion of the first matched extension.
 */
-PALEXPORT ASN1_OCTET_STRING* CryptoNative_X509FindExtensionData(X509* x, int32_t nid);
+PALEXPORT const ASN1_OCTET_STRING* CryptoNative_X509FindExtensionData(X509* x, int32_t nid);
 
 /*
 Shims the X509_STORE_free method.
 */
-PALEXPORT void CryptoNative_X509StoreDestory(X509_STORE* v);
+PALEXPORT void CryptoNative_X509StoreDestroy(X509_STORE* v);
 
 /*
 Shims the X509_STORE_add_crl method.
@@ -266,11 +261,6 @@ Returns the interior pointer to the "untrusted" certificates collection for this
 PALEXPORT X509Stack* CryptoNative_X509StoreCtxGetSharedUntrusted(X509_STORE_CTX* ctx);
 
 /*
-Returns the interior pointer to the target certificate for an X509 certificate chain
-*/
-PALEXPORT X509* CryptoNative_X509StoreCtxGetTargetCert(X509_STORE_CTX* ctx);
-
-/*
 Shims the X509_STORE_CTX_get_error method.
 */
 PALEXPORT int32_t CryptoNative_X509StoreCtxGetError(X509_STORE_CTX* ctx);
@@ -294,9 +284,14 @@ Shims the X509_STORE_CTX_get_error_depth method.
 PALEXPORT int32_t CryptoNative_X509StoreCtxGetErrorDepth(X509_STORE_CTX* ctx);
 
 /*
-Shims the X509_STORE_CTX_set_verify_cb function.
+Shims the X509_STORE_CTX_set_verify_cb and X509_STORE_CTX_set_app_data functions.
 */
-PALEXPORT void CryptoNative_X509StoreCtxSetVerifyCallback(X509_STORE_CTX* ctx, X509StoreVerifyCallback callback);
+PALEXPORT int32_t CryptoNative_X509StoreCtxSetVerifyCallback(X509_STORE_CTX* ctx, X509StoreVerifyCallback callback, void* appData);
+
+/*
+Shims the X509_STORE_CTX_get_app_data function.
+*/
+PALEXPORT void* CryptoNative_X509StoreCtxGetAppData(X509_STORE_CTX* ctx);
 
 /*
 Shims the X509_verify_cert_error_string method.
@@ -381,10 +376,20 @@ determined by the chain in storeCtx.
 PALEXPORT int32_t CryptoNative_X509ChainGetCachedOcspStatus(X509_STORE_CTX* storeCtx, char* cachePath, int chainDepth);
 
 /*
+Build an OCSP request appropriate for the subject certificate (as issued by the issuer certificate)
+*/
+PALEXPORT OCSP_REQUEST* CryptoNative_X509BuildOcspRequest(X509* subject, X509* issuer);
+
+/*
 Build an OCSP request appropriate for the end-entity certificate using the issuer (and trust) as
 determined by the chain in storeCtx.
 */
 PALEXPORT OCSP_REQUEST* CryptoNative_X509ChainBuildOcspRequest(X509_STORE_CTX* storeCtx, int chainDepth);
+
+/*
+Checks if the target certificate has an appropriate stapled OCSP response.
+*/
+PALEXPORT int32_t CryptoNative_X509ChainHasStapledOcsp(X509_STORE_CTX* storeCtx);
 
 /*
 Determine if the OCSP response is acceptable, and if acceptable report the status and
@@ -395,3 +400,9 @@ PALEXPORT int32_t CryptoNative_X509ChainVerifyOcsp(X509_STORE_CTX* storeCtx,
                                                    OCSP_RESPONSE* resp,
                                                    char* cachePath,
                                                    int chainDepth);
+
+/*
+Decode len bytes of buf into an OCSP response, process it against the OCSP request, and return if the bytes were valid.
+If the bytes were valid, and the OCSP response had a nextUpdate value, assign it to expiration.
+*/
+PALEXPORT int32_t CryptoNative_X509DecodeOcspToExpiration(const uint8_t* buf, int32_t len, OCSP_REQUEST* req, X509* subject, X509** issuers, int issuersLen, int64_t* expiration);

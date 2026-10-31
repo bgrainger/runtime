@@ -2,8 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics;
-using System.Runtime.Versioning;
 using System.Runtime.CompilerServices;
+using System.Runtime.Versioning;
 
 namespace System.Runtime.InteropServices.ObjectiveC
 {
@@ -29,9 +29,10 @@ namespace System.Runtime.InteropServices.ObjectiveC
             delegate* unmanaged<IntPtr, void> trackedObjectEnteredFinalization)
              => throw new NotImplementedException();
 
-        private static IntPtr CreateReferenceTrackingHandleInternal(
-            ObjectHandleOnStack obj,
-            out int memInSizeT,
-            out IntPtr mem) => throw new NotImplementedException();
+        private static IntPtr AllocateReferenceTrackingHandle(object obj)
+            => throw new NotImplementedException();
+
+        private static bool IsTrackedReferenceWithFinalizer(object obj)
+            => throw new NotImplementedException();
     }
 }

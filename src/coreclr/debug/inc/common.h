@@ -17,15 +17,11 @@
 inline CORDB_ADDRESS PTR_TO_CORDB_ADDRESS(const void* ptr)
 {
     SUPPORTS_DAC;
-    // Cast a void* to a ULONG is not 64-bit safe and triggers compiler warning C3411.
-    // But this is x86 only, so we know it's ok. Use PtrToUlong to do the conversion
-    // without invoking the error.
-    return (CORDB_ADDRESS)(PtrToUlong(ptr));
+    return (CORDB_ADDRESS)(ULONG)(UINT_PTR)ptr;
 }
 inline CORDB_ADDRESS PTR_TO_CORDB_ADDRESS(UINT_PTR ptr)
 {
     SUPPORTS_DAC;
-    // PtrToUlong
     return (CORDB_ADDRESS)(ULONG)(ptr);
 }
 #else
@@ -44,13 +40,6 @@ void InitEventForDebuggerNotification(DEBUG_EVENT *      pDebugEvent,
                                       DebuggerIPCEvent * pIPCEvent);
 #endif // (FEATURE_DBGIPC_TRANSPORT_DI || FEATURE_DBGIPC_TRANSPORT_VM)
 
-
-void GetPidDecoratedName(__out_z __out_ecount(cBufSizeInChars) WCHAR * pBuf,
-                         int cBufSizeInChars,
-                         const WCHAR * pPrefix,
-                         DWORD pid);
-
-
 //
 // This macro is used in CORDbgCopyThreadContext().
 //
@@ -60,8 +49,8 @@ void GetPidDecoratedName(__out_z __out_ecount(cBufSizeInChars) WCHAR * pBuf,
 #define CopyContextChunk(_t, _f, _end, _flag)                                  \
 {                                                                              \
     LOG((LF_CORDB, LL_INFO1000000,                                             \
-         "CP::CTC: copying " #_flag  ":" FMT_ADDR "<---" FMT_ADDR "(%d)\n",    \
-         DBG_ADDR(_t), DBG_ADDR(_f), ((UINT_PTR)(_end) - (UINT_PTR)_t)));      \
+         "CP::CTC: copying " #_flag  ":" FMT_ADDR "<---" FMT_ADDR "(%zu)\n",   \
+         DBG_ADDR(_t), DBG_ADDR(_f), (size_t)((UINT_PTR)(_end) - (UINT_PTR)_t)));      \
     memcpy((_t), (_f), ((UINT_PTR)(_end) - (UINT_PTR)(_t)));                     \
 }
 
@@ -69,11 +58,8 @@ void GetPidDecoratedName(__out_z __out_ecount(cBufSizeInChars) WCHAR * pBuf,
 // CORDbgCopyThreadContext() does an intelligent copy from pSrc to pDst,
 // respecting the ContextFlags of both contexts.
 //
-struct DebuggerREGDISPLAY;
 
 extern void CORDbgCopyThreadContext(DT_CONTEXT* pDst, const DT_CONTEXT* pSrc);
-extern void CORDbgSetDebuggerREGDISPLAYFromContext(DebuggerREGDISPLAY *pDRD,
-                                                   DT_CONTEXT* pContext);
 
 //---------------------------------------------------------------------------------------
 //
@@ -103,7 +89,15 @@ ULONG32 ContextSizeForFlags(ULONG32 flags)
     else
 #endif // TARGET_X86
     {
+#if !defined(CROSS_COMPILE) && !defined(TARGET_WINDOWS) && (defined(TARGET_AMD64) || defined(TARGET_ARM64))
+        if ((flags & CONTEXT_XSTATE) == CONTEXT_XSTATE)
+        {
+            return sizeof(T_CONTEXT);
+        }
+        return offsetof(T_CONTEXT, XStateFeaturesMask);
+#else
         return sizeof(T_CONTEXT);
+#endif
     }
 }
 
@@ -290,7 +284,7 @@ inline CORDB_ADDRESS ALIGN_ADDRESS( CORDB_ADDRESS val, CORDB_ADDRESS alignment )
     return result;
 }
 
-#include "dacprivate.h" // for MSLAYOUT
+#include "mslayout.h"
 #include "dumpcommon.h"
 
 #endif //DEBUGGER_COMMON_H

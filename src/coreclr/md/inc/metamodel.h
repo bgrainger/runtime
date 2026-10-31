@@ -1,11 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-//*****************************************************************************
-// MetaModel.h -- header file for compressed COM+ metadata.
-//
 
-//
 //*****************************************************************************
+// MetaModel.h -- header file for compressed CLR metadata.
+//*****************************************************************************
+
 #ifndef _METAMODEL_H_
 #define _METAMODEL_H_
 
@@ -16,7 +15,7 @@
 #include <cor.h>
 #include <stgpool.h>
 #include <metamodelpub.h>
-#include "metadatatracker.h"
+#include "cdacdata.h"
 
 #include "../datablob.h"
 #include "../debug_metadata.h"
@@ -40,11 +39,6 @@
 
 #define METAMODEL_MAJOR_VER 2
 #define METAMODEL_MINOR_VER 0
-
-// Metadata version number up through Whidbey Beta2
-#define METAMODEL_MAJOR_VER_B1 1
-#define METAMODEL_MINOR_VER_B1 1
-
 
 typedef enum MetadataVersion
 {
@@ -260,9 +254,9 @@ public:
         HAS_DELETE      =   0x80,       // If set, this metadata can contain _Delete tokens.
     };
 
-    unsigned __int64    m_maskvalid;            // Bit mask of present table counts.
+    uint64_t    m_maskvalid;            // Bit mask of present table counts.
 
-    unsigned __int64    m_sorted;               // Bit mask of sorted tables.
+    uint64_t    m_sorted;               // Bit mask of sorted tables.
     FORCEINLINE bool IsSorted(ULONG ixTbl)
         { return m_sorted & BIT(ixTbl) ? true : false; }
     void SetSorted(ULONG ixTbl, int bVal)
@@ -284,9 +278,9 @@ public:
 #endif
 
 private:
-    FORCEINLINE unsigned __int64 BIT(ULONG ixBit)
-    {   _ASSERTE(ixBit < (sizeof(__int64)*CHAR_BIT));
-        return UI64(1) << ixBit; }
+    FORCEINLINE uint64_t BIT(ULONG ixBit)
+    {   _ASSERTE(ixBit < (sizeof(int64_t)*CHAR_BIT));
+        return 1ULL << ixBit; }
 
 };
 
@@ -317,13 +311,7 @@ public:
 // Direct getter for a field.  Defines an inline function like:
 //    getSomeFieldOfXyz(XyzRec *pRec) { return pRec->m_SomeField;}
 //  Note that the returned value declaration is NOT included.
-#if METADATATRACKER_ENABLED
-#define _GETFLD(tbl,fld) _GETTER(tbl,fld){ PVOID pVal = (BYTE*)pRec + offsetof(tbl##Rec, m_##fld); \
-    pVal = MetaDataTracker::NoteAccess(pVal); \
-    return ((tbl##Rec*)((BYTE*)pVal - offsetof(tbl##Rec, m_##fld)))->Get##fld(); }
-#else
 #define _GETFLD(tbl,fld) _GETTER(tbl,fld){  return pRec->Get##fld();}
-#endif
 
 // These functions call the helper function getIX to get a two or four byte value from a record,
 //  and then use that value as an index into the appropriate pool.
@@ -411,10 +399,12 @@ public:
 //     To make that happen would be a substantial refactoring job as RegMeta
 //     always embeds CMiniMdRW even when it was opened for ReadOnly.
 //*****************************************************************************
+class DacDbiInterfaceImpl;
 class CMiniMdBase : public IMetaModelCommonRO
 {
 
-    friend class VerifyLayoutsMD; // verifies class layout doesn't accidentally change
+    friend struct ::cdac_data<CMiniMdBase>;
+    friend class ::DacDbiInterfaceImpl;
 
 public:
     CMiniMdBase();
@@ -443,14 +433,6 @@ public:
         ULONG       ulTarget,           // target for search
         RID        *pRid) = 0;
 
-    // Search for a custom value with a given type.
-    __checkReturn
-    HRESULT FindCustomAttributeFor(// RID of custom value, or 0.
-        RID         rid,                // The object's rid.
-        mdToken     tkOjb,              // The object's type.
-        mdToken     tkType,             // Type of custom value.
-        RID        *pFoundRid);
-
     // Search for the specified Column Definition array in the global cache
     BOOL FindSharedColDefs(// TRUE if we found a match in the global cache and updated pTable, FALSE otherwise
         CMiniTableDef *pTable,          // The table def that wants the column definition array
@@ -477,20 +459,6 @@ public:
         PVOID pVal = (BYTE *)pRec + def.m_oColumn;
         if (def.m_cbColumn == 2)
         {
-            METADATATRACKER_ONLY(pVal = MetaDataTracker::NoteAccess(pVal));
-            ULONG ix = GET_UNALIGNED_VAL16(pVal);
-            return ix;
-        }
-        _ASSERTE(def.m_cbColumn == 4);
-        METADATATRACKER_ONLY(pVal = MetaDataTracker::NoteAccess(pVal));
-        return GET_UNALIGNED_VAL32(pVal);
-    }
-
-    inline static ULONG getIX_NoLogging(const void *pRec, CMiniColDef &def)
-    {
-        PVOID pVal = (BYTE *)pRec + def.m_oColumn;
-        if (def.m_cbColumn == 2)
-        {
             ULONG ix = GET_UNALIGNED_VAL16(pVal);
             return ix;
         }
@@ -502,7 +470,6 @@ public:
     FORCEINLINE static ULONG getI1(const void *pRec, CMiniColDef &def)
     {
         PVOID pVal = (BYTE *)pRec + def.m_oColumn;
-        METADATATRACKER_ONLY(pVal = MetaDataTracker::NoteAccess(pVal));
         return *(BYTE*)pVal;
     }
 
@@ -510,7 +477,6 @@ public:
     FORCEINLINE static ULONG getI4(const void *pRec, CMiniColDef &def)
     {
         PVOID pVal = (BYTE *)pRec + def.m_oColumn;
-        METADATATRACKER_ONLY(pVal = MetaDataTracker::NoteAccess(pVal));
         return GET_UNALIGNED_VAL32(pVal);
     }
 
@@ -551,23 +517,6 @@ public:
     BOOL IsVerified()
     {
         return m_fVerifiedByTrustedSource && CommonIsRo();
-    }
-
-    void SetVerifiedByTrustedSource(BOOL fVerifiedByTrustedSource)
-    {
-        m_fVerifiedByTrustedSource = fVerifiedByTrustedSource;
-    }
-
-    STDMETHODIMP GetRvaOffsetData(// S_OK or error
-        DWORD   *pFirstMethodRvaOffset,     // [OUT] Offset (from start of metadata) to the first RVA field in MethodDef table.
-        DWORD   *pMethodDefRecordSize,      // [OUT] Size of each record in MethodDef table.
-        DWORD   *pMethodDefCount,           // [OUT] Number of records in MethodDef table.
-        DWORD   *pFirstFieldRvaOffset,      // [OUT] Offset (from start of metadata) to the first RVA field in FieldRVA table.
-        DWORD   *pFieldRvaRecordSize,       // [OUT] Size of each record in FieldRVA table.
-        DWORD   *pFieldRvaCount)            // [OUT] Number of records in FieldRVA table.
-    {
-        _ASSERTE("Not implemented");
-        return E_NOTIMPL;
     }
 
     //*****************************************************************************
@@ -632,6 +581,13 @@ private:
     BOOL UsesAllocatedMemory(CMiniColDef* pCols);
 };
 
+template<>
+struct cdac_data<CMiniMdBase>
+{
+    static constexpr size_t Schema = offsetof(CMiniMdBase, m_Schema);
+    static constexpr size_t TableCount = offsetof(CMiniMdBase, m_TblCount);
+};
+
 
 #ifdef FEATURE_METADATA_RELEASE_MEMORY_ON_REOPEN
 #define MINIMD_POSSIBLE_INTERNAL_POINTER_EXPOSED() MarkUnsafeToDelete()
@@ -659,7 +615,7 @@ protected:
     // Primitives -- these must be implemented in the Impl class.
 public:
     __checkReturn
-    FORCEINLINE HRESULT getString(UINT32 nIndex, __out LPCSTR *pszString)
+    FORCEINLINE HRESULT getString(UINT32 nIndex, _Out_ LPCSTR *pszString)
     {
         MINIMD_POSSIBLE_INTERNAL_POINTER_EXPOSED();
         return static_cast<Impl*>(this)->Impl_GetString(nIndex, pszString);
@@ -677,13 +633,13 @@ public:
         return static_cast<Impl*>(this)->Impl_GetGuid(nIndex, pGuid);
     }
     __checkReturn
-    FORCEINLINE HRESULT getBlob(UINT32 nIndex, __out MetaData::DataBlob *pData)
+    FORCEINLINE HRESULT getBlob(UINT32 nIndex, _Out_ MetaData::DataBlob *pData)
     {
         MINIMD_POSSIBLE_INTERNAL_POINTER_EXPOSED();
         return static_cast<Impl*>(this)->Impl_GetBlob(nIndex, pData);
     }
     __checkReturn
-    FORCEINLINE HRESULT getRow(UINT32 nTableIndex, UINT32 nRowIndex, __deref_out void **ppRow)
+    FORCEINLINE HRESULT getRow(UINT32 nTableIndex, UINT32 nRowIndex, _Outptr_ void **ppRow)
     {
         MINIMD_POSSIBLE_INTERNAL_POINTER_EXPOSED();
         return static_cast<Impl*>(this)->Impl_GetRow(nTableIndex, nRowIndex, reinterpret_cast<BYTE **>(ppRow));
@@ -694,7 +650,7 @@ public:
               RID          nRowIndex,
               CMiniColDef &columnDefinition,
               UINT32       nTargetTableIndex,
-        __out RID         *pEndRid)
+        _Out_ RID         *pEndRid)
     {
         MINIMD_POSSIBLE_INTERNAL_POINTER_EXPOSED();
         return static_cast<Impl*>(this)->Impl_GetEndRidForColumn(nTableIndex, nRowIndex, columnDefinition, nTargetTableIndex, pEndRid);
@@ -1401,7 +1357,9 @@ public:
 
         pSig += CorSigUncompressData(pSig, &data);
 
-        while (pSig < pEnd && CorIsModifierElementType((CorElementType) data))
+        while (pSig < pEnd
+            && (CorIsModifierElementType((CorElementType) data)
+                || data == ELEMENT_TYPE_GENERICINST))
         {
             pSig += CorSigUncompressData(pSig, &data);
         }
@@ -1487,7 +1445,7 @@ public:
             ulCount = getCountEvents();
             break;
         case mdtProperty:
-            ulCount = getCountPropertys();
+            ulCount = getCountProperties();
             break;
         case mdtModuleRef:
             ulCount = getCountModuleRefs();
@@ -2019,9 +1977,8 @@ public:
 
     BOOL SupportsGenerics()
     {
-        // Only 2.0 of the metadata (and 1.1) support generics
-        return (m_Schema.m_major >= METAMODEL_MAJOR_VER_V2_0 ||
-                (m_Schema.m_major == METAMODEL_MAJOR_VER_B1 && m_Schema.m_minor == METAMODEL_MINOR_VER_B1));
+        // Only 2.0 of the metadata support generics
+        return (m_Schema.m_major >= METAMODEL_MAJOR_VER_V2_0);
     }// SupportGenerics
 
     protected:
@@ -2076,7 +2033,7 @@ public:
                 bRet = (rid <= getCountEvents());
                 break;
             case mdtProperty:
-                bRet = (rid <= getCountPropertys());
+                bRet = (rid <= getCountProperties());
                 break;
             case mdtModuleRef:
                 bRet = (rid <= getCountModuleRefs());

@@ -2,7 +2,7 @@
 
 ## Intention of this project:
 
-The goal is to create a standalone, cross platform, open-source tool that is capable of verifying MSIL code based on [ECMA-335](https://www.ecma-international.org/publications/standards/Ecma-335.htm).
+The goal is to create a standalone, cross platform, open-source tool that is capable of verifying MSIL code based on [ECMA-335](https://www.ecma-international.org/publications-and-standards/standards/ecma-335).
 
 The main users of this tool are people working on software that emits MSIL code. These are typically compiler and profiler writers.
 
@@ -17,7 +17,7 @@ dotnet tool install --global dotnet-ilverify
 Example of use:
 
 ```
-C:\test>dotnet ilverify hello.dll -r "c:\Program Files\dotnet\shared\Microsoft.NETCore.App\2.1.12\*.dll"
+C:\test>ilverify hello.dll -r "c:\Program Files\dotnet\shared\Microsoft.NETCore.App\2.1.12\*.dll"
 All Classes and Methods in C:\test\hello.dll Verified.
 ```
 
@@ -40,34 +40,13 @@ The code is split into three projects:
 
 ## Tests
 
-To test the ILVerification library we have small methods checked in as .il files testing specific verification scenarios. These tests live under [src/tests/ilverify/ILTests](../../../tests/ilverify/ILTests). Tests are grouped into .il files based on functionalities they test. There is no strict policy here, the goal is to have a few dozen .il files instead of thousands containing each only a single method.
+To test the ILVerification library we have small methods checked in as .il files testing specific verification scenarios. These tests live under [src/coreclr/tools/ILVerification.Tests/ILTests](../ILVerification.Tests/ILTests). Tests are grouped into .il files based on functionalities they test. There is no strict policy here, the goal is to have a few dozen .il files instead of thousands containing each only a single method.
 
-The test project itself is under [src/tests/ilverify](../../../tests/ilverify)
+The test project itself is under [src/coreclr/tools/ILVerification.Tests](../ILVerification.Tests)
 
 ### Building and Running Tests
 
-General instructions to build this library can be found [here](https://github.com/dotnet/runtime/blob/main/docs/workflow/testing/coreclr/testing.md).
-
-As the test project is marked with priority=1, simply building the test projects from the root of the project is not enough. For the initial build of priority=1 in release mode, run the following:
-
-```sh
-src/tests/build.(cmd/sh) release -priority=1
-```
-
-It is important to not attempt to build the test project using `dotnet build` or `dotnet test`, as this will invalidate the state of the build and requires a full rebuild of both (see this [issue](https://github.com/dotnet/runtime/issues/43967)).
-
-To incrementally build the ILVerify tests in isolation, run the following:
-
-```sh
-dotnet.(cmd/sh) msbuild ./src/tests/ilverify/ILVerification.Tests.csproj /p:Configuration=Release
-```
-
-In order to run the tests, execute:
-
-```sh
-artifacts/tests/coreclr/(Windows/Linux).x64.Release/ilverify/ILVerification.Tests.(cmd/sh) -coreroot=artifacts/tests/coreclr/(Windows/Linux).x64.Release/Tests/Core_Root
-```
-
+To run tests, you can run `./dotnet[.cmd|.sh] test src/coreclr/tools/ILVerification.Tests/ILVerification.Tests.csproj` from the root of the repository.
 
 ### Defining Tests
 
@@ -116,10 +95,10 @@ Additionally the method signature of the special test method must be equal to th
 The methods are automatically fed into appropriate XUnit theories based on the naming convention. Methods not following this naming conventions are ignored by the test scaffolding system.
 
 ## How to contribute
-All ILVerify issues are labeled with [area-ILVerification](https://github.com/search?utf8=%E2%9C%93&q=label%3Aarea-ILVerification&type=). You can also look and fix TODOs in the source code.
+All ILVerify issues are labeled with [area-Tools-ILVerification](https://github.com/search?utf8=%E2%9C%93&q=label%3Aarea-Tools-ILVerification&type=). You can also look and fix TODOs in the source code.
 
 Useful sources:
  - [PEVerify source code](https://github.com/lewischeng-ms/sscli/blob/master/clr/src/jit64/newverify.cpp)
  - [RyuJIT source code](https://github.com/dotnet/runtime/tree/main/src/coreclr/jit), specifically: [exception handling specific part](https://github.com/dotnet/runtime/blob/main/src/coreclr/jit/jiteh.cpp), [importer.cpp](https://github.com/dotnet/runtime/blob/main/src/coreclr/jit/importer.cpp) (look for `Compiler::ver`, `Verify`, `VerifyOrReturn`, and `VerifyOrReturnSpeculative`), [_typeinfo.h](https://github.com/dotnet/runtime/blob/main/src/coreclr/jit/_typeinfo.h), [typeinfo.cpp](https://github.com/dotnet/runtime/blob/main/src/coreclr/jit/typeinfo.cpp)
- - [ECMA-335 standard](https://www.ecma-international.org/publications/standards/Ecma-335.htm)
+ - [ECMA-335 standard](https://www.ecma-international.org/publications-and-standards/standards/ecma-335)
  - [Expert .NET 2.0 IL Assembler book](http://www.apress.com/us/book/9781590596463) by Serge Lidin

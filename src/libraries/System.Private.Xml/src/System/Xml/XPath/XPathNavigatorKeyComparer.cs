@@ -1,8 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using MS.Internal.Xml.Cache;
 using System.Collections;
+using MS.Internal.Xml.Cache;
 
 namespace System.Xml.XPath
 {
@@ -22,15 +22,13 @@ namespace System.Xml.XPath
 
         int IEqualityComparer.GetHashCode(object obj)
         {
+            ArgumentNullException.ThrowIfNull(obj);
+
             int hashCode;
             XPathNavigator? nav;
             XPathDocumentNavigator? xpdocNav;
 
-            if (obj == null)
-            {
-                throw new ArgumentNullException(nameof(obj));
-            }
-            else if (null != (xpdocNav = obj as XPathDocumentNavigator))
+            if (null != (xpdocNav = obj as XPathDocumentNavigator))
             {
                 hashCode = xpdocNav.GetPositionHashCode();
             }

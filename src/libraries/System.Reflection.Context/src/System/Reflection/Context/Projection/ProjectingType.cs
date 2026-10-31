@@ -14,7 +14,7 @@ namespace System.Reflection.Context.Projection
         private readonly Projector _projector;
 
         public ProjectingType(Type type, Projector projector)
-            :  base(type)
+            : base(type)
         {
             Debug.Assert(null != projector);
 
@@ -66,9 +66,16 @@ namespace System.Reflection.Context.Projection
             return _projector.ProjectType(base.GetEnumUnderlyingType());
         }
 
+#if NET11_0_OR_GREATER
+        public override Type? GetNullableUnderlyingType()
+        {
+            return _projector.ProjectType(base.GetNullableUnderlyingType());
+        }
+#endif
+
         public override object[] GetCustomAttributes(Type attributeType, bool inherit)
         {
-            attributeType = _projector.Unproject(attributeType);
+            attributeType = Projector.Unproject(attributeType);
 
             return base.GetCustomAttributes(attributeType, inherit);
         }
@@ -82,6 +89,23 @@ namespace System.Reflection.Context.Projection
         {
             return _projector.Project(base.GetEvents(), _projector.ProjectEvent);
         }
+
+#if NET
+        public override Type[] GetFunctionPointerCallingConventions()
+        {
+            return _projector.Project(base.GetFunctionPointerCallingConventions(), _projector.ProjectType);
+        }
+
+        public override Type[] GetFunctionPointerParameterTypes()
+        {
+            return _projector.Project(base.GetFunctionPointerParameterTypes(), _projector.ProjectType);
+        }
+
+        public override Type GetFunctionPointerReturnType()
+        {
+            return _projector.ProjectType(base.GetFunctionPointerReturnType());
+        }
+#endif
 
         public override Type[] GetGenericArguments()
         {
@@ -100,7 +124,7 @@ namespace System.Reflection.Context.Projection
 
         public override InterfaceMapping GetInterfaceMap(Type interfaceType)
         {
-            interfaceType = _projector.Unproject(interfaceType);
+            interfaceType = Projector.Unproject(interfaceType);
 
             return _projector.ProjectInterfaceMapping(base.GetInterfaceMap(interfaceType));
         }
@@ -146,7 +170,7 @@ namespace System.Reflection.Context.Projection
 
         public override bool IsDefined(Type attributeType, bool inherit)
         {
-            attributeType = _projector.Unproject(attributeType);
+            attributeType = Projector.Unproject(attributeType);
 
             return base.IsDefined(attributeType, inherit);
         }
@@ -181,7 +205,7 @@ namespace System.Reflection.Context.Projection
 
         protected override ConstructorInfo? GetConstructorImpl(BindingFlags bindingAttr, Binder? binder, CallingConventions callConvention, Type[] types, ParameterModifier[]? modifiers)
         {
-            types = _projector.Unproject(types);
+            types = Projector.Unproject(types);
 
             return _projector.ProjectConstructor(base.GetConstructorImpl(bindingAttr, binder, callConvention, types, modifiers));
         }
@@ -259,9 +283,16 @@ namespace System.Reflection.Context.Projection
 
         protected override MethodInfo? GetMethodImpl(string name, BindingFlags bindingAttr, Binder? binder, CallingConventions callConvention, Type[]? types, ParameterModifier[]? modifiers)
         {
-            types = _projector.Unproject(types);
+            types = Projector.Unproject(types);
 
             return _projector.ProjectMethod(base.GetMethodImpl(name, bindingAttr, binder, callConvention, types, modifiers));
+        }
+
+        protected override MethodInfo? GetMethodImpl(string name, int genericParameterCount, BindingFlags bindingAttr, Binder? binder, CallingConventions callConvention, Type[]? types, ParameterModifier[]? modifiers)
+        {
+            types = Projector.Unproject(types);
+
+            return _projector.ProjectMethod(base.GetMethodImpl(name, genericParameterCount, bindingAttr, binder, callConvention, types, modifiers));
         }
 
         public override MethodInfo[] GetMethods(BindingFlags bindingAttr)
@@ -286,8 +317,8 @@ namespace System.Reflection.Context.Projection
 
         protected override PropertyInfo? GetPropertyImpl(string name, BindingFlags bindingAttr, Binder? binder, Type? returnType, Type[]? types, ParameterModifier[]? modifiers)
         {
-            returnType = _projector.Unproject(returnType);
-            types = _projector.Unproject(types);
+            returnType = Projector.Unproject(returnType);
+            types = Projector.Unproject(types);
 
             return _projector.ProjectProperty(base.GetPropertyImpl(name, bindingAttr, binder, returnType, types, modifiers));
         }
@@ -307,10 +338,19 @@ namespace System.Reflection.Context.Projection
             return _projector.ProjectType(base.MakePointerType());
         }
 
+#if NET11_0_OR_GREATER
+        public override Type MakeFunctionPointerType(Type[]? parameterTypes, bool isUnmanaged = false)
+        {
+            parameterTypes = Projector.Unproject(parameterTypes);
+
+            return _projector.ProjectType(base.MakeFunctionPointerType(parameterTypes, isUnmanaged));
+        }
+#endif
+
         [RequiresUnreferencedCode("If some of the generic arguments are annotated (either with DynamicallyAccessedMembersAttribute, or generic constraints), trimming can't validate that the requirements of those annotations are met.")]
         public override Type MakeGenericType(params Type[] typeArguments)
         {
-            typeArguments = _projector.Unproject(typeArguments);
+            typeArguments = Projector.Unproject(typeArguments);
 
             return _projector.ProjectType(base.MakeGenericType(typeArguments));
         }
@@ -318,6 +358,15 @@ namespace System.Reflection.Context.Projection
         public override Type MakeByRefType()
         {
             return _projector.ProjectType(base.MakeByRefType());
+        }
+
+        public override bool HasSameMetadataDefinitionAs(MemberInfo other)
+        {
+            ArgumentNullException.ThrowIfNull(other);
+
+            return other is ProjectingType otherType &&
+                Projector == otherType.Projector &&
+                UnderlyingType.HasSameMetadataDefinitionAs(otherType.UnderlyingType);
         }
 
         public override bool Equals([NotNullWhen(true)] object? o)

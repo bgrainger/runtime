@@ -2,13 +2,14 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.Metrics;
 using System.IO;
 using System.Net.Security;
 using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Diagnostics.CodeAnalysis;
-using System.Diagnostics;
 
 namespace System.Net.Http
 {
@@ -91,6 +92,13 @@ namespace System.Net.Http
             set => throw new PlatformNotSupportedException();
         }
 
+        [CLSCompliant(false)]
+        public IMeterFactory? MeterFactory
+        {
+            get => throw new PlatformNotSupportedException();
+            set => throw new PlatformNotSupportedException();
+        }
+
         public TimeSpan ResponseDrainTimeout
         {
             get => throw new PlatformNotSupportedException();
@@ -135,6 +143,12 @@ namespace System.Net.Http
         }
 
         public int InitialHttp2StreamWindowSize
+        {
+            get => throw new PlatformNotSupportedException();
+            set => throw new PlatformNotSupportedException();
+        }
+
+        public int InitialHttp2MaxConcurrentStreams
         {
             get => throw new PlatformNotSupportedException();
             set => throw new PlatformNotSupportedException();
@@ -188,6 +202,12 @@ namespace System.Net.Http
             set => throw new PlatformNotSupportedException();
         }
 
+        public bool EnableMultipleHttp3Connections
+        {
+            get => throw new PlatformNotSupportedException();
+            set => throw new PlatformNotSupportedException();
+        }
+
         public Func<SocketsHttpConnectionContext, CancellationToken, ValueTask<Stream>>? ConnectCallback
         {
             get => throw new PlatformNotSupportedException();
@@ -195,6 +215,13 @@ namespace System.Net.Http
         }
 
         public Func<SocketsHttpPlaintextStreamFilterContext, CancellationToken, ValueTask<Stream>>? PlaintextStreamFilter
+        {
+            get => throw new PlatformNotSupportedException();
+            set => throw new PlatformNotSupportedException();
+        }
+
+        [Experimental(Experimentals.SocketsHttpHandlerExperimentalDiagId, UrlFormat = Experimentals.SharedUrlFormat)]
+        public Func<SocketsHttpConnectionEvictionContext, CancellationToken, Task<bool>>? ShouldEvictConnection
         {
             get => throw new PlatformNotSupportedException();
             set => throw new PlatformNotSupportedException();

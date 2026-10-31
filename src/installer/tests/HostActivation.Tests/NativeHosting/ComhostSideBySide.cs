@@ -2,10 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Reflection.Metadata;
-using System.Runtime.InteropServices;
 
 using Microsoft.DotNet.Cli.Build.Framework;
 using Microsoft.NET.HostModel.ComHost;
@@ -19,11 +17,12 @@ namespace Microsoft.DotNet.CoreSetup.Test.HostActivation.NativeHosting
 
         public ComhostSideBySide(SharedTestState sharedTestState)
         {
+            Assert.SkipUnless(OperatingSystem.IsWindows(), "COM activation is only supported on Windows");
+
             sharedState = sharedTestState;
         }
 
         [Fact]
-        [PlatformSpecific(TestPlatforms.Windows)] // COM activation is only supported on Windows
         public void ActivateClass()
         {
             string [] args = {
@@ -33,8 +32,7 @@ namespace Microsoft.DotNet.CoreSetup.Test.HostActivation.NativeHosting
 
             CommandResult result = Command.Create(sharedState.ComSxsPath, args)
                 .EnableTracingAndCaptureOutputs()
-                .DotNetRoot(sharedState.ComLibraryFixture.BuiltDotnet.BinPath)
-                .MultilevelLookup(false)
+                .DotNetRoot(HostTestContext.BuiltDotNet.BinPath)
                 .Execute();
 
             result.Should().Pass()
@@ -42,7 +40,6 @@ namespace Microsoft.DotNet.CoreSetup.Test.HostActivation.NativeHosting
         }
 
         [Fact]
-        [PlatformSpecific(TestPlatforms.Windows)] // COM activation is only supported on Windows
         public void LocateEmbeddedTlb()
         {
             string [] args = {
@@ -52,12 +49,32 @@ namespace Microsoft.DotNet.CoreSetup.Test.HostActivation.NativeHosting
 
             CommandResult result = Command.Create(sharedState.ComSxsPath, args)
                 .EnableTracingAndCaptureOutputs()
-                .DotNetRoot(sharedState.ComLibraryFixture.BuiltDotnet.BinPath)
-                .MultilevelLookup(false)
+                .DotNetRoot(HostTestContext.BuiltDotNet.BinPath)
                 .Execute();
 
             result.Should().Pass()
                 .And.HaveStdOutContaining("Located type library by typeid.");
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void ManagedHost(bool selfContained)
+        {
+            string [] args = {
+                "comhost",
+                sharedState.ClsidString
+            };
+            TestApp app = selfContained ? sharedState.ManagedHost_SelfContained : sharedState.ManagedHost_FrameworkDependent;
+            CommandResult result = Command.Create(app.AppExe, args)
+                .EnableTracingAndCaptureOutputs()
+                .DotNetRoot(HostTestContext.BuiltDotNet.BinPath)
+                .Execute();
+
+            result.Should().Pass()
+                .And.HaveStdOutContaining("New instance of Server created")
+                .And.HaveStdOutContaining($"Activation of {sharedState.ClsidString} succeeded.")
+                .And.ExecuteSelfContained(selfContained);
         }
 
         public class SharedTestState : Comhost.SharedTestState
@@ -65,6 +82,9 @@ namespace Microsoft.DotNet.CoreSetup.Test.HostActivation.NativeHosting
             public string TypeLibId { get; } = "{20151109-a0e8-46ae-b28e-8ff2c0e72166}";
 
             public string ComSxsPath { get; }
+
+            public TestApp ManagedHost_FrameworkDependent { get; }
+            public TestApp ManagedHost_SelfContained { get; }
 
             public SharedTestState()
             {
@@ -74,16 +94,17 @@ namespace Microsoft.DotNet.CoreSetup.Test.HostActivation.NativeHosting
                     return;
                 }
 
-                using (var assemblyStream = new FileStream(ComLibraryFixture.TestProject.AppDll, FileMode.Open, FileAccess.Read, FileShare.Delete | FileShare.Read))
+                string comsxsDirectory = BaseDirectory;
+                string regFreeManifestName = $"{ ComLibrary.AssemblyName }.X.manifest";
+                string regFreeManifestPath = Path.Combine(comsxsDirectory, regFreeManifestName);
+                using (var assemblyStream = new FileStream(ComLibrary.AppDll, FileMode.Open, FileAccess.Read, FileShare.Delete | FileShare.Read))
                 using (var peReader = new System.Reflection.PortableExecutable.PEReader(assemblyStream))
                 {
                     if (peReader.HasMetadata)
                     {
-                        string regFreeManifestPath = Path.Combine(BaseDirectory, $"{ ComLibraryFixture.TestProject.AssemblyName }.X.manifest");
-
                         MetadataReader reader = peReader.GetMetadataReader();
                         RegFreeComManifest.CreateManifestFromClsidmap(
-                            ComLibraryFixture.TestProject.AssemblyName,
+                            ComLibrary.AssemblyName,
                             Path.GetFileName(ComHostPath),
                             reader.GetAssemblyDefinition().Version.ToString(),
                             ClsidMapPath,
@@ -93,24 +114,42 @@ namespace Microsoft.DotNet.CoreSetup.Test.HostActivation.NativeHosting
                     }
                 }
 
-                string testDirectoryPath = Path.GetDirectoryName(NativeHostPath);
-                string comsxsName = RuntimeInformationExtensions.GetExeFileNameForCurrentPlatform("comsxs");
-                ComSxsPath = Path.Combine(testDirectoryPath, comsxsName);
+                string comsxsName = Binaries.GetExeName("comsxs");
+                ComSxsPath = Path.Combine(comsxsDirectory, comsxsName);
                 File.Copy(
-                    Path.Combine(RepoDirectories.Artifacts, "corehost_test", comsxsName),
+                    Path.Combine(RepoDirectoriesProvider.Default.HostTestArtifacts, comsxsName),
                     ComSxsPath);
-                File.Copy(
+
+                ManagedHost_FrameworkDependent = TestApp.CreateFromBuiltAssets("RegFreeCom");
+                ManagedHost_FrameworkDependent.CreateAppHost();
+                File.Copy(regFreeManifestPath, Path.Combine(ManagedHost_FrameworkDependent.Location, regFreeManifestName));
+
+                ManagedHost_SelfContained = TestApp.CreateFromBuiltAssets("RegFreeCom");
+                ManagedHost_SelfContained.PopulateSelfContained(TestApp.MockedComponent.None);
+                ManagedHost_SelfContained.CreateAppHost();
+                File.Copy(regFreeManifestPath, Path.Combine(ManagedHost_SelfContained.Location, regFreeManifestName));
+
+                // Copy the ComLibrary output and comhost to the ComSxS and ManagedHost directories
+                string[] toCopy = {
+                    ComLibrary.AppDll,
+                    ComLibrary.DepsJson,
+                    ComLibrary.RuntimeConfigJson,
                     ComHostPath,
-                    Path.Combine(testDirectoryPath, Path.GetFileName(ComHostPath)));
-                File.Copy(
-                    ComLibraryFixture.TestProject.AppDll,
-                    Path.Combine(testDirectoryPath, Path.GetFileName(ComLibraryFixture.TestProject.AppDll)));
-                File.Copy(
-                    ComLibraryFixture.TestProject.DepsJson,
-                    Path.Combine(testDirectoryPath, Path.GetFileName(ComLibraryFixture.TestProject.DepsJson)));
-                File.Copy(
-                    ComLibraryFixture.TestProject.RuntimeConfigJson,
-                    Path.Combine(testDirectoryPath, Path.GetFileName(ComLibraryFixture.TestProject.RuntimeConfigJson)));
+                };
+                foreach (string filePath in toCopy)
+                {
+                    File.Copy(filePath, Path.Combine(comsxsDirectory, Path.GetFileName(filePath)));
+                    File.Copy(filePath, Path.Combine(ManagedHost_FrameworkDependent.Location, Path.GetFileName(filePath)));
+                    File.Copy(filePath, Path.Combine(ManagedHost_SelfContained.Location, Path.GetFileName(filePath)));
+                }
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                ManagedHost_FrameworkDependent?.Dispose();
+                ManagedHost_SelfContained?.Dispose();
+
+                base.Dispose(disposing);
             }
         }
     }

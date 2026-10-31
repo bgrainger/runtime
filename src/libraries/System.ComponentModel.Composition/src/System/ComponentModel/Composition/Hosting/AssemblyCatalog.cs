@@ -24,8 +24,8 @@ namespace System.ComponentModel.Composition.Hosting
     {
         private readonly object _thisLock = new object();
         private readonly ICompositionElement _definitionOrigin;
-        private volatile Assembly _assembly;
-        private volatile ComposablePartCatalog? _innerCatalog;
+        private Assembly _assembly;
+        private ComposablePartCatalog? _innerCatalog;
         private int _isDisposed;
 
         private readonly ReflectionContext? _reflectionContext;
@@ -514,10 +514,7 @@ namespace System.ComponentModel.Composition.Hosting
                 {
                     if (disposing)
                     {
-                        if (_innerCatalog != null)
-                        {
-                            _innerCatalog.Dispose();
-                        }
+                        _innerCatalog?.Dispose();
                     }
                 }
             }
@@ -558,7 +555,9 @@ namespace System.ComponentModel.Composition.Hosting
             catch (ArgumentException)
             {
                 assemblyName = new AssemblyName();
+#pragma warning disable SYSLIB0044 // AssemblyName.CodeBase and AssemblyName.EscapedCodeBase are obsolete. Using them for loading an assembly is not supported.
                 assemblyName.CodeBase = codeBase;
+#pragma warning restore SYSLIB0044
             }
 
             try

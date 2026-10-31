@@ -13,7 +13,7 @@ namespace System.Threading
         ///
         /// Used by the wait subsystem on Unix, so this class cannot have any dependencies on the wait subsystem.
         /// </summary>
-        public sealed class WaitableObject
+        public sealed partial class WaitableObject : IWaitableObject
         {
             /// <summary>
             /// Dictionary to look up named waitable objects.  This implementation only supports in-process
@@ -32,11 +32,6 @@ namespace System.Threading
             /// ownership info is separated to reduce the size. For other types, this is null.
             /// </summary>
             private readonly OwnershipInfo? _ownershipInfo;
-
-            /// <summary>
-            /// Linked list of information about waiting threads
-            /// </summary>
-            private ThreadWaitInfo.WaitedListNode? _waitersHead, _waitersTail;
 
             private WaitableObject(
                 WaitableObjectType type,
@@ -151,8 +146,8 @@ namespace System.Threading
 
                     if (IsMutex && !IsSignaled)
                     {
-                        // A thread has a reference to all <see cref="Mutex"/>es locked by it, see
-                        // <see cref="ThreadWaitInfo.LockedMutexesHead"/>. Abandon the mutex to remove the reference to it.
+                        // The multithreaded implementation tracks owned mutexes on the thread.
+                        // Abandon the mutex to remove ownership when the final handle is deleted.
                         AbandonMutex();
                     }
                 }
@@ -236,34 +231,6 @@ namespace System.Threading
                 }
             }
 
-            public ThreadWaitInfo.WaitedListNode? WaitersHead
-            {
-                get
-                {
-                    s_lock.VerifyIsLocked();
-                    return _waitersHead;
-                }
-                set
-                {
-                    s_lock.VerifyIsLocked();
-                    _waitersHead = value;
-                }
-            }
-
-            public ThreadWaitInfo.WaitedListNode? WaitersTail
-            {
-                get
-                {
-                    s_lock.VerifyIsLocked();
-                    return _waitersTail;
-                }
-                set
-                {
-                    s_lock.VerifyIsLocked();
-                    _waitersTail = value;
-                }
-            }
-
             private bool IsSignaled
             {
                 get
@@ -301,29 +268,11 @@ namespace System.Threading
                 }
             }
 
-            public int Wait(ThreadWaitInfo waitInfo, int timeoutMilliseconds, bool interruptible, bool prioritize)
-            {
-                Debug.Assert(waitInfo != null);
-                Debug.Assert(waitInfo.Thread == Thread.CurrentThread);
-
-                Debug.Assert(timeoutMilliseconds >= -1);
-
-                s_lock.Acquire();
-
-                if (interruptible && waitInfo.CheckAndResetPendingInterrupt)
-                {
-                    s_lock.Release();
-                    throw new ThreadInterruptedException();
-                }
-
-                return Wait_Locked(waitInfo, timeoutMilliseconds, interruptible, prioritize);
-            }
-
             /// <summary>
             /// This function does not check for a pending thread interrupt. Callers are expected to do that soon after
             /// acquiring <see cref="s_lock"/>.
             /// </summary>
-            public int Wait_Locked(ThreadWaitInfo waitInfo, int timeoutMilliseconds, bool interruptible, bool prioritize)
+            public int Wait_Locked(ThreadWaitInfo waitInfo, int timeoutMilliseconds, bool interruptible, ref LockHolder lockHolder)
             {
                 s_lock.VerifyIsLocked();
                 Debug.Assert(waitInfo != null);
@@ -332,50 +281,30 @@ namespace System.Threading
                 Debug.Assert(timeoutMilliseconds >= -1);
                 Debug.Assert(!interruptible || !waitInfo.CheckAndResetPendingInterrupt);
 
-                bool needToWait = false;
-                try
+                if (IsSignaled)
                 {
-                    if (IsSignaled)
-                    {
-                        bool isAbandoned = IsAbandonedMutex;
-                        AcceptSignal(waitInfo);
-                        return isAbandoned ? WaitHandle.WaitAbandoned : WaitHandle.WaitSuccess;
-                    }
-
-                    if (IsMutex && _ownershipInfo != null && _ownershipInfo.Thread == waitInfo.Thread)
-                    {
-                        if (!_ownershipInfo.CanIncrementReacquireCount)
-                        {
-                            throw new OverflowException(SR.Overflow_MutexReacquireCount);
-                        }
-                        _ownershipInfo.IncrementReacquireCount();
-                        return WaitHandle.WaitSuccess;
-                    }
-
-                    if (timeoutMilliseconds == 0)
-                    {
-                        return WaitHandle.WaitTimeout;
-                    }
-
-                    WaitableObject?[] waitableObjects = waitInfo.GetWaitedObjectArray(1);
-                    waitableObjects[0] = this;
-                    waitInfo.RegisterWait(1, prioritize, isWaitForAll: false);
-                    needToWait = true;
-                }
-                finally
-                {
-                    // Once the wait function is called, it will release the lock
-                    if (!needToWait)
-                    {
-                        s_lock.Release();
-                    }
+                    bool isAbandoned = IsAbandonedMutex;
+                    AcceptSignal(waitInfo);
+                    return isAbandoned ? WaitHandle.WaitAbandoned : WaitHandle.WaitSuccess;
                 }
 
-                return
-                    waitInfo.Wait(
-                        timeoutMilliseconds,
-                        interruptible,
-                        isSleep: false);
+                if (IsMutex && _ownershipInfo != null && _ownershipInfo.Thread == waitInfo.Thread)
+                {
+                    if (!_ownershipInfo.CanIncrementReacquireCount)
+                    {
+                        lockHolder.Dispose();
+                        throw new OverflowException(SR.Overflow_MutexReacquireCount);
+                    }
+                    _ownershipInfo.IncrementReacquireCount();
+                    return WaitHandle.WaitSuccess;
+                }
+
+                if (timeoutMilliseconds == 0)
+                {
+                    return WaitHandle.WaitTimeout;
+                }
+
+                return WaitUnsignaled(waitInfo, timeoutMilliseconds, interruptible, ref lockHolder);
             }
 
             public static int Wait(
@@ -384,8 +313,7 @@ namespace System.Threading
                 bool waitForAll,
                 ThreadWaitInfo waitInfo,
                 int timeoutMilliseconds,
-                bool interruptible,
-                bool prioritize)
+                bool interruptible)
             {
                 s_lock.VerifyIsNotLocked();
                 Debug.Assert(waitInfo != null);
@@ -396,12 +324,12 @@ namespace System.Threading
                 Debug.Assert(count > 1);
                 Debug.Assert(timeoutMilliseconds >= -1);
 
-                bool needToWait = false;
-                s_lock.Acquire();
+                var lockHolder = new LockHolder(s_lock);
                 try
                 {
                     if (interruptible && waitInfo.CheckAndResetPendingInterrupt)
                     {
+                        lockHolder.Dispose();
                         throw new ThreadInterruptedException();
                     }
 
@@ -431,6 +359,7 @@ namespace System.Threading
                                 {
                                     if (!ownershipInfo.CanIncrementReacquireCount)
                                     {
+                                        lockHolder.Dispose();
                                         throw new OverflowException(SR.Overflow_MutexReacquireCount);
                                     }
                                     ownershipInfo.IncrementReacquireCount();
@@ -465,6 +394,7 @@ namespace System.Threading
                                 {
                                     if (!ownershipInfo.CanIncrementReacquireCount)
                                     {
+                                        lockHolder.Dispose();
                                         throw new OverflowException(SR.Overflow_MutexReacquireCount);
                                     }
                                     continue;
@@ -494,6 +424,7 @@ namespace System.Threading
 
                             if (isAnyAbandonedMutex)
                             {
+                                lockHolder.Dispose();
                                 throw new AbandonedMutexException();
                             }
                             return WaitHandle.WaitSuccess;
@@ -505,125 +436,22 @@ namespace System.Threading
                         return WaitHandle.WaitTimeout;
                     }
 
-                    waitableObjects = null; // no need to clear this anymore, RegisterWait / Wait will take over from here
-                    waitInfo.RegisterWait(count, prioritize, waitForAll);
-                    needToWait = true;
+                    WaitableObject?[] waitedObjects = waitableObjects;
+                    waitableObjects = null; // The threading-specific wait takes over clearing the array.
+                    return WaitUnsignaled(waitedObjects, count, waitForAll, waitInfo, timeoutMilliseconds, interruptible, ref lockHolder);
                 }
                 finally
                 {
+                    lockHolder.Dispose();
+
                     if (waitableObjects != null)
                     {
-                        for (int i = 0; i < count; ++i)
-                        {
-                            waitableObjects[i] = null;
-                        }
+                        Array.Clear(waitableObjects, 0, count);
                     }
-
-                    // Once the wait function is called, it will release the lock
-                    if (!needToWait)
-                    {
-                        s_lock.Release();
-                    }
-                }
-
-                return waitInfo.Wait(timeoutMilliseconds, interruptible, isSleep: false);
-            }
-
-            public static bool WouldWaitForAllBeSatisfiedOrAborted(
-                Thread waitingThread,
-                WaitableObject?[] waitedObjects,
-                int waitedCount,
-                int signaledWaitedObjectIndex,
-                ref bool wouldAnyMutexReacquireCountOverflow,
-                ref bool isAnyAbandonedMutex)
-            {
-                s_lock.VerifyIsLocked();
-                Debug.Assert(waitingThread != null);
-                Debug.Assert(waitingThread != Thread.CurrentThread);
-                Debug.Assert(waitedObjects != null);
-                Debug.Assert(waitedObjects.Length >= waitedCount);
-                Debug.Assert(waitedCount > 1);
-                Debug.Assert(signaledWaitedObjectIndex >= 0);
-                Debug.Assert(signaledWaitedObjectIndex <= WaitHandle.MaxWaitHandles);
-                Debug.Assert(!wouldAnyMutexReacquireCountOverflow);
-
-                for (int i = 0; i < waitedCount; ++i)
-                {
-                    Debug.Assert(waitedObjects[i] != null);
-                    if (i == signaledWaitedObjectIndex)
-                    {
-                        continue;
-                    }
-
-                    WaitableObject waitedObject = waitedObjects[i]!;
-                    if (waitedObject.IsSignaled)
-                    {
-                        if (!isAnyAbandonedMutex && waitedObject.IsAbandonedMutex)
-                        {
-                            isAnyAbandonedMutex = true;
-                        }
-                        continue;
-                    }
-
-                    if (waitedObject.IsMutex)
-                    {
-                        OwnershipInfo ownershipInfo = waitedObject._ownershipInfo!;
-                        if (ownershipInfo.Thread == waitingThread)
-                        {
-                            if (!ownershipInfo.CanIncrementReacquireCount)
-                            {
-                                // This will cause the wait to be aborted without accepting any signals
-                                wouldAnyMutexReacquireCountOverflow = true;
-                                return true;
-                            }
-                            continue;
-                        }
-                    }
-
-                    return false;
-                }
-
-                return true;
-            }
-
-            public static void SatisfyWaitForAll(
-                ThreadWaitInfo waitInfo,
-                WaitableObject?[] waitedObjects,
-                int waitedCount,
-                int signaledWaitedObjectIndex)
-            {
-                s_lock.VerifyIsLocked();
-                Debug.Assert(waitInfo != null);
-                Debug.Assert(waitInfo.Thread != Thread.CurrentThread);
-                Debug.Assert(waitedObjects != null);
-                Debug.Assert(waitedObjects.Length >= waitedCount);
-                Debug.Assert(waitedCount > 1);
-                Debug.Assert(signaledWaitedObjectIndex >= 0);
-                Debug.Assert(signaledWaitedObjectIndex <= WaitHandle.MaxWaitHandles);
-
-                for (int i = 0; i < waitedCount; ++i)
-                {
-                    Debug.Assert(waitedObjects[i] != null);
-                    if (i == signaledWaitedObjectIndex)
-                    {
-                        continue;
-                    }
-
-                    WaitableObject waitedObject = waitedObjects[i]!;
-                    if (waitedObject.IsSignaled)
-                    {
-                        waitedObject.AcceptSignal(waitInfo);
-                        continue;
-                    }
-
-                    Debug.Assert(waitedObject.IsMutex);
-                    OwnershipInfo ownershipInfo = waitedObject._ownershipInfo!;
-                    Debug.Assert(ownershipInfo.Thread == waitInfo.Thread);
-                    ownershipInfo.IncrementReacquireCount();
                 }
             }
 
-            public void Signal(int count)
+            public void Signal(int count, ref LockHolder lockHolder)
             {
                 s_lock.VerifyIsLocked();
                 Debug.Assert(count > 0);
@@ -641,17 +469,17 @@ namespace System.Threading
                         break;
 
                     case WaitableObjectType.Semaphore:
-                        SignalSemaphore(count);
+                        SignalSemaphore(count, ref lockHolder);
                         break;
 
                     default:
                         Debug.Assert(count == 1);
-                        SignalMutex();
+                        SignalMutex(ref lockHolder);
                         break;
                 }
             }
 
-            public void SignalEvent()
+            public void SignalEvent(ref LockHolder lockHolder)
             {
                 s_lock.VerifyIsLocked();
 
@@ -666,67 +494,19 @@ namespace System.Threading
                         break;
 
                     default:
+                        lockHolder.Dispose();
                         WaitHandle.ThrowInvalidHandleException();
                         break;
                 }
             }
 
-            private void SignalManualResetEvent()
-            {
-                s_lock.VerifyIsLocked();
-                Debug.Assert(IsManualResetEvent);
-
-                if (IsSignaled)
-                {
-                    return;
-                }
-
-                for (ThreadWaitInfo.WaitedListNode? waiterNode = _waitersHead, nextWaiterNode;
-                    waiterNode != null;
-                    waiterNode = nextWaiterNode)
-                {
-                    // Signaling a waiter will unregister the waiter node, so keep the next node before trying
-                    nextWaiterNode = waiterNode.NextThread;
-
-                    waiterNode.WaitInfo.TrySignalToSatisfyWait(waiterNode, isAbandonedMutex: false);
-                }
-
-                _signalCount = 1;
-            }
-
-            private void SignalAutoResetEvent()
-            {
-                s_lock.VerifyIsLocked();
-                Debug.Assert(IsAutoResetEvent);
-
-                if (IsSignaled)
-                {
-                    return;
-                }
-
-                for (ThreadWaitInfo.WaitedListNode? waiterNode = _waitersHead, nextWaiterNode;
-                    waiterNode != null;
-                    waiterNode = nextWaiterNode)
-                {
-                    // Signaling a waiter will unregister the waiter node, but it may only abort the wait without satisfying the
-                    // wait, in which case we would try to signal another waiter. So, keep the next node before trying.
-                    nextWaiterNode = waiterNode.NextThread;
-
-                    if (waiterNode.WaitInfo.TrySignalToSatisfyWait(waiterNode, isAbandonedMutex: false))
-                    {
-                        return;
-                    }
-                }
-
-                _signalCount = 1;
-            }
-
-            public void UnsignalEvent()
+            public void UnsignalEvent(ref LockHolder lockHolder)
             {
                 s_lock.VerifyIsLocked();
 
                 if (!IsEvent)
                 {
+                    lockHolder.Dispose();
                     WaitHandle.ThrowInvalidHandleException();
                 }
 
@@ -736,57 +516,19 @@ namespace System.Threading
                 }
             }
 
-            public int SignalSemaphore(int count)
-            {
-                s_lock.VerifyIsLocked();
-                Debug.Assert(count > 0);
-
-                if (!IsSemaphore)
-                {
-                    WaitHandle.ThrowInvalidHandleException();
-                }
-
-                int oldSignalCount = _signalCount;
-                Debug.Assert(oldSignalCount <= _maximumSignalCount);
-                if (count > _maximumSignalCount - oldSignalCount)
-                {
-                    throw new SemaphoreFullException();
-                }
-
-                if (oldSignalCount != 0)
-                {
-                    _signalCount = oldSignalCount + count;
-                    return oldSignalCount;
-                }
-
-                for (ThreadWaitInfo.WaitedListNode? waiterNode = _waitersHead, nextWaiterNode;
-                    waiterNode != null;
-                    waiterNode = nextWaiterNode)
-                {
-                    // Signaling the waiter will unregister the waiter node, so keep the next node before trying
-                    nextWaiterNode = waiterNode.NextThread;
-
-                    if (waiterNode.WaitInfo.TrySignalToSatisfyWait(waiterNode, isAbandonedMutex: false) && --count == 0)
-                    {
-                        return oldSignalCount;
-                    }
-                }
-
-                _signalCount = count;
-                return oldSignalCount;
-            }
-
-            public void SignalMutex()
+            public void SignalMutex(ref LockHolder lockHolder)
             {
                 s_lock.VerifyIsLocked();
 
                 if (!IsMutex)
                 {
+                    lockHolder.Dispose();
                     WaitHandle.ThrowInvalidHandleException();
                 }
 
                 if (IsSignaled || _ownershipInfo!.Thread != Thread.CurrentThread)
                 {
+                    lockHolder.Dispose();
                     throw new ApplicationException(SR.Arg_SynchronizationLockException);
                 }
 
@@ -812,59 +554,10 @@ namespace System.Threading
                 SignalMutex(isAbandoned: true);
             }
 
-            private void SignalMutex(bool isAbandoned)
+            private sealed partial class OwnershipInfo
             {
-                s_lock.VerifyIsLocked();
-
-                Debug.Assert(IsMutex);
-                Debug.Assert(!IsSignaled);
-                Debug.Assert(_ownershipInfo != null);
-
-                _ownershipInfo.RelinquishOwnership(this, isAbandoned);
-
-                for (ThreadWaitInfo.WaitedListNode? waiterNode = _waitersHead, nextWaiterNode;
-                    waiterNode != null;
-                    waiterNode = nextWaiterNode)
-                {
-                    // Signaling a waiter will unregister the waiter node, but it may only abort the wait without satisfying the
-                    // wait, in which case we would try to signal another waiter. So, keep the next node before trying.
-                    nextWaiterNode = waiterNode.NextThread;
-
-                    ThreadWaitInfo waitInfo = waiterNode.WaitInfo;
-                    if (waitInfo.TrySignalToSatisfyWait(waiterNode, isAbandoned))
-                    {
-                        _ownershipInfo.AssignOwnership(this, waitInfo);
-                        return;
-                    }
-                }
-
-                _signalCount = 1;
-            }
-
-            private sealed class OwnershipInfo
-            {
-                private Thread? _thread;
                 private int _reacquireCount;
                 private bool _isAbandoned;
-
-                /// <summary>
-                /// Link in the <see cref="ThreadWaitInfo.LockedMutexesHead"/> linked list
-                /// </summary>
-                private WaitableObject? _previous;
-
-                /// <summary>
-                /// Link in the <see cref="ThreadWaitInfo.LockedMutexesHead"/> linked list
-                /// </summary>
-                private WaitableObject? _next;
-
-                public Thread? Thread
-                {
-                    get
-                    {
-                        s_lock.VerifyIsLocked();
-                        return _thread;
-                    }
-                }
 
                 public bool IsAbandoned
                 {
@@ -875,79 +568,13 @@ namespace System.Threading
                     }
                 }
 
-                public void AssignOwnership(WaitableObject waitableObject, ThreadWaitInfo waitInfo)
-                {
-                    s_lock.VerifyIsLocked();
-
-                    Debug.Assert(waitableObject != null);
-                    Debug.Assert(waitableObject.IsMutex);
-                    Debug.Assert(waitableObject._ownershipInfo == this);
-
-                    Debug.Assert(_thread == null);
-                    Debug.Assert(_reacquireCount == 0);
-                    Debug.Assert(_previous == null);
-                    Debug.Assert(_next == null);
-
-                    _thread = waitInfo.Thread;
-                    _isAbandoned = false;
-
-                    WaitableObject? head = waitInfo.LockedMutexesHead;
-                    if (head != null)
-                    {
-                        _next = head;
-                        head._ownershipInfo!._previous = waitableObject;
-                    }
-                    waitInfo.LockedMutexesHead = waitableObject;
-                }
-
-                public void RelinquishOwnership(WaitableObject waitableObject, bool isAbandoned)
-                {
-                    s_lock.VerifyIsLocked();
-
-                    Debug.Assert(waitableObject != null);
-                    Debug.Assert(waitableObject.IsMutex);
-                    Debug.Assert(waitableObject._ownershipInfo == this);
-
-                    Debug.Assert(_thread != null);
-                    ThreadWaitInfo waitInfo = _thread.WaitInfo;
-                    Debug.Assert(isAbandoned ? _reacquireCount >= 0 : _reacquireCount == 0);
-                    Debug.Assert(!_isAbandoned);
-
-                    _thread = null;
-                    if (isAbandoned)
-                    {
-                        _reacquireCount = 0;
-                        _isAbandoned = isAbandoned;
-                    }
-
-                    WaitableObject? previous = _previous;
-                    WaitableObject? next = _next;
-
-                    if (previous != null)
-                    {
-                        previous._ownershipInfo!._next = next;
-                        _previous = null;
-                    }
-                    else
-                    {
-                        Debug.Assert(waitInfo.LockedMutexesHead == waitableObject);
-                        waitInfo.LockedMutexesHead = next;
-                    }
-
-                    if (next != null)
-                    {
-                        next._ownershipInfo!._previous = previous;
-                        _next = null;
-                    }
-                }
-
                 public bool CanIncrementReacquireCount
                 {
                     get
                     {
                         s_lock.VerifyIsLocked();
 
-                        Debug.Assert(_thread != null);
+                        Debug.Assert(Thread is not null);
                         Debug.Assert(_reacquireCount >= 0);
                         Debug.Assert(!_isAbandoned);
 
@@ -965,7 +592,7 @@ namespace System.Threading
                 {
                     s_lock.VerifyIsLocked();
 
-                    Debug.Assert(_thread == Thread.CurrentThread);
+                    Debug.Assert(Thread == System.Threading.Thread.CurrentThread);
                     Debug.Assert(_reacquireCount >= 0);
                     Debug.Assert(!_isAbandoned);
 

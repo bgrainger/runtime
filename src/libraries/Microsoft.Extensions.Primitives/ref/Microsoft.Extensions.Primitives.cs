@@ -16,7 +16,9 @@ namespace Microsoft.Extensions.Primitives
     public static partial class ChangeToken
     {
         public static System.IDisposable OnChange(System.Func<Microsoft.Extensions.Primitives.IChangeToken?> changeTokenProducer, System.Action changeTokenConsumer) { throw null; }
+        public static System.IDisposable OnChange(System.Func<Microsoft.Extensions.Primitives.IChangeToken?> changeTokenProducer, System.Func<System.Threading.Tasks.Task> changeTokenConsumer) { throw null; }
         public static System.IDisposable OnChange<TState>(System.Func<Microsoft.Extensions.Primitives.IChangeToken?> changeTokenProducer, System.Action<TState> changeTokenConsumer, TState state) { throw null; }
+        public static System.IDisposable OnChange<TState>(System.Func<Microsoft.Extensions.Primitives.IChangeToken?> changeTokenProducer, System.Func<TState, System.Threading.Tasks.Task> changeTokenConsumer, TState state) { throw null; }
     }
     public partial class CompositeChangeToken : Microsoft.Extensions.Primitives.IChangeToken
     {
@@ -35,6 +37,20 @@ namespace Microsoft.Extensions.Primitives
         bool ActiveChangeCallbacks { get; }
         bool HasChanged { get; }
         System.IDisposable RegisterChangeCallback(System.Action<object?> callback, object? state);
+    }
+    [System.ComponentModel.EditorBrowsableAttribute(System.ComponentModel.EditorBrowsableState.Never)]
+    [System.ObsoleteAttribute("This type is retained only for compatibility. The recommended alternative is string.Create<TState> (int length, TState state, System.Buffers.SpanAction<char,TState> action).", error: true)]
+    public partial struct InplaceStringBuilder
+    {
+        private object _dummy;
+        private int _dummyPrimitive;
+        public InplaceStringBuilder(int capacity) { throw null; }
+        public int Capacity { get { throw null; } set { } }
+        public void Append(Microsoft.Extensions.Primitives.StringSegment segment) { }
+        public void Append(char c) { }
+        public void Append(string? value) { }
+        public void Append(string? value, int offset, int count) { }
+        public override string? ToString() { throw null; }
     }
     public readonly partial struct StringSegment : System.IEquatable<Microsoft.Extensions.Primitives.StringSegment>, System.IEquatable<string?>
     {
@@ -180,7 +196,7 @@ namespace Microsoft.Extensions.Primitives
             private int _dummyPrimitive;
             public Enumerator(ref Microsoft.Extensions.Primitives.StringValues values) { throw null; }
             public string? Current { get { throw null; } }
-            object System.Collections.IEnumerator.Current { get { throw null; } }
+            object? System.Collections.IEnumerator.Current { get { throw null; } }
             public void Dispose() { }
             public bool MoveNext() { throw null; }
             void System.Collections.IEnumerator.Reset() { }

@@ -4,12 +4,13 @@
 using System;
 using System.Buffers;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 
 internal static partial class Interop
 {
     internal static partial class Sys
     {
-        [GeneratedDllImport(Libraries.SystemNative, EntryPoint = "SystemNative_GetCwd", SetLastError = true)]
+        [LibraryImport(Libraries.SystemNative, EntryPoint = "SystemNative_GetCwd", SetLastError = true)]
         private static unsafe partial byte* GetCwd(byte* buffer, int bufferLength);
 
         internal static unsafe string GetCwd()
@@ -54,7 +55,7 @@ internal static partial class Interop
             // If it returned non-null, the null-terminated path is in the buffer
             if (result != null)
             {
-                return Marshal.PtrToStringAnsi((IntPtr)ptr);
+                return Utf8StringMarshaller.ConvertToManaged(ptr);
             }
 
             // Otherwise, if it failed due to the buffer being too small, return null;
@@ -62,7 +63,7 @@ internal static partial class Interop
             ErrorInfo errorInfo = Interop.Sys.GetLastErrorInfo();
             if (errorInfo.Error == Interop.Error.ERANGE)
             {
-               return null;
+                return null;
             }
             throw Interop.GetExceptionForIoErrno(errorInfo);
         }

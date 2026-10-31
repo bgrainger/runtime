@@ -96,12 +96,12 @@ namespace System.Collections.Generic
                     return;
                 }
 
-                List<T> toRemove = new List<T>();
+                List<T> toRemove = new List<T>(Count);
                 BreadthFirstTreeWalk(n => { toRemove.Add(n.Item); return true; });
-                while (toRemove.Count != 0)
+
+                for (int i = toRemove.Count - 1; i >= 0; i--)
                 {
-                    _underlying.Remove(toRemove[^1]);
-                    toRemove.RemoveAt(toRemove.Count - 1);
+                    _underlying.Remove(toRemove[i]);
                 }
 
                 root = null;
@@ -306,8 +306,8 @@ namespace System.Collections.Generic
 
             /// <summary>
             /// Checks whether this subset is out of date, and updates it if necessary.
-            /// <param name="updateCount">Updates the count variable if necessary.</param>
             /// </summary>
+            /// <param name="updateCount">Updates the count variable if necessary.</param>
             internal override void VersionCheck(bool updateCount = false) => VersionCheckImpl(updateCount);
 
             private void VersionCheckImpl(bool updateCount)

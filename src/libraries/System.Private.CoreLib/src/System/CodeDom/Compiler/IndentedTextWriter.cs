@@ -23,13 +23,11 @@ namespace System.CodeDom.Compiler
 
         public IndentedTextWriter(TextWriter writer, string tabString) : base(CultureInfo.InvariantCulture)
         {
-            if (writer == null)
-            {
-                throw new ArgumentNullException(nameof(writer));
-            }
+            ArgumentNullException.ThrowIfNull(writer);
 
             _writer = writer;
             _tabString = tabString;
+            _tabsPending = true;
         }
 
         public override Encoding Encoding => _writer.Encoding;
@@ -58,6 +56,17 @@ namespace System.CodeDom.Compiler
 
         /// <inheritdoc/>
         public override Task FlushAsync() => _writer.FlushAsync();
+
+        /// <summary>
+        /// Clears all buffers for this <see cref="IndentedTextWriter"/> asynchronously and causes any buffered data to be
+        /// written to the underlying device.
+        /// </summary>
+        /// <param name="cancellationToken">The <see cref="CancellationToken"/> to monitor for cancellation requests.</param>
+        /// <returns>A <see cref="Task"/> representing the asynchronous flush operation.</returns>
+        public override Task FlushAsync(CancellationToken cancellationToken) =>
+            cancellationToken.IsCancellationRequested ? Task.FromCanceled(cancellationToken) :
+            GetType() != typeof(IndentedTextWriter) ? FlushAsync() :
+            _writer.FlushAsync(cancellationToken);
 
         protected virtual void OutputTabs()
         {
@@ -105,6 +114,16 @@ namespace System.CodeDom.Compiler
             _writer.Write(value);
         }
 
+        /// <summary>
+        /// Writes out the specified <see cref="Rune"/>, inserting tabs at the start of every line.
+        /// </summary>
+        /// <param name="value">The <see cref="Rune"/> to write.</param>
+        public override void Write(Rune value)
+        {
+            OutputTabs();
+            _writer.Write(value);
+        }
+
         public override void Write(char[]? buffer)
         {
             OutputTabs();
@@ -147,19 +166,30 @@ namespace System.CodeDom.Compiler
             _writer.Write(value);
         }
 
-        public override void Write(string format, object? arg0)
+        public override void Write([StringSyntax(StringSyntaxAttribute.CompositeFormat)] string format, object? arg0)
         {
             OutputTabs();
             _writer.Write(format, arg0);
         }
 
-        public override void Write(string format, object? arg0, object? arg1)
+        public override void Write([StringSyntax(StringSyntaxAttribute.CompositeFormat)] string format, object? arg0, object? arg1)
         {
             OutputTabs();
             _writer.Write(format, arg0, arg1);
         }
 
-        public override void Write(string format, params object?[] arg)
+        public override void Write([StringSyntax(StringSyntaxAttribute.CompositeFormat)] string format, params object?[] arg)
+        {
+            OutputTabs();
+            _writer.Write(format, arg);
+        }
+
+        /// <summary>
+        /// Writes out a formatted string, using the same semantics as specified.
+        /// </summary>
+        /// <param name="format">The formatting string to use.</param>
+        /// <param name="arg">The argument span to output.</param>
+        public override void Write([StringSyntax(StringSyntaxAttribute.CompositeFormat)] string format, params ReadOnlySpan<object?> arg)
         {
             OutputTabs();
             _writer.Write(format, arg);
@@ -172,6 +202,18 @@ namespace System.CodeDom.Compiler
         /// <param name="value">The <see cref="char"/> to write.</param>
         /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
         public override async Task WriteAsync(char value)
+        {
+            await OutputTabsAsync().ConfigureAwait(false);
+            await _writer.WriteAsync(value).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Asynchronously writes the specified <see cref="Rune"/> to the underlying <see cref="TextWriter"/>, inserting
+        /// tabs at the start of every line.
+        /// </summary>
+        /// <param name="value">The <see cref="Rune"/> to write.</param>
+        /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+        public override async Task WriteAsync(Rune value)
         {
             await OutputTabsAsync().ConfigureAwait(false);
             await _writer.WriteAsync(value).ConfigureAwait(false);
@@ -273,6 +315,17 @@ namespace System.CodeDom.Compiler
             _tabsPending = true;
         }
 
+        /// <summary>
+        /// Writes out the specified <see cref="Rune"/>, followed by a line terminator, inserting tabs at the start of every line.
+        /// </summary>
+        /// <param name="value">The <see cref="Rune"/> to write.</param>
+        public override void WriteLine(Rune value)
+        {
+            OutputTabs();
+            _writer.WriteLine(value);
+            _tabsPending = true;
+        }
+
         public override void WriteLine(char[]? buffer)
         {
             OutputTabs();
@@ -322,21 +375,33 @@ namespace System.CodeDom.Compiler
             _tabsPending = true;
         }
 
-        public override void WriteLine(string format, object? arg0)
+        public override void WriteLine([StringSyntax(StringSyntaxAttribute.CompositeFormat)] string format, object? arg0)
         {
             OutputTabs();
             _writer.WriteLine(format, arg0);
             _tabsPending = true;
         }
 
-        public override void WriteLine(string format, object? arg0, object? arg1)
+        public override void WriteLine([StringSyntax(StringSyntaxAttribute.CompositeFormat)] string format, object? arg0, object? arg1)
         {
             OutputTabs();
             _writer.WriteLine(format, arg0, arg1);
             _tabsPending = true;
         }
 
-        public override void WriteLine(string format, params object?[] arg)
+        public override void WriteLine([StringSyntax(StringSyntaxAttribute.CompositeFormat)] string format, params object?[] arg)
+        {
+            OutputTabs();
+            _writer.WriteLine(format, arg);
+            _tabsPending = true;
+        }
+
+        /// <summary>
+        /// Writes out a formatted string, followed by a line terminator, using the same semantics as specified.
+        /// </summary>
+        /// <param name="format">The formatting string to use.</param>
+        /// <param name="arg">The argument span to output.</param>
+        public override void WriteLine([StringSyntax(StringSyntaxAttribute.CompositeFormat)] string format, params ReadOnlySpan<object?> arg)
         {
             OutputTabs();
             _writer.WriteLine(format, arg);
@@ -366,6 +431,19 @@ namespace System.CodeDom.Compiler
         /// <param name="value">The character to write.</param>
         /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
         public override async Task WriteLineAsync(char value)
+        {
+            await OutputTabsAsync().ConfigureAwait(false);
+            await _writer.WriteLineAsync(value).ConfigureAwait(false);
+            _tabsPending = true;
+        }
+
+        /// <summary>
+        /// Asynchronously writes the specified <see cref="Rune"/> to the underlying <see cref="TextWriter"/> followed by a line terminator, inserting tabs
+        /// at the start of every line.
+        /// </summary>
+        /// <param name="value">The character to write.</param>
+        /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+        public override async Task WriteLineAsync(Rune value)
         {
             await OutputTabsAsync().ConfigureAwait(false);
             await _writer.WriteLineAsync(value).ConfigureAwait(false);

@@ -13,6 +13,9 @@
 #ifndef _ProfilePriv_h_
 #define _ProfilePriv_h_
 
+#ifndef FEATURE_PERFTRACING
+typedef struct _EventPipeProvider EventPipeProvider;
+#endif //FEATURE_PERFTRACING
 
 // Forward declarations
 class EEToProfInterfaceImpl;
@@ -106,7 +109,7 @@ public:
     // **** IMPORTANT!! ****
 
     CurrentProfilerStatus curProfStatus;
-    
+
     EventMask eventMask;
 
     Volatile<BOOL> inUse;
@@ -130,7 +133,7 @@ enum class ProfilerCallbackType
 // cause another profiler to not be able to detach. We can't just check the event masks
 // before and after the call because it is legal for a profiler to change its event mask,
 // and then it would be possible for a profiler to permanently prevent itself from detaching.
-// 
+//
 // WHEN IS EvacuationCounterHolder REQUIRED?
 // Answer: any time you access a ProfilerInfo *. There is a specific sequence that must be followed:
 //   - Do a dirty read of the Profiler interface
@@ -139,7 +142,7 @@ enum class ProfilerCallbackType
 //     is always read with a memory barrier
 //
 // The DoProfilerCallback/IterateProfilers functions automate this process for you, you should use
-// them unless you are absoultely sure you know what you're doing
+// them unless you are absolutely sure you know what you're doing
 class EvacuationCounterHolder
 {
 private:
@@ -155,10 +158,11 @@ struct StoredProfilerNode
 {
     CLSID guid;
     SString path;
-    SLink m_Link;
+    // Next pointer for SList linkage.
+    DPTR(StoredProfilerNode) m_pNext;
 };
 
-typedef SList<StoredProfilerNode, true> STOREDPROFILERLIST;
+typedef SList<StoredProfilerNode> STOREDPROFILERLIST;
 // ---------------------------------------------------------------------------------------
 // Global struct that lets the EE see the load status of the profiler, and provides a
 // pointer (pProfInterface) through which profiler calls can be made
@@ -188,11 +192,9 @@ private:
         // This is the dirty read
         if (pProfilerInfo->pProfInterface.Load() != NULL)
         {
-#ifdef FEATURE_PROFAPI_ATTACH_DETACH
             // Now indicate we are accessing the profiler
             EvacuationCounterHolder evacuationCounter(pProfilerInfo);
-#endif // FEATURE_PROFAPI_ATTACH_DETACH
-            
+
             if ((callbackType == ProfilerCallbackType::Active && IsProfilerPresent(pProfilerInfo))
                 || (callbackType == ProfilerCallbackType::ActiveOrInitializing && IsProfilerPresentOrInitializing(pProfilerInfo)))
             {
@@ -205,7 +207,7 @@ private:
     FORCEINLINE VOID IterateProfilers(ProfilerCallbackType callbackType, Func callback, Args... args)
     {
         DoOneProfilerIteration(&mainProfilerInfo, callbackType, callback, args...);
-        
+
         if (notificationProfilerCount > 0)
         {
             for (SIZE_T i = 0; i < MAX_NOTIFICATION_PROFILERS; ++i)
@@ -217,8 +219,8 @@ private:
     }
 
 public:
-    BOOL fGCInProgress;
-    BOOL fBaseSystemClassesLoaded;
+    bool fGCInProgress;
+    bool fBaseSystemClassesLoaded;
 
     STOREDPROFILERLIST storedProfilers;
 
@@ -240,7 +242,7 @@ public:
     //
     // See code:AreCallbackStateFlagsSet#P2CLRRestrictionsOverview for general information
     // on how the test hooks lift restrictions normally in place for the Info functions.
-    BOOL fTestOnlyForceEnterLeave;
+    bool fTestOnlyForceEnterLeave;
 #endif
 
 #ifdef PROF_TEST_ONLY_FORCE_OBJECT_ALLOCATED_DATA
@@ -254,21 +256,23 @@ public:
     //
     // See code:AreCallbackStateFlagsSet#P2CLRRestrictionsOverview for general information
     // on how the test hooks lift restrictions normally in place for the Info functions.
-    BOOL fTestOnlyForceObjectAllocated;
+    bool fTestOnlyForceObjectAllocated;
 #endif
 
 #ifdef _DEBUG
-    // Test-only, debug-only code to allow attaching profilers to call ICorProfilerInfo inteface,
+    // Test-only, debug-only code to allow attaching profilers to call ICorProfilerInfo interface,
     // which would otherwise be disallowed for attaching profilers
-    BOOL                    fTestOnlyEnableICorProfilerInfo;
+    bool                    fTestOnlyEnableICorProfilerInfo;
 #endif // _DEBUG
 
     // Whether we've turned off concurrent GC during attach
-    Volatile<BOOL> fConcurrentGCDisabledForAttach;
+    Volatile<bool> fConcurrentGCDisabledForAttach;
 
-    Volatile<BOOL> fProfControlBlockInitialized;
+    Volatile<bool> fProfControlBlockInitialized;
 
-    Volatile<BOOL> fProfilerRequestedRuntimeSuspend;
+    Volatile<bool> fProfilerRequestedRuntimeSuspend;
+
+    bool fRejitOnAttachEnabled;
 
     void Init();
     BOOL IsMainProfiler(EEToProfInterfaceImpl *pEEToProf);
@@ -308,7 +312,7 @@ public:
     BOOL IsCallback5Supported();
     BOOL RequiresGenericsContextForEnterLeave();
     UINT_PTR EEFunctionIDMapper(FunctionID funcId, BOOL * pbHookFunction);
-    
+
     void ThreadCreated(ThreadID threadID);
     void ThreadDestroyed(ThreadID threadID);
     void ThreadAssignedToOSThread(ThreadID managedThreadId, DWORD osThreadId);
@@ -385,7 +389,7 @@ public:
     void GarbageCollectionStarted(int cGenerations, BOOL generationCollected[], COR_PRF_GC_REASON reason);
     void GarbageCollectionFinished();
     void GetAssemblyReferences(LPCWSTR wszAssemblyPath, IAssemblyBindingClosure *pClosure, AssemblyReferenceClosureWalkContextForProfAPI *pContext);
-    void EventPipeEventDelivered(EventPipeProvider *provider, DWORD eventId, DWORD eventVersion, ULONG cbMetadataBlob, LPCBYTE metadataBlob, ULONG cbEventData, 
+    void EventPipeEventDelivered(EventPipeProvider *provider, DWORD eventId, DWORD eventVersion, ULONG cbMetadataBlob, LPCBYTE metadataBlob, ULONG cbEventData,
                                  LPCBYTE eventData, LPCGUID pActivityId, LPCGUID pRelatedActivityId, Thread *pEventThread, ULONG numStackFrames, UINT_PTR stackFrames[]);
     void EventPipeProviderCreated(EventPipeProvider *provider);
 };

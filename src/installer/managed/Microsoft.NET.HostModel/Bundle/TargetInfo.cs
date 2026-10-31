@@ -1,9 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using Microsoft.NET.HostModel.MachO;
 using Microsoft.NET.HostModel.AppHost;
 using System;
-using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 
@@ -29,25 +29,23 @@ namespace Microsoft.NET.HostModel.Bundle
         public readonly BundleOptions DefaultOptions;
         public readonly int AssemblyAlignment;
 
-        public TargetInfo(OSPlatform? os, Architecture? arch, Version targetFrameworkVersion)
+        public TargetInfo(OSPlatform os, Architecture arch, Version targetFrameworkVersion)
         {
-            OS = os ?? HostOS;
-            Arch = arch ?? RuntimeInformation.OSArchitecture;
-            FrameworkVersion = targetFrameworkVersion ?? net60;
+            OS = os;
+            Arch = arch;
+            FrameworkVersion = targetFrameworkVersion ?? Environment.Version;
 
-            Debug.Assert(IsLinux || IsOSX || IsWindows);
-
-            if (FrameworkVersion.CompareTo(net60) >= 0)
+            if (FrameworkVersion.Major >= 6)
             {
                 BundleMajorVersion = 6u;
                 DefaultOptions = BundleOptions.None;
             }
-            else if (FrameworkVersion.CompareTo(net50) >= 0)
+            else if (FrameworkVersion.Major == 5)
             {
                 BundleMajorVersion = 2u;
                 DefaultOptions = BundleOptions.None;
             }
-            else if (FrameworkVersion.Major == 3 && (FrameworkVersion.Minor == 0 || FrameworkVersion.Minor == 1))
+            else if (FrameworkVersion.Major == 3)
             {
                 BundleMajorVersion = 1u;
                 DefaultOptions = BundleOptions.BundleAllContent;
@@ -57,23 +55,35 @@ namespace Microsoft.NET.HostModel.Bundle
                 throw new ArgumentException($"Invalid input: Unsupported Target Framework Version {targetFrameworkVersion}");
             }
 
-            if (IsLinux && Arch == Architecture.Arm64)
+            if (IsWindows)
             {
-                // We align assemblies in the bundle at 4K so that we can use mmap on Linux without changing the page alignment of ARM64 R2R code.
+                // We align assemblies in the bundle at 4K - per requirements of memory mapping API (MapViewOfFile3, et al).
+                // This is only necessary for R2R assemblies, but we do it for all assemblies for simplicity.
+                AssemblyAlignment = 4096;
+            }
+            else if (Arch == Architecture.LoongArch64)
+            {
+                // We align assemblies in the bundle at 16K so that we can use mmap on Unix without changing the page alignment of LOONGARCH64 R2R code.
+                // This is only necessary for R2R assemblies, but we do it for all assemblies for simplicity.
+                AssemblyAlignment = 16384;
+            }
+            else if (Arch == Architecture.Arm64)
+            {
+                // We align assemblies in the bundle at 4K so that we can use mmap on Unix without changing the page alignment of ARM64 R2R code.
                 // This is only necessary for R2R assemblies, but we do it for all assemblies for simplicity.
                 // See https://github.com/dotnet/runtime/issues/41832.
                 AssemblyAlignment = 4096;
             }
             else
             {
-                // Otherwise, assemblies are 16 bytes aligned, so that their sections can be memory-mapped cache aligned.
-                AssemblyAlignment = 16;
+                // Otherwise, assemblies are 64 bytes aligned, so that their sections can be memory-mapped cache aligned.
+                AssemblyAlignment = 64;
             }
         }
 
         public bool IsNativeBinary(string filePath)
         {
-            return IsLinux ? ElfUtils.IsElfImage(filePath) : IsOSX ? MachOUtils.IsMachOImage(filePath) : PEUtils.IsPEImage(filePath);
+            return IsWindows ? PEUtils.IsPEImage(filePath) : IsOSX ? MachObjectFile.IsMachOImage(filePath) : ElfUtils.IsElfImage(filePath);
         }
 
         public string GetAssemblyName(string hostName)
@@ -85,15 +95,11 @@ namespace Microsoft.NET.HostModel.Bundle
 
         public override string ToString()
         {
-            string os = IsWindows ? "win" : IsLinux ? "linux" : "osx";
+            string os = IsWindows ? "win" : OS.ToString().ToLowerInvariant();
             string arch = Arch.ToString().ToLowerInvariant();
             return $"OS: {os} Arch: {arch} FrameworkVersion: {FrameworkVersion}";
         }
 
-        private static OSPlatform HostOS => RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? OSPlatform.Linux :
-                                    RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? OSPlatform.OSX : OSPlatform.Windows;
-
-        public bool IsLinux => OS.Equals(OSPlatform.Linux);
         public bool IsOSX => OS.Equals(OSPlatform.OSX);
         public bool IsWindows => OS.Equals(OSPlatform.Windows);
 
@@ -110,11 +116,17 @@ namespace Microsoft.NET.HostModel.Bundle
         public bool ShouldExclude(string relativePath) =>
             (FrameworkVersion.Major != 3) && (relativePath.Equals(HostFxr) || relativePath.Equals(HostPolicy));
 
-        private readonly Version net60 = new Version(6, 0);
-        private readonly Version net50 = new Version(5, 0);
-        private string HostFxr => IsWindows ? "hostfxr.dll" : IsLinux ? "libhostfxr.so" : "libhostfxr.dylib";
-        private string HostPolicy => IsWindows ? "hostpolicy.dll" : IsLinux ? "libhostpolicy.so" : "libhostpolicy.dylib";
+        private string HostFxr => IsWindows ? "hostfxr.dll" : IsOSX ? "libhostfxr.dylib" : "libhostfxr.so";
+        private string HostPolicy => IsWindows ? "hostpolicy.dll" : IsOSX ? "libhostpolicy.dylib" : "libhostpolicy.so";
+    }
 
-
+    file static class PlatformExtensions
+    {
+#if NETFRAMEWORK
+        extension(Architecture)
+        {
+            public static Architecture LoongArch64 => (Architecture)6;
+        }
+#endif
     }
 }

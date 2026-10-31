@@ -65,7 +65,6 @@
 // assignments in a static class constructor are under a lock implicitly.
 
 using System.Runtime.CompilerServices;
-using Internal.Runtime.CompilerServices;
 using Microsoft.Win32.SafeHandles;
 
 namespace System.Runtime.InteropServices
@@ -153,7 +152,9 @@ namespace System.Runtime.InteropServices
             if (_numBytes == Uninitialized)
                 throw NotInitialized();
 
+#pragma warning disable IDE0059 // https://github.com/dotnet/roslyn/issues/42761
             pointer = null;
+#pragma warning restore IDE0059
 
             bool junk = false;
             DangerousAddRef(ref junk);
@@ -186,21 +187,18 @@ namespace System.Runtime.InteropServices
             byte* ptr = (byte*)handle + byteOffset;
             SpaceCheck(ptr, sizeofT);
 
-            // return *(T*) (_ptr + byteOffset);
-            T value = default;
             bool mustCallRelease = false;
             try
             {
                 DangerousAddRef(ref mustCallRelease);
 
-                Buffer.Memmove(ref Unsafe.As<T, byte>(ref value), ref *ptr, sizeofT);
+                return Unsafe.ReadUnaligned<T>(ptr);
             }
             finally
             {
                 if (mustCallRelease)
                     DangerousRelease();
             }
-            return value;
         }
 
         /// <summary>
@@ -214,12 +212,10 @@ namespace System.Runtime.InteropServices
         public void ReadArray<T>(ulong byteOffset, T[] array, int index, int count)
             where T : struct
         {
-            if (array == null)
-                throw new ArgumentNullException(nameof(array), SR.ArgumentNull_Buffer);
-            if (index < 0)
-                throw new ArgumentOutOfRangeException(nameof(index), SR.ArgumentOutOfRange_NeedNonNegNum);
-            if (count < 0)
-                throw new ArgumentOutOfRangeException(nameof(count), SR.ArgumentOutOfRange_NeedNonNegNum);
+            ArgumentNullException.ThrowIfNull(array);
+
+            ArgumentOutOfRangeException.ThrowIfNegative(index);
+            ArgumentOutOfRangeException.ThrowIfNegative(count);
             if (array.Length - index < count)
                 throw new ArgumentException(SR.Argument_InvalidOffLen);
 
@@ -249,7 +245,9 @@ namespace System.Runtime.InteropServices
 
                 ref T structure = ref MemoryMarshal.GetReference(buffer);
                 for (int i = 0; i < buffer.Length; i++)
-                    Buffer.Memmove(ref Unsafe.Add(ref structure, i), ref Unsafe.AsRef<T>(ptr + alignedSizeofT * i), 1);
+                {
+                    Unsafe.Add(ref structure, (nint)(uint)i) = Unsafe.ReadUnaligned<T>(ptr + alignedSizeofT * (uint)i);
+                }
             }
             finally
             {
@@ -276,13 +274,12 @@ namespace System.Runtime.InteropServices
             byte* ptr = (byte*)handle + byteOffset;
             SpaceCheck(ptr, sizeofT);
 
-            // *((T*) (_ptr + byteOffset)) = value;
             bool mustCallRelease = false;
             try
             {
                 DangerousAddRef(ref mustCallRelease);
 
-                Buffer.Memmove(ref *ptr, ref Unsafe.As<T, byte>(ref value), sizeofT);
+                Unsafe.WriteUnaligned(ptr, value);
             }
             finally
             {
@@ -303,12 +300,10 @@ namespace System.Runtime.InteropServices
         public void WriteArray<T>(ulong byteOffset, T[] array, int index, int count)
             where T : struct
         {
-            if (array == null)
-                throw new ArgumentNullException(nameof(array), SR.ArgumentNull_Buffer);
-            if (index < 0)
-                throw new ArgumentOutOfRangeException(nameof(index), SR.ArgumentOutOfRange_NeedNonNegNum);
-            if (count < 0)
-                throw new ArgumentOutOfRangeException(nameof(count), SR.ArgumentOutOfRange_NeedNonNegNum);
+            ArgumentNullException.ThrowIfNull(array);
+
+            ArgumentOutOfRangeException.ThrowIfNegative(index);
+            ArgumentOutOfRangeException.ThrowIfNegative(count);
             if (array.Length - index < count)
                 throw new ArgumentException(SR.Argument_InvalidOffLen);
 
@@ -339,7 +334,9 @@ namespace System.Runtime.InteropServices
 
                 ref T structure = ref MemoryMarshal.GetReference(data);
                 for (int i = 0; i < data.Length; i++)
-                    Buffer.Memmove(ref Unsafe.AsRef<T>(ptr + alignedSizeofT * i), ref Unsafe.Add(ref structure, i), 1);
+                {
+                    Unsafe.WriteUnaligned(ptr + alignedSizeofT * (uint)i, Unsafe.Add(ref structure, (nint)(uint)i));
+                }
             }
             finally
             {
@@ -389,6 +386,7 @@ namespace System.Runtime.InteropServices
         /// value that sizeof(T) returns! Since the primary use case is to parse memory mapped files, we cannot change this algorithm as this defines a de-facto serialization format.
         /// Throws if T contains GC references.
         /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static uint AlignedSizeOf<T>() where T : struct
         {
             uint size = SizeOf<T>();
@@ -403,12 +401,13 @@ namespace System.Runtime.InteropServices
         /// <summary>
         /// Returns same value as sizeof(T) but throws if T contains GC references.
         /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static uint SizeOf<T>() where T : struct
         {
             if (RuntimeHelpers.IsReferenceOrContainsReferences<T>())
-                throw new ArgumentException(SR.Argument_NeedStructWithNoRefs);
+                ThrowHelper.ThrowArgument_TypeContainsReferences(typeof(T));
 
-            return (uint)Unsafe.SizeOf<T>();
+            return (uint)sizeof(T);
         }
     }
 }

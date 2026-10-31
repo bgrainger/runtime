@@ -2,21 +2,17 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 /*++
-
-
-
 Module Name:
-
     include/pal/environ.h
 
 Abstract:
     Header file for functions manipulating environment variables
-
-
 --*/
 
 #ifndef __ENVIRON_H_
 #define __ENVIRON_H_
+
+#include <minipal/mutex.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -32,7 +28,7 @@ Variables :
     gcsEnvironment: critical section to synchronize access to palEnvironment
 --*/
 extern char **palEnvironment;
-extern CRITICAL_SECTION gcsEnvironment;
+extern minipal_mutex gcsEnvironment;
 
 /*++
 
@@ -58,7 +54,7 @@ Function:
 Add the environment variable string provided to the PAL version
 of the environment.
 --*/
-BOOL EnvironPutenv(const char *string, BOOL deleteIfEmpty);
+BOOL EnvironPutenv(const char *string);
 
 /*++
 Function:
@@ -74,4 +70,3 @@ void EnvironUnsetenv(const char *name);
 #endif // __cplusplus
 
 #endif /* __ENVIRON_H_ */
-

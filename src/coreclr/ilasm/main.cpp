@@ -9,15 +9,14 @@
 
 #include "asmparse.h"
 #include "clrversion.h"
-#include "shimload.h"
 
 #include "strsafe.h"
-#define ASSERTE_ALL_BUILDS(expr) _ASSERTE_ALL_BUILDS(__FILE__, (expr))
+#define ASSERTE_ALL_BUILDS(expr) _ASSERTE_ALL_BUILDS((expr))
 
-WCHAR* EqualOrColon(__in __nullterminated WCHAR* szArg)
+WCHAR* EqualOrColon(_In_ __nullterminated WCHAR* szArg)
 {
-    WCHAR* pchE = wcschr(szArg,L'=');
-    WCHAR* pchC = wcschr(szArg,L':');
+    WCHAR* pchE = (WCHAR*)u16_strchr(szArg,W('='));
+    WCHAR* pchC = (WCHAR*)u16_strchr(szArg,W(':'));
     WCHAR* ret;
     if(pchE == NULL) ret = pchC;
     else if(pchC == NULL) ret = pchE;
@@ -25,15 +24,37 @@ WCHAR* EqualOrColon(__in __nullterminated WCHAR* szArg)
     return ret;
 }
 
+// When converting a string for number parsing it is
+// possible to simply cast a WCHAR to a char with no
+// loss of data.
+class NarrowForNumberParsing final
+{
+    char* _buffer;
+public:
+    NarrowForNumberParsing(const WCHAR* str)
+    {
+        size_t len = u16_strlen(str);
+        _buffer = (char*)malloc(len + 1);
+        for (size_t i = 0; i < len; ++i)
+            _buffer[i] = (char)str[i];
+        _buffer[len] = '\0';
+    }
+    ~NarrowForNumberParsing()
+    {
+        free(_buffer);
+    }
+    operator const char*() const
+    {
+        return _buffer;
+    }
+};
+
 static DWORD    g_dwSubsystem=(DWORD)-1,g_dwComImageFlags=(DWORD)-1,g_dwFileAlignment=0,g_dwTestRepeat=0;
 static ULONGLONG   g_stBaseAddress=0;
 static size_t   g_stSizeOfStackReserve=0;
 extern unsigned int g_uConsoleCP;
-#ifdef TARGET_UNIX
-char * g_pszExeFile;
-#endif
 
-void MakeTestFile(__in __nullterminated char* szFileName)
+void MakeTestFile(_In_ __nullterminated char* szFileName)
 {
     if(g_dwTestRepeat)
     {
@@ -55,13 +76,13 @@ void MakeTestFile(__in __nullterminated char* szFileName)
     }
 }
 
-void MakeProperSourceFileName(__in __nullterminated WCHAR* wzOrigName,
+void MakeProperSourceFileName(_In_ __nullterminated WCHAR* wzOrigName,
                               unsigned uCodePage,
-                              __out_ecount(MAX_FILENAME_LENGTH) WCHAR* wzProperName,
-                              __out_ecount(MAX_FILENAME_LENGTH*3) char* szProperName)
+                              _Out_writes_(MAX_FILENAME_LENGTH) WCHAR* wzProperName,
+                              _Out_writes_(MAX_FILENAME_LENGTH*3) char* szProperName)
 {
     wcscpy_s(wzProperName,MAX_FILENAME_LENGTH, wzOrigName);
-    size_t j = wcslen(wzProperName);
+    size_t j = u16_strlen(wzProperName);
     do
     {
         j--;
@@ -73,16 +94,16 @@ void MakeProperSourceFileName(__in __nullterminated WCHAR* wzOrigName,
         }
     }
     while(j);
-    WszWideCharToMultiByte(uCodePage,0,wzProperName,-1,szProperName,MAX_FILENAME_LENGTH*3-1,NULL,NULL);
+    WideCharToMultiByte(uCodePage,0,wzProperName,-1,szProperName,MAX_FILENAME_LENGTH*3-1,NULL,NULL);
 }
 
-char* FullFileName(__in __nullterminated WCHAR* wzFileName, unsigned uCodePage)
+char* FullFileName(_In_ __nullterminated WCHAR* wzFileName, unsigned uCodePage)
 {
     static WCHAR wzFullPath[MAX_FILENAME_LENGTH];
     WCHAR* pwz;
-    WszGetFullPathName(wzFileName,MAX_FILENAME_LENGTH,wzFullPath,&pwz);
+    GetFullPathName(wzFileName,MAX_FILENAME_LENGTH,wzFullPath,&pwz);
     char szFullPath[MAX_FILENAME_LENGTH*3];
-    WszWideCharToMultiByte(uCodePage,0,wzFullPath,-1,szFullPath,MAX_FILENAME_LENGTH*3-1,NULL,NULL);
+    WideCharToMultiByte(uCodePage,0,wzFullPath,-1,szFullPath,MAX_FILENAME_LENGTH*3-1,NULL,NULL);
     char* sz = new char[strlen(szFullPath)+1];
     if(sz) strcpy_s(sz,strlen(szFullPath)+1,szFullPath);
     return sz;
@@ -96,13 +117,7 @@ WCHAR       wzInputFilename[MAX_FILENAME_LENGTH];
 WCHAR       wzOutputFilename[MAX_FILENAME_LENGTH];
 WCHAR       wzPdbFilename[MAX_FILENAME_LENGTH];
 
-
-#ifdef _PREFAST_
-#pragma warning(push)
-#pragma warning(disable:21000) // Suppress PREFast warning about overly large function
-#endif
-
-extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
+extern "C" int _cdecl wmain(int argc, _In_ WCHAR **argv)
 {
     int         i, NumFiles = 0, NumDeltaFiles = 0;
     bool        IsDLL = false;
@@ -120,38 +135,21 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
     bool bClock = false;
     Clockwork   cw;
 
-#ifdef HOST_WINDOWS
-    // SWI has requested that the exact form of the function call below be used. For details
-    // see http://swi/SWI%20Docs/Detecting%20Heap%20Corruption.doc
-    (void)HeapSetInformation(NULL, HeapEnableTerminationOnCorruption, NULL, 0);
-#endif
-
     memset(pwzInputFiles,0,1024*sizeof(WCHAR*));
     memset(pwzDeltaFiles,0,1024*sizeof(WCHAR*));
     memset(&cw,0,sizeof(Clockwork));
-    cw.cBegin = GetTickCount();
+    cw.cBegin = minipal_lowres_ticks();
 
     g_uConsoleCP = GetConsoleOutputCP();
     memset(wzOutputFilename,0,sizeof(wzOutputFilename));
     memset(wzPdbFilename, 0, sizeof(wzPdbFilename));
 
-#ifdef _DEBUG
-    DisableThrowCheck();
-    //CONTRACT_VIOLATION(ThrowsViolation);
-#endif
-
     if(argc < 2) goto ErrorExit;
-#ifdef _PREFAST_
-#pragma warning(push)
-#pragma warning(disable:26000) // "Suppress prefast warning about index overflow"
-#endif
-    if (! wcscmp(argv[1], W("/?")) || ! wcscmp(argv[1],W("-?")))
-#ifdef _PREFAST_
-#pragma warning(pop)
-#endif
+
+    if (! u16_strcmp(argv[1], W("/?")) || ! u16_strcmp(argv[1],W("-?")))
     {
-        printf("\nMicrosoft (R) .NET IL Assembler version " CLR_PRODUCT_VERSION);
-        printf("\n%S\n\n", VER_LEGALCOPYRIGHT_LOGO_STR_L);
+        printf("\n.NET IL Assembler version " CLR_PRODUCT_VERSION);
+        printf("\n%s\n\n", VER_LEGALCOPYRIGHT_LOGO_STR);
         goto PrintUsageAndExit;
 
     ErrorExit:
@@ -169,6 +167,7 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
       printf("\n/DEBUG          Disable JIT optimization, create PDB file, use sequence points from PDB");
       printf("\n/DEBUG=IMPL     Disable JIT optimization, create PDB file, use implicit sequence points");
       printf("\n/DEBUG=OPT      Enable JIT optimization, create PDB file, use implicit sequence points");
+      printf("\n/DET            Produce deterministic outputs");
       printf("\n/OPTIMIZE       Optimize long instructions to short");
       printf("\n/FOLD           Fold the identical method bodies into one");
       printf("\n/CLOCK          Measure and report compilation times");
@@ -177,6 +176,7 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
       printf("\n/OUTPUT=<targetfile>    Compile to file with specified name \n\t\t\t(user must provide extension, if any)");
       printf("\n/KEY=<keyfile>      Compile with strong signature \n\t\t\t(<keyfile> contains private key)");
       printf("\n/KEY=@<keysource>   Compile with strong signature \n\t\t\t(<keysource> is the private key source name)");
+      printf("\n/ANAME=<asmname>    Override the name of the compiled assembly");
       printf("\n/INCLUDE=<path>     Set path to search for #include'd files");
       printf("\n/SUBSYSTEM=<int>    Set Subsystem value in the NT Optional header");
       printf("\n/SSVER=<int>.<int>  Set Subsystem version number in the NT Optional header");
@@ -217,13 +217,13 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
             for (i = 1; i < argc; i++)
             {
 #ifdef TARGET_UNIX
-                if(argv[i][0] == L'-')
+                if(argv[i][0] == W('-'))
 #else
-                if((argv[i][0] == L'/') || (argv[i][0] == L'-'))
+                if((argv[i][0] == W('/')) || (argv[i][0] == W('-')))
 #endif
                 {
                     char szOpt[3 + 1] = { 0 };
-                    WszWideCharToMultiByte(uCodePage, 0, &argv[i][1], 3, szOpt, sizeof(szOpt), NULL, NULL);
+                    WideCharToMultiByte(uCodePage, 0, &argv[i][1], 3, szOpt, sizeof(szOpt), NULL, NULL);
                     if (!_stricmp(szOpt, "NOA"))
                     {
                         pAsm->m_fAutoInheritFromObject = FALSE;
@@ -250,8 +250,8 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                       WCHAR *pStr = EqualOrColon(argv[i]);
                       if(pStr != NULL)
                       {
-                          for(pStr++; *pStr == L' '; pStr++); //skip the blanks
-                          if(wcslen(pStr)==0) goto InvalidOption; //if no suboption
+                          for(pStr++; *pStr == W(' '); pStr++); //skip the blanks
+                          if(u16_strlen(pStr)==0) goto InvalidOption; //if no suboption
                           else
                           {
                               WCHAR wzSubOpt[8];
@@ -263,9 +263,10 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                                 pAsm->m_dwIncludeDebugInfo = 0x103;
                               else
                               {
-                                const WCHAR *pFmt =((*pStr == '0')&&(*(pStr+1) == 'x'))? W("%lx") : W("%ld");
-                                if(swscanf_s(pStr,pFmt,&(pAsm->m_dwIncludeDebugInfo))!=1)
-                                goto InvalidOption; // bad subooption
+                                const CHAR *pFmt =((*pStr == '0')&&(*(pStr+1) == 'x'))? "%x" : "%d";
+                                NarrowForNumberParsing str{pStr};
+                                if(sscanf_s(str,pFmt,&(pAsm->m_dwIncludeDebugInfo))!=1)
+                                    goto InvalidOption; // bad subooption
                               }
                           }
                       }
@@ -303,6 +304,10 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                     {
                       pAsm->m_fOptimize = TRUE;
                     }
+                    else if (!_stricmp(szOpt, "DET"))
+                    {
+                      pAsm->m_fDeterministic = TRUE;
+                    }
                     else if (!_stricmp(szOpt, "X64"))
                     {
                       pAsm->m_dwCeeFileFlags &= ~ICEE_CREATE_MACHINE_MASK;
@@ -314,7 +319,7 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                         // We could change it to be longer, but that would affect the existing usability (ARM64 was
                         // added much later). Thus, just distinguish the two here.
                         char szOpt2[5 + 1] = { 0 };
-                        WszWideCharToMultiByte(uCodePage, 0, &argv[i][1], 5, szOpt2, sizeof(szOpt2), NULL, NULL);
+                        WideCharToMultiByte(uCodePage, 0, &argv[i][1], 5, szOpt2, sizeof(szOpt2), NULL, NULL);
                         if (!_stricmp(szOpt2, "ARM"))
                         {
                             pAsm->m_dwCeeFileFlags &= ~ICEE_CREATE_MACHINE_MASK;
@@ -363,36 +368,36 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                         {
                             WCHAR *pStr = EqualOrColon(argv[i]);
                             if(pStr == NULL) goto ErrorExit;
-                            for(pStr++; *pStr == L' '; pStr++); //skip the blanks
-                            if(wcslen(pStr)==0) goto InvalidOption; //if no file name
+                            for(pStr++; *pStr == W(' '); pStr++); //skip the blanks
+                            if(u16_strlen(pStr)==0) goto InvalidOption; //if no file name
                             pAsm->m_wzResourceFile = pStr;
                         }
                         else
-                            printf("Multiple resource files not allowed. Option %ls skipped\n",argv[i]);
+                            printf("Multiple resource files not allowed. Last RES option skipped\n");
                     }
                     else if (!_stricmp(szOpt, "KEY"))
                     {
                         WCHAR *pStr = EqualOrColon(argv[i]);
                         if(pStr == NULL) goto InvalidOption;
-                        for(pStr++; *pStr == L' '; pStr++); //skip the blanks
-                        if(wcslen(pStr)==0) goto InvalidOption; //if no file name
+                        for(pStr++; *pStr == W(' '); pStr++); //skip the blanks
+                        if(u16_strlen(pStr)==0) goto InvalidOption; //if no file name
                         pAsm->m_wzKeySourceName = pStr;
                     }
                     else if (!_stricmp(szOpt, "INC"))
                     {
                         WCHAR *pStr = EqualOrColon(argv[i]);
                         if(pStr == NULL) goto InvalidOption;
-                        for(pStr++; *pStr == L' '; pStr++); //skip the blanks
-                        if(wcslen(pStr)==0) goto InvalidOption; //if no file name
+                        for(pStr++; *pStr == W(' '); pStr++); //skip the blanks
+                        if(u16_strlen(pStr)==0) goto InvalidOption; //if no file name
                         wzIncludePath = pStr;
                     }
                     else if (!_stricmp(szOpt, "OUT"))
                     {
                         WCHAR *pStr = EqualOrColon(argv[i]);
                         if(pStr == NULL) goto InvalidOption;
-                        for(pStr++; *pStr == L' '; pStr++); //skip the blanks
-                        if(wcslen(pStr)==0) goto InvalidOption; //if no file name
-                        if(wcslen(pStr) >= MAX_FILENAME_LENGTH)
+                        for(pStr++; *pStr == W(' '); pStr++); //skip the blanks
+                        if(u16_strlen(pStr)==0) goto InvalidOption; //if no file name
+                        if(u16_strlen(pStr) >= MAX_FILENAME_LENGTH)
                         {
                             fprintf(stderr,"\nError: Output file name exceeds %d characters\n",MAX_FILENAME_LENGTH-1);
                             goto ErrorExit;
@@ -403,19 +408,20 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                     {
                         WCHAR *pStr = EqualOrColon(argv[i]);
                         if(pStr == NULL) goto InvalidOption;
-                        for(pStr++; *pStr == L' '; pStr++); //skip the blanks
-                        if(wcslen(pStr)==0) goto InvalidOption; //if no version string
+                        for(pStr++; *pStr == W(' '); pStr++); //skip the blanks
+                        if(u16_strlen(pStr)==0) goto InvalidOption; //if no version string
                         pAsm->m_wzMetadataVersion = pStr;
                     }
                     else if (!_stricmp(szOpt, "MSV"))
                     {
                         WCHAR *pStr = EqualOrColon(argv[i]);
                         if(pStr == NULL) goto InvalidOption;
-                        for(pStr++; *pStr == L' '; pStr++); //skip the blanks
-                        if(wcslen(pStr)==0) goto InvalidOption; //if no version
+                        for(pStr++; *pStr == W(' '); pStr++); //skip the blanks
+                        if(u16_strlen(pStr)==0) goto InvalidOption; //if no version
                         {
                             int major=-1,minor=-1;
-                            if(swscanf_s(pStr,W("%d.%d"),&major, &minor)==2)
+                            NarrowForNumberParsing str{pStr};
+                            if(sscanf_s(str,"%d.%d",&major, &minor)==2)
                             {
                                 if((major >= 0)&&(major < 0xFF))
                                     pAsm->m_wMSVmajor = (WORD)major;
@@ -429,18 +435,20 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                         WCHAR *pStr = EqualOrColon(argv[i]);
                         if(pStr == NULL) goto InvalidOption;
                         pStr++;
-                        const WCHAR *pFmt = ((*pStr=='0')&&(*(pStr+1) == 'x'))? W("%lx") : W("%ld");
-                        if(swscanf_s(pStr,pFmt,&g_dwSubsystem)!=1) goto InvalidOption;
+                        const CHAR *pFmt = ((*pStr=='0')&&(*(pStr+1) == 'x'))? "%x" : "%d";
+                        NarrowForNumberParsing str{pStr};
+                        if(sscanf_s(str,pFmt,&g_dwSubsystem)!=1) goto InvalidOption;
                     }
                     else if (!_stricmp(szOpt, "SSV"))
                     {
                         WCHAR *pStr = EqualOrColon(argv[i]);
                         if(pStr == NULL) goto InvalidOption;
-                        for(pStr++; *pStr == L' '; pStr++); //skip the blanks
-                        if(wcslen(pStr)==0) goto InvalidOption; //if no version
+                        for(pStr++; *pStr == W(' '); pStr++); //skip the blanks
+                        if(u16_strlen(pStr)==0) goto InvalidOption; //if no version
                         {
                             int major=-1,minor=-1;
-                            if(swscanf_s(pStr,W("%d.%d"),&major, &minor)==2)
+                            NarrowForNumberParsing str{pStr};
+                            if(sscanf_s(str,"%d.%d",&major, &minor)==2)
                             {
                                 if((major >= 0)&&(major < 0xFFFF))
                                     pAsm->m_wSSVersionMajor = (WORD)major;
@@ -455,8 +463,9 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                         WCHAR *pStr = EqualOrColon(argv[i]);
                         if(pStr == NULL) goto InvalidOption;
                         pStr++;
-                        const WCHAR *pFmt = ((*pStr=='0')&&(*(pStr+1) == 'x'))? W("%lx") : W("%ld");
-                        if(swscanf_s(pStr,pFmt,&g_dwFileAlignment)!=1) goto InvalidOption;
+                        const CHAR *pFmt = ((*pStr=='0')&&(*(pStr+1) == 'x'))? "%x" : "%d";
+                        NarrowForNumberParsing str{pStr};
+                        if(sscanf_s(str,pFmt,&g_dwFileAlignment)!=1) goto InvalidOption;
                         if((g_dwFileAlignment & (g_dwFileAlignment-1))
                            || (g_dwFileAlignment < 0x200) || (g_dwFileAlignment > 0x10000))
                         {
@@ -469,16 +478,18 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                         WCHAR *pStr = EqualOrColon(argv[i]);
                         if(pStr == NULL) goto InvalidOption;
                         pStr++;
-                        const WCHAR *pFmt = ((*pStr=='0')&&(*(pStr+1) == 'x'))? W("%lx") : W("%ld");
-                        if(swscanf_s(pStr,pFmt,&g_dwComImageFlags)!=1) goto InvalidOption;
+                        const CHAR *pFmt = ((*pStr=='0')&&(*(pStr+1) == 'x'))? "%x" : "%d";
+                        NarrowForNumberParsing str{pStr};
+                        if(sscanf_s(str,pFmt,&g_dwComImageFlags)!=1) goto InvalidOption;
                     }
                     else if (!_stricmp(szOpt, "BAS"))
                     {
                         WCHAR *pStr = EqualOrColon(argv[i]);
                         if(pStr == NULL) goto InvalidOption;
                         pStr++;
-                        const WCHAR *pFmt = ((*pStr=='0')&&(*(pStr+1) == 'x'))? W("%I64x") : W("%I64d");
-                        if(swscanf_s(pStr,pFmt,&g_stBaseAddress)!=1) goto InvalidOption;
+                        const CHAR *pFmt = ((*pStr=='0')&&(*(pStr+1) == 'x'))? "%llx" : "%lld";
+                        NarrowForNumberParsing str{pStr};
+                        if(sscanf_s(str,pFmt,&g_stBaseAddress)!=1) goto InvalidOption;
                         if(g_stBaseAddress & 0xFFFF)
                         {
                             fprintf(stderr,"\nBase address must be 0x10000-aligned\n");
@@ -490,8 +501,9 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                         WCHAR *pStr = EqualOrColon(argv[i]);
                         if(pStr == NULL) goto InvalidOption;
                         pStr++;
-                        const WCHAR *pFmt = ((*pStr=='0')&&(*(pStr+1) == 'x'))? W("%lx") : W("%ld");
-                        if(swscanf_s(pStr,pFmt,&g_stSizeOfStackReserve)!=1) goto InvalidOption;
+                        const CHAR *pFmt = ((*pStr=='0')&&(*(pStr+1) == 'x'))? "%x" : "%d";
+                        NarrowForNumberParsing str{pStr};
+                        if(sscanf_s(str,pFmt,&g_stSizeOfStackReserve)!=1) goto InvalidOption;
                     }
 #ifdef _SPECIAL_INTERNAL_USE_ONLY
                     else if (!_stricmp(szOpt, "TES"))
@@ -499,20 +511,29 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                         WCHAR *pStr = EqualOrColon(argv[i]);
                         if(pStr == NULL) goto InvalidOption;
                         pStr++;
-                        WCHAR *pFmt = ((*pStr=='0')&&(*(pStr+1) == 'x'))? L"%lx" : L"%ld";
-                        if(swscanf_s(pStr,pFmt,&g_dwTestRepeat)!=1) goto InvalidOption;
+                        const CHAR *pFmt = ((*pStr=='0')&&(*(pStr+1) == 'x'))? "%x" : "%d";
+                        NarrowForNumberParsing str{pStr};
+                        if(sscanf_s(str,pFmt,&g_dwTestRepeat)!=1) goto InvalidOption;
                     }
 #endif
+                    else if (!_stricmp(szOpt, "ANA"))
+                    {
+                        WCHAR *pEqualOrColon = EqualOrColon(argv[i]);
+                        if (pEqualOrColon == NULL) goto InvalidOption;
+                        MAKE_UTF8PTR_FROMWIDE_NOTHROW(anameOverride, pEqualOrColon + 1);
+                        pAsm->m_pOverrideAssemblyName = _strdup(anameOverride);
+                    }
                     else
                     {
                     InvalidOption:
-                        fprintf(stderr, "Error : Invalid Option: %LS\n", argv[i]);
+                        MAKE_UTF8PTR_FROMWIDE_NOTHROW(invalidOpt, argv[i]);
+                        fprintf(stderr, "Error : Invalid Option: %s\n", invalidOpt);
                         goto ErrorExit;
                     }
                 }
                 else
                 {
-                    if(wcslen(argv[i]) >= MAX_FILENAME_LENGTH)
+                    if(u16_strlen(argv[i]) >= MAX_FILENAME_LENGTH)
                     {
                         printf("\nError: Input file name exceeds %d characters\n",MAX_FILENAME_LENGTH-1);
                         goto ErrorExit;
@@ -591,11 +612,11 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
             if(wzOutputFilename[0] == 0)
             {
                 wcscpy_s(wzOutputFilename,MAX_FILENAME_LENGTH,pwzInputFiles[0]);
-                size_t j = wcslen(wzOutputFilename);
+                size_t j = u16_strlen(wzOutputFilename);
                 do
                 {
                     j--;
-                    if(wzOutputFilename[j] == L'.')
+                    if(wzOutputFilename[j] == W('.'))
                     {
                         wzOutputFilename[j] = 0;
                         break;
@@ -607,7 +628,7 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
             if (pAsm->m_fGeneratePDB)
             {
                 wcscpy_s(wzPdbFilename, MAX_FILENAME_LENGTH, wzOutputFilename);
-                WCHAR* extPos = wcsrchr(wzPdbFilename, L'.');
+                WCHAR* extPos = (WCHAR*)u16_strrchr(wzPdbFilename, W('.'));
                 if (extPos != NULL)
                     *extPos = 0;
                 wcscat_s(wzPdbFilename, MAX_FILENAME_LENGTH, W(".pdb"));
@@ -633,8 +654,8 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                 //======================================================================
                 if(bLogo)
                 {
-                    printf("\nMicrosoft (R) .NET IL Assembler.  Version " CLR_PRODUCT_VERSION);
-                    printf("\n%S", VER_LEGALCOPYRIGHT_LOGO_STR_L);
+                    printf("\n.NET IL Assembler.  Version " CLR_PRODUCT_VERSION);
+                    printf("\n%s", VER_LEGALCOPYRIGHT_LOGO_STR);
                 }
 
                 pAsm->SetDLL(IsDLL);
@@ -645,7 +666,7 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                 {
                     int iFile;
                     BOOL fAllFilesPresent = TRUE;
-                    if(bClock) cw.cParsBegin = GetTickCount();
+                    if(bClock) cw.cParsBegin = minipal_lowres_ticks();
                     for(iFile = 0; iFile < NumFiles; iFile++)
                     {
                         uCodePage = CP_UTF8;
@@ -666,7 +687,7 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                             {
                                 char szOutputFilename[MAX_FILENAME_LENGTH*3];
                                 memset(szOutputFilename,0,sizeof(szOutputFilename));
-                                WszWideCharToMultiByte(uCodePage,0,wzOutputFilename,-1,szOutputFilename,MAX_FILENAME_LENGTH*3-1,NULL,NULL);
+                                WideCharToMultiByte(uCodePage,0,wzOutputFilename,-1,szOutputFilename,MAX_FILENAME_LENGTH*3-1,NULL,NULL);
                                 pParser->msg(" --> '%s'\n", szOutputFilename);
                             }
                         }
@@ -697,11 +718,11 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                         }
                         if(pIn)
                         {
-                            pIn->set_namew(NULL);
+                            pIn->clear_name();
                             delete pIn;
                         }
                     } // end for(iFile)
-                    if(bClock) cw.cParsEnd = GetTickCount();
+                    if(bClock) cw.cParsEnd = minipal_lowres_ticks();
                     if ((pParser->Success() && fAllFilesPresent) || pAsm->OnErrGo)
                     {
                         HRESULT hr;
@@ -724,7 +745,7 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                             }
                             if(exitval == 0) // Write the output file
                             {
-                                if(bClock) cw.cFilegenEnd = GetTickCount();
+                                if(bClock) cw.cFilegenEnd = minipal_lowres_ticks();
                                 if(pAsm->m_fReportProgress) pParser->msg("Writing PE file\n");
                                 // Generate the file
                                 if (FAILED(hr = pAsm->m_pCeeFileGen->GenerateCeeFile(pAsm->m_pCeeFile)))
@@ -742,15 +763,16 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                                         pParser->msg("Failed to write PDB file, error code=0x%08X\n", hr);
                                     }
                                 }
-                                if(bClock) cw.cEnd = GetTickCount();
+                                if(bClock) cw.cEnd = minipal_lowres_ticks();
                                 if(exitval==0)
                                 {
                                     WCHAR wzNewOutputFilename[MAX_FILENAME_LENGTH+16];
                                     for(iFile = 0; iFile < NumDeltaFiles; iFile++)
                                     {
                                         wcscpy_s(wzNewOutputFilename,MAX_FILENAME_LENGTH+16,wzOutputFilename);
-                                        exitval = _snwprintf_s(&wzNewOutputFilename[wcslen(wzNewOutputFilename)], 32, _TRUNCATE,
-                                                 W(".%d"),iFile+1);
+                                        size_t len = u16_strlen(wzNewOutputFilename);
+                                        wzNewOutputFilename[len] = W('.');
+                                        FormatInteger(&wzNewOutputFilename[len + 1], MaxSigned32BitDecString + 1, "%d", iFile+1);
                                         MakeProperSourceFileName(pwzDeltaFiles[iFile], uCodePage, wzInputFilename, szInputFilename);
                                         if(pAsm->m_fReportProgress)
                                         {
@@ -761,7 +783,8 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                                             if (pAsm->m_fStdMapping == FALSE)
                                                 pParser->msg(", with REFERENCE mapping");
 
-                                            pParser->msg(" --> '%S.*'\n", wzNewOutputFilename);
+                                            MAKE_UTF8PTR_FROMWIDE(newOutputFilenameUtf8, wzNewOutputFilename);
+                                            pParser->msg(" --> '%s.*'\n", newOutputFilenameUtf8);
                                         }
                                         exitval = 0;
                                         pIn = new MappedFileStream(wzInputFilename);
@@ -784,7 +807,7 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
                                         } // end if ((!pIn) || !(pIn->IsValid())) -- else
                                         if(pIn)
                                         {
-                                            pIn->set_namew(NULL);
+                                            pIn->clear_name();
                                             delete pIn;
                                         }
                                     } // end for(iFile)
@@ -807,36 +830,44 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
     if (exitval || !bGeneratePdb)
     {
         // PE file was not created, or no debug info required. Kill PDB if any
-        WCHAR* pc = wcsrchr(wzOutputFilename,L'.');
+        WCHAR* pc = (WCHAR*)u16_strrchr(wzOutputFilename,W('.'));
         if(pc==NULL)
         {
-            pc = &wzOutputFilename[wcslen(wzOutputFilename)];
-            *pc = L'.';
+            pc = &wzOutputFilename[u16_strlen(wzOutputFilename)];
+            *pc = W('.');
         }
         wcscpy_s(pc+1,4,W("PDB"));
-#undef DeleteFileW
-        DeleteFileW(wzOutputFilename);
+
+#ifdef TARGET_WINDOWS
+        _wremove(wzOutputFilename);
+#else
+        MAKE_UTF8PTR_FROMWIDE_NOTHROW(szOutputFilename, wzOutputFilename);
+        if (szOutputFilename != NULL)
+        {
+            remove(szOutputFilename);
+        }
+#endif
     }
     if (exitval == 0)
     {
         if(bReportProgress) printf("Operation completed successfully\n");
         if(bClock)
         {
-            printf("Timing (msec): Total run                 %d\n",(cw.cEnd-cw.cBegin));
-            printf("               Startup                   %d\n",(cw.cParsBegin-cw.cBegin));
-            printf("               - MD initialization       %d\n",(cw.cMDInitEnd - cw.cMDInitBegin));
-            printf("               Parsing                   %d\n",(cw.cParsEnd - cw.cParsBegin));
-            printf("               Emitting MD               %d\n",(cw.cMDEmitEnd - cw.cRef2DefEnd)+(cw.cRef2DefBegin - cw.cMDEmitBegin));
-            //printf("                - global fixups         %d\n",(cw.cMDEmit1 - cw.cMDEmitBegin));
-            printf("                - SN sig alloc           %d\n",(cw.cMDEmit2 - cw.cMDEmitBegin));
-            printf("                - Classes,Methods,Fields %d\n",(cw.cRef2DefBegin - cw.cMDEmit2));
-            printf("                - Events,Properties      %d\n",(cw.cMDEmit3 - cw.cRef2DefEnd));
-            printf("                - MethodImpls            %d\n",(cw.cMDEmit4 - cw.cMDEmit3));
-            printf("                - Manifest,CAs           %d\n",(cw.cMDEmitEnd - cw.cMDEmit4));
-            printf("               Ref to Def resolution     %d\n",(cw.cRef2DefEnd - cw.cRef2DefBegin));
-            printf("               Fixup and linking         %d\n",(cw.cFilegenBegin - cw.cMDEmitEnd));
-            printf("               CEE file generation       %d\n",(cw.cFilegenEnd - cw.cFilegenBegin));
-            printf("               PE file writing           %d\n",(cw.cEnd - cw.cFilegenEnd));
+            printf("Timing (msec): Total run                 %d\n",(int)(cw.cEnd-cw.cBegin));
+            printf("               Startup                   %d\n",(int)(cw.cParsBegin-cw.cBegin));
+            printf("               - MD initialization       %d\n",(int)(cw.cMDInitEnd - cw.cMDInitBegin));
+            printf("               Parsing                   %d\n",(int)(cw.cParsEnd - cw.cParsBegin));
+            printf("               Emitting MD               %d\n",(int)(cw.cMDEmitEnd - cw.cRef2DefEnd)+(int)(cw.cRef2DefBegin - cw.cMDEmitBegin));
+            //printf("                - global fixups         %d\n",(int)(cw.cMDEmit1 - cw.cMDEmitBegin));
+            printf("                - SN sig alloc           %d\n",(int)(cw.cMDEmit2 - cw.cMDEmitBegin));
+            printf("                - Classes,Methods,Fields %d\n",(int)(cw.cRef2DefBegin - cw.cMDEmit2));
+            printf("                - Events,Properties      %d\n",(int)(cw.cMDEmit3 - cw.cRef2DefEnd));
+            printf("                - MethodImpls            %d\n",(int)(cw.cMDEmit4 - cw.cMDEmit3));
+            printf("                - Manifest,CAs           %d\n",(int)(cw.cMDEmitEnd - cw.cMDEmit4));
+            printf("               Ref to Def resolution     %d\n",(int)(cw.cRef2DefEnd - cw.cRef2DefBegin));
+            printf("               Fixup and linking         %d\n",(int)(cw.cFilegenBegin - cw.cMDEmitEnd));
+            printf("               CEE file generation       %d\n",(int)(cw.cFilegenEnd - cw.cFilegenBegin));
+            printf("               PE file writing           %d\n",(int)(cw.cEnd - cw.cFilegenEnd));
         }
     }
     else
@@ -846,15 +877,10 @@ extern "C" int _cdecl wmain(int argc, __in WCHAR **argv)
     exit(exitval);
     return exitval;
 }
-#ifdef _PREFAST_
-#pragma warning(pop)
-#endif
-
 
 #ifdef TARGET_UNIX
 int main(int argc, char* str[])
 {
-    g_pszExeFile = str[0];
     if (0 != PAL_Initialize(argc, str))
     {
         fprintf(stderr,"Error: Fail to PAL_Initialize\n");

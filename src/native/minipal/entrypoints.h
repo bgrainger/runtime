@@ -14,11 +14,15 @@ typedef struct
     const void* method;
 } Entry;
 
-// expands to:      {"impl", (void*)impl},
+// expands to:      {"impl", (void*)&impl},
 #define DllImportEntry(impl) \
-    {#impl, (void*)impl},
+    {#impl, (void*)&impl},
 
-static const void* minipal_resolve_dllimport(const Entry* resolutionTable, size_t tableLength, const char* name)
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+inline const void* minipal_resolve_dllimport(const Entry* resolutionTable, size_t tableLength, const char* name)
 {
     for (size_t i = 0; i < tableLength; i++)
     {
@@ -30,5 +34,9 @@ static const void* minipal_resolve_dllimport(const Entry* resolutionTable, size_
 
     return NULL;
 }
+
+#ifdef __cplusplus
+}
+#endif // extern "C"
 
 #endif // HAVE_MINIPAL_ENTRYPOINTS_H

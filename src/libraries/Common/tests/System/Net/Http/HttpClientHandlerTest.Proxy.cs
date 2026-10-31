@@ -27,6 +27,7 @@ namespace System.Net.Http.Functional.Tests
         public HttpClientHandler_Proxy_Test(ITestOutputHelper output) : base(output) { }
 
         [Fact]
+        [SkipOnPlatform(TestPlatforms.Wasi, "WASI HttpHandler does not support proxy")]
         public async Task Dispose_HandlerWithProxy_ProxyNotDisposed()
         {
             if (IsWinHttpHandler && UseVersion >= HttpVersion20.Value)
@@ -56,7 +57,6 @@ namespace System.Net.Http.Functional.Tests
             Assert.False(proxy.Disposed);
         }
 
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/1507")]
         [OuterLoop("Uses external servers")]
         [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsNotWindowsNanoServer))]
         [InlineData(AuthenticationSchemes.Ntlm, true, false)]
@@ -89,9 +89,10 @@ namespace System.Net.Http.Functional.Tests
             Uri serverUri = secureServer ? Configuration.Http.SecureRemoteEchoServer : Configuration.Http.RemoteEchoServer;
 
             var options = new LoopbackProxyServer.Options
-                { AuthenticationSchemes = proxyAuthScheme,
-                  ConnectionCloseAfter407 = proxyClosesConnectionAfterFirst407Response
-                };
+            {
+                AuthenticationSchemes = proxyAuthScheme,
+                ConnectionCloseAfter407 = proxyClosesConnectionAfterFirst407Response
+            };
             using (LoopbackProxyServer proxyServer = LoopbackProxyServer.Create(options))
             {
                 using (HttpClientHandler handler = CreateHttpClientHandler())
@@ -115,10 +116,10 @@ namespace System.Net.Http.Functional.Tests
         public static bool IsSocketsHttpHandlerAndRemoteExecutorSupported => !HttpClientHandlerTestBase.IsWinHttpHandler && RemoteExecutor.IsSupported;
 
         [OuterLoop("Uses external servers")]
-        [ConditionalFact(nameof(IsSocketsHttpHandlerAndRemoteExecutorSupported))]
-        public void Proxy_UseEnvironmentVariableToSetSystemProxy_RequestGoesThruProxy()
+        [ConditionalFact(typeof(HttpClientHandler_Proxy_Test), nameof(IsSocketsHttpHandlerAndRemoteExecutorSupported))]
+        public async Task Proxy_UseEnvironmentVariableToSetSystemProxy_RequestGoesThruProxy()
         {
-            RemoteExecutor.Invoke(async (useVersionString) =>
+            await RemoteExecutor.Invoke(async (useVersionString) =>
             {
                 var options = new LoopbackProxyServer.Options { AddViaRequestHeader = true };
                 using (LoopbackProxyServer proxyServer = LoopbackProxyServer.Create(options))
@@ -133,7 +134,7 @@ namespace System.Net.Http.Functional.Tests
                         Assert.Contains(proxyServer.ViaHeader, body);
                     }
                 }
-            }, UseVersion.ToString()).Dispose();
+            }, UseVersion.ToString()).DisposeAsync();
         }
 
         const string BasicAuth = "Basic";
@@ -219,10 +220,9 @@ namespace System.Net.Http.Functional.Tests
             };
 
             using (LoopbackProxyServer proxyServer = LoopbackProxyServer.Create(options))
-            using (HttpClientHandler handler = CreateHttpClientHandler())
+            using (HttpClientHandler handler = CreateHttpClientHandler(allowAllCertificates: true))
             using (HttpClient client = CreateHttpClient(handler))
             {
-                handler.ServerCertificateCustomValidationCallback = TestHelper.AllowAllCertificates;
                 handler.Proxy = new WebProxy(proxyServer.Uri) { Credentials = ConstructCredentials(cred, proxyServer.Uri, BasicAuth, wrapCredsInCache) };
 
                 using (HttpResponseMessage response = await client.PostAsync(Configuration.Http.SecureRemoteEchoServer, new StringContent(content)))
@@ -280,7 +280,7 @@ namespace System.Net.Http.Functional.Tests
             }
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsTlsSupported))]
         public async Task AuthenticatedProxyTunnelRequest_PostAsyncWithNoCreds_Throws()
         {
             if (IsWinHttpHandler)
@@ -295,32 +295,37 @@ namespace System.Net.Http.Functional.Tests
 
             using (LoopbackProxyServer proxyServer = LoopbackProxyServer.Create(options))
             {
-                HttpClientHandler handler = CreateHttpClientHandler();
+                HttpClientHandler handler = CreateHttpClientHandler(allowAllCertificates: true);
                 handler.Proxy = new WebProxy(proxyServer.Uri);
-                handler.ServerCertificateCustomValidationCallback = TestHelper.AllowAllCertificates;
                 using (HttpClient client = CreateHttpClient(handler))
                 {
                     HttpRequestException e = await Assert.ThrowsAnyAsync<HttpRequestException>(async () => await client.PostAsync("https://nosuchhost.invalid", new StringContent(content)));
-                    Assert.Contains("407", e.Message);
+                    Assert.Contains(((int)HttpStatusCode.ProxyAuthenticationRequired).ToString(), e.Message);
+#if !WINHTTPHANDLER_TEST
+                    Assert.Equal(HttpStatusCode.ProxyAuthenticationRequired, e.StatusCode);
+                    Assert.Equal(HttpRequestError.ProxyTunnelError, e.HttpRequestError);
+#endif
                 }
             }
         }
 
-        [Fact]
+        [ConditionalFact(typeof(HttpClientHandler_Proxy_Test), nameof(HttpClientHandlerTestBase.IsWinHttpHandler))]
         public async Task Proxy_SslProxyUnsupported_Throws()
         {
             using (HttpClientHandler handler = CreateHttpClientHandler())
             using (HttpClient client = CreateHttpClient(handler))
             {
-                handler.Proxy = new WebProxy("https://" + Guid.NewGuid().ToString("N"));
+                handler.Proxy = new WebProxy($"https://{Guid.NewGuid():N}");
 
-                Type expectedType = IsWinHttpHandler ? typeof(HttpRequestException) : typeof(NotSupportedException);
-
-                await Assert.ThrowsAsync(expectedType, () => client.GetAsync("http://" + Guid.NewGuid().ToString("N")));
+                HttpRequestException e = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetAsync($"http://{Guid.NewGuid():N}"));
+#if !WINHTTPHANDLER_TEST
+                Assert.Null(e.StatusCode);
+                Assert.Equal(HttpRequestError.ProxyTunnelError, e.HttpRequestError);
+#endif
             }
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsTlsSupported))]
         public async Task ProxyTunnelRequest_GetAsync_Success()
         {
             if (IsWinHttpHandler)
@@ -332,16 +337,15 @@ namespace System.Net.Http.Functional.Tests
 
             using (LoopbackProxyServer proxyServer = LoopbackProxyServer.Create())
             {
-                HttpClientHandler handler = CreateHttpClientHandler();
+                HttpClientHandler handler = CreateHttpClientHandler(allowAllCertificates: true);
                 handler.Proxy = new WebProxy(proxyServer.Uri);
-                handler.ServerCertificateCustomValidationCallback = TestHelper.AllowAllCertificates;
                 using (HttpClient client = CreateHttpClient(handler))
                 {
                     var options = new LoopbackServer.Options { UseSsl = true };
                     await LoopbackServer.CreateServerAsync(async (server, uri) =>
                     {
                         Assert.Equal(proxyServer.Uri, handler.Proxy.GetProxy(uri));
-                        
+
                         Task<HttpResponseMessage> clientTask = client.GetAsync(uri);
                         await server.AcceptConnectionSendResponseAndCloseAsync(content: Content);
                         using (var response = await clientTask)
@@ -356,7 +360,7 @@ namespace System.Net.Http.Functional.Tests
             }
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsTlsSupported))]
         public async Task ProxyTunnelRequest_MaxConnectionsSetButDoesNotApplyToProxyConnect_Success()
         {
             if (IsWinHttpHandler)
@@ -368,9 +372,8 @@ namespace System.Net.Http.Functional.Tests
 
             using (LoopbackProxyServer proxyServer = LoopbackProxyServer.Create())
             {
-                HttpClientHandler handler = CreateHttpClientHandler();
+                HttpClientHandler handler = CreateHttpClientHandler(allowAllCertificates: true);
                 handler.Proxy = new WebProxy(proxyServer.Uri);
-                handler.ServerCertificateCustomValidationCallback = TestHelper.AllowAllCertificates;
                 handler.MaxConnectionsPerServer = 1;
                 using (HttpClient client = CreateHttpClient(handler))
                 {
@@ -413,7 +416,7 @@ namespace System.Net.Http.Functional.Tests
             }
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsTlsSupported))]
         public async Task ProxyTunnelRequest_OriginServerSendsProxyAuthChallenge_NoProxyAuthPerformed()
         {
             if (IsWinHttpHandler)
@@ -423,9 +426,8 @@ namespace System.Net.Http.Functional.Tests
 
             using (LoopbackProxyServer proxyServer = LoopbackProxyServer.Create())
             {
-                HttpClientHandler handler = CreateHttpClientHandler();
+                HttpClientHandler handler = CreateHttpClientHandler(allowAllCertificates: true);
                 handler.Proxy = new WebProxy(proxyServer.Uri) { Credentials = ConstructCredentials(new NetworkCredential("username", "password"), proxyServer.Uri, BasicAuth, true) };
-                handler.ServerCertificateCustomValidationCallback = TestHelper.AllowAllCertificates;
                 using (HttpClient client = CreateHttpClient(handler))
                 {
                     var options = new LoopbackServer.Options { UseSsl = true };
@@ -434,19 +436,19 @@ namespace System.Net.Http.Functional.Tests
                         Assert.Equal(proxyServer.Uri, handler.Proxy.GetProxy(uri));
 
                         Task<HttpResponseMessage> clientTask = client.GetAsync(uri);
-                        await server.AcceptConnectionSendResponseAndCloseAsync(statusCode: HttpStatusCode.ProxyAuthenticationRequired, additionalHeaders: "Proxy-Authenticate: Basic");
-                        using (var response = await clientTask)
+                        await server.AcceptConnectionSendResponseAndCloseAsync(statusCode: HttpStatusCode.ProxyAuthenticationRequired, additionalHeaders: "Proxy-Authenticate: Basic").WaitAsync(TestHelper.PassingTestTimeout);
+                        using (var response = await clientTask.WaitAsync(TestHelper.PassingTestTimeout))
                         {
                             Assert.Equal(HttpStatusCode.ProxyAuthenticationRequired, response.StatusCode);
                         }
-                    }, options);
+                    }, options).WaitAsync(TestHelper.PassingTestTimeout);
                 }
 
                 Assert.Contains("CONNECT", proxyServer.Requests[0].RequestLine);
             }
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsNotWindowsNanoServer))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsNotWindowsNanoServer), nameof(PlatformDetection.IsMD5Supported))]
         public async Task ProxyAuth_Digest_Succeeds()
         {
             const string expectedUsername = "user";
@@ -503,14 +505,15 @@ namespace System.Net.Http.Functional.Tests
             string proxyConfigString = $"{failingEndPoint.Address}:{failingEndPoint.Port} {succeedingProxyServer.Uri.Host}:{succeedingProxyServer.Uri.Port}";
 
             // Create a WinInetProxyHelper and override its values with our own.
-            object winInetProxyHelper = Activator.CreateInstance(typeof(HttpClient).Assembly.GetType("System.Net.Http.WinInetProxyHelper", true), true);
-            winInetProxyHelper.GetType().GetField("_autoConfigUrl", Reflection.BindingFlags.Instance | Reflection.BindingFlags.NonPublic).SetValue(winInetProxyHelper, null);
-            winInetProxyHelper.GetType().GetField("_autoDetect", Reflection.BindingFlags.Instance | Reflection.BindingFlags.NonPublic).SetValue(winInetProxyHelper, false);
-            winInetProxyHelper.GetType().GetField("_proxy", Reflection.BindingFlags.Instance | Reflection.BindingFlags.NonPublic).SetValue(winInetProxyHelper, proxyConfigString);
-            winInetProxyHelper.GetType().GetField("_proxyBypass", Reflection.BindingFlags.Instance | Reflection.BindingFlags.NonPublic).SetValue(winInetProxyHelper, null);
+            Type winInetProxyHelperType = Type.GetType("System.Net.Http.WinInetProxyHelper, System.Net.Http", true);
+            object winInetProxyHelper = Activator.CreateInstance(winInetProxyHelperType, true);
+            winInetProxyHelperType.GetField("_autoConfigUrl", Reflection.BindingFlags.Instance | Reflection.BindingFlags.NonPublic).SetValue(winInetProxyHelper, null);
+            winInetProxyHelperType.GetField("_autoDetect", Reflection.BindingFlags.Instance | Reflection.BindingFlags.NonPublic).SetValue(winInetProxyHelper, false);
+            winInetProxyHelperType.GetField("_proxy", Reflection.BindingFlags.Instance | Reflection.BindingFlags.NonPublic).SetValue(winInetProxyHelper, proxyConfigString);
+            winInetProxyHelperType.GetField("_proxyBypass", Reflection.BindingFlags.Instance | Reflection.BindingFlags.NonPublic).SetValue(winInetProxyHelper, null);
 
             // Create a HttpWindowsProxy with our custom WinInetProxyHelper.
-            IWebProxy httpWindowsProxy = (IWebProxy)Activator.CreateInstance(typeof(HttpClient).Assembly.GetType("System.Net.Http.HttpWindowsProxy", true), Reflection.BindingFlags.NonPublic | Reflection.BindingFlags.Instance, null, new[] { winInetProxyHelper, null }, null);
+            IWebProxy httpWindowsProxy = (IWebProxy)Activator.CreateInstance(Type.GetType("System.Net.Http.HttpWindowsProxy, System.Net.Http", true), Reflection.BindingFlags.Public | Reflection.BindingFlags.NonPublic| Reflection.BindingFlags.Instance, null, new[] { winInetProxyHelper }, null);
 
             Task<bool> nextFailedConnection = null;
 
@@ -562,6 +565,65 @@ namespace System.Net.Http.Functional.Tests
             }
         }
 
+        [Fact]
+        [PlatformSpecific(TestPlatforms.Windows)]
+        public async Task MultiProxy_PAC_Failover_CredentialsNotSent_Succeeds()
+        {
+            if (IsWinHttpHandler)
+            {
+                // PAC-based failover is only supported on Windows/SocketsHttpHandler
+                return;
+            }
+
+            using LoopbackProxyServer failingProxyServer = LoopbackProxyServer.Create(new LoopbackProxyServer.Options
+            {
+                AuthenticationSchemes = AuthenticationSchemes.Basic,
+                ConnectionCloseAfter407 = true,
+                KillConnectionAfterAuth = true
+            });
+            using LoopbackProxyServer succeedingProxyServer = LoopbackProxyServer.Create();
+            string proxyConfigString = $"{failingProxyServer.Uri.Host}:{failingProxyServer.Uri.Port} {succeedingProxyServer.Uri.Host}:{succeedingProxyServer.Uri.Port}";
+
+            // Create a WinInetProxyHelper and override its values with our own.
+            Type winInetProxyHelperType = Type.GetType("System.Net.Http.WinInetProxyHelper, System.Net.Http", true);
+            object winInetProxyHelper = Activator.CreateInstance(winInetProxyHelperType, true);
+            winInetProxyHelperType.GetField("_autoConfigUrl", Reflection.BindingFlags.Instance | Reflection.BindingFlags.NonPublic).SetValue(winInetProxyHelper, null);
+            winInetProxyHelperType.GetField("_autoDetect", Reflection.BindingFlags.Instance | Reflection.BindingFlags.NonPublic).SetValue(winInetProxyHelper, false);
+            winInetProxyHelperType.GetField("_proxy", Reflection.BindingFlags.Instance | Reflection.BindingFlags.NonPublic).SetValue(winInetProxyHelper, proxyConfigString);
+            winInetProxyHelperType.GetField("_proxyBypass", Reflection.BindingFlags.Instance | Reflection.BindingFlags.NonPublic).SetValue(winInetProxyHelper, null);
+
+            // Create a HttpWindowsProxy with our custom WinInetProxyHelper.
+            IWebProxy httpWindowsProxy = (IWebProxy)Activator.CreateInstance(Type.GetType("System.Net.Http.HttpWindowsProxy, System.Net.Http", true), Reflection.BindingFlags.Public | Reflection.BindingFlags.NonPublic| Reflection.BindingFlags.Instance, null, new[] { winInetProxyHelper }, null);
+
+            // Run a request with that proxy.
+            Task requestTask = LoopbackServerFactory.CreateClientAndServerAsync(
+                async uri =>
+                {
+                    using HttpClientHandler handler = CreateHttpClientHandler();
+                    using HttpClient client = CreateHttpClient(handler);
+                    handler.Proxy = httpWindowsProxy;
+                    handler.Proxy.Credentials = new NetworkCredential("username", "password", $"{failingProxyServer.Uri.Host}:{failingProxyServer.Uri.Port}");
+
+                    // First request is expected to hit the failing proxy server, then failover to the succeeding proxy server.
+                    Assert.Equal("foo", await client.GetStringAsync(uri));
+                    Assert.Equal("bar", await client.GetStringAsync(uri));
+                },
+                async server =>
+                {
+                    await server.HandleRequestAsync(statusCode: HttpStatusCode.OK, content: "foo");
+                    await server.HandleRequestAsync(statusCode: HttpStatusCode.OK, content: "bar");
+                });
+
+            // Wait for request to finish.
+            await requestTask;
+
+            Assert.Equal(2, succeedingProxyServer.Requests.Count);
+            foreach (var request in succeedingProxyServer.Requests)
+            {
+                Assert.Null(request.AuthorizationHeaderValueToken);
+            }
+        }
+
         [Theory]
         [InlineData("1.2.3.4")]
         [InlineData("1.2.3.4:8080")]
@@ -578,7 +640,7 @@ namespace System.Net.Http.Functional.Tests
                 using (HttpClient client = CreateHttpClient(handler))
                 {
                     handler.Proxy = new WebProxy(proxyUri);
-                    try { await client.GetAsync(uri); } catch { }
+                    await IgnoreExceptions(client.GetAsync(uri));
                 }
             }, server => server.AcceptConnectionAsync(async connection =>
             {
@@ -611,7 +673,7 @@ namespace System.Net.Http.Functional.Tests
                 using (HttpClient client = CreateHttpClient(handler))
                 {
                     handler.Proxy = new WebProxy(proxyUri);
-                    try { await client.GetAsync(addressUri); } catch { }
+                    await IgnoreExceptions(client.GetAsync(addressUri));
                 }
             }, server => server.AcceptConnectionAsync(async connection =>
             {
@@ -623,7 +685,7 @@ namespace System.Net.Http.Functional.Tests
             Assert.True(connectionAccepted);
         }
 
-        [Theory]
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsTlsSupported))]
         [MemberData(nameof(DestinationHost_MemberData))]
         public async Task ProxyTunnelRequest_PortSpecified_NotStrippedOffInUri(string host)
         {
@@ -634,12 +696,11 @@ namespace System.Net.Http.Functional.Tests
 
             await LoopbackServer.CreateClientAndServerAsync(async proxyUri =>
             {
-                using (HttpClientHandler handler = CreateHttpClientHandler())
+                using (HttpClientHandler handler = CreateHttpClientHandler(allowAllCertificates: true))
                 using (HttpClient client = CreateHttpClient(handler))
                 {
                     handler.Proxy = new WebProxy(proxyUri);
-                    handler.ServerCertificateCustomValidationCallback = TestHelper.AllowAllCertificates;
-                    try { await client.GetAsync(addressUri); } catch { }
+                    await IgnoreExceptions(client.GetAsync(addressUri));
                 }
             }, server => server.AcceptConnectionAsync(async connection =>
             {
@@ -654,6 +715,7 @@ namespace System.Net.Http.Functional.Tests
         [Theory]
         [InlineData(true)]
         [InlineData(false)]
+        [SkipOnPlatform(TestPlatforms.Wasi, "WASI HttpHandler does not support proxy")]
         public async Task ProxyTunnelRequest_UserAgentHeaderAdded(bool addUserAgentHeader)
         {
             if (IsWinHttpHandler)
@@ -667,11 +729,10 @@ namespace System.Net.Http.Functional.Tests
 
             await LoopbackServer.CreateClientAndServerAsync(async proxyUri =>
             {
-                using (HttpClientHandler handler = CreateHttpClientHandler())
+                using (HttpClientHandler handler = CreateHttpClientHandler(allowAllCertificates: true))
                 using (var client = new HttpClient(handler))
                 {
                     handler.Proxy = new WebProxy(proxyUri);
-                    handler.ServerCertificateCustomValidationCallback = TestHelper.AllowAllCertificates;
                     if (addUserAgentHeader)
                     {
                         client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("Mozilla", "5.0"));
@@ -719,6 +780,112 @@ namespace System.Net.Http.Functional.Tests
                     yield return new object[] { new NetworkCredential("username", "password", "domain"), wrapCredsInCache, connectionCloseAfter407 };
                 }
             }
+        }
+
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsTlsSupported))]
+        public async Task ProxiedRequest_HttpToHttpsRedirect_ProxyAuthNotSentToServer()
+        {
+            if (IsWinHttpHandler)
+            {
+                return; // Test targets SocketsHttpHandler proxy behavior.
+            }
+
+            const string Content = "Hello world";
+            var proxyCreds = new NetworkCredential("username", "password");
+
+            // Normal HTTP proxy that requires Basic authentication.
+            var proxyOptions = new LoopbackProxyServer.Options { AuthenticationSchemes = AuthenticationSchemes.Basic };
+            using LoopbackProxyServer proxyServer = LoopbackProxyServer.Create(proxyOptions);
+
+            // HTTPS server that ultimately handles the request (reached via a CONNECT tunnel).
+            var httpsOptions = new LoopbackServer.Options { UseSsl = true };
+            await LoopbackServer.CreateServerAsync(async (httpsServer, httpsUri) =>
+            {
+                // Plain HTTP server that returns a redirect to the HTTPS server (reached via plain forwarding).
+                await LoopbackServer.CreateServerAsync(async (httpServer, httpUri) =>
+                {
+                    using HttpClientHandler handler = CreateHttpClientHandler(allowAllCertificates: true);
+                    handler.Proxy = new WebProxy(proxyServer.Uri) { Credentials = proxyCreds };
+                    using HttpClient client = CreateHttpClient(handler);
+
+                    // Client sends the request to the HTTP server through the HTTP proxy.
+                    Task<HttpResponseMessage> clientTask = client.GetAsync(httpUri);
+
+                    // The HTTP server responds with a redirect pointing at the HTTPS server.
+                    await httpServer.AcceptConnectionSendResponseAndCloseAsync(
+                        HttpStatusCode.Redirect,
+                        additionalHeaders: $"Location: {httpsUri.AbsoluteUri}\r\n");
+
+                    // The HTTPS server handles the redirected request and captures the headers it received.
+                    List<string> serverRequestHeaders = null;
+                    await httpsServer.AcceptConnectionAsync(async connection =>
+                    {
+                        serverRequestHeaders = await connection.ReadRequestHeaderAndSendResponseAsync(content: Content);
+                    });
+
+                    using HttpResponseMessage response = await clientTask;
+                    Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                    Assert.Equal(Content, await response.Content.ReadAsStringAsync());
+
+                    // The credentials used to authenticate to the proxy must never be forwarded to the origin server.
+                    Assert.DoesNotContain(serverRequestHeaders, h => h.StartsWith("Proxy-Authorization", StringComparison.OrdinalIgnoreCase));
+                }, new LoopbackServer.Options());
+            }, httpsOptions);
+        }
+
+        [ConditionalFact(typeof(HttpClientHandler_Proxy_Test), nameof(IsSocketsHttpHandlerAndRemoteExecutorSupported))]
+        public async Task ProxiedRequest_HttpToNoProxyRedirect_ProxyAuthNotSentToServer()
+        {
+            await RemoteExecutor.Invoke(async (useVersionString) =>
+            {
+                const string Content = "Hello world";
+                var proxyCreds = new NetworkCredential("username", "password");
+
+                // Normal HTTP proxy that requires Basic authentication.
+                var proxyOptions = new LoopbackProxyServer.Options { AuthenticationSchemes = AuthenticationSchemes.Basic };
+                using LoopbackProxyServer proxyServer = LoopbackProxyServer.Create(proxyOptions);
+
+                // HTTP server that ultimately handles the request.
+                await LoopbackServer.CreateServerAsync(async (httpServer2, httpUri2) =>
+                {
+                    // Plain HTTP server that returns a redirect to the HTTPS server (reached via plain forwarding).
+                    await LoopbackServer.CreateServerAsync(async (httpServer1, httpUri1) =>
+                    {
+                        Console.WriteLine($"{proxyServer.Uri}, {httpUri1}, {httpUri2}");
+                        Environment.SetEnvironmentVariable("http_proxy", proxyServer.Uri.AbsoluteUri.ToString());
+                        Environment.SetEnvironmentVariable("no_proxy", "localhost");
+
+                        using HttpClientHandler handler = CreateHttpClientHandler(allowAllCertificates: true);
+                        handler.DefaultProxyCredentials = proxyCreds;
+                        using HttpClient client = CreateHttpClient(handler, useVersionString);
+
+                        // Client sends the request to the HTTP server through the HTTP proxy.
+                        Task<HttpResponseMessage> clientTask = client.GetAsync(httpUri1);
+
+                        // The HTTP server responds with a redirect pointing at the HTTPS server.
+                        await httpServer1.AcceptConnectionSendResponseAndCloseAsync(
+                            HttpStatusCode.Redirect,
+                            additionalHeaders: $"Location: {httpUri2.Scheme}://localhost:{httpUri2.Port}\r\n");
+
+                        // The HTTPS server handles the redirected request and captures the headers it received.
+                        List<string> serverRequestHeaders = null;
+                        await httpServer2.AcceptConnectionAsync(async connection =>
+                        {
+                            serverRequestHeaders = await connection.ReadRequestHeaderAndSendResponseAsync(content: Content);
+                        });
+
+                        using HttpResponseMessage response = await clientTask;
+                        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                        Assert.Equal(Content, await response.Content.ReadAsStringAsync());
+
+                        Assert.Equal(2, proxyServer.Requests.Count);
+                        Assert.NotNull(proxyServer.Requests[1].AuthorizationHeaderValueToken);
+
+                        // The credentials used to authenticate to the proxy must never be forwarded to the origin server.
+                        Assert.DoesNotContain(serverRequestHeaders, h => h.StartsWith("Proxy-Authorization", StringComparison.OrdinalIgnoreCase));
+                    }, new LoopbackServer.Options());
+                });
+            }, UseVersion.ToString()).DisposeAsync();
         }
 
         private sealed class TrackDisposalProxy : IWebProxy, IDisposable

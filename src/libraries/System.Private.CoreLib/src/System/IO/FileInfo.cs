@@ -2,8 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics;
-using System.Text;
 using System.Runtime.Versioning;
+using System.Text;
 
 namespace System.IO
 {
@@ -14,21 +14,22 @@ namespace System.IO
         private FileInfo() { }
 
         public FileInfo(string fileName)
-            : this(fileName, isNormalized: false)
+            : this(fileName ?? throw new ArgumentNullException(nameof(fileName)), isNormalized: false)
         {
         }
 
         internal FileInfo(string originalPath, string? fullPath = null, string? fileName = null, bool isNormalized = false)
         {
-            // Want to throw the original argument name
-            OriginalPath = originalPath ?? throw new ArgumentNullException(nameof(fileName));
+            OriginalPath = originalPath;
 
-            fullPath = fullPath ?? originalPath;
+            fullPath ??= originalPath;
             Debug.Assert(!isNormalized || !PathInternal.IsPartiallyQualified(fullPath.AsSpan()), "should be fully qualified if normalized");
 
             FullPath = isNormalized ? fullPath ?? originalPath : Path.GetFullPath(fullPath);
-            _name = fileName ?? Path.GetFileName(originalPath);
+            _name = fileName;
         }
+
+        public override string Name => _name ??= Path.GetFileName(OriginalPath);
 
         public long Length
         {
@@ -71,28 +72,34 @@ namespace System.IO
         }
 
         /// <summary>
-        /// Initializes a new instance of the <see cref="System.IO.FileStream" /> class with the specified creation mode, read/write and sharing permission, the access other FileStreams can have to the same file, the buffer size, additional file options and the allocation size.
+        /// Initializes a new instance of the <see cref="FileStream" /> class with the specified creation mode, read/write and sharing permission, the access other FileStreams can have to the same file, the buffer size, additional file options and the allocation size.
         /// </summary>
-        /// <remarks><see cref="System.IO.FileStream(string,System.IO.FileStreamOptions)"/> for information about exceptions.</remarks>
-        public FileStream Open(FileStreamOptions options) => File.Open(NormalizedPath, options);
+        /// <remarks><see cref="FileStream(string,FileStreamOptions)"/> for information about exceptions.</remarks>
+        public FileStream Open(FileStreamOptions options)
+        {
+            FileStream fileStream = File.Open(NormalizedPath, options);
+            Invalidate();
+            return fileStream;
+        }
 
         public StreamReader OpenText()
-            => new StreamReader(NormalizedPath, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        {
+            StreamReader reader = new StreamReader(NormalizedPath, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            Invalidate();
+            return reader;
+        }
 
         public StreamWriter CreateText()
-            => new StreamWriter(NormalizedPath, append: false);
+            => CreateStreamWriter(append: false);
 
         public StreamWriter AppendText()
-            => new StreamWriter(NormalizedPath, append: true);
+            => CreateStreamWriter(append: true);
 
         public FileInfo CopyTo(string destFileName) => CopyTo(destFileName, overwrite: false);
 
         public FileInfo CopyTo(string destFileName, bool overwrite)
         {
-            if (destFileName == null)
-                throw new ArgumentNullException(nameof(destFileName), SR.ArgumentNull_FileName);
-            if (destFileName.Length == 0)
-                throw new ArgumentException(SR.Argument_EmptyFileName, nameof(destFileName));
+            ArgumentException.ThrowIfNullOrEmpty(destFileName);
 
             string destinationPath = Path.GetFullPath(destFileName);
             FileSystem.CopyFile(FullPath, destinationPath, overwrite);
@@ -112,6 +119,21 @@ namespace System.IO
             Invalidate();
         }
 
+        public override bool Exists
+        {
+            get
+            {
+                try
+                {
+                    return ExistsCore;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+        }
+
         public FileStream Open(FileMode mode)
             => Open(mode, (mode == FileMode.Append ? FileAccess.Write : FileAccess.ReadWrite), FileShare.None);
 
@@ -119,13 +141,25 @@ namespace System.IO
             => Open(mode, access, FileShare.None);
 
         public FileStream Open(FileMode mode, FileAccess access, FileShare share)
-            => new FileStream(NormalizedPath, mode, access, share);
+        {
+            FileStream fileStream = new FileStream(NormalizedPath, mode, access, share);
+            Invalidate();
+            return fileStream;
+        }
 
         public FileStream OpenRead()
-            => new FileStream(NormalizedPath, FileMode.Open, FileAccess.Read, FileShare.Read, File.DefaultBufferSize, false);
+        {
+            FileStream fileStream = new FileStream(NormalizedPath, FileMode.Open, FileAccess.Read, FileShare.Read, File.DefaultBufferSize, false);
+            Invalidate();
+            return fileStream;
+        }
 
         public FileStream OpenWrite()
-            => new FileStream(NormalizedPath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
+        {
+            FileStream fileStream = new FileStream(NormalizedPath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
+            Invalidate();
+            return fileStream;
+        }
 
         // Moves a given file to a new location and potentially a new file name.
         // This method does work across volumes.
@@ -139,10 +173,7 @@ namespace System.IO
         // This method does work across volumes.
         public void MoveTo(string destFileName, bool overwrite)
         {
-            if (destFileName == null)
-                throw new ArgumentNullException(nameof(destFileName));
-            if (destFileName.Length == 0)
-                throw new ArgumentException(SR.Argument_EmptyFileName, nameof(destFileName));
+            ArgumentException.ThrowIfNullOrEmpty(destFileName);
 
             string fullDestFileName = Path.GetFullPath(destFileName);
 
@@ -150,8 +181,9 @@ namespace System.IO
             // as it does on Windows.These checks can be removed if a solution to
             // https://github.com/dotnet/runtime/issues/14885 is found that doesn't require
             // validity checks before making an API call.
-            if (!new DirectoryInfo(Path.GetDirectoryName(FullName)!).Exists)
-                throw new DirectoryNotFoundException(SR.Format(SR.IO_PathNotFound_Path, FullName));
+            string? directoryPath = Path.GetDirectoryName(FullName);
+            if (!System.IO.Directory.Exists(directoryPath))
+                throw new DirectoryNotFoundException(SR.Format(SR.IO_PathNotFound_Path, directoryPath), directoryPath);
 
             if (!Exists)
                 throw new FileNotFoundException(SR.Format(SR.IO_FileNotFound_FileName, FullName), FullName);
@@ -171,8 +203,7 @@ namespace System.IO
 
         public FileInfo Replace(string destinationFileName, string? destinationBackupFileName, bool ignoreMetadataErrors)
         {
-            if (destinationFileName == null)
-                throw new ArgumentNullException(nameof(destinationFileName));
+            ArgumentNullException.ThrowIfNull(destinationFileName);
 
             FileSystem.ReplaceFile(
                 FullPath,
@@ -180,13 +211,48 @@ namespace System.IO
                 destinationBackupFileName != null ? Path.GetFullPath(destinationBackupFileName) : null,
                 ignoreMetadataErrors);
 
+            Invalidate();
             return new FileInfo(destinationFileName);
         }
 
         [SupportedOSPlatform("windows")]
-        public void Decrypt() => File.Decrypt(FullPath);
+        public void Decrypt()
+        {
+            File.Decrypt(FullPath);
+            Invalidate();
+        }
 
         [SupportedOSPlatform("windows")]
-        public void Encrypt() => File.Encrypt(FullPath);
+        public void Encrypt()
+        {
+            File.Encrypt(FullPath);
+            Invalidate();
+        }
+
+        private StreamWriter CreateStreamWriter(bool append)
+        {
+            StreamWriter streamWriter = new StreamWriter(NormalizedPath, append);
+            Invalidate();
+            return streamWriter;
+        }
+
+        /// <summary>
+        /// Creates a hard link located in <see cref="Name"/> that refers to the same file content as <paramref name="pathToTarget"/>.
+        /// </summary>
+        /// <param name="pathToTarget">The path of the hard link target.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="pathToTarget"/> is <see langword="null"/>.</exception>
+        /// <exception cref="ArgumentException"><paramref name="pathToTarget"/> is empty.
+        /// -or-
+        /// <paramref name="pathToTarget"/> contains invalid path characters.</exception>
+        /// <exception cref="FileNotFoundException">The file specified by <paramref name="pathToTarget"/> does not exist.</exception>
+        /// <exception cref="IOException">A file or directory already exists in the location of <see cref="Name"/>.
+        /// -or-
+        /// An I/O error occurred.</exception>
+        public void CreateAsHardLink(string pathToTarget)
+        {
+            FileSystem.VerifyValidPath(pathToTarget, nameof(pathToTarget));
+            FileSystem.CreateHardLink(OriginalPath, pathToTarget);
+            Invalidate();
+        }
     }
 }

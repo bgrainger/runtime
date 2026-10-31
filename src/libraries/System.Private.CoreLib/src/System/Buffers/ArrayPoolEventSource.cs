@@ -1,18 +1,15 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Diagnostics.Tracing;
 using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.Tracing;
 
 namespace System.Buffers
 {
     [EventSource(Guid = "0866B2B8-5CEF-5DB9-2612-0C0FFD814A44", Name = "System.Buffers.ArrayPoolEventSource")]
-    [EventSourceAutoGenerate]
     internal sealed partial class ArrayPoolEventSource : EventSource
     {
-#if !ES_BUILD_STANDALONE
         private const string EventSourceSuppressMessage = "Parameters to this method are primitive and are trimmer safe";
-#endif
         internal static readonly ArrayPoolEventSource Log = new ArrayPoolEventSource();
 
         /// <summary>Bucket ID used when renting/returning an array that's too large for a pool.</summary>
@@ -38,10 +35,6 @@ namespace System.Buffers
             OverMaximumSize,
         }
 
-        // Parameterized constructor to block initialization and ensure the EventSourceGenerator is creating the default constructor
-        // as you can't make a constructor partial.
-        private ArrayPoolEventSource(int _) { }
-
         /// <summary>
         /// Event for when a buffer is rented.  This is invoked once for every successful call to Rent,
         /// regardless of whether a buffer is allocated or a buffer is taken from the pool.  In a
@@ -50,10 +43,8 @@ namespace System.Buffers
         /// of BufferAllocated events being less than or equal to those numbers (ideally significantly
         /// less than).
         /// </summary>
-#if !ES_BUILD_STANDALONE
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:UnrecognizedReflectionPattern",
                    Justification = EventSourceSuppressMessage)]
-#endif
         [Event(1, Level = EventLevel.Verbose)]
         internal unsafe void BufferRented(int bufferId, int bufferSize, int poolId, int bucketId)
         {
@@ -78,10 +69,8 @@ namespace System.Buffers
         /// of BufferAllocated events is significantly smaller than the number of BufferRented and
         /// BufferReturned events.
         /// </summary>
-#if !ES_BUILD_STANDALONE
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:UnrecognizedReflectionPattern",
                    Justification = EventSourceSuppressMessage)]
-#endif
         [Event(2, Level = EventLevel.Informational)]
         internal unsafe void BufferAllocated(int bufferId, int bufferSize, int poolId, int bucketId, BufferAllocatedReason reason)
         {
@@ -114,7 +103,7 @@ namespace System.Buffers
 
         /// <summary>
         /// Event raised when we attempt to free a buffer due to inactivity or memory pressure (by no longer
-        /// referencing it). It is possible (although not commmon) this buffer could be rented as we attempt
+        /// referencing it). It is possible (although not common) this buffer could be rented as we attempt
         /// to free it. A rent event before or after this event for the same ID, is a rare, but expected case.
         /// </summary>
         [Event(4, Level = EventLevel.Informational)]
@@ -129,10 +118,8 @@ namespace System.Buffers
         /// <summary>
         /// Event raised when a buffer returned to the pool is dropped.
         /// </summary>
-#if !ES_BUILD_STANDALONE
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
                    Justification = EventSourceSuppressMessage)]
-#endif
         [Event(6, Level = EventLevel.Informational)]
         internal unsafe void BufferDropped(int bufferId, int bufferSize, int poolId, int bucketId, BufferDroppedReason reason)
         {

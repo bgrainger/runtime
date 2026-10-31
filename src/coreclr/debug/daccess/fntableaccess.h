@@ -11,24 +11,12 @@
 #define _FN_TABLE_ACCESS_H
 
 
-#if !defined(TARGET_X86)
-
-#ifndef TARGET_UNIX
-#define DEBUGSUPPORT_STUBS_HAVE_UNWIND_INFO
-#endif // !TARGET_UNIX
-
-#ifndef USE_INDIRECT_CODEHEADER
-#define USE_INDIRECT_CODEHEADER
-#endif  // USE_INDIRECT_CODEHEADER
-#endif
-
-
 struct FakeEEJitManager
 {
     LPVOID      __VFN_table;
     LPVOID      m_runtimeSupport;
-    LPVOID      m_pCodeHeap;
-    // Nothing after this point matters: we only need the correct offset of m_pCodeHeap.
+    LPVOID      m_pAllCodeHeaps;
+    // Nothing after this point matters: we only need the correct offset of m_pAllCodeHeaps.
 };
 
 struct FakeHeapList
@@ -40,14 +28,14 @@ struct FakeHeapList
     DWORD_PTR           mapBase;        // changed from PBYTE
     DWORD_PTR           pHdrMap;        // changed from DWORD*
     size_t              maxCodeHeapSize;
-    size_t              reserveForJumpStubs;
-#if defined(TARGET_AMD64) || defined(TARGET_ARM64)
+    DWORD_PTR           pLoaderAllocator;
+#if defined(TARGET_64BIT)
     DWORD_PTR           CLRPersonalityRoutine;
 #endif
 
     DWORD_PTR GetModuleBase()
     {
-#if defined(TARGET_AMD64) || defined(TARGET_ARM64)
+#if defined(TARGET_64BIT)
         return CLRPersonalityRoutine;
 #else
         return mapBase;
@@ -75,64 +63,6 @@ typedef struct _FakeHpCodeHdr
 
 #define FAKE_STUB_CODE_BLOCK_LAST 0xF
 
-#ifdef DEBUGSUPPORT_STUBS_HAVE_UNWIND_INFO
-
-struct FakeStubUnwindInfoHeaderSuffix
-{
-    UCHAR nUnwindInfoSize;
-};
-
-// Variable-sized struct that preceeds a Stub when the stub requires unwind
-// information.  Followed by a StubUnwindInfoHeaderSuffix.
-struct FakeStubUnwindInfoHeader
-{
-    FakeStubUnwindInfoHeader *pNext;
-    T_RUNTIME_FUNCTION FunctionEntry;
-    UNWIND_INFO UnwindInfo;  // variable length
-};
-
-// List of stub address ranges, in increasing address order.
-struct FakeStubUnwindInfoHeapSegment
-{
-    PBYTE pbBaseAddress;
-    SIZE_T cbSegment;
-    FakeStubUnwindInfoHeader *pUnwindHeaderList;
-    FakeStubUnwindInfoHeapSegment *pNext;
-};
-
-#define FAKE_STUB_EXTERNAL_ENTRY_BIT 0x40000000
-#define FAKE_STUB_UNWIND_INFO_BIT   0x08000000
-
-#ifdef _DEBUG
-#define FAKE_STUB_SIGNATURE         0x42555453
-#endif
-
-struct FakeStub
-{
-    ULONG   m_refcount;
-    ULONG   m_patchOffset;
-
-    UINT    m_numCodeBytes;
-#ifdef _DEBUG
-    UINT32  m_signature;
-#else
-#ifdef HOST_64BIT
-    //README ALIGNMENT: in retail mode UINT m_numCodeBytes does not align to 16byte for the code
-    //                   after the Stub struct. This is to pad properly
-    UINT    m_pad_code_bytes;
-#endif // HOST_64BIT
-#endif // _DEBUG
-};
-
-#endif // DEBUGSUPPORT_STUBS_HAVE_UNWIND_INFO
-
-
-enum FakeEEDynamicFunctionTableType
-{
-    FAKEDYNFNTABLE_JIT = 0,
-    FAKEDYNFNTABLE_STUB = 1,
-};
-
 
 #ifdef CHECK_DUPLICATED_STRUCT_LAYOUTS
 
@@ -143,9 +73,9 @@ enum FakeEEDynamicFunctionTableType
 //
 class CheckDuplicatedStructLayouts
 {
-#define CHECK_OFFSET(cls, fld) CPP_ASSERT(cls##fld, offsetof(Fake##cls, fld) == offsetof(cls, fld))
+#define CHECK_OFFSET(cls, fld) static_assert(offsetof(Fake##cls, fld) == offsetof(cls, fld))
 
-    CHECK_OFFSET(EEJitManager, m_pCodeHeap);
+    CHECK_OFFSET(EEJitManager, m_pAllCodeHeaps);
 
     CHECK_OFFSET(HeapList, hpNext);
     CHECK_OFFSET(HeapList, startAddress);
@@ -158,56 +88,39 @@ class CheckDuplicatedStructLayouts
     CHECK_OFFSET(RealCodeHeader,    unwindInfos);
 #endif  // !TARGET_X86
 
-#ifdef DEBUGSUPPORT_STUBS_HAVE_UNWIND_INFO
-    CHECK_OFFSET(StubUnwindInfoHeader, pNext);
-
-    CHECK_OFFSET(StubUnwindInfoHeapSegment, pbBaseAddress);
-    CHECK_OFFSET(StubUnwindInfoHeapSegment, cbSegment);
-    CHECK_OFFSET(StubUnwindInfoHeapSegment, pUnwindHeaderList);
-    CHECK_OFFSET(StubUnwindInfoHeapSegment, pNext);
-
-
-    CHECK_OFFSET(Stub, m_refcount);
-    CHECK_OFFSET(Stub, m_patchOffset);
-    CHECK_OFFSET(Stub, m_numCodeBytes);
-#ifdef _DEBUG
-    CHECK_OFFSET(Stub, m_signature);
-#endif // _DEBUG
-
-#endif // DEBUGSUPPORT_STUBS_HAVE_UNWIND_INFO
+#if defined(TARGET_WINDOWS) && defined(TARGET_64BIT)
+    // Keep the descriptor-free reader in mscordaccore_enummemory/FunctionTableCallbacks.cs in sync.
+    static_assert(offsetof(DYNAMIC_FUNCTION_TABLE, MinimumAddress) == 0x20);
+    static_assert(offsetof(DYNAMIC_FUNCTION_TABLE, Context) == 0x40);
+    static_assert(offsetof(EEJitManager, m_pAllCodeHeaps) == 0x10);
+    static_assert(offsetof(HeapList, hpNext) == 0x00);
+    static_assert(offsetof(HeapList, startAddress) == 0x10);
+    static_assert(offsetof(HeapList, endAddress) == 0x18);
+    static_assert(offsetof(HeapList, mapBase) == 0x20);
+    static_assert(offsetof(HeapList, pHdrMap) == 0x28);
+    static_assert(offsetof(HeapList, CLRPersonalityRoutine) == 0x40);
+    static_assert(offsetof(RealCodeHeader, nUnwindInfos) == 0x20);
+    static_assert(offsetof(RealCodeHeader, unwindInfos) == 0x24);
+    static_assert(sizeof(CodeHeader) == sizeof(uint64_t));
+    static_assert(STUB_CODE_BLOCK_LAST == 0xf);
+    static_assert(VALUE_MASK == 0x7FFFFFFFFFFFFFFFLL);
+    static_assert(BYTES_PER_BUCKET == 32);
+    static_assert(CODE_ALIGN == 4);
+    static_assert(NIBBLES_PER_DWORD == 8);
+    static_assert(NIBBLE_SIZE == 4);
+    static_assert(NIBBLE_MASK == 0xf);
+#if defined(TARGET_AMD64)
+    static_assert(sizeof(T_RUNTIME_FUNCTION) == 12);
+#elif defined(TARGET_ARM64)
+    static_assert(sizeof(T_RUNTIME_FUNCTION) == 8);
+#endif // TARGET_AMD64
+#endif // TARGET_WINDOWS && TARGET_64BIT
 
 #undef CHECK_OFFSET
-
-#ifdef DEBUGSUPPORT_STUBS_HAVE_UNWIND_INFO
-
-    static_assert_no_msg(       Stub::EXTERNAL_ENTRY_BIT
-             == FAKE_STUB_EXTERNAL_ENTRY_BIT);
-
-    static_assert_no_msg(       Stub::UNWIND_INFO_BIT
-             == FAKE_STUB_UNWIND_INFO_BIT);
-
-#ifdef _DEBUG
-    static_assert_no_msg(   FAKE_STUB_SIGNATURE
-             == Stub::kUsedStub);
-#endif
-
-#endif // DEBUGSUPPORT_STUBS_HAVE_UNWIND_INFO
 };
-
-#ifdef DEBUGSUPPORT_STUBS_HAVE_UNWIND_INFO
-
-static_assert_no_msg(   FAKEDYNFNTABLE_JIT
-         ==     DYNFNTABLE_JIT);
-
-static_assert_no_msg(   FAKEDYNFNTABLE_STUB
-         ==     DYNFNTABLE_STUB);
-
-#endif // DEBUGSUPPORT_STUBS_HAVE_UNWIND_INFO
 
 #else // CHECK_DUPLICATED_STRUCT_LAYOUTS
 
-BOOL WINAPI             DllMain(HINSTANCE hDLL, DWORD dwReason, LPVOID pReserved);
-//NTSTATUS                OutOfProcessFindHeader(HANDLE hProcess, DWORD_PTR pMapIn, DWORD_PTR addr, DWORD_PTR &codeHead);
 extern "C" NTSTATUS     OutOfProcessFunctionTableCallback(IN HANDLE hProcess, IN PVOID TableAddress, OUT PULONG pnEntries, OUT PT_RUNTIME_FUNCTION* ppFunctions);
 
 

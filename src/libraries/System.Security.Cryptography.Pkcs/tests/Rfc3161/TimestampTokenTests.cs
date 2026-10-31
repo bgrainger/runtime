@@ -8,6 +8,7 @@ using Xunit;
 
 namespace System.Security.Cryptography.Pkcs.Tests
 {
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/126697", typeof(PlatformDetection), nameof(PlatformDetection.IsAppleMobile), nameof(PlatformDetection.IsNativeAot))]
     public static class TimestampTokenTests
     {
         [Theory]
@@ -85,10 +86,22 @@ namespace System.Security.Cryptography.Pkcs.Tests
 
                 using (var signerCert = new X509Certificate2(testData.ExternalCertificateBytes))
                 {
-                    // Assert.NoThrow
-                    signedCms.CheckSignature(
-                        new X509Certificate2Collection(signerCert),
-                        true);
+                    if (!SignatureSupport.SupportsRsaSha1Signatures &&
+                        signedCms.SignerInfos[0].SignatureAlgorithm.Value == Oids.Rsa &&
+                        signedCms.SignerInfos[0].DigestAlgorithm.Value == Oids.Sha1)
+                    {
+                        Assert.ThrowsAny<CryptographicException>(() => signedCms.CheckSignature(
+                            new X509Certificate2Collection(signerCert),
+                            true));
+                        return;
+                    }
+                    else
+                    {
+                        // Assert.NoThrow
+                        signedCms.CheckSignature(
+                            new X509Certificate2Collection(signerCert),
+                            true);
+                    }
                 }
             }
 
@@ -329,7 +342,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
         public static void MatchV2(
             X509IncludeOption includeOption,
             SigningCertificateOption v2Option,
-            string hashAlgName)
+            string? hashAlgName)
         {
             CustomBuild_CertMatch(
                 Certificates.ValidLookingTsaCert,
@@ -349,7 +362,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
         [InlineData(X509IncludeOption.None, "SHA1")]
         [InlineData(X509IncludeOption.WholeChain, "SHA384")]
         [InlineData(X509IncludeOption.None, "SHA384")]
-        public static void CertHashMismatchV2(X509IncludeOption includeOption, string hashAlgName)
+        public static void CertHashMismatchV2(X509IncludeOption includeOption, string? hashAlgName)
         {
             CustomBuild_CertMismatch(
                 Certificates.ValidLookingTsaCert,
@@ -405,7 +418,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
             X509IncludeOption includeOption,
             SigningCertificateOption v2Option,
             SubjectIdentifierType identifierType,
-            string hashAlgName)
+            string? hashAlgName)
         {
             CustomBuild_CertMismatch(
                 Certificates.ValidLookingTsaCert,
@@ -502,7 +515,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
             X509IncludeOption includeOption,
             SigningCertificateOption v1Option,
             SigningCertificateOption v2Option,
-            string hashAlgName)
+            string? hashAlgName)
         {
             CustomBuild_CertMatch(
                 Certificates.ValidLookingTsaCert,
@@ -549,7 +562,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
             SigningCertificateOption v1Option,
             SigningCertificateOption v2Option,
             SubjectIdentifierType identifierType,
-            string hashAlgName)
+            string? hashAlgName)
         {
             CustomBuild_CertMismatch(
                 Certificates.ValidLookingTsaCert,

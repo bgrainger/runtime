@@ -42,13 +42,11 @@ inline BaseAssemblySpec::~BaseAssemblySpec()
         delete [] m_pAssemblyName;
     if (m_ownedFlags & PUBLIC_KEY_OR_TOKEN_OWNED)
         delete [] m_pbPublicKeyOrToken;
-    if (m_wszCodeBase && (m_ownedFlags & CODE_BASE_OWNED))
-        delete [] m_wszCodeBase;
     if (m_ownedFlags & LOCALE_OWNED)
         delete [] m_context.szLocale;
 }
 
-inline HRESULT BaseAssemblySpec::Init(LPCSTR pAssemblyName,
+inline void BaseAssemblySpec::Init(LPCSTR pAssemblyName,
                          const AssemblyMetaDataInternal* pContext,
                          const BYTE * pbPublicKeyOrToken, DWORD cbPublicKeyOrToken,
                          DWORD dwFlags)
@@ -64,26 +62,15 @@ inline HRESULT BaseAssemblySpec::Init(LPCSTR pAssemblyName,
     m_ownedFlags = 0;
 
     m_context = *pContext;
-
-    return S_OK;
 }
 
-inline HRESULT BaseAssemblySpec::Init(LPCSTR pAssemblyDisplayName)
-{
-    WRAPPER_NO_CONTRACT;
-    m_pAssemblyName = pAssemblyDisplayName;
-    // We eagerly parse the name to allow FusionBind::Hash to avoid throwing.
-    return ParseName();
-}
-
-inline VOID BaseAssemblySpec::CloneFields(int ownedFlags)
+inline VOID BaseAssemblySpec::CloneFields()
 {
     CONTRACTL
     {
         THROWS;
         GC_NOTRIGGER;
         MODE_ANY;
-        INJECT_FAULT(ThrowOutOfMemory(););
     }
     CONTRACTL_END
 
@@ -91,7 +78,7 @@ inline VOID BaseAssemblySpec::CloneFields(int ownedFlags)
     DWORD hash = Hash();
 #endif
 
-    if ((~m_ownedFlags & NAME_OWNED) && (ownedFlags & NAME_OWNED) &&
+    if ((~m_ownedFlags & NAME_OWNED) &&
         m_pAssemblyName) {
         size_t len = strlen(m_pAssemblyName) + 1;
         LPSTR temp = new char [len];
@@ -101,14 +88,14 @@ inline VOID BaseAssemblySpec::CloneFields(int ownedFlags)
     }
 
     if ((~m_ownedFlags & PUBLIC_KEY_OR_TOKEN_OWNED) &&
-        (ownedFlags & PUBLIC_KEY_OR_TOKEN_OWNED) && m_pbPublicKeyOrToken) {
+        m_pbPublicKeyOrToken) {
         BYTE *temp = new BYTE [m_cbPublicKeyOrToken];
         memcpy(temp, m_pbPublicKeyOrToken, m_cbPublicKeyOrToken);
         m_pbPublicKeyOrToken = temp;
         m_ownedFlags |= PUBLIC_KEY_OR_TOKEN_OWNED;
     }
 
-    if ((~m_ownedFlags & LOCALE_OWNED) && (ownedFlags & LOCALE_OWNED) &&
+    if ((~m_ownedFlags & LOCALE_OWNED) &&
         m_context.szLocale) {
         size_t len = strlen(m_context.szLocale) + 1;
         LPSTR temp = new char [len];
@@ -117,19 +104,10 @@ inline VOID BaseAssemblySpec::CloneFields(int ownedFlags)
         m_ownedFlags |= LOCALE_OWNED;
     }
 
-    if ((~m_ownedFlags & CODEBASE_OWNED) && (ownedFlags & CODEBASE_OWNED) &&
-        m_wszCodeBase) {
-        size_t len = wcslen(m_wszCodeBase) + 1;
-        LPWSTR temp = new WCHAR [len];
-        wcscpy_s(temp, len, m_wszCodeBase);
-        m_wszCodeBase = temp;
-        m_ownedFlags |= CODEBASE_OWNED;
-    }
-
     _ASSERTE(hash == Hash());
 }
 
-inline VOID BaseAssemblySpec::CloneFieldsToLoaderHeap(int flags, LoaderHeap *pHeap, AllocMemTracker *pamTracker)
+inline VOID BaseAssemblySpec::CloneFieldsToLoaderHeap(LoaderHeap *pHeap, AllocMemTracker *pamTracker)
 {
     CONTRACTL
     {
@@ -137,7 +115,6 @@ inline VOID BaseAssemblySpec::CloneFieldsToLoaderHeap(int flags, LoaderHeap *pHe
         THROWS;
         GC_TRIGGERS;
         MODE_ANY;
-        INJECT_FAULT(ThrowOutOfMemory(););
     }
     CONTRACTL_END
 
@@ -145,7 +122,7 @@ inline VOID BaseAssemblySpec::CloneFieldsToLoaderHeap(int flags, LoaderHeap *pHe
     DWORD hash = Hash();
 #endif
 
-    if ((~m_ownedFlags & NAME_OWNED)  && (flags &NAME_OWNED) &&
+    if ((~m_ownedFlags & NAME_OWNED) &&
         m_pAssemblyName) {
         size_t len = strlen(m_pAssemblyName) + 1;
         LPSTR temp = (LPSTR)pamTracker->Track( pHeap->AllocMem(S_SIZE_T (len)) );
@@ -153,27 +130,19 @@ inline VOID BaseAssemblySpec::CloneFieldsToLoaderHeap(int flags, LoaderHeap *pHe
         m_pAssemblyName = temp;
     }
 
-    if ((~m_ownedFlags & PUBLIC_KEY_OR_TOKEN_OWNED) && (flags &PUBLIC_KEY_OR_TOKEN_OWNED) &&
+    if ((~m_ownedFlags & PUBLIC_KEY_OR_TOKEN_OWNED) &&
         m_pbPublicKeyOrToken && m_cbPublicKeyOrToken > 0) {
         BYTE *temp = (BYTE *)pamTracker->Track( pHeap->AllocMem(S_SIZE_T (m_cbPublicKeyOrToken)) );
         memcpy(temp, m_pbPublicKeyOrToken, m_cbPublicKeyOrToken);
         m_pbPublicKeyOrToken = temp;
     }
 
-    if ((~m_ownedFlags & LOCALE_OWNED)  && (flags &LOCALE_OWNED) &&
+    if ((~m_ownedFlags & LOCALE_OWNED) &&
         m_context.szLocale) {
         size_t len = strlen(m_context.szLocale) + 1;
         LPSTR temp = (char *)pamTracker->Track( pHeap->AllocMem(S_SIZE_T (len)) );
         strcpy_s(temp, len, m_context.szLocale);
         m_context.szLocale = temp;
-    }
-
-    if ((~m_ownedFlags & CODEBASE_OWNED)  && (flags &CODEBASE_OWNED) &&
-        m_wszCodeBase) {
-        size_t len = wcslen(m_wszCodeBase) + 1;
-        LPWSTR temp = (LPWSTR)pamTracker->Track( pHeap->AllocMem(S_SIZE_T(len*sizeof(WCHAR))) );
-        wcscpy_s(temp, len, m_wszCodeBase);
-        m_wszCodeBase = temp;
     }
 
     _ASSERTE(hash == Hash());
@@ -188,7 +157,6 @@ inline void BaseAssemblySpec::CopyFrom(const BaseAssemblySpec *pSpec)
         THROWS;
         GC_NOTRIGGER;
         MODE_ANY;
-        INJECT_FAULT(ThrowOutOfMemory(););
     }
     CONTRACTL_END
 
@@ -198,8 +166,6 @@ inline void BaseAssemblySpec::CopyFrom(const BaseAssemblySpec *pSpec)
     m_cbPublicKeyOrToken = pSpec->m_cbPublicKeyOrToken;
     m_dwFlags = pSpec->m_dwFlags;
     m_ownedFlags = 0;
-
-    m_wszCodeBase=pSpec->m_wszCodeBase;
 
     m_context = pSpec->m_context;
 
@@ -222,9 +188,6 @@ inline DWORD BaseAssemblySpec::Hash()
         GC_NOTRIGGER;
         MODE_ANY;
     } CONTRACTL_END;
-
-    if(m_wszCodeBase)
-        return HashString(m_wszCodeBase);
 
     // Hash fields.
     DWORD hash = 0;
@@ -270,14 +233,6 @@ inline BOOL BaseAssemblySpec::CompareEx(BaseAssemblySpec *pSpec, DWORD dwCompare
 {
     WRAPPER_NO_CONTRACT;
 
-
-    if(m_wszCodeBase || pSpec->m_wszCodeBase)
-    {
-        if(!m_wszCodeBase || !pSpec->m_wszCodeBase)
-            return FALSE;
-        return wcscmp(m_wszCodeBase,(pSpec->m_wszCodeBase))==0;
-    }
-
     // Compare fields
 
     if (m_pAssemblyName != pSpec->m_pAssemblyName
@@ -285,10 +240,11 @@ inline BOOL BaseAssemblySpec::CompareEx(BaseAssemblySpec *pSpec, DWORD dwCompare
             || strcmp(m_pAssemblyName, pSpec->m_pAssemblyName)))
         return FALSE;
 
-    if (m_cbPublicKeyOrToken != pSpec->m_cbPublicKeyOrToken
-        || memcmp(m_pbPublicKeyOrToken, pSpec->m_pbPublicKeyOrToken, m_cbPublicKeyOrToken))
+    if (m_cbPublicKeyOrToken != pSpec->m_cbPublicKeyOrToken)
         return FALSE;
 
+    if (m_cbPublicKeyOrToken != 0 && memcmp(m_pbPublicKeyOrToken, pSpec->m_pbPublicKeyOrToken, m_cbPublicKeyOrToken) != 0)
+        return FALSE;
 
     if (m_dwFlags != pSpec->m_dwFlags)
         return FALSE;
@@ -371,113 +327,6 @@ inline HRESULT BaseAssemblySpec::Init(mdToken kAssemblyToken,
         m_pbPublicKeyOrToken = (PBYTE)1;
 
     return S_OK;
-}
-
-inline HRESULT BaseAssemblySpec::Init(mdToken tkAssemblyRef,
-                                  IMetaDataAssemblyImport  *pImport)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    // Retrieve size of assembly name
-    ASSEMBLYMETADATA sContext;
-    LPWSTR wszAssemblyName=NULL;
-    ZeroMemory(&sContext, sizeof(ASSEMBLYMETADATA));
-    HRESULT hr = S_OK;
-    if(TypeFromToken(tkAssemblyRef) == mdtAssembly)
-    {
-        DWORD cchName;
-        IfFailRet(pImport->GetAssemblyProps(tkAssemblyRef,    // [IN] The Assembly for which to get the properties.
-                                            NULL,        // [OUT] Pointer to the public key or token.
-                                            NULL,        // [OUT] Count of bytes in the public key or token.
-                                            NULL,        // [OUT] Hash Algorithm
-                                            NULL,        // [OUT] Buffer to fill with name.
-                                            NULL,        // [IN] Size of buffer in wide chars.
-                                            &cchName,    // [OUT] Actual # of wide chars in name.
-                                            &sContext,   // [OUT] Assembly MetaData.
-                                            NULL));       // [OUT] Flags.
-
-        // Get the assembly name other naming properties
-        wszAssemblyName = (LPWSTR)_alloca(cchName * sizeof(WCHAR));
-        IfFailRet(pImport->GetAssemblyProps(tkAssemblyRef,
-                                            (const void **)&m_pbPublicKeyOrToken,
-                                            &m_cbPublicKeyOrToken,
-                                            NULL,
-                                            wszAssemblyName,
-                                            cchName,
-                                            &cchName,
-                                            &sContext,
-                                            &m_dwFlags));
-    }
-    else if(TypeFromToken(tkAssemblyRef) == mdtAssemblyRef)
-    {
-        DWORD cchName;
-        IfFailRet(pImport->GetAssemblyRefProps(tkAssemblyRef, // [IN] The AssemblyRef for which to get the properties.
-                                            NULL,        // [OUT] Pointer to the public key or token.
-                                            NULL,        // [OUT] Count of bytes in the public key or token.
-                                            NULL,        // [OUT] Buffer to fill with name.
-                                            NULL,        // [IN] Size of buffer in wide chars.
-                                            &cchName,    // [OUT] Actual # of wide chars in name.
-                                            &sContext,   // [OUT] Assembly MetaData.
-                                            NULL,        // [OUT] Hash blob.
-                                            NULL,        // [OUT] Count of bytes in the hash blob.
-                                            NULL));       // [OUT] Flags.
-
-        // Get the assembly name other naming properties
-        wszAssemblyName = (LPWSTR)_alloca(cchName * sizeof(WCHAR));
-        IfFailRet(pImport->GetAssemblyRefProps(tkAssemblyRef,
-                                            (const void **)&m_pbPublicKeyOrToken,
-                                            &m_cbPublicKeyOrToken,
-                                            wszAssemblyName,
-                                            cchName,
-                                            &cchName,
-                                            &sContext,
-                                            NULL,
-                                            NULL,
-                                            &m_dwFlags));
-    }
-    else
-    {
-        _ASSERTE(false && "unexpected token");
-    }
-    MAKE_UTF8PTR_FROMWIDE_NOTHROW(szAssemblyName,wszAssemblyName);
-    IfNullRet(szAssemblyName);
-    size_t len=strlen(szAssemblyName)+1;
-    NewArrayHolder<char> assemblyName(new(nothrow) char[len]);
-    IfNullRet(assemblyName);
-    strcpy_s(assemblyName,len,szAssemblyName);
-
-    m_pAssemblyName=assemblyName.Extract();
-    m_ownedFlags |= CODEBASE_OWNED;
-    SetContext(&sContext);
-    return S_OK;
-}
-
-inline void BaseAssemblySpec::SetCodeBase(LPCWSTR szCodeBase)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    if(m_wszCodeBase && (m_ownedFlags & CODEBASE_OWNED))
-        delete m_wszCodeBase;
-    m_ownedFlags &= ~CODEBASE_OWNED;
-    m_wszCodeBase=szCodeBase;
-}
-
-inline LPCWSTR BaseAssemblySpec::GetCodeBase() const
-{
-    LIMITED_METHOD_CONTRACT;
-    return m_wszCodeBase;
 }
 
 inline void BaseAssemblySpec::SetName(LPCSTR szName)

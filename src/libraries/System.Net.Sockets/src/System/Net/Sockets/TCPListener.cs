@@ -1,17 +1,17 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Diagnostics;
+using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Runtime.Versioning;
-using System.Diagnostics;
 
 namespace System.Net.Sockets
 {
     // The System.Net.Sockets.TcpListener class provide TCP services at a higher level of abstraction
     // than the System.Net.Sockets.Socket class. System.Net.Sockets.TcpListener is used to create a
     // host process that listens for connections from TCP clients.
-    public class TcpListener
+    public class TcpListener : IDisposable
     {
         private readonly IPEndPoint _serverSocketEP;
         private Socket? _serverSocket;
@@ -24,10 +24,7 @@ namespace System.Net.Sockets
         {
             if (NetEventSource.Log.IsEnabled()) NetEventSource.Info(this, localEP);
 
-            if (localEP == null)
-            {
-                throw new ArgumentNullException(nameof(localEP));
-            }
+            ArgumentNullException.ThrowIfNull(localEP);
             _serverSocketEP = localEP;
             _serverSocket = new Socket(_serverSocketEP.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
         }
@@ -38,10 +35,7 @@ namespace System.Net.Sockets
         {
             if (NetEventSource.Log.IsEnabled()) NetEventSource.Info(this, localaddr);
 
-            if (localaddr == null)
-            {
-                throw new ArgumentNullException(nameof(localaddr));
-            }
+            ArgumentNullException.ThrowIfNull(localaddr);
             if (!TcpValidationHelpers.ValidatePortNumber(port))
             {
                 throw new ArgumentOutOfRangeException(nameof(port));
@@ -106,10 +100,7 @@ namespace System.Net.Sockets
                     throw new InvalidOperationException(SR.net_tcplistener_mustbestopped);
                 }
 
-                if (_serverSocket != null)
-                {
-                    _serverSocket.ExclusiveAddressUse = value;
-                }
+                _serverSocket?.ExclusiveAddressUse = value;
                 _exclusiveAddressUse = value;
             }
         }
@@ -140,10 +131,7 @@ namespace System.Net.Sockets
 
         public void Start(int backlog)
         {
-            if (backlog > (int)SocketOptionName.MaxConnections || backlog < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(backlog));
-            }
+            ArgumentOutOfRangeException.ThrowIfNegative(backlog);
 
             // Already listening.
             if (_active)
@@ -176,6 +164,11 @@ namespace System.Net.Sockets
             _serverSocket = null;
         }
 
+        /// <summary>
+        /// Releases all resources used by the current <see cref="TcpListener"/> instance.
+        /// </summary>
+        public void Dispose() => Stop();
+
         // Determine if there are pending connection requests.
         public bool Pending()
         {
@@ -195,6 +188,8 @@ namespace System.Net.Sockets
                 throw new InvalidOperationException(SR.net_stopped);
             }
 
+            if (OperatingSystem.IsWasi() && _serverSocket!.Blocking) throw new PlatformNotSupportedException("Only use with Socket.Blocking=false on WASI");
+
             return _serverSocket!.Accept();
         }
 
@@ -205,18 +200,20 @@ namespace System.Net.Sockets
                 throw new InvalidOperationException(SR.net_stopped);
             }
 
+            if (OperatingSystem.IsWasi() && _serverSocket!.Blocking) throw new PlatformNotSupportedException("Only use with Socket.Blocking=false on WASI");
+
             Socket acceptedSocket = _serverSocket!.Accept();
             return new TcpClient(acceptedSocket);
         }
 
         public IAsyncResult BeginAcceptSocket(AsyncCallback? callback, object? state) =>
-            TaskToApm.Begin(AcceptSocketAsync(), callback, state);
+            TaskToAsyncResult.Begin(AcceptSocketAsync(), callback, state);
 
         public Socket EndAcceptSocket(IAsyncResult asyncResult) =>
             EndAcceptCore<Socket>(asyncResult);
 
         public IAsyncResult BeginAcceptTcpClient(AsyncCallback? callback, object? state) =>
-            TaskToApm.Begin(AcceptTcpClientAsync(), callback, state);
+            TaskToAsyncResult.Begin(AcceptTcpClientAsync(), callback, state);
 
         public TcpClient EndAcceptTcpClient(IAsyncResult asyncResult) =>
             EndAcceptCore<TcpClient>(asyncResult);
@@ -256,7 +253,7 @@ namespace System.Net.Sockets
             {
                 // If OS supports IPv6 use dual mode so both address families work.
                 listener = new TcpListener(IPAddress.IPv6Any, port);
-                listener.Server.DualMode = true;
+                if (!OperatingSystem.IsWasi()) listener.Server.DualMode = true;
             }
             else
             {
@@ -290,9 +287,11 @@ namespace System.Net.Sockets
 
         private TResult EndAcceptCore<TResult>(IAsyncResult asyncResult)
         {
+            if (!Socket.OSSupportsThreads) throw new PlatformNotSupportedException(); // TODO remove with https://github.com/dotnet/runtime/pull/107185
+
             try
             {
-                return TaskToApm.End<TResult>(asyncResult);
+                return TaskToAsyncResult.End<TResult>(asyncResult);
             }
             catch (SocketException) when (!_active)
             {

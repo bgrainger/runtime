@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Collections.Generic;
-using System.IO;
 using System.Net.Sockets;
 
 namespace System.Net.NetworkInformation
@@ -13,7 +11,7 @@ namespace System.Net.NetworkInformation
         private MulticastIPAddressInformationCollection? _multicastAddreses;
         private readonly UnixNetworkInterface _uni;
         internal string? _dnsSuffix;
-        internal IPAddressCollection? _dnsAddresses;
+        internal IPAddressCollection _dnsAddresses;
 
         public UnixIPInterfaceProperties(UnixNetworkInterface uni, bool globalConfig = false)
         {
@@ -23,35 +21,21 @@ namespace System.Net.NetworkInformation
                 _dnsSuffix = GetDnsSuffix();
                 _dnsAddresses = GetDnsAddresses();
             }
-        }
-
-        public override UnicastIPAddressInformationCollection UnicastAddresses
-        {
-            get
+            else
             {
-                return _unicastAddresses ?? (_unicastAddresses = GetUnicastAddresses(_uni));
+                _dnsAddresses = new InternalIPAddressCollection();
             }
         }
 
-        public sealed override MulticastIPAddressInformationCollection MulticastAddresses
-        {
-            get
-            {
-                return _multicastAddreses ?? (_multicastAddreses = GetMulticastAddresses(_uni));
-            }
-        }
+        public override UnicastIPAddressInformationCollection UnicastAddresses =>
+            _unicastAddresses ??= GetUnicastAddresses(_uni);
+
+        public sealed override MulticastIPAddressInformationCollection MulticastAddresses =>
+            _multicastAddreses ??= GetMulticastAddresses(_uni);
 
         public override bool IsDnsEnabled
         {
-            get
-            {
-                if (_dnsAddresses == null)
-                {
-                    throw new PlatformNotSupportedException(SR.net_InformationUnavailableOnPlatform);
-                }
-
-                return _dnsAddresses.Count > 0;
-            }
+            get => _dnsAddresses.Count > 0;
         }
 
         public sealed override string DnsSuffix
@@ -69,15 +53,7 @@ namespace System.Net.NetworkInformation
 
         public sealed override IPAddressCollection DnsAddresses
         {
-            get
-            {
-                if (_dnsAddresses == null)
-                {
-                    throw new PlatformNotSupportedException(SR.net_InformationUnavailableOnPlatform);
-                }
-
-                return _dnsAddresses;
-            }
+            get => _dnsAddresses;
         }
 
         private static UnicastIPAddressInformationCollection GetUnicastAddresses(UnixNetworkInterface uni)
@@ -108,27 +84,16 @@ namespace System.Net.NetworkInformation
 
         private static string? GetDnsSuffix()
         {
-            try
-            {
-                return StringParsingHelpers.ParseDnsSuffixFromResolvConfFile(File.ReadAllText(NetworkFiles.EtcResolvConfFile));
-            }
-            catch (FileNotFoundException)
-            {
-                return null;
-            }
+            string? resolverConfig = StringParsingHelpers.ReadResolvConfFile(NetworkFiles.EtcResolvConfFile);
+            return resolverConfig is null ? null : StringParsingHelpers.ParseDnsSuffixFromResolvConfFile(resolverConfig);
         }
 
-        private static IPAddressCollection? GetDnsAddresses()
+        private static InternalIPAddressCollection GetDnsAddresses()
         {
-            try
-            {
-                List<IPAddress> internalAddresses = StringParsingHelpers.ParseDnsAddressesFromResolvConfFile(File.ReadAllText(NetworkFiles.EtcResolvConfFile));
-                return new InternalIPAddressCollection(internalAddresses);
-            }
-            catch (FileNotFoundException)
-            {
-                return null;
-            }
+            string? resolverConfig = StringParsingHelpers.ReadResolvConfFile(NetworkFiles.EtcResolvConfFile);
+            return resolverConfig is null ?
+                new InternalIPAddressCollection() :
+                new InternalIPAddressCollection(StringParsingHelpers.ParseDnsAddressesFromResolvConfFile(resolverConfig));
         }
     }
 }

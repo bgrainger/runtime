@@ -81,13 +81,13 @@ static void appendStrNum(CQuickBytes *out, int num) {
     CONTRACTL_END;
 
     char buff[16];
-    sprintf_s(buff, COUNTOF(buff), "%d", num);
+    sprintf_s(buff, ARRAY_SIZE(buff), "%d", num);
     appendStr(out, buff);
 }
 
 PCCOR_SIGNATURE PrettyPrintSignature(
     PCCOR_SIGNATURE typePtr,            // type to convert,
-    unsigned typeLen,                   // the lenght of 'typePtr'
+    unsigned typeLen,                   // the length of 'typePtr'
     const char* name,                   // can be "", the name of the method for this sig 0 means local var sig
     CQuickBytes *out,                   // where to put the pretty printed string
     IMDInternalImport *pIMDI,           // ptr to IMDInternalImport class with ComSig
@@ -163,7 +163,7 @@ const char* PrettyPrintSig(
         out->Shrink(0);
         appendStr(out,"ERROR PARSING THE SIGNATURE");
     }
-    EX_END_CATCH(SwallowAllExceptions);
+    EX_END_CATCH
 
     return(asString(out));
 }
@@ -174,7 +174,7 @@ const char* PrettyPrintSig(
 
 PCCOR_SIGNATURE PrettyPrintSignature(
     PCCOR_SIGNATURE typePtr,    // type to convert,
-    unsigned typeLen,           // the lenght of 'typePtr'
+    unsigned typeLen,           // the length of 'typePtr'
     const char* name,           // can be "", the name of the method for this sig 0 means local var sig
     CQuickBytes *out,           // where to put the pretty printed string
     IMDInternalImport *pIMDI,   // ptr to IMDInternalImport class with ComSig
@@ -217,7 +217,7 @@ PCCOR_SIGNATURE PrettyPrintSignature(
     if (name != 0)
     {
         // get the calling convention out
-        unsigned callConv = CorSigUncompressData(typePtr);
+        unsigned callConv = CorSigUncompressCallingConv(typePtr);
 
         // should not be a local var sig
         _ASSERTE(!isCallConv(callConv, IMAGE_CEE_CS_CALLCONV_LOCAL_SIG));
@@ -265,14 +265,14 @@ PCCOR_SIGNATURE PrettyPrintSignature(
                 callConvUndefined,
                 callConvUndefined
                 };
-            static_assert_no_msg(COUNTOF(callConvNames) == (IMAGE_CEE_CS_CALLCONV_MASK + 1));
+            static_assert(ARRAY_SIZE(callConvNames) == (IMAGE_CEE_CS_CALLCONV_MASK + 1));
 
             char tmp[32];
             unsigned callConvIdx = callConv & IMAGE_CEE_CS_CALLCONV_MASK;
             const char* name_cc = callConvNames[callConvIdx];
             if (name_cc == callConvUndefined)
             {
-                sprintf_s(tmp, COUNTOF(tmp), "callconv(%u) ", callConvIdx);
+                sprintf_s(tmp, ARRAY_SIZE(tmp), "callconv(%u) ", callConvIdx);
                 name_cc = tmp;
             }
 
@@ -290,14 +290,14 @@ PCCOR_SIGNATURE PrettyPrintSignature(
             if(pszArgName)
             {
                 argname[0] = 0;
-                DumpParamAttr(argname,COUNTOF(argname),pszArgName[ixArg+numArgs].attr);
+                DumpParamAttr(argname, ARRAY_SIZE(argname), pszArgName[ixArg+numArgs].attr);
                 appendStr(out,argname);
             }
             typePtr = PrettyPrintTypeOrDef(typePtr, out, pIMDI);
             if(pszArgName)
             {
                 argname[0] = ' '; argname[1] = 0;
-                DumpMarshaling(pIMDI,argname,COUNTOF(argname),pszArgName[ixArg+numArgs].tok);
+                DumpMarshaling(pIMDI,argname, ARRAY_SIZE(argname), pszArgName[ixArg+numArgs].tok);
                 appendStr(out,argname);
             }
             if(*name != 0)
@@ -321,7 +321,7 @@ PCCOR_SIGNATURE PrettyPrintSignature(
 #ifdef _DEBUG
         unsigned callConv =
 #endif
-            CorSigUncompressData(typePtr);
+            CorSigUncompressCallingConv(typePtr);
 #ifdef _DEBUG
         (void)callConv; //prevent "unused variable" warning from GCC
         // should be a local var sig
@@ -338,7 +338,7 @@ PCCOR_SIGNATURE PrettyPrintSignature(
     {
         if(name) // printing the arguments
         {
-            PREFIX_ASSUME(typePtr != NULL);
+            _ASSERTE(typePtr != NULL);
             if (*typePtr == ELEMENT_TYPE_SENTINEL)
             {
                 if (needComma)
@@ -355,7 +355,7 @@ PCCOR_SIGNATURE PrettyPrintSignature(
                 if(pszArgName)
                 {
                     argname[0] = 0;
-                    DumpParamAttr(argname,COUNTOF(argname),pszArgName[ixArg].attr);
+                    DumpParamAttr(argname, ARRAY_SIZE(argname), pszArgName[ixArg].attr);
                     appendStr(out,argname);
                 }
                 typePtr = PrettyPrintTypeOrDef(typePtr, out, pIMDI);
@@ -364,10 +364,10 @@ PCCOR_SIGNATURE PrettyPrintSignature(
                     if(pszArgName)
                     {
                         argname[0] = ' '; argname[1] = 0;
-                        DumpMarshaling(pIMDI,argname,COUNTOF(argname),pszArgName[ixArg].tok);
-                        strcat_s(argname, COUNTOF(argname), ProperName(pszArgName[ixArg++].name));
+                        DumpMarshaling(pIMDI,argname, ARRAY_SIZE(argname), pszArgName[ixArg].tok);
+                        strcat_s(argname, ARRAY_SIZE(argname), ProperName(pszArgName[ixArg++].name));
                     }
-                    else sprintf_s(argname,COUNTOF(argname)," %s_%d",label,ixArg++);
+                    else sprintf_s(argname, ARRAY_SIZE(argname), " %s_%d", label,ixArg++);
                     appendStr(out,argname);
                 }
                 --numArgs;
@@ -392,7 +392,7 @@ PCCOR_SIGNATURE PrettyPrintSignature(
                 appendChar(out, ',');
             if(pszArgName)
             {
-                sprintf_s(argname,COUNTOF(argname),"[%d] ",pszArgName[ixArg].attr);
+                sprintf_s(argname,ARRAY_SIZE(argname),"[%d] ",pszArgName[ixArg].attr);
                 appendStr(out,argname);
             }
             typePtr = PrettyPrintTypeOrDef(typePtr, out, pIMDI);
@@ -400,9 +400,9 @@ PCCOR_SIGNATURE PrettyPrintSignature(
             {
                 if(pszArgName)
                 {
-                    sprintf_s(argname,COUNTOF(argname)," %s",ProperLocalName(pszArgName[ixArg++].name));
+                    sprintf_s(argname,ARRAY_SIZE(argname)," %s",ProperLocalName(pszArgName[ixArg++].name));
                 }
-                else sprintf_s(argname,COUNTOF(argname)," %s_%d",label,ixArg++);
+                else sprintf_s(argname,ARRAY_SIZE(argname)," %s_%d",label,ixArg++);
                 appendStr(out,argname);
             }
             --numArgs;
@@ -555,7 +555,7 @@ PCCOR_SIGNATURE PrettyPrintType(
             case ELEMENT_TYPE_ARRAY       :
                 {
                 typePtr = PrettyPrintTypeOrDef(typePtr, out, pIMDI);
-                PREFIX_ASSUME(typePtr != NULL);
+                _ASSERTE(typePtr != NULL);
                 unsigned rank = CorSigUncompressData(typePtr);
                     // <TODO> what is the syntax for the rank 0 case? </TODO>
                 if (rank == 0) {
@@ -563,11 +563,6 @@ PCCOR_SIGNATURE PrettyPrintType(
                 }
                 else {
                     _ASSERTE(rank != 0);
-
-#ifdef _PREFAST_
-#pragma prefast(push)
-#pragma prefast(disable:22009 "Suppress PREFAST warnings about integer overflow")
-#endif
                     int* lowerBounds = (int*) _alloca(sizeof(int)*2*rank);
                     int* sizes       = &lowerBounds[rank];
                     memset(lowerBounds, 0, sizeof(int)*2*rank);
@@ -609,9 +604,6 @@ PCCOR_SIGNATURE PrettyPrintType(
                         }
                     }
                     appendChar(out, ']');
-#ifdef _PREFAST_
-#pragma prefast(pop)
-#endif
                 }
                 } break;
 
@@ -688,8 +680,47 @@ PCCOR_SIGNATURE PrettyPrintType(
                         appendStr(out, "(null)");
                 }
 
-                char sz[32];
-                sprintf_s(sz, COUNTOF(sz), " /* MT: 0x%p */", pMT);
+                const char fmt[] = " /* MT: %p */";
+                char sz[Max64BitHexString + ARRAY_SIZE(fmt)];
+                sprintf_s(sz, ARRAY_SIZE(sz), fmt, pMT);
+                appendStr(out, sz);
+                break;
+            }
+            case ELEMENT_TYPE_CMOD_INTERNAL :
+            {
+                // ELEMENT_TYPE_CMOD_INTERNAL <required> <TypeHandle>
+                bool required = *typePtr++ != 0;
+                _ASSERTE(sizeof(TypeHandle) == sizeof(void *));
+                TypeHandle typeHandle;
+                typePtr += CorSigUncompressPointer(typePtr, (void **)&typeHandle);
+
+                MethodTable *pMT = NULL;
+                if (typeHandle.IsTypeDesc())
+                {
+                    pMT = typeHandle.AsTypeDesc()->GetMethodTable();
+                    if (pMT)
+                    {
+                        PrettyPrintClass(out, pMT->GetCl(), pMT->GetMDImport());
+
+                        // It could be a "native version" of the managed type used in interop
+                        if (typeHandle.AsTypeDesc()->IsNativeValueType())
+                            appendStr(out, "_NativeValueType");
+                    }
+                    else
+                        appendStr(out, "(null)");
+                }
+                else
+                {
+                    pMT = typeHandle.AsMethodTable();
+                    if (pMT)
+                        PrettyPrintClass(out, pMT->GetCl(), pMT->GetMDImport());
+                    else
+                        appendStr(out, "(null)");
+                }
+
+                const char fmt[] = " mod%s(/* MT: %p */)";
+                char sz[Max64BitHexString + ARRAY_SIZE(fmt) + ARRAY_SIZE("req")];
+                sprintf_s(sz, ARRAY_SIZE(sz), fmt, required ? "req" : "opt", pMT);
                 appendStr(out, sz);
                 break;
             }
@@ -703,10 +734,6 @@ PCCOR_SIGNATURE PrettyPrintType(
                 str = " modreq(";
             ADDCLASSTOCMOD:
                 typePtr += CorSigUncompressToken(typePtr, &tk);
-                if (IsNilToken(tk))
-                {
-                    Debug_ReportError("Nil token in custom modifier");
-                }
                 tmp.Shrink(0);
                 appendStr(&tmp, KEYWORD((char*)str));
                 PrettyPrintClass(&tmp, tk, pIMDI);
@@ -731,7 +758,7 @@ PCCOR_SIGNATURE PrettyPrintType(
                 if(typ)
                 {
                     char sz[64];
-                    sprintf_s(sz,COUNTOF(sz),"/* UNKNOWN TYPE (0x%X)*/",typ);
+                    sprintf_s(sz,ARRAY_SIZE(sz),"/* UNKNOWN TYPE (0x%X)*/",typ);
                     appendStr(out, ERRORMSG(sz));
                 }
                 break;
@@ -762,7 +789,7 @@ const char* PrettyPrintClass(
     if(!pIMDI->IsValidToken(tk))
     {
         char str[1024];
-        sprintf_s(str,COUNTOF(str)," [ERROR: INVALID TOKEN 0x%8.8X] ",tk);
+        sprintf_s(str,ARRAY_SIZE(str)," [ERROR: INVALID TOKEN 0x%8.8X] ",tk);
         appendStr(out,ERRORMSG(str));
         return(asString(out));
     }
@@ -851,7 +878,7 @@ const char* PrettyPrintClass(
                 if(g_fDumpTokens)
                 {
                     char tmp[16];
-                    sprintf_s(tmp,COUNTOF(tmp),"/*%08X*/",tk);
+                    sprintf_s(tmp,ARRAY_SIZE(tmp),"/*%08X*/",tk);
                     appendStr(out,COMMENT(tmp));
                 }
             }
@@ -880,7 +907,7 @@ const char* PrettyPrintClass(
                     if(g_fDumpTokens)
                     {
                         char tmp[16];
-                        sprintf_s(tmp,COUNTOF(tmp),"/*%08X*/",tk);
+                        sprintf_s(tmp,ARRAY_SIZE(tmp),"/*%08X*/",tk);
                         appendStr(out,COMMENT(tmp));
                     }
                     appendChar(out, ']');
@@ -901,7 +928,7 @@ const char* PrettyPrintClass(
                     if(g_fDumpTokens)
                     {
                         char tmp[16];
-                        sprintf_s(tmp,COUNTOF(tmp),"/* %08X */",tk);
+                        sprintf_s(tmp,ARRAY_SIZE(tmp),"/* %08X */",tk);
                         appendStr(out,COMMENT(tmp));
                     }
                     appendChar(out, ']');
@@ -923,7 +950,7 @@ const char* PrettyPrintClass(
                     if(g_fDumpTokens)
                     {
                         char tmp[16];
-                        sprintf_s(tmp,COUNTOF(tmp),"/*%08X*/",tk);
+                        sprintf_s(tmp,ARRAY_SIZE(tmp),"/*%08X*/",tk);
                         appendStr(out,COMMENT(tmp));
                     }
                     appendChar(out, ']');
@@ -951,7 +978,7 @@ const char* PrettyPrintClass(
                     if (FAILED(pIMDI->GetSigFromToken(tk, &cSig, &sig)))
                     {
                         char tmp[64];
-                        sprintf_s(tmp, COUNTOF(tmp), "/*Invalid %08X record*/", tk);
+                        sprintf_s(tmp, ARRAY_SIZE(tmp), "/*Invalid %08X record*/", tk);
                         appendStr(out, COMMENT(tmp));
                     }
                     else
@@ -962,7 +989,7 @@ const char* PrettyPrintClass(
                 if(g_fDumpTokens)
                 {
                     char tmp[16];
-                    sprintf_s(tmp,COUNTOF(tmp),"/*%08X*/",tk);
+                    sprintf_s(tmp,ARRAY_SIZE(tmp),"/*%08X*/",tk);
                     appendStr(out,COMMENT(tmp));
                 }
             }
@@ -974,7 +1001,7 @@ const char* PrettyPrintClass(
         default:
             {
                 char str[128];
-                sprintf_s(str,COUNTOF(str)," [ERROR: INVALID TOKEN TYPE 0x%8.8X] ",tk);
+                sprintf_s(str,ARRAY_SIZE(str)," [ERROR: INVALID TOKEN TYPE 0x%8.8X] ",tk);
                 appendStr(out,ERRORMSG(str));
             }
     }
@@ -1067,13 +1094,8 @@ bool TrySigUncompress(PCCOR_SIGNATURE pData,              // [IN] compressed dat
     }
 }
 
-
-#ifdef _PREFAST_
-#pragma warning(push)
-#pragma warning(disable:21000) // Suppress PREFast warning about overly large function
-#endif
 char* DumpMarshaling(IMDInternalImport* pImport,
-                     __inout_ecount(cchszString) char* szString,
+                     _Inout_updates_(cchszString) char* szString,
                      DWORD cchszString,
                      mdToken tok)
 {
@@ -1197,18 +1219,11 @@ char* DumpMarshaling(IMDInternalImport* pImport,
                         cbCur += ByteCountLength;
                         if(strLen)
                         {
-#ifdef _PREFAST_
-#pragma prefast(push)
-#pragma prefast(disable:22009 "Suppress PREFAST warnings about integer overflow")
-#endif
                             strTemp = (LPUTF8)_alloca(strLen + 1);
                             memcpy(strTemp, (LPUTF8)&pSigNativeType[cbCur], strLen);
                             strTemp[strLen] = 0;
                             buf.AppendPrintf(", \"%s\"", UnquotedProperName(strTemp));
                             cbCur += strLen;
-#ifdef _PREFAST_
-#pragma prefast(pop)
-#endif
                         }
                     }
                     break;
@@ -1507,7 +1522,7 @@ error:
         buf.AppendASCII(" }) ");
 
         char * tgt = szString + strlen(szString);
-        int sprintf_ret = sprintf_s(tgt, cchszString - (tgt - szString), "%S", buf.GetUnicode());
+        int sprintf_ret = sprintf_s(tgt, cchszString - (tgt - szString), "%s", buf.GetUTF8());
         if (sprintf_ret == -1)
         {
             // Hit an error. Oh well, nothing to do...
@@ -1521,7 +1536,7 @@ error:
     else
     {
         char * tgt = szString + strlen(szString);
-        int sprintf_ret = sprintf_s(tgt, cchszString - (tgt - szString), "%S", buf.GetUnicode());
+        int sprintf_ret = sprintf_s(tgt, cchszString - (tgt - szString), "%s", buf.GetUTF8());
         if (sprintf_ret == -1)
         {
             // There was an error, possibly with converting the Unicode characters.
@@ -1536,11 +1551,8 @@ error:
         }
     }
 }
-#ifdef _PREFAST_
-#pragma warning(pop)
-#endif
 
-char* DumpParamAttr(__inout_ecount(cchszString) char* szString, DWORD cchszString, DWORD dwAttr)
+char* DumpParamAttr(_Inout_updates_(cchszString) char* szString, DWORD cchszString, DWORD dwAttr)
 {
     CONTRACTL
     {

@@ -1,15 +1,11 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-// --------------------------------------------------------------------------------
-// PEDecoder.cpp
-//
-
-// --------------------------------------------------------------------------------
 
 #include "stdafx.h"
 
 #include "ex.h"
 #include "pedecoder.h"
+#include "cordecoderhelpers.h"
 #include "mdcommon.h"
 #include "nibblemapmacros.h"
 
@@ -35,8 +31,6 @@ CHECK PEDecoder::CheckFormat() const
 
             if (IsILOnly())
                 CHECK(CheckILOnly());
-
-            CHECK(CheckWillCreateGuardPage());
         }
     }
 
@@ -119,7 +113,7 @@ CHECK PEDecoder::CheckILOnlyFormat() const
 
 BOOL PEDecoder::HasNTHeaders() const
 {
-    CONTRACT(BOOL)
+    CONTRACTL
     {
         INSTANCE_CHECK;
         NOTHROW;
@@ -127,12 +121,12 @@ BOOL PEDecoder::HasNTHeaders() const
         SUPPORTS_DAC;
         PRECONDITION(HasContents());
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     // Check for a valid DOS header
 
     if (m_size < sizeof(IMAGE_DOS_HEADER))
-        RETURN FALSE;
+        return FALSE;
 
     IMAGE_DOS_HEADER* pDOS = PTR_IMAGE_DOS_HEADER(m_base);
 
@@ -140,7 +134,7 @@ BOOL PEDecoder::HasNTHeaders() const
         if (pDOS->e_magic != VAL16(IMAGE_DOS_SIGNATURE)
             || (DWORD) pDOS->e_lfanew == VAL32(0))
         {
-            RETURN FALSE;
+            return FALSE;
         }
 
         // Check for integer overflow
@@ -148,31 +142,31 @@ BOOL PEDecoder::HasNTHeaders() const
                                S_SIZE_T(sizeof(IMAGE_NT_HEADERS)));
         if (cbNTHeaderEnd.IsOverflow())
         {
-            RETURN FALSE;
+            return FALSE;
         }
 
         // Now check for a valid NT header
         if (m_size < cbNTHeaderEnd.Value())
         {
-            RETURN FALSE;
+            return FALSE;
         }
     }
 
     IMAGE_NT_HEADERS *pNT = PTR_IMAGE_NT_HEADERS(m_base + VAL32(pDOS->e_lfanew));
 
     if (pNT->Signature != VAL32(IMAGE_NT_SIGNATURE))
-        RETURN FALSE;
+        return FALSE;
 
     if (pNT->OptionalHeader.Magic == VAL16(IMAGE_NT_OPTIONAL_HDR32_MAGIC))
     {
         if (pNT->FileHeader.SizeOfOptionalHeader != VAL16(sizeof(IMAGE_OPTIONAL_HEADER32)))
-            RETURN FALSE;
+            return FALSE;
     }
     else if (pNT->OptionalHeader.Magic == VAL16(IMAGE_NT_OPTIONAL_HDR64_MAGIC))
     {
         // on 64 bit we can promote this
         if (pNT->FileHeader.SizeOfOptionalHeader != VAL16(sizeof(IMAGE_OPTIONAL_HEADER64)))
-            RETURN FALSE;
+            return FALSE;
 
         // Check for integer overflow
         S_SIZE_T cbNTHeaderEnd(S_SIZE_T(static_cast<SIZE_T>(VAL32(pDOS->e_lfanew))) +
@@ -180,23 +174,23 @@ BOOL PEDecoder::HasNTHeaders() const
 
         if (cbNTHeaderEnd.IsOverflow())
         {
-            RETURN FALSE;
+            return FALSE;
     }
 
         // Now check for a valid NT header
         if (m_size < cbNTHeaderEnd.Value())
         {
-            RETURN FALSE;
+            return FALSE;
         }
 
     }
     else
-        RETURN FALSE;
+        return FALSE;
 
     // Go ahead and cache NT header since we already found it.
-    const_cast<PEDecoder *>(this)->m_pNTHeaders = dac_cast<PTR_IMAGE_NT_HEADERS>(pNT);
+    m_pNTHeaders = dac_cast<PTR_IMAGE_NT_HEADERS>(pNT);
 
-    RETURN TRUE;
+    return TRUE;
 }
 
 CHECK PEDecoder::CheckNTHeaders() const
@@ -341,7 +335,7 @@ CHECK PEDecoder::CheckNTHeaders() const
 
     // @todo: verify directory entries
 
-    const_cast<PEDecoder *>(this)->m_flags |= FLAG_NT_CHECKED;
+    m_flags |= FLAG_NT_CHECKED;
 
     CHECK_OK;
 }
@@ -372,7 +366,13 @@ CHECK PEDecoder::CheckSection(COUNT_T previousAddressEnd, COUNT_T addressStart, 
         CHECK(alignedSize >= VAL32(pNT->OptionalHeader.SizeOfImage));
 
     // Check expected alignments
+#if TARGET_WINDOWS
+    // On Windows we expect section starts to be a multiple of SectionAlignment.
+    // That is not an explicit requirement in the documentation, but it looks like OS loader expects it.
+    // In contrast to this, in Unix R2R files we keep lower 16bits of sections RVA and
+    // this condition does not hold.
     CHECK(CheckAligned(addressStart, VAL32(pNT->OptionalHeader.SectionAlignment)));
+#endif
     CHECK(CheckAligned(offsetStart, VAL32(pNT->OptionalHeader.FileAlignment)));
     CHECK(CheckAligned(offsetSize, VAL32(pNT->OptionalHeader.FileAlignment)));
 
@@ -493,7 +493,6 @@ CHECK PEDecoder::CheckRva(RVA rva, COUNT_T size, int forbiddenFlags, IsNullOK ok
         CHECK(section != NULL);
 
         CHECK(CheckBounds(VAL32(section->VirtualAddress),
-                          // AlignUp((UINT)VAL32(section->Misc.VirtualSize), (UINT)VAL32(FindNTHeaders()->OptionalHeader.SectionAlignment)),
                           (UINT)VAL32(section->Misc.VirtualSize),
                           rva, size));
         if(!IsMapped())
@@ -567,7 +566,7 @@ CHECK PEDecoder::CheckOffset(COUNT_T fileOffset, IsNullOK ok) const
     }
     CONTRACT_CHECK_END;
 
-    if (fileOffset == NULL)
+    if (fileOffset == 0)
         CHECK_MSG(ok == NULL_OK, "Null pointer illegal");
     else
     {
@@ -679,25 +678,25 @@ CHECK PEDecoder::CheckInternalAddress(SIZE_T address, COUNT_T size, IsNullOK ok)
 
 RVA PEDecoder::InternalAddressToRva(SIZE_T address) const
 {
-    CONTRACT(RVA)
+    CONTRACTL
     {
         INSTANCE_CHECK;
         PRECONDITION(CheckNTHeaders());
         NOTHROW;
         GC_NOTRIGGER;
-        POSTCONDITION(CheckRva(RETVAL));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     if (m_flags & FLAG_RELOCATED)
     {
         // Address has been fixed up
-        RETURN (RVA) ((BYTE *) address - (BYTE *) m_base);
+        _ASSERTE(CheckRva((RVA) ((BYTE *) address - (BYTE *) m_base)));
+        return (RVA) ((BYTE *) address - (BYTE *) m_base);
     }
     else
     {
         // Address has not been fixed up
-        RETURN (RVA) (address - (SIZE_T) GetPreferredBase());
+        return (RVA) (address - (SIZE_T) GetPreferredBase());
     }
 }
 
@@ -705,7 +704,7 @@ RVA PEDecoder::InternalAddressToRva(SIZE_T address) const
 // The name should include the starting "." as well.
 IMAGE_SECTION_HEADER *PEDecoder::FindSection(LPCSTR sectionName) const
 {
-    CONTRACT(IMAGE_SECTION_HEADER *)
+    CONTRACTL
     {
         INSTANCE_CHECK;
         PRECONDITION(CheckNTHeaders());
@@ -713,16 +712,15 @@ IMAGE_SECTION_HEADER *PEDecoder::FindSection(LPCSTR sectionName) const
         NOTHROW;
         GC_NOTRIGGER;
         CANNOT_TAKE_LOCK;
-        POSTCONDITION(CheckPointer(RETVAL, NULL_OK));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     // Ensure that the section name length is valid
     SIZE_T iSectionNameLength = strlen(sectionName);
     if ((iSectionNameLength < 1) || (iSectionNameLength > IMAGE_SIZEOF_SHORT_NAME))
     {
         _ASSERTE(!"Invalid section name!");
-        RETURN NULL;
+        return NULL;
     }
 
     // Get the start and ends of the sections
@@ -749,58 +747,64 @@ IMAGE_SECTION_HEADER *PEDecoder::FindSection(LPCSTR sectionName) const
      }
 
     if (TRUE == fFoundSection)
-        RETURN pSection;
+        return pSection;
     else
-        RETURN NULL;
+        return NULL;
 }
 
 IMAGE_SECTION_HEADER *PEDecoder::RvaToSection(RVA rva) const
 {
-    CONTRACT(IMAGE_SECTION_HEADER *)
+    CONTRACTL
     {
         INSTANCE_CHECK;
         NOTHROW;
         GC_NOTRIGGER;
         CANNOT_TAKE_LOCK;
-        POSTCONDITION(CheckPointer(RETVAL, NULL_OK));
         SUPPORTS_DAC;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     PTR_IMAGE_SECTION_HEADER section = dac_cast<PTR_IMAGE_SECTION_HEADER>(FindFirstSection(FindNTHeaders()));
     PTR_IMAGE_SECTION_HEADER sectionEnd = section + VAL16(FindNTHeaders()->FileHeader.NumberOfSections);
 
     while (section < sectionEnd)
     {
-        if (rva < (VAL32(section->VirtualAddress)
-                   + AlignUp((UINT)VAL32(section->Misc.VirtualSize), (UINT)VAL32(FindNTHeaders()->OptionalHeader.SectionAlignment))))
+        // The RVA should be within a section's virtual address range. 
+        if (rva < (VAL32(section->VirtualAddress) + VAL32(section->Misc.VirtualSize)))
         {
+            if (!IsMapped())
+            {
+                // On flat images (!IsMapped()), the RVA should also be within the section's raw data range.
+                if (rva >= (VAL32(section->VirtualAddress) + VAL32(section->SizeOfRawData)))
+                {
+                    return NULL;
+                }
+            }
             if (rva < VAL32(section->VirtualAddress))
-                RETURN NULL;
+                return NULL;
             else
             {
-                RETURN section;
+                return section;
             }
         }
 
         section++;
     }
 
-    RETURN NULL;
+    return NULL;
 }
 
 IMAGE_SECTION_HEADER *PEDecoder::OffsetToSection(COUNT_T fileOffset) const
 {
-    CONTRACT(IMAGE_SECTION_HEADER *)
+    CONTRACTL
     {
         INSTANCE_CHECK;
         PRECONDITION(CheckNTHeaders());
         NOTHROW;
         GC_NOTRIGGER;
-        POSTCONDITION(CheckPointer(RETVAL, NULL_OK));
         SUPPORTS_DAC;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     PTR_IMAGE_SECTION_HEADER section = dac_cast<PTR_IMAGE_SECTION_HEADER>(FindFirstSection(FindNTHeaders()));
     PTR_IMAGE_SECTION_HEADER sectionEnd = section + VAL16(FindNTHeaders()->FileHeader.NumberOfSections);
@@ -810,20 +814,22 @@ IMAGE_SECTION_HEADER *PEDecoder::OffsetToSection(COUNT_T fileOffset) const
         if (fileOffset < section->PointerToRawData + section->SizeOfRawData)
         {
             if (fileOffset < section->PointerToRawData)
-                RETURN NULL;
+                return NULL;
             else
-                RETURN section;
+                {
+                    return section;
+                }
         }
 
         section++;
     }
 
-    RETURN NULL;
+    return NULL;
 }
 
 TADDR PEDecoder::GetRvaData(RVA rva, IsNullOK ok /*= NULL_NOT_OK*/) const
 {
-    CONTRACT(TADDR)
+    CONTRACTL
     {
         INSTANCE_CHECK;
         PRECONDITION(CheckNTHeaders());
@@ -833,26 +839,25 @@ TADDR PEDecoder::GetRvaData(RVA rva, IsNullOK ok /*= NULL_NOT_OK*/) const
         CANNOT_TAKE_LOCK;
         SUPPORTS_DAC;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     if ((rva == 0)&&(ok == NULL_NOT_OK))
-        RETURN NULL;
+        return (TADDR)NULL;
 
     RVA offset;
     if (IsMapped())
         offset = rva;
     else
     {
-        // !!! check for case where rva is in padded portion of segment
         offset = RvaToOffset(rva);
     }
 
-    RETURN( m_base + offset );
+    return m_base + offset;
 }
 
 RVA PEDecoder::GetDataRva(const TADDR data) const
 {
-    CONTRACT(RVA)
+    CONTRACTL
     {
         INSTANCE_CHECK;
         PRECONDITION(CheckNTHeaders());
@@ -861,16 +866,16 @@ RVA PEDecoder::GetDataRva(const TADDR data) const
         GC_NOTRIGGER;
         SUPPORTS_DAC;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
-    if (data == NULL)
-        RETURN 0;
+    if (data == (TADDR)NULL)
+        return 0;
 
     COUNT_T offset = (COUNT_T) (data - m_base);
     if (IsMapped())
-        RETURN offset;
+        return offset;
     else
-        RETURN OffsetToRva(offset);
+        return OffsetToRva(offset);
 }
 
 BOOL PEDecoder::PointerInPE(PTR_CVOID data) const
@@ -880,7 +885,6 @@ BOOL PEDecoder::PointerInPE(PTR_CVOID data) const
         INSTANCE_CHECK;
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
         SUPPORTS_DAC;
     }
     CONTRACTL_END;
@@ -900,7 +904,7 @@ BOOL PEDecoder::PointerInPE(PTR_CVOID data) const
 
 TADDR PEDecoder::GetOffsetData(COUNT_T fileOffset, IsNullOK ok /*= NULL_NOT_OK*/) const
 {
-    CONTRACT(TADDR)
+    CONTRACTL
     {
         INSTANCE_CHECK;
         PRECONDITION(CheckNTHeaders());
@@ -908,12 +912,12 @@ TADDR PEDecoder::GetOffsetData(COUNT_T fileOffset, IsNullOK ok /*= NULL_NOT_OK*/
         NOTHROW;
         GC_NOTRIGGER;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     if ((fileOffset == 0)&&(ok == NULL_NOT_OK))
-        RETURN NULL;
+        return (TADDR)NULL;
 
-    RETURN GetRvaData(OffsetToRva(fileOffset));
+    return GetRvaData(OffsetToRva(fileOffset));
 }
 
 //-------------------------------------------------------------------------------
@@ -967,7 +971,7 @@ inline PTR_STORAGESTREAM NextStorageStream(PTR_STORAGESTREAM pSS)
 
     SUPPORTS_DAC;
     TADDR pc = dac_cast<TADDR>(pSS);
-    pc += (sizeof(STORAGESTREAM) - 32 /*sizeof(STORAGESTREAM::rcName)*/ + strlen(pSS->rcName)+1+3)&~3;
+    pc += (sizeof(STORAGESTREAM) - 32 /*sizeof(STORAGESTREAM::rcName)*/ + strlen((const char*)pSS->rcName)+1+3)&~3;
     return PTR_STORAGESTREAM(pc);
 }
 //-------------------------------------------------------------------------------
@@ -1014,7 +1018,7 @@ CHECK PEDecoder::CheckCorHeader() const
 
     //CHECK(((ULONGLONG)pCor & 0x3)==0);
 
-    // If the file is COM+ 1.0, which by definition has nothing the runtime can
+    // If the file is CLR 1.0, which by definition has nothing the runtime can
     // use, or if the file requires a newer version of this engine than us,
     // it cannot be run by this engine.
     if (!possiblyCompositeR2R)
@@ -1079,7 +1083,7 @@ CHECK PEDecoder::CheckCorHeader() const
     COUNT_T ctMD = (COUNT_T)VAL32(pDirMD->Size);
     TADDR   pcMD = (TADDR)GetDirectoryData(pDirMD);
 
-    if(pcMD != NULL)
+    if(pcMD != (TADDR)NULL)
     {
         // Storage signature checks
         CHECK(ctMD >= sizeof(STORAGESIGNATURE));
@@ -1119,9 +1123,6 @@ CHECK PEDecoder::CheckCorHeader() const
             for(namelen=0; (namelen<32)&&(pSS->rcName[namelen]!=0); namelen++);
             CHECK((0 < namelen)&&(namelen < 32));
 
-            // Forbid HOT_MODEL_STREAM
-            CHECK(strcmp(pSS->rcName, HOT_MODEL_STREAM_A) != 0);
-
             pcMD = dac_cast<TADDR>(NextStorageStream(pSS));
             ctMD -= (COUNT_T)(pcMD - dac_cast<TADDR>(pSS));
 
@@ -1156,175 +1157,66 @@ CHECK PEDecoder::CheckCorHeader() const
         }
     }  //end if(pcMD != NULL)
 
-    const_cast<PEDecoder *>(this)->m_flags |= FLAG_COR_CHECKED;
+    m_flags |= FLAG_COR_CHECKED;
 
     CHECK_OK;
 }
 
 
 
-// This function exists to provide compatibility between two different native image
-// (NGEN) formats. In particular, the manifest metadata blob and the full metadata
-// blob swapped locations from 3.5RTM to 3.5SP1. The logic here is to look at the
-// runtime version embedded in the native image, to determine which format it is.
-IMAGE_DATA_DIRECTORY *PEDecoder::GetMetaDataHelper(METADATA_SECTION_TYPE type) const
-{
-    CONTRACT(IMAGE_DATA_DIRECTORY *)
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckCorHeader());
-        PRECONDITION(type == METADATA_SECTION_FULL);
-        NOTHROW;
-        GC_NOTRIGGER;
-        SUPPORTS_DAC;
-    }
-    CONTRACT_END;
-
-    IMAGE_DATA_DIRECTORY *pDirRet = &GetCorHeader()->MetaData;
-
-    RETURN pDirRet;
-}
-
 PTR_CVOID PEDecoder::GetMetadata(COUNT_T *pSize) const
 {
-    CONTRACT(PTR_CVOID)
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckCorHeader());
-        PRECONDITION(CheckPointer(pSize, NULL_OK));
-        NOTHROW;
-        GC_NOTRIGGER;
-        SUPPORTS_DAC;
-    }
-    CONTRACT_END;
-
-    IMAGE_DATA_DIRECTORY *pDir = GetMetaDataHelper(METADATA_SECTION_FULL);
-
-    if (pSize != NULL)
-        *pSize = VAL32(pDir->Size);
-
-    RETURN dac_cast<PTR_VOID>(GetDirectoryData(pDir));
+    WRAPPER_NO_CONTRACT;
+    SUPPORTS_DAC;
+    return CorDecoderHelpers::GetMetadata(*this, pSize);
 }
 
 const void *PEDecoder::GetResources(COUNT_T *pSize) const
 {
-    CONTRACT(const void *)
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckCorHeader());
-        PRECONDITION(CheckPointer(pSize, NULL_OK));
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACT_END;
-
-    IMAGE_DATA_DIRECTORY *pDir = &GetCorHeader()->Resources;
-
-    if (pSize != NULL)
-        *pSize = VAL32(pDir->Size);
-
-    RETURN (void *)GetDirectoryData(pDir);
+    WRAPPER_NO_CONTRACT;
+    return CorDecoderHelpers::GetResources(*this, pSize);
 }
 
 CHECK PEDecoder::CheckResource(COUNT_T offset) const
 {
-    CONTRACT_CHECK
-    {
-        INSTANCE_CHECK;
-        NOTHROW;
-        GC_NOTRIGGER;
-        PRECONDITION(CheckCorHeader());
-    }
-    CONTRACT_CHECK_END;
-
-    IMAGE_DATA_DIRECTORY *pDir = &GetCorHeader()->Resources;
-
-    CHECK(CheckOverflow(VAL32(pDir->VirtualAddress), offset));
-
-    RVA rva = VAL32(pDir->VirtualAddress) + offset;
-
-    // Make sure we have at least enough data for a length
-    CHECK(CheckRva(rva, sizeof(DWORD)));
-
-    // Make sure resource is within resource section
-    CHECK(CheckBounds(VAL32(pDir->VirtualAddress), VAL32(pDir->Size),
-                      rva + sizeof(DWORD), GET_UNALIGNED_VAL32((LPVOID)GetRvaData(rva))));
-
-    CHECK_OK;
+    WRAPPER_NO_CONTRACT;
+    return CorDecoderHelpers::CheckResource(*this, offset);
 }
 
 const void *PEDecoder::GetResource(COUNT_T offset, COUNT_T *pSize) const
 {
-    CONTRACT(const void *)
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckCorHeader());
-        PRECONDITION(CheckPointer(pSize, NULL_OK));
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACT_END;
-
-    IMAGE_DATA_DIRECTORY *pDir = &GetCorHeader()->Resources;
-
-    // 403571: Prefix complained correctly about need to always perform rva check
-    if (CheckResource(offset) == FALSE)
-        return NULL;
-
-    void * resourceBlob = (void *)GetRvaData(VAL32(pDir->VirtualAddress) + offset);
-    // Holds if CheckResource(offset) == TRUE
-    PREFIX_ASSUME(resourceBlob != NULL);
-
-     if (pSize != NULL)
-        *pSize = GET_UNALIGNED_VAL32(resourceBlob);
-
-    RETURN (const void *) ((BYTE*)resourceBlob+sizeof(DWORD));
+    WRAPPER_NO_CONTRACT;
+    return CorDecoderHelpers::GetResource(*this, offset, pSize);
 }
 
 BOOL PEDecoder::HasManagedEntryPoint() const
 {
-    CONTRACTL {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckCorHeader());
-        NOTHROW;
-        GC_NOTRIGGER;
-    } CONTRACTL_END;
-
-    ULONG flags = GetCorHeader()->Flags;
-    return (!(flags & VAL32(COMIMAGE_FLAGS_NATIVE_ENTRYPOINT)) &&
-            (!IsNilToken(GetEntryPointToken())));
+    WRAPPER_NO_CONTRACT;
+    return CorDecoderHelpers::HasManagedEntryPoint(*this);
 }
 
 ULONG PEDecoder::GetEntryPointToken() const
 {
-    CONTRACT(ULONG)
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckCorHeader());
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACT_END;
-
-    RETURN VAL32(IMAGE_COR20_HEADER_FIELD(*GetCorHeader(), EntryPointToken));
+    WRAPPER_NO_CONTRACT;
+    return CorDecoderHelpers::GetEntryPointToken(*this);
 }
 
 IMAGE_COR_VTABLEFIXUP *PEDecoder::GetVTableFixups(COUNT_T *pCount) const
 {
-    CONTRACT(IMAGE_COR_VTABLEFIXUP *)
+    CONTRACTL
     {
         INSTANCE_CHECK;
         PRECONDITION(CheckCorHeader());
         NOTHROW;
         GC_NOTRIGGER;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
     IMAGE_DATA_DIRECTORY *pDir = &GetCorHeader()->VTableFixups;
 
     if (pCount != NULL)
         *pCount = VAL32(pDir->Size)/sizeof(IMAGE_COR_VTABLEFIXUP);
 
-    RETURN PTR_IMAGE_COR_VTABLEFIXUP(GetDirectoryData(pDir));
+    return PTR_IMAGE_COR_VTABLEFIXUP(GetDirectoryData(pDir));
 }
 
 CHECK PEDecoder::CheckILOnly() const
@@ -1345,7 +1237,7 @@ CHECK PEDecoder::CheckILOnly() const
     if (HasReadyToRunHeader())
     {
         // Pretend R2R images are IL-only
-        const_cast<PEDecoder *>(this)->m_flags |= FLAG_IL_ONLY_CHECKED;
+        m_flags |= FLAG_IL_ONLY_CHECKED;
         CHECK_OK;
     }
 
@@ -1428,7 +1320,7 @@ CHECK PEDecoder::CheckILOnly() const
     }
 
 
-    const_cast<PEDecoder *>(this)->m_flags |= FLAG_IL_ONLY_CHECKED;
+    m_flags |= FLAG_IL_ONLY_CHECKED;
 
     CHECK_OK;
 }
@@ -1460,7 +1352,7 @@ CHECK PEDecoder::CheckILOnlyImportDlls() const
     // Get the import directory entry
     PIMAGE_DATA_DIRECTORY pDirEntryImport = GetDirectoryEntry(IMAGE_DIRECTORY_ENTRY_IMPORT);
     CHECK(pDirEntryImport != NULL);
-    PREFIX_ASSUME(pDirEntryImport != NULL);
+    _ASSERTE(pDirEntryImport != NULL);
 
     // There should be space for 2 entries. (mscoree and NULL)
     CHECK(VAL32(pDirEntryImport->Size) >= (2 * sizeof(IMAGE_IMPORT_DESCRIPTOR)));
@@ -1468,7 +1360,7 @@ CHECK PEDecoder::CheckILOnlyImportDlls() const
     // Get the import data
     PIMAGE_IMPORT_DESCRIPTOR pID = (PIMAGE_IMPORT_DESCRIPTOR) GetDirectoryData(pDirEntryImport);
     CHECK(pID != NULL);
-    PREFIX_ASSUME(pID != NULL);
+    _ASSERTE(pID != NULL);
 
     // Entry 0: ILT, Name, IAT must be be non-null.  Forwarder, DateTime should be NULL.
     CHECK( IMAGE_IMPORT_DESC_FIELD(pID[0], Characteristics) != 0
@@ -1527,7 +1419,7 @@ CHECK PEDecoder::CheckILOnlyImportByNameTable(RVA rva) const
 #define DLL_NAME "_CorDllMain"
 #define EXE_NAME "_CorExeMain"
 
-    static_assert_no_msg(sizeof(DLL_NAME) == sizeof(EXE_NAME));
+    static_assert(sizeof(DLL_NAME) == sizeof(EXE_NAME));
 
     // Check if we have enough space to hold 2 bytes +
     // _CorExeMain or _CorDllMain and a NULL char
@@ -1535,7 +1427,7 @@ CHECK PEDecoder::CheckILOnlyImportByNameTable(RVA rva) const
 
     IMAGE_IMPORT_BY_NAME *import = (IMAGE_IMPORT_BY_NAME*) GetRvaData(importRVA);
 
-    CHECK(SString::_stricmp((char *) import->Name, DLL_NAME) == 0 || _stricmp((char *) import->Name, EXE_NAME) == 0);
+    CHECK(SString::_stricmp((char *) import->Name, DLL_NAME) == 0 || SString::_stricmp((char *) import->Name, EXE_NAME) == 0);
 
     CHECK_OK;
 }
@@ -1586,23 +1478,13 @@ CHECK PEDecoder::CheckILOnlyBaseRelocations() const
 
         UINT16 *pRelocEntry = (UINT16 *) (pReloc + 1);
         UINT16 *pRelocEntryEnd = (UINT16 *) ((BYTE *) pReloc + VAL32(pReloc->SizeOfBlock));
-        if(FindNTHeaders()->FileHeader.Machine == VAL16(IMAGE_FILE_MACHINE_IA64))
-        {
-            // Exactly 2 Reloc records, both IMAGE_REL_BASED_DIR64
-            CHECK(VAL32(pReloc->SizeOfBlock) >= (sizeof(IMAGE_BASE_RELOCATION)+2*sizeof(UINT16)));
+
+        // Only one Reloc record is expected
+        CHECK(VAL32(pReloc->SizeOfBlock) >= (sizeof(IMAGE_BASE_RELOCATION)+sizeof(UINT16)));
+        if(FindNTHeaders()->FileHeader.Machine == VAL16(IMAGE_FILE_MACHINE_AMD64))
             CHECK((VAL16(pRelocEntry[0]) & 0xF000) == (IMAGE_REL_BASED_DIR64 << 12));
-            pRelocEntry++;
-            CHECK((VAL16(pRelocEntry[0]) & 0xF000) == (IMAGE_REL_BASED_DIR64 << 12));
-        }
         else
-        {
-            // Only one Reloc record is expected
-            CHECK(VAL32(pReloc->SizeOfBlock) >= (sizeof(IMAGE_BASE_RELOCATION)+sizeof(UINT16)));
-            if(FindNTHeaders()->FileHeader.Machine == VAL16(IMAGE_FILE_MACHINE_AMD64))
-                CHECK((VAL16(pRelocEntry[0]) & 0xF000) == (IMAGE_REL_BASED_DIR64 << 12));
-            else
-                CHECK((VAL16(pRelocEntry[0]) & 0xF000) == (IMAGE_REL_BASED_HIGHLOW << 12));
-        }
+            CHECK((VAL16(pRelocEntry[0]) & 0xF000) == (IMAGE_REL_BASED_HIGHLOW << 12));
 
         while (++pRelocEntry < pRelocEntryEnd)
         {
@@ -1640,7 +1522,7 @@ CHECK PEDecoder::CheckILOnlyEntryPoint() const
         static const BYTE s_DllOrExeMain[] = JMP_DWORD_PTR_DS_OPCODE;
 
         // 403570: prefix complained about stub being possibly NULL.
-        // Unsure here. PREFIX_ASSUME might be also correct as indices are
+        // Unsure here. _ASSERTE might be also correct as indices are
         // verified in the above CHECK statement.
         CHECK(stub != NULL);
         CHECK(memcmp(stub, s_DllOrExeMain, JMP_DWORD_PTR_DS_OPCODE_SIZE) == 0);
@@ -1659,502 +1541,6 @@ CHECK PEDecoder::CheckILOnlyEntryPoint() const
 }
 #endif // TARGET_X86
 
-#ifndef DACCESS_COMPILE
-
-void PEDecoder::LayoutILOnly(void *base, bool enableExecution) const
-{
-    CONTRACT_VOID
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckZeroedMemory(base, VAL32(FindNTHeaders()->OptionalHeader.SizeOfImage)));
-        // Ideally we would require the layout address to honor the section alignment constraints.
-        // However, we do have 8K aligned IL only images which we load on 32 bit platforms. In this
-        // case, we can only guarantee OS page alignment (which after all, is good enough.)
-        PRECONDITION(CheckAligned((SIZE_T)base, GetOsPageSize()));
-        THROWS;
-        GC_NOTRIGGER;
-    }
-    CONTRACT_END;
-
-    // We're going to copy everything first, and write protect what we need to later.
-
-    // First, copy headers
-    CopyMemory(base, (void *)m_base, VAL32(FindNTHeaders()->OptionalHeader.SizeOfHeaders));
-
-    // Now, copy all sections to appropriate virtual address
-
-    IMAGE_SECTION_HEADER *sectionStart = IMAGE_FIRST_SECTION(FindNTHeaders());
-    IMAGE_SECTION_HEADER *sectionEnd = sectionStart + VAL16(FindNTHeaders()->FileHeader.NumberOfSections);
-
-    IMAGE_SECTION_HEADER *section = sectionStart;
-    while (section < sectionEnd)
-    {
-        // Raw data may be less than section size if tail is zero, but may be more since VirtualSize is
-        // not padded.
-        DWORD size = min(VAL32(section->SizeOfRawData), VAL32(section->Misc.VirtualSize));
-
-        CopyMemory((BYTE *) base + VAL32(section->VirtualAddress), (BYTE *) m_base + VAL32(section->PointerToRawData), size);
-
-        // Note that our memory is zeroed already, so no need to initialize any tail.
-
-        section++;
-    }
-
-    // Apply write protection to copied headers
-    DWORD oldProtection;
-    if (!ClrVirtualProtect((void *) base, VAL32(FindNTHeaders()->OptionalHeader.SizeOfHeaders),
-                           PAGE_READONLY, &oldProtection))
-        ThrowLastError();
-
-    // Finally, apply proper protection to copied sections
-    for (section = sectionStart; section < sectionEnd; section++)
-    {
-        // Add appropriate page protection.
-        DWORD newProtection;
-        if (!enableExecution)
-        {
-            if (section->Characteristics & IMAGE_SCN_MEM_WRITE)
-                continue;
-
-            newProtection = PAGE_READONLY;
-        }
-        else
-        {
-            newProtection = section->Characteristics & IMAGE_SCN_MEM_EXECUTE ?
-                PAGE_EXECUTE_READ :
-                section->Characteristics & IMAGE_SCN_MEM_WRITE ?
-                    PAGE_READWRITE :
-                    PAGE_READONLY;
-        }
-
-        if (!ClrVirtualProtect((void*)((BYTE*)base + VAL32(section->VirtualAddress)),
-            VAL32(section->Misc.VirtualSize),
-            newProtection, &oldProtection))
-        {
-            ThrowLastError();
-        }
-    }
-
-    RETURN;
-}
-
-#endif // #ifndef DACCESS_COMPILE
-
-bool ReadResourceDirectoryHeader(const PEDecoder *pDecoder, DWORD rvaOfResourceSection, DWORD rva, IMAGE_RESOURCE_DIRECTORY_ENTRY** ppDirectoryEntries, IMAGE_RESOURCE_DIRECTORY **ppResourceDirectory)
-{
-    if (!pDecoder->CheckRva(rva, sizeof(IMAGE_RESOURCE_DIRECTORY)))
-    {
-        return false;
-    }
-
-    *ppResourceDirectory = (IMAGE_RESOURCE_DIRECTORY *)pDecoder->GetRvaData(rva);
-
-    // Check to see if entire resource directory is accessible
-    if (!pDecoder->CheckRva(rva + sizeof(IMAGE_RESOURCE_DIRECTORY),
-                       (sizeof(IMAGE_RESOURCE_DIRECTORY_ENTRY) * (*ppResourceDirectory)->NumberOfNamedEntries) +
-                       (sizeof(IMAGE_RESOURCE_DIRECTORY_ENTRY) * (*ppResourceDirectory)->NumberOfIdEntries)))
-    {
-        return false;
-    }
-
-    *ppDirectoryEntries = (IMAGE_RESOURCE_DIRECTORY_ENTRY *)pDecoder->GetRvaData(rva + sizeof(IMAGE_RESOURCE_DIRECTORY));
-    return true;
-}
-
-bool ReadNameFromResourceDirectoryEntry(const PEDecoder *pDecoder, DWORD rvaOfResourceSection, IMAGE_RESOURCE_DIRECTORY_ENTRY* pDirectoryEntries, DWORD iEntry, DWORD *pNameUInt, WCHAR **pNameStr)
-{
-    *pNameStr = NULL;
-    *pNameUInt = 0;
-
-    if (!IS_INTRESOURCE(pDirectoryEntries[iEntry].Name))
-    {
-        DWORD entryName = pDirectoryEntries[iEntry].Name;
-        if (!(entryName & IMAGE_RESOURCE_NAME_IS_STRING))
-            return false;
-        DWORD entryNameRva = (entryName & ~IMAGE_RESOURCE_NAME_IS_STRING) + rvaOfResourceSection;
-
-        if (!pDecoder->CheckRva(entryNameRva, sizeof(WORD)))
-            return false;
-
-        size_t entryNameLen = *(WORD*)pDecoder->GetRvaData(entryNameRva);
-        if (!pDecoder->CheckRva(entryNameRva, (COUNT_T)(sizeof(WORD) * (1 + entryNameLen))))
-            return false;
-        *pNameStr = new(nothrow) WCHAR[entryNameLen + 1];
-        if ((*pNameStr) == NULL)
-            return false;
-        memcpy((*pNameStr), (WCHAR*)pDecoder->GetRvaData(entryNameRva + sizeof(WORD)), entryNameLen * sizeof(WCHAR));
-        (*pNameStr)[entryNameLen] = 0;
-    }
-    else
-    {
-        DWORD name = pDirectoryEntries[iEntry].Name;
-        if (!IS_INTRESOURCE(name))
-            return false;
-
-        *pNameUInt = name;
-    }
-
-    return true;
-}
-
-DWORD ReadResourceDirectory(const PEDecoder *pDecoder, DWORD rvaOfResourceSection, DWORD rva, LPCWSTR name, BOOL *pisDirectory)
-{
-    *pisDirectory = FALSE;
-
-    IMAGE_RESOURCE_DIRECTORY* pResourceDirectory;
-    IMAGE_RESOURCE_DIRECTORY_ENTRY* pDirectoryEntries;
-    if (!ReadResourceDirectoryHeader(pDecoder, rvaOfResourceSection, rva, &pDirectoryEntries, &pResourceDirectory))
-    {
-        return 0;
-    }
-
-    // A fast implementation of resource lookup uses a binary search, but our needs are simple, and a linear search
-    // is easier to prove correct, so do that instead.
-    DWORD iEntryCount = (DWORD)pResourceDirectory->NumberOfNamedEntries + (DWORD)pResourceDirectory->NumberOfIdEntries;
-
-    for (DWORD iEntry = 0; iEntry < iEntryCount; iEntry++)
-    {
-        BOOL foundEntry = FALSE;
-
-        if (IS_INTRESOURCE(name))
-        {
-            // name is id
-            if (pDirectoryEntries[iEntry].Name == (DWORD)(SIZE_T)name)
-                foundEntry = TRUE;
-        }
-        else
-        {
-            // name is string
-            DWORD entryName = pDirectoryEntries[iEntry].Name;
-            if (!(entryName & IMAGE_RESOURCE_NAME_IS_STRING))
-                continue;
-
-            DWORD entryNameRva = (entryName & ~IMAGE_RESOURCE_NAME_IS_STRING) + rvaOfResourceSection;
-
-            if (!pDecoder->CheckRva(entryNameRva, sizeof(WORD)))
-                return 0;
-
-            size_t entryNameLen = *(WORD*)pDecoder->GetRvaData(entryNameRva);
-            if (wcslen(name) != entryNameLen)
-                continue;
-
-            if (!pDecoder->CheckRva(entryNameRva, (COUNT_T)(sizeof(WORD) * (1 + entryNameLen))))
-                return 0;
-
-            if (memcmp((WCHAR*)pDecoder->GetRvaData(entryNameRva + sizeof(WORD)), name, entryNameLen * sizeof(WCHAR)) == 0)
-                foundEntry = TRUE;
-        }
-
-        if (!foundEntry)
-            continue;
-
-        *pisDirectory = !!(pDirectoryEntries[iEntry].OffsetToData & IMAGE_RESOURCE_DATA_IS_DIRECTORY);
-        DWORD offsetToData = pDirectoryEntries[iEntry].OffsetToData & ~IMAGE_RESOURCE_DATA_IS_DIRECTORY;
-        DWORD dataRva = rvaOfResourceSection + offsetToData;
-        return dataRva;
-    }
-
-    return 0;
-}
-
-DWORD ReadResourceDataEntry(const PEDecoder *pDecoder, DWORD rva, COUNT_T *pSize)
-{
-    *pSize = 0;
-
-    if (!pDecoder->CheckRva(rva, sizeof(IMAGE_RESOURCE_DATA_ENTRY)))
-    {
-        return 0;
-    }
-
-    IMAGE_RESOURCE_DATA_ENTRY *pDataEntry = (IMAGE_RESOURCE_DATA_ENTRY *)pDecoder->GetRvaData(rva);
-    *pSize = pDataEntry->Size;
-    return pDataEntry->OffsetToData;
-}
-
-void * PEDecoder::GetWin32Resource(LPCWSTR lpName, LPCWSTR lpType, COUNT_T *pSize /*=NULL*/) const
-{
-    CONTRACTL {
-        INSTANCE_CHECK;
-        PRECONDITION(IsMapped());
-        NOTHROW;
-        GC_NOTRIGGER;
-    } CONTRACTL_END;
-
-    COUNT_T sizeUnused = 0; // Use this variable if pSize is null
-    if (pSize == NULL)
-        pSize = &sizeUnused;
-
-    *pSize = 0;
-
-    if (!HasDirectoryEntry(IMAGE_DIRECTORY_ENTRY_RESOURCE))
-        return NULL;
-
-    COUNT_T resourceDataSize = 0;
-    IMAGE_DATA_DIRECTORY *pDir = GetDirectoryEntry(IMAGE_DIRECTORY_ENTRY_RESOURCE);
-
-    if (pDir->VirtualAddress == 0)
-        return NULL;
-
-    BOOL isDirectory = FALSE;
-    DWORD nameTableRva = ReadResourceDirectory(this, pDir->VirtualAddress, pDir->VirtualAddress, lpType, &isDirectory);
-
-    if (!isDirectory)
-        return NULL;
-
-    if (nameTableRva == 0)
-        return NULL;
-
-    DWORD languageTableRva = ReadResourceDirectory(this, pDir->VirtualAddress, nameTableRva, lpName, &isDirectory);
-    if (!isDirectory)
-        return NULL;
-
-    if (languageTableRva == 0)
-        return NULL;
-
-    // This api is designed to find resources with LANGID = MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL)
-    // This translates to LANGID 0 as the initial lookup point, which is sufficient for the needs of this api at this time
-    // (FindResource in the Windows api implements a large number of fallback paths which this api does not implement)
-
-    DWORD resourceDataEntryRva = ReadResourceDirectory(this, pDir->VirtualAddress, languageTableRva, 0, &isDirectory);
-    if (isDirectory) // This must not be a resource directory itself
-        return NULL;
-
-    if (resourceDataEntryRva == 0)
-        return NULL;
-
-    DWORD resourceDataRva = ReadResourceDataEntry(this, resourceDataEntryRva, pSize);
-    if (!CheckRva(resourceDataRva, *pSize))
-    {
-        *pSize = 0;
-        return NULL;
-    }
-
-    return (void*)GetRvaData(resourceDataRva);
-}
-
-typedef bool (*PEDecoder_EnumerateResourceTableFunction)(const PEDecoder *pDecoder, DWORD rvaOfResourceSection, bool isDirectory, LPCWSTR name, DWORD dataRVA, void *context);
-
-struct ResourceEnumerateNamesState
-{
-    PEDecoder_ResourceNamesCallbackFunction namesCallback;
-    PEDecoder_ResourceCallbackFunction langIDcallback;
-    void *context;
-    LPCWSTR nameType;
-    LPCWSTR nameName;
-    PEDecoder_EnumerateResourceTableFunction callbackPerName;
-    PEDecoder_EnumerateResourceTableFunction callbackPerLangID;
-};
-
-struct ResourceEnumerateTypesState
-{
-    PEDecoder_ResourceTypesCallbackFunction callback;
-    void *context;
-    LPCWSTR nameType;
-};
-
-bool EnumerateWin32ResourceTable(const PEDecoder *pDecoder, DWORD rvaOfResourceSection, DWORD rvaOfResourceTable, PEDecoder_EnumerateResourceTableFunction resourceTableEnumerator, void *context)
-{
-    IMAGE_RESOURCE_DIRECTORY* pResourceDirectory;
-    IMAGE_RESOURCE_DIRECTORY_ENTRY* pDirectoryEntries;
-    if (!ReadResourceDirectoryHeader(pDecoder, rvaOfResourceSection, rvaOfResourceTable, &pDirectoryEntries, &pResourceDirectory))
-    {
-        return false;
-    }
-
-    DWORD iEntryCount = (DWORD)pResourceDirectory->NumberOfNamedEntries + (DWORD)pResourceDirectory->NumberOfIdEntries;
-
-    for (DWORD iEntry = 0; iEntry < iEntryCount; iEntry++)
-    {
-        DWORD nameUInt;
-        NewArrayHolder<WCHAR> nameString;
-        if (!ReadNameFromResourceDirectoryEntry(pDecoder, rvaOfResourceSection, pDirectoryEntries, iEntry, &nameUInt, &nameString))
-            return false;
-
-        LPCWSTR name = MAKEINTRESOURCEW(nameUInt);
-        if (nameString != NULL)
-            name = &nameString[0];
-
-        bool isDirectory = !!(pDirectoryEntries[iEntry].OffsetToData & IMAGE_RESOURCE_DATA_IS_DIRECTORY);
-        DWORD offsetToData = pDirectoryEntries[iEntry].OffsetToData & ~IMAGE_RESOURCE_DATA_IS_DIRECTORY;
-        DWORD dataRva = rvaOfResourceSection + offsetToData;
-
-        if (!resourceTableEnumerator(pDecoder, rvaOfResourceSection, isDirectory, name, dataRva, context))
-            return false;
-    }
-
-    return true;
-}
-
-bool DoesResourceNameMatch(LPCWSTR nameA, LPCWSTR nameB)
-{
-    bool foundEntry = false;
-
-    if (IS_INTRESOURCE(nameA))
-    {
-        // name is id
-        if (nameA == nameB)
-            foundEntry = true;
-    }
-    else
-    {
-        // name is a string.
-
-        // Check for name enumerated is an id. If so, it doesn't match, skip to next.
-        if (IS_INTRESOURCE(nameB))
-            return false;
-        else
-            foundEntry = !wcscmp(nameB, nameA);
-    }
-
-    return foundEntry;
-}
-
-bool EnumerateLangIDs(const PEDecoder *pDecoder, DWORD rvaOfResourceSection, bool isDirectory, LPCWSTR name, DWORD dataRVA, void *context)
-{
-    ResourceEnumerateNamesState *state = (ResourceEnumerateNamesState*)context;
-    if (isDirectory)
-        return false;
-
-    // Only LangIDs are permitted here
-    if (!IS_INTRESOURCE(name))
-        return false;
-
-    if (dataRVA == 0)
-        return false;
-
-    COUNT_T cbData;
-    DWORD resourceDataRva = ReadResourceDataEntry(pDecoder, dataRVA, &cbData);
-    if (!pDecoder->CheckRva(resourceDataRva, cbData))
-    {
-        return false;
-    }
-
-    BYTE *pData = (BYTE*)pDecoder->GetRvaData(resourceDataRva);
-
-    return state->langIDcallback(state->nameName, state->nameType, (DWORD)(uintptr_t)name, pData, cbData, state->context);
-}
-
-
-bool EnumerateNames(const PEDecoder *pDecoder, DWORD rvaOfResourceSection, bool isDirectory, LPCWSTR name, DWORD dataRVA, void *context)
-{
-    ResourceEnumerateNamesState *state = (ResourceEnumerateNamesState*)context;
-    if (!isDirectory)
-        return false;
-
-    state->nameName = name;
-    return state->namesCallback(state->nameName, state->nameType, state->context);
-}
-
-bool EnumerateNamesForLangID(const PEDecoder *pDecoder, DWORD rvaOfResourceSection, bool isDirectory, LPCWSTR name, DWORD dataRVA, void *context)
-{
-    ResourceEnumerateNamesState *state = (ResourceEnumerateNamesState*)context;
-    if (!isDirectory)
-        return false;
-
-    bool foundEntry = DoesResourceNameMatch(state->nameName, name);
-
-    if (foundEntry)
-        return EnumerateWin32ResourceTable(pDecoder, rvaOfResourceSection, dataRVA, state->callbackPerLangID, context);
-    else
-        return true; // Keep scanning
-}
-
-
-bool EnumerateTypes(const PEDecoder *pDecoder, DWORD rvaOfResourceSection, bool isDirectory, LPCWSTR name, DWORD dataRVA, void *context)
-{
-    ResourceEnumerateTypesState *state = (ResourceEnumerateTypesState*)context;
-    if (!isDirectory)
-        return false;
-
-    state->nameType = name;
-    return state->callback(name, state->context);
-}
-
-bool EnumerateTypesForNames(const PEDecoder *pDecoder, DWORD rvaOfResourceSection, bool isDirectory, LPCWSTR name, DWORD dataRVA, void *context)
-{
-    ResourceEnumerateNamesState *state = (ResourceEnumerateNamesState*)context;
-    if (!isDirectory)
-        return false;
-
-    bool foundEntry = DoesResourceNameMatch(state->nameType, name);
-
-    if (foundEntry)
-        return EnumerateWin32ResourceTable(pDecoder, rvaOfResourceSection, dataRVA, state->callbackPerName, context);
-    else
-        return true; // Keep scanning
-}
-
-
-bool PEDecoder::EnumerateWin32ResourceTypes(PEDecoder_ResourceTypesCallbackFunction callback, void* context) const
-{
-    if (!HasDirectoryEntry(IMAGE_DIRECTORY_ENTRY_RESOURCE))
-        return true;
-
-    COUNT_T resourceDataSize = 0;
-    IMAGE_DATA_DIRECTORY *pDir = GetDirectoryEntry(IMAGE_DIRECTORY_ENTRY_RESOURCE);
-
-    if (pDir->VirtualAddress == 0)
-        return true;
-
-    DWORD rvaOfResourceSection = pDir->VirtualAddress;
-
-    ResourceEnumerateTypesState state;
-    state.context = context;
-    state.callback = callback;
-
-    return EnumerateWin32ResourceTable(this, rvaOfResourceSection, rvaOfResourceSection, EnumerateTypes, &state);
-}
-
-bool PEDecoder::EnumerateWin32ResourceNames(LPCWSTR lpType, PEDecoder_ResourceNamesCallbackFunction callback, void* context) const
-{
-    if (!HasDirectoryEntry(IMAGE_DIRECTORY_ENTRY_RESOURCE))
-        return true;
-
-    COUNT_T resourceDataSize = 0;
-    IMAGE_DATA_DIRECTORY *pDir = GetDirectoryEntry(IMAGE_DIRECTORY_ENTRY_RESOURCE);
-
-    if (pDir->VirtualAddress == 0)
-        return true;
-
-    DWORD rvaOfResourceSection = pDir->VirtualAddress;
-
-    ResourceEnumerateNamesState state;
-    state.context = context;
-    state.namesCallback = callback;
-    state.langIDcallback = NULL;
-    state.nameType = lpType;
-    state.nameName = NULL;
-    state.callbackPerName = EnumerateNames;
-    state.callbackPerLangID = NULL;
-
-    return EnumerateWin32ResourceTable(this, rvaOfResourceSection, rvaOfResourceSection, EnumerateTypesForNames, &state);
-}
-
-bool PEDecoder::EnumerateWin32Resources(LPCWSTR lpName, LPCWSTR lpType, PEDecoder_ResourceCallbackFunction callback, void* context) const
-{
-    if (!HasDirectoryEntry(IMAGE_DIRECTORY_ENTRY_RESOURCE))
-        return true;
-
-    COUNT_T resourceDataSize = 0;
-    IMAGE_DATA_DIRECTORY *pDir = GetDirectoryEntry(IMAGE_DIRECTORY_ENTRY_RESOURCE);
-
-    if (pDir->VirtualAddress == 0)
-        return true;
-
-    DWORD rvaOfResourceSection = pDir->VirtualAddress;
-
-    ResourceEnumerateNamesState state;
-    state.context = context;
-    state.namesCallback = NULL;
-    state.langIDcallback = callback;
-    state.nameType = lpType;
-    state.nameName = lpName;
-    state.callbackPerName = EnumerateNamesForLangID;
-    state.callbackPerLangID = EnumerateLangIDs;
-
-    return EnumerateWin32ResourceTable(this, rvaOfResourceSection, rvaOfResourceSection, EnumerateTypesForNames, &state);
-}
-
 READYTORUN_HEADER * PEDecoder::FindReadyToRunHeader() const
 {
     CONTRACTL
@@ -2172,12 +1558,12 @@ READYTORUN_HEADER * PEDecoder::FindReadyToRunHeader() const
         PTR_READYTORUN_HEADER pHeader = PTR_READYTORUN_HEADER((TADDR)GetDirectoryData(pDir));
         if (pHeader->Signature == READYTORUN_SIGNATURE)
         {
-            const_cast<PEDecoder*>(this)->m_pReadyToRunHeader = pHeader;
+            m_pReadyToRunHeader = pHeader;
             return pHeader;
         }
     }
 
-    const_cast<PEDecoder *>(this)->m_flags |= FLAG_HAS_NO_READYTORUN_HEADER;
+    m_flags |= FLAG_HAS_NO_READYTORUN_HEADER;
     return NULL;
 }
 
@@ -2221,114 +1607,10 @@ PTR_VOID PEDecoder::GetExport(LPCSTR exportName) const
 // properly DACized and have other dependencies on the rest of the CLR.
 //
 
-typedef DPTR(COR_ILMETHOD_TINY) PTR_COR_ILMETHOD_TINY;
-typedef DPTR(COR_ILMETHOD_FAT) PTR_COR_ILMETHOD_FAT;
-typedef DPTR(COR_ILMETHOD_SECT_SMALL) PTR_COR_ILMETHOD_SECT_SMALL;
-typedef DPTR(COR_ILMETHOD_SECT_FAT) PTR_COR_ILMETHOD_SECT_FAT;
-
 CHECK PEDecoder::CheckILMethod(RVA rva)
 {
-    CONTRACT_CHECK
-    {
-        INSTANCE_CHECK;
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACT_CHECK_END;
-
-    //
-    // Incrementaly validate that the entire IL method body is within the bounds of the image
-    //
-
-    // We need to have at least the tiny header
-    CHECK(CheckRva(rva, sizeof(IMAGE_COR_ILMETHOD_TINY)));
-
-    TADDR pIL = GetRvaData(rva);
-
-    PTR_COR_ILMETHOD_TINY pMethodTiny = PTR_COR_ILMETHOD_TINY(pIL);
-
-    if (pMethodTiny->IsTiny())
-    {
-        // Tiny header has no optional sections - we are done.
-        CHECK(CheckRva(rva, sizeof(IMAGE_COR_ILMETHOD_TINY) + pMethodTiny->GetCodeSize()));
-        CHECK_OK;
-    }
-
-    //
-    // Fat header
-    //
-
-    CHECK(CheckRva(rva, sizeof(IMAGE_COR_ILMETHOD_FAT)));
-
-    PTR_COR_ILMETHOD_FAT pMethodFat = PTR_COR_ILMETHOD_FAT(pIL);
-
-    CHECK(pMethodFat->IsFat());
-
-    S_UINT32 codeEnd = S_UINT32(4) * S_UINT32(pMethodFat->GetSize()) + S_UINT32(pMethodFat->GetCodeSize());
-    CHECK(!codeEnd.IsOverflow());
-
-    // Check minimal size of the header
-    CHECK(pMethodFat->GetSize() >= (sizeof(COR_ILMETHOD_FAT) / 4));
-
-    CHECK(CheckRva(rva, codeEnd.Value()));
-
-    if (!pMethodFat->More())
-    {
-        CHECK_OK;
-    }
-
-    // DACized copy of code:COR_ILMETHOD_FAT::GetSect
-    TADDR pSect = AlignUp(pIL + codeEnd.Value(), 4);
-
-    //
-    // Optional sections following the code
-    //
-
-    for (;;)
-    {
-        CHECK(CheckRva(rva, UINT32(pSect - pIL) + sizeof(IMAGE_COR_ILMETHOD_SECT_SMALL)));
-
-        PTR_COR_ILMETHOD_SECT_SMALL pSectSmall = PTR_COR_ILMETHOD_SECT_SMALL(pSect);
-
-        UINT32 sectSize;
-
-        if (pSectSmall->IsSmall())
-        {
-            sectSize = pSectSmall->DataSize;
-
-            // Workaround for bug in shipped compilers - see comment in code:COR_ILMETHOD_SECT::DataSize
-            if ((pSectSmall->Kind & CorILMethod_Sect_KindMask) == CorILMethod_Sect_EHTable)
-                sectSize = COR_ILMETHOD_SECT_EH_SMALL::Size(sectSize / sizeof(IMAGE_COR_ILMETHOD_SECT_EH_CLAUSE_SMALL));
-        }
-        else
-        {
-            CHECK(CheckRva(rva, UINT32(pSect - pIL) + sizeof(IMAGE_COR_ILMETHOD_SECT_FAT)));
-
-            PTR_COR_ILMETHOD_SECT_FAT pSectFat = PTR_COR_ILMETHOD_SECT_FAT(pSect);
-
-            sectSize = pSectFat->GetDataSize();
-
-            // Workaround for bug in shipped compilers - see comment in code:COR_ILMETHOD_SECT::DataSize
-            if ((pSectSmall->Kind & CorILMethod_Sect_KindMask) == CorILMethod_Sect_EHTable)
-                sectSize = COR_ILMETHOD_SECT_EH_FAT::Size(sectSize / sizeof(IMAGE_COR_ILMETHOD_SECT_EH_CLAUSE_FAT));
-        }
-
-        // Section has to be non-empty to avoid infinite loop below
-        CHECK(sectSize > 0);
-
-        S_UINT32 sectEnd = S_UINT32(UINT32(pSect - pIL)) + S_UINT32(sectSize);
-        CHECK(!sectEnd.IsOverflow());
-
-        CHECK(CheckRva(rva, sectEnd.Value()));
-
-        if (!pSectSmall->More())
-        {
-            CHECK_OK;
-        }
-
-        // DACized copy of code:COR_ILMETHOD_FAT::Next
-        pSect = AlignUp(pIL + sectEnd.Value(), 4);
-    }
+    WRAPPER_NO_CONTRACT;
+    return CorDecoderHelpers::CheckILMethod(*this, rva);
 }
 
 //
@@ -2371,7 +1653,7 @@ SIZE_T PEDecoder::ComputeILMethodSize(TADDR pIL)
     // DACized copy of code:COR_ILMETHOD_FAT::GetSect
     TADDR pSect = AlignUp(pIL + codeEnd, 4);
 
-    for (;;)
+    while (true)
     {
         PTR_COR_ILMETHOD_SECT_SMALL pSectSmall = PTR_COR_ILMETHOD_SECT_SMALL(pSect);
 
@@ -2425,55 +1707,22 @@ SIZE_T PEDecoder::ComputeILMethodSize(TADDR pIL)
 //
 PTR_IMAGE_DEBUG_DIRECTORY PEDecoder::GetDebugDirectoryEntry(UINT index) const
 {
-    CONTRACT(PTR_IMAGE_DEBUG_DIRECTORY)
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckNTHeaders());
-        NOTHROW;
-        GC_NOTRIGGER;
-        SUPPORTS_DAC;
-    }
-    CONTRACT_END;
-
-    if (!HasDirectoryEntry(IMAGE_DIRECTORY_ENTRY_DEBUG))
-    {
-        RETURN NULL;
-    }
-
-    // Get a pointer to the contents and size of the debug directory
-    // Also validates (in CHK builds) that this is all within one section, which the
-    // caller should have already validated if they don't trust the context of this PE file.
-    COUNT_T cbDebugDir;
-    TADDR taDebugDir = GetDirectoryEntryData(IMAGE_DIRECTORY_ENTRY_DEBUG, &cbDebugDir);
-
-    // Check if the specified directory entry exists (based on the size of the directory)
-    // Note that the directory size should be an even multiple of the entry size, but we
-    // just round-down because we need to be resiliant (without asserting) to corrupted /
-    // fuzzed PE files.
-    UINT cNumEntries = cbDebugDir / sizeof(IMAGE_DEBUG_DIRECTORY);
-    if (index >= cNumEntries)
-    {
-        RETURN NULL;    // index out of range
-    }
-
-    // Get the debug directory entry at the specified index.
-    PTR_IMAGE_DEBUG_DIRECTORY pDebugEntry = dac_cast<PTR_IMAGE_DEBUG_DIRECTORY>(taDebugDir);
-    pDebugEntry += index;   // offset from the first entry to the requested entry
-    RETURN pDebugEntry;
+    WRAPPER_NO_CONTRACT;
+    SUPPORTS_DAC;
+    return CorDecoderHelpers::GetDebugDirectoryEntry(*this, index);
 }
 
 
 PTR_CVOID PEDecoder::GetNativeManifestMetadata(COUNT_T *pSize) const
 {
-    CONTRACT(PTR_CVOID)
+    CONTRACTL
     {
         INSTANCE_CHECK;
         PRECONDITION(HasReadyToRunHeader());
-        POSTCONDITION(CheckPointer(RETVAL, NULL_OK)); // TBD - may not store metadata for IJW
         NOTHROW;
         GC_NOTRIGGER;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     IMAGE_DATA_DIRECTORY *pDir = NULL;
     {
@@ -2502,52 +1751,14 @@ PTR_CVOID PEDecoder::GetNativeManifestMetadata(COUNT_T *pSize) const
                 *pSize = 0;
             }
 
-            RETURN NULL;
+            return NULL;
         }
     }
 
     if (pSize != NULL)
         *pSize = VAL32(pDir->Size);
 
-    RETURN dac_cast<PTR_VOID>(GetDirectoryData(pDir));
-}
-
-// Get the SizeOfStackReserve and SizeOfStackCommit from the PE file that was used to create
-// the calling process (.exe file).
-void PEDecoder::GetEXEStackSizes(SIZE_T *PE_SizeOfStackReserve, SIZE_T *PE_SizeOfStackCommit) const
-{
-    CONTRACTL {
-        PRECONDITION(!IsDll()); // This routine should only be called for EXE files.
-        NOTHROW;
-        GC_NOTRIGGER;
-    } CONTRACTL_END;
-
-    * PE_SizeOfStackReserve = GetSizeOfStackReserve();
-    * PE_SizeOfStackCommit  = GetSizeOfStackCommit();
-}
-
-CHECK PEDecoder::CheckWillCreateGuardPage() const
-{
-    CONTRACT_CHECK
-    {
-        PRECONDITION(CheckNTHeaders());
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACT_CHECK_END;
-
-    if (!IsDll())
-    {
-        SIZE_T sizeReservedStack = 0;
-        SIZE_T sizeCommitedStack = 0;
-
-        GetEXEStackSizes(&sizeReservedStack, &sizeCommitedStack);
-
-        CHECK(ThreadWillCreateGuardPage(sizeReservedStack, sizeCommitedStack));
-
-    }
-
-    CHECK_OK;
+    return dac_cast<PTR_VOID>(GetDirectoryData(pDir));
 }
 
 BOOL PEDecoder::HasNativeEntryPoint() const
@@ -2566,16 +1777,15 @@ BOOL PEDecoder::HasNativeEntryPoint() const
 
 void *PEDecoder::GetNativeEntryPoint() const
 {
-    CONTRACT (void *) {
+    CONTRACTL {
         INSTANCE_CHECK;
         NOTHROW;
         GC_NOTRIGGER;
         PRECONDITION(CheckCorHeader());
         PRECONDITION(HasNativeEntryPoint());
-        POSTCONDITION(CheckPointer(RETVAL, NULL_OK));
-    } CONTRACT_END;
+    } CONTRACTL_END;
 
-    RETURN ((void *) GetRvaData((RVA)VAL32(IMAGE_COR20_HEADER_FIELD(*GetCorHeader(), EntryPointToken))));
+    return (void *) GetRvaData((RVA)VAL32(IMAGE_COR20_HEADER_FIELD(*GetCorHeader(), EntryPointToken)));
 }
 
 #ifdef DACCESS_COMPILE
@@ -2619,14 +1829,13 @@ BOOL PEDecoder::GetForceRelocs()
     WRAPPER_NO_CONTRACT;
 
     static ConfigDWORD forceRelocs;
-    return (forceRelocs.val(CLRConfig::INTERNAL_ForceRelocs) != 0);
+    return forceRelocs.val(CLRConfig::INTERNAL_ForceRelocs) != 0;
 }
 
 BOOL PEDecoder::ForceRelocForDLL(LPCWSTR lpFileName)
 {
 #ifdef _DEBUG
 		STATIC_CONTRACT_NOTHROW;                                        \
-		ANNOTATION_DEBUG_ONLY;                                          \
 		STATIC_CONTRACT_CANNOT_TAKE_LOCK;
 #endif
 
@@ -2653,7 +1862,7 @@ BOOL PEDecoder::ForceRelocForDLL(LPCWSTR lpFileName)
     if (hFile == INVALID_HANDLE_VALUE)
         goto ErrExit;
 
-    HANDLE hMap = WszCreateFileMapping(hFile,
+    HANDLE hMap = CreateFileMapping(hFile,
                                        NULL,
                                        SEC_IMAGE | PAGE_READONLY,
                                        0,
@@ -2685,7 +1894,7 @@ BOOL PEDecoder::ForceRelocForDLL(LPCWSTR lpFileName)
     // Reserve the space so nobody can use it. A potential bug is likely to
     // result in a plain AV this way. It is not a good idea to use the original
     // mapping for the reservation since since it would lock the file on the disk.
-    if (!ClrVirtualAlloc(pPreferredBase, nVirtualSize, MEM_RESERVE, PAGE_NOACCESS))
+    if (!VirtualAlloc(pPreferredBase, nVirtualSize, MEM_RESERVE, PAGE_NOACCESS))
         goto ErrExit;
 
     fSuccess = TRUE;
@@ -2702,12 +1911,14 @@ ErrExit:
 #endif // _DEBUG
 
 //
-//  MethodSectionIterator class is used to iterate hot (or) cold method section in an ngen image.
-//  Also used to iterate over jitted methods in the code heap
+//  MethodSectionIterator class is used to iterate hot (or) cold method sections
+//  over jitted methods in the code heap
 //
-MethodSectionIterator::MethodSectionIterator(const void *code, SIZE_T codeSize,
-                                             const void *codeTable, SIZE_T codeTableSize)
+MethodSectionIterator::MethodSectionIterator(void *code, SIZE_T codeSize,
+                                             void *codeTable, SIZE_T codeTableSize)
 {
+    using namespace NibbleMap;
+
     //For DAC builds,we'll read the table one DWORD at a time.  Note that m_code IS
     //NOT a host pointer.
     m_codeTableStart = PTR_DWORD(TADDR(codeTable));
@@ -2722,6 +1933,11 @@ MethodSectionIterator::MethodSectionIterator(const void *code, SIZE_T codeSize,
     {
         m_dword = *m_codeTable++;
         m_index = 0;
+        while(m_codeTable < m_codeTableEnd && IsPointer(m_dword))
+        {
+            m_dword = *m_codeTable++;
+            m_code += BYTES_PER_DWORD;
+        }
     }
     else
     {
@@ -2731,6 +1947,8 @@ MethodSectionIterator::MethodSectionIterator(const void *code, SIZE_T codeSize,
 
 BOOL MethodSectionIterator::Next()
 {
+    using namespace NibbleMap;
+
     while (m_codeTable < m_codeTableEnd || m_index < (int)NIBBLES_PER_DWORD)
     {
         while (m_index++ < (int)NIBBLES_PER_DWORD)
@@ -2741,7 +1959,7 @@ BOOL MethodSectionIterator::Next()
             if (nibble != 0)
             {
                 // We have found a method start
-                m_current = m_code + ((nibble-1)*CODE_ALIGN);
+                m_current = m_code + ((nibble-1) << LOG2_CODE_ALIGN);
                 m_code += BYTES_PER_BUCKET;
                 return TRUE;
             }
@@ -2753,6 +1971,11 @@ BOOL MethodSectionIterator::Next()
         {
             m_dword = *m_codeTable++;
             m_index = 0;
+            while(m_codeTable < m_codeTableEnd && (IsPointer(m_dword) || m_dword == 0))
+            {
+                m_dword = *m_codeTable++;
+                m_code += BYTES_PER_DWORD;
+            }
         }
     }
     return FALSE;

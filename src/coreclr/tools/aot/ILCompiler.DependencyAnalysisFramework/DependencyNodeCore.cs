@@ -1,37 +1,29 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+#nullable enable
+
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace ILCompiler.DependencyAnalysisFramework
 {
-    public abstract class DependencyNodeCore<DependencyContextType> : DependencyNode, IDependencyNode<DependencyContextType>
+    public abstract partial class DependencyNodeCore<DependencyContextType> : DependencyNode, IDependencyNode<DependencyContextType>
     {
-        public struct DependencyListEntry
+        public readonly struct DependencyListEntry(
+            DependencyNodeCore<DependencyContextType> node,
+            string reason)
         {
-            public DependencyListEntry(DependencyNodeCore<DependencyContextType> node,
-                                       string reason)
+            public DependencyListEntry(object node, string reason)
+                : this((DependencyNodeCore<DependencyContextType>)node, reason)
             {
-                Node = node;
-                Reason = reason;
             }
 
-            public DependencyListEntry(object node,
-                                       string reason)
-            {
-                Node = (DependencyNodeCore<DependencyContextType>)node;
-                Reason = reason;
-            }
-
-            public DependencyNodeCore<DependencyContextType> Node;
-            public string Reason;
+            public readonly DependencyNodeCore<DependencyContextType> Node = node;
+            public readonly string Reason = reason;
         }
 
-        public class DependencyList : List<DependencyListEntry>
+        public class DependencyList : List<DependencyListEntry>, IDependencySink
         {
             public DependencyList() { }
 
@@ -40,44 +32,62 @@ namespace ILCompiler.DependencyAnalysisFramework
             {
             }
 
-            public void Add(DependencyNodeCore<DependencyContextType> node,
-                                       string reason)
+            public virtual void Add(DependencyNodeCore<DependencyContextType> node,
+                                    string reason)
             {
-                this.Add(new DependencyListEntry(node, reason));
+                Add(new DependencyListEntry(node, reason));
             }
 
-            public void Add(object node, string reason)
+            public virtual void Add(object node, string reason)
             {
-                this.Add(new DependencyListEntry((DependencyNodeCore<DependencyContextType>)node, reason));
+                Add(new DependencyListEntry(node, reason));
+            }
+
+            public new virtual void Add(DependencyListEntry dependency)
+            {
+                base.Add(dependency);
+            }
+
+            public virtual void AddRange(params ReadOnlySpan<DependencyListEntry> dependencies)
+            {
+                foreach (DependencyListEntry dependency in dependencies)
+                {
+                    Add(dependency);
+                }
             }
         }
 
-        public struct CombinedDependencyListEntry : IEquatable<CombinedDependencyListEntry>
+        public class CombinedDependencyList : List<CombinedDependencyListEntry>, IConditionalDependencySink
         {
-            public CombinedDependencyListEntry(DependencyNodeCore<DependencyContextType> node,
-                                               DependencyNodeCore<DependencyContextType> otherReasonNode,
-                                               string reason)
+            public new virtual void Add(CombinedDependencyListEntry dependency)
             {
-                Node = node;
-                OtherReasonNode = otherReasonNode;
-                Reason = reason;
+                base.Add(dependency);
             }
+        }
 
+        public readonly struct CombinedDependencyListEntry(
+            DependencyNodeCore<DependencyContextType> node,
+            DependencyNodeCore<DependencyContextType> otherReasonNode,
+            string reason) : IEquatable<CombinedDependencyListEntry>
+        {
             public CombinedDependencyListEntry(object node,
                                                object otherReasonNode,
                                                string reason)
+                : this(
+                    (DependencyNodeCore<DependencyContextType>)node,
+                    (DependencyNodeCore<DependencyContextType>)otherReasonNode,
+                    reason)
             {
-                Node = (DependencyNodeCore<DependencyContextType>)node;
-                OtherReasonNode = (DependencyNodeCore<DependencyContextType>)otherReasonNode;
-                Reason = reason;
             }
 
-            // Used by HashSet, so must have good Equals/GetHashCode
-            public readonly DependencyNodeCore<DependencyContextType> Node;
-            public readonly DependencyNodeCore<DependencyContextType> OtherReasonNode;
-            public readonly string Reason;
+            internal readonly DependencyListEntry Dependency = new(node, reason);
+            public readonly DependencyNodeCore<DependencyContextType> OtherReasonNode = otherReasonNode;
 
-            public override bool Equals(object obj)
+            public readonly DependencyNodeCore<DependencyContextType> Node => Dependency.Node;
+            public readonly string Reason => Dependency.Reason;
+
+            // Used by HashSet, so must have good Equals/GetHashCode
+            public override bool Equals(object? obj)
             {
                 return obj is CombinedDependencyListEntry && Equals((CombinedDependencyListEntry)obj);
             }
@@ -86,9 +96,7 @@ namespace ILCompiler.DependencyAnalysisFramework
             {
                 int hash = 23;
                 hash = hash * 31 + Node.GetHashCode();
-
-                if (OtherReasonNode != null)
-                    hash = hash * 31 + OtherReasonNode.GetHashCode();
+                hash = hash * 31 + OtherReasonNode.GetHashCode();
 
                 if (Reason != null)
                     hash = hash * 31 + Reason.GetHashCode();
@@ -98,9 +106,9 @@ namespace ILCompiler.DependencyAnalysisFramework
 
             public bool Equals(CombinedDependencyListEntry other)
             {
-                return Object.ReferenceEquals(Node, other.Node)
-                    && Object.ReferenceEquals(OtherReasonNode, other.OtherReasonNode)
-                    && Object.Equals(Reason, other.Reason);
+                return ReferenceEquals(Node, other.Node)
+                    && ReferenceEquals(OtherReasonNode, other.OtherReasonNode)
+                    && Equals(Reason, other.Reason);
             }
         }
 
@@ -124,13 +132,17 @@ namespace ILCompiler.DependencyAnalysisFramework
             get;
         }
 
-        public virtual int DependencyPhaseForDeferredStaticComputation { get; } = 0;
+        public virtual int DependencyPhaseForDeferredStaticComputation { get; }
 
-        public abstract IEnumerable<DependencyListEntry> GetStaticDependencies(DependencyContextType context);
+        public abstract void AddStaticDependencies(DependencySink sink, DependencyContextType context);
 
-        public abstract IEnumerable<CombinedDependencyListEntry> GetConditionalStaticDependencies(DependencyContextType context);
+        public virtual void AddConditionalDependencies(DependencySink sink, DependencyContextType context)
+        {
+        }
 
-        public abstract IEnumerable<CombinedDependencyListEntry> SearchDynamicDependencies(List<DependencyNodeCore<DependencyContextType>> markedNodes, int firstNode, DependencyContextType context);
+        public virtual void SearchDynamicDependencies(List<DependencyNodeCore<DependencyContextType>> markedNodes, int firstNode, DependencySink sink, DependencyContextType context)
+        {
+        }
 
         internal void CallOnMarked(DependencyContextType context)
         {
@@ -150,11 +162,16 @@ namespace ILCompiler.DependencyAnalysisFramework
         // Force all non-abstract nodes to provide a name
         protected abstract string GetName(DependencyContextType context);
 
+        string IDependencyNode<DependencyContextType>.GetName(DependencyContextType context) => GetName(context);
+
         // We would prefer GetName to be "protected internal", but that will break people who want to source
         // include the dependency analysis framework. When nobody does that, maybe we can get rid of this method.
         internal string GetNameInternal(DependencyContextType context)
         {
             return GetName(context);
         }
+
+        public static string GetNodeName(DependencyNodeCore<DependencyContextType> node, DependencyContextType context)
+            => node.GetName(context);
     }
 }

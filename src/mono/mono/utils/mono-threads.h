@@ -98,7 +98,7 @@ typedef struct {
 } MonoThreadHandle;
 
 /*
-THREAD_INFO_TYPE is a way to make the mono-threads module parametric - or sort of.
+THREAD_INFO_TYPE is a way to make the mono-threads module parameteric - or sort of.
 The GC using mono-threads might extend the MonoThreadInfo struct to add its own
 data, this avoid a pointer indirection on what is on a lot of hot paths.
 
@@ -168,6 +168,7 @@ enum {
 	ASYNC_SUSPEND_STATE_INDEX = 1,
 };
 
+MONO_DISABLE_WARNING(4201) // nonstandard extension used: nameless struct/union
 typedef union {
 	int32_t raw;
 	struct {
@@ -176,6 +177,7 @@ typedef union {
 		int32_t suspend_count : 8;
 	};
 } MonoThreadStateMachine;
+MONO_RESTORE_WARNING
 
 /*
  * These flags control how the rest of the runtime will see and interact with
@@ -407,7 +409,7 @@ mono_thread_info_set_tid (THREAD_INFO_TYPE *info, MonoNativeThreadId tid)
 
 /*
  * @thread_info_size is sizeof (GcThreadInfo), a struct the GC defines to make it possible to have
- * a single block with info from both camps. 
+ * a single block with info from both camps.
  */
 void
 mono_thread_info_init (size_t thread_info_size);
@@ -491,9 +493,6 @@ mono_thread_info_suspend_lock (void);
 void
 mono_thread_info_suspend_unlock (void);
 
-void
-mono_thread_info_abort_socket_syscall_for_close (MonoNativeThreadId tid);
-
 MONO_COMPONENT_API void
 mono_thread_info_set_is_async_context (gboolean async_context);
 
@@ -539,7 +538,7 @@ mono_thread_info_self_interrupt (void);
 void
 mono_thread_info_clear_self_interrupt (void);
 
-gboolean
+MONO_COMPONENT_API gboolean
 mono_thread_info_is_interrupt_state (THREAD_INFO_TYPE *info);
 
 void
@@ -647,14 +646,12 @@ mono_native_thread_id_main_thread_known (MonoNativeThreadId *main_thread_tid);
 /*
  * This does _not_ return the same value as mono_native_thread_id_get, except on Windows.
  * On POSIX, mono_native_thread_id_get returns the value from pthread_self, which is then
- * passed around as an identifier to other pthread functions. However this function, where 
- * possible, returns the OS-unique thread id value, fetched in a platform-specific manner. 
+ * passed around as an identifier to other pthread functions. However this function, where
+ * possible, returns the OS-unique thread id value, fetched in a platform-specific manner.
  * It will not work with the various pthread functions, should never be used as a
  * MonoNativeThreadId, and is intended solely to match the output of various diagonistic tools.
  */
 guint64 mono_native_thread_os_id_get (void);
-
-gint32 mono_native_thread_processor_id_get (void);
 
 MONO_API gboolean
 mono_native_thread_id_equals (MonoNativeThreadId id1, MonoNativeThreadId id2);
@@ -848,7 +845,13 @@ void mono_threads_join_unlock (void);
 
 #ifdef HOST_WASM
 typedef void (*background_job_cb)(void);
-void mono_threads_schedule_background_job (background_job_cb cb);
+typedef gsize (*ds_job_cb)(void* data);
+#ifdef DISABLE_THREADS
+void SystemJS_ScheduleBackgroundJob (background_job_cb cb);
+void SystemJS_DiagnosticServerQueueJob (ds_job_cb cb, void* data);
+#else
+void SystemJS_ScheduleSynchronizationContext(MonoNativeThreadId target_thread);
+#endif // DISABLE_THREADS
 #endif
 
 #ifdef USE_WINDOWS_BACKEND
@@ -856,13 +859,13 @@ void mono_threads_schedule_background_job (background_job_cb cb);
 void
 mono_win32_enter_alertable_wait (THREAD_INFO_TYPE *info);
 
-void
+gboolean
 mono_win32_leave_alertable_wait (THREAD_INFO_TYPE *info);
 
 void
 mono_win32_enter_blocking_io_call (THREAD_INFO_TYPE *info, HANDLE io_handle);
 
-void
+gboolean
 mono_win32_leave_blocking_io_call (THREAD_INFO_TYPE *info, HANDLE io_handle);
 
 void
@@ -871,19 +874,50 @@ mono_win32_interrupt_wait (PVOID thread_info, HANDLE native_thread_handle, DWORD
 void
 mono_win32_abort_blocking_io_call (THREAD_INFO_TYPE *info);
 
-#define W32_DEFINE_LAST_ERROR_RESTORE_POINT \
+#else
+
+
+#endif
+
+#ifdef USE_WINDOWS_BACKEND
+
+/* APC calls can change GetLastError while a thread is suspended.  Save/restore it when doing thread
+   state transitions (for example in m2n wrappers) in order to protect the result of the last
+   pinvoke */
+
+#define MONO_DEFINE_LAST_ERROR_RESTORE_POINT \
 	const DWORD _last_error_restore_point = GetLastError ();
 
-#define W32_RESTORE_LAST_ERROR_FROM_RESTORE_POINT \
-		/* Only restore if changed to prevent unecessary writes. */ \
+#define MONO_RESTORE_LAST_ERROR_FROM_RESTORE_POINT \
+		/* Only restore if changed to prevent unnecessary writes. */ \
 		if (GetLastError () != _last_error_restore_point) \
 			mono_SetLastError (_last_error_restore_point);
 
+#elif defined(USE_WASM_BACKEND) || defined (USE_POSIX_BACKEND)
+
+#define MONO_DEFINE_LAST_ERROR_RESTORE_POINT     \
+	int _last_errno_restore_point = errno;
+
+#define MONO_RESTORE_LAST_ERROR_FROM_RESTORE_POINT       \
+        if (errno != _last_errno_restore_point)         \
+                errno = _last_errno_restore_point;
+
+/* Posix semaphores set errno on failure and sporadic wakeup.  GC state transitions are done in n2m
+ * and m2n wrappers and may change the value of errno from the last pinvoke.  Use these macros to
+ * save/restore errno when doing thread state transitions. */
+
+#elif defined(USE_MACH_BACKEND)
+
+/* Mach semaphores don't set errno on failure.  Change this to be the same as POSIX if some other primitives used
+   in thread state transitions pollute errno. */
+
+#define MONO_DEFINE_LAST_ERROR_RESTORE_POINT /* nothing */
+#define MONO_RESTORE_LAST_ERROR_FROM_RESTORE_POINT /* nothing */
+
 #else
-
-#define W32_DEFINE_LAST_ERROR_RESTORE_POINT /* nothing */
-#define W32_RESTORE_LAST_ERROR_FROM_RESTORE_POINT /* nothing */
-
+#error "unknown threads backend, not sure how to save/restore last error"
 #endif
+
+
 
 #endif /* __MONO_THREADS_H__ */

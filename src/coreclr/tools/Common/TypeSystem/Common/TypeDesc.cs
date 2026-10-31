@@ -2,9 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.Diagnostics;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
+
+using Internal.Text;
 
 namespace Internal.TypeSystem
 {
@@ -24,27 +26,27 @@ namespace Internal.TypeSystem
         public override bool Equals(object o)
         {
             // Its only valid to compare two TypeDescs in the same context
-            Debug.Assert(o is not TypeDesc || object.ReferenceEquals(((TypeDesc)o).Context, this.Context));
-            return object.ReferenceEquals(this, o);
+            Debug.Assert(o is not TypeDesc || ReferenceEquals(((TypeDesc)o).Context, this.Context));
+            return ReferenceEquals(this, o);
         }
 
 #if DEBUG
         public static bool operator ==(TypeDesc left, TypeDesc right)
         {
             // Its only valid to compare two TypeDescs in the same context
-            Debug.Assert(left is null || right is null || object.ReferenceEquals(left.Context, right.Context));
-            return object.ReferenceEquals(left, right);
+            Debug.Assert(left is null || right is null || ReferenceEquals(left.Context, right.Context));
+            return ReferenceEquals(left, right);
         }
 
         public static bool operator !=(TypeDesc left, TypeDesc right)
         {
             // Its only valid to compare two TypeDescs in the same context
-            Debug.Assert(left is null || right is null || object.ReferenceEquals(left.Context, right.Context));
-            return !object.ReferenceEquals(left, right);
+            Debug.Assert(left is null || right is null || ReferenceEquals(left.Context, right.Context));
+            return !ReferenceEquals(left, right);
         }
 #endif
 
-        // The most frequently used type properties are cached here to avoid excesive virtual calls
+        // The most frequently used type properties are cached here to avoid excessive virtual calls
         private TypeFlags _typeFlags;
 
         /// <summary>
@@ -117,7 +119,6 @@ namespace Internal.TypeSystem
                 case WellKnownType.RuntimeMethodHandle:
                 case WellKnownType.RuntimeFieldHandle:
                 case WellKnownType.TypedReference:
-                case WellKnownType.ByReferenceOfT:
                     flags = TypeFlags.ValueType;
                     break;
 
@@ -286,6 +287,14 @@ namespace Internal.TypeSystem
             }
         }
 
+        public bool IsTypedReference
+        {
+            get
+            {
+                return this.IsWellKnownType(WellKnownType.TypedReference);
+            }
+        }
+
         /// <summary>
         /// Gets a value indicating whether this is a generic definition, or
         /// an instance of System.Nullable`1.
@@ -295,18 +304,6 @@ namespace Internal.TypeSystem
             get
             {
                 return this.GetTypeDefinition().IsWellKnownType(WellKnownType.Nullable);
-            }
-        }
-
-        /// <summary>
-        /// Gets a value indicating whether this is a generic definition, or
-        /// an instance of System.ByReference`1.
-        /// </summary>
-        public bool IsByReferenceOfT
-        {
-            get
-            {
-                return this.GetTypeDefinition().IsWellKnownType(WellKnownType.ByReferenceOfT);
             }
         }
 
@@ -477,11 +474,10 @@ namespace Internal.TypeSystem
                 if (!this.IsEnum)
                     return this;
 
-                // TODO: Cache the result?
-                foreach (var field in this.GetFields())
+                foreach (var fieldInfo in this.GetFields())
                 {
-                    if (!field.IsStatic)
-                        return field.FieldType;
+                    if (!fieldInfo.IsStatic)
+                        return fieldInfo.FieldType;
                 }
 
                 ThrowHelper.ThrowTypeLoadException(ExceptionStringID.ClassLoadGeneral, this);
@@ -526,7 +522,7 @@ namespace Internal.TypeSystem
         /// If signature is not specified and there are multiple matches, the first one
         /// is returned. Returns null if method not found.
         /// </summary>
-        public MethodDesc GetMethod(string name, MethodSignature signature)
+        public MethodDesc GetMethod(Utf8Span name, MethodSignature signature)
         {
             return GetMethod(name, signature, default(Instantiation));
         }
@@ -538,13 +534,26 @@ namespace Internal.TypeSystem
         /// is returned. If substitution is not null, then substitution will be applied to
         /// possible target methods before signature comparison. Returns null if method not found.
         /// </summary>
-        public virtual MethodDesc GetMethod(string name, MethodSignature signature, Instantiation substitution)
+        public virtual MethodDesc GetMethod(Utf8Span name, MethodSignature signature, Instantiation substitution)
         {
             foreach (var method in GetMethods())
             {
                 if (method.Name == name)
                 {
                     if (signature == null || signature.Equals(method.Signature.ApplySubstitution(substitution)))
+                        return method;
+                }
+            }
+            return null;
+        }
+
+        public virtual MethodDesc GetMethodWithEquivalentSignature(Utf8Span name, MethodSignature signature, Instantiation substitution)
+        {
+            foreach (var method in GetMethods())
+            {
+                if (method.Name == name)
+                {
+                    if (signature == null || signature.EquivalentTo(method.Signature.ApplySubstitution(substitution)))
                         return method;
                 }
             }
@@ -582,7 +591,7 @@ namespace Internal.TypeSystem
         /// </summary>
         // TODO: Substitutions, generics, modopts, ...
         // TODO: field signature
-        public virtual FieldDesc GetField(string name)
+        public virtual FieldDesc GetField(Utf8Span name)
         {
             foreach (var field in GetFields())
             {

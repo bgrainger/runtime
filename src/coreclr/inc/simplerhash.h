@@ -4,6 +4,7 @@
 #ifndef _SIMPLERHASHTABLE_H_
 #define _SIMPLERHASHTABLE_H_
 
+#include "contract.h"
 #include "iallocator.h"
 
 // SimplerHashTable implements a mapping from a Key type to a Value type,
@@ -34,7 +35,7 @@
 //                                              Typically inherited from default traits (3/2)
 //
 // s_density_factor_numerator
-// s_density_factor_denominator                 Maxium occupied density of table before growth
+// s_density_factor_denominator                 Maximum occupied density of table before growth
 //                                              occurs (num/denom).  Typically inherited (3/4).
 //
 // s_minimum_allocation                         Minimum table allocation count (size on first growth.)  It is

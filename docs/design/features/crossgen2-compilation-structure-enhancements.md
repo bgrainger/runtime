@@ -7,14 +7,16 @@ This document describes the concept of a version bubble, how to specify them to 
 ## Behavior of code that shares a version bubble
 
 1. Inlining is only permitted within a version bubble unless the method is marked with `System.Runtime.Versioning.NonVersionableAttribute`. If the inlinee is marked as NonVersionable, it may ALWAYS be inlined into the method being compiled.
-2. Generic instantiations may only be ahead of time compiled into the application if the definition of the generic is defined within the version bubble as well as the instantiation arguments to the generic. As an exception to the requirement for the instantiation arguments to be defined within the bubble, the shared generic type `System.__Canon` will always be considered to be part of the version bubble. Also, the list of very well known types (object, string, int, uint, short, ushort, byte, sbyte, long, ulong, float, double, IntPtr, and UIntPtr) are also considered to be part of the version bubble as long as the generic is not constrained on an interface or class. For Example
+2. Generic instantiations may only be ahead of time compiled into the application if the definition of the generic is defined within the version bubble as well as the instantiation arguments to the generic. As an exception to the requirement for the instantiation arguments to be defined within the bubble, the shared generic type `System.__Canon` will always be considered to be part of the version bubble. Also, the list of very well known types (object, string, int, uint, short, ushort, byte, sbyte, long, ulong, float, double, IntPtr, and UIntPtr) are also considered to be part of the version bubble as long as the generic is not constrained on an interface or class. The `struct` and `unmanaged` constraints, which C# encodes as a `System.ValueType` type constraint, do not count as class constraints for primitive instantiations. For Example
 
 ```csharp
 class MyGeneric<T> {}
 class ConstrainedGeneric<T> where T : IEquatable<T> {}
+class StructGeneric<T> where T : struct {}
 ...
 //MyGeneric<int> would be always be in the version bubble where MyGeneric was defined.
 //ConstrainedGeneric<int> would only be in the version bubble of ConstrainedGeneric if ConstrainedGeneric shared a version bubble with System.Private.CoreLib.
+//StructGeneric<int> would always be in the version bubble where StructGeneric was defined.
 //MyGeneric<DateTime> would would only be in the version bubble of MyGeneric if MyGeneric shared a version bubble with System.Private.CoreLib.
 //ConstrainedGeneric<DateTime> would would only be in the version bubble of ConstrainedGeneric if ConstrainedGeneric shared a version bubble with System.Private.CoreLib.
 ```
@@ -50,7 +52,7 @@ There are 3 sets of files to pass to crossgen2:
 ### Principles
 
 1. Ahead of time generated code exists to improve startup, and for some scenarios will be retained for the lifetime of the process.
-2. Our default scenario relies on on tiered compilation rejit for best performance.
+2. Our default scenario relies on tiered compilation rejit for best performance.
 3. Too much pregenerated code will negatively affect applications. Startup is the critical detail for most pregeneration scenarios, and for those, there is a blend of time to pull the file to the CPU (from disk, over the network, etc.) and to compile functions. Striking the right blend has been discovered to be critical.
 
 ### Proposed approach

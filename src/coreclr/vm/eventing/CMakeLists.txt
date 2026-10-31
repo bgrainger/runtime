@@ -8,7 +8,7 @@ else()
   set(NEED_XPLAT_HEADER ON)
 endif()
 
-include(FindPythonInterp)
+include(FindPython)
 
 set (EventingHeaders
   ${GENERATED_INCLUDE_DIR}/etmdummy.h
@@ -24,9 +24,14 @@ endif()
 
 set(GENEVENTING_SCRIPT ${CLR_DIR}/scripts/genEventing.py)
 
+if(CMAKE_CROSSCOMPILING)
+  set(GEN_EVENTING_TARGETOS --targetos)
+  set(GEN_EVENTING_TARGETOS_ARG ${CLR_CMAKE_TARGET_OS})
+endif()
+
 add_custom_command(
   OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/eventing_headers.timestamp
-  COMMAND ${PYTHON_EXECUTABLE} ${GENEVENTING_SCRIPT} --man ${EVENT_MANIFEST} --inc ${GENERATED_INCLUDE_DIR} --dummy ${GENERATED_INCLUDE_DIR}/etmdummy.h ${NONEXTERN_ARG} ${NOXPLATHEADER_ARG}
+  COMMAND ${Python_EXECUTABLE} ${GENEVENTING_SCRIPT} --man ${EVENT_MANIFEST} --incdir ${GENERATED_INCLUDE_DIR} ${GEN_EVENTING_TARGETOS} ${GEN_EVENTING_TARGETOS_ARG} --dummy ${GENERATED_INCLUDE_DIR}/etmdummy.h ${NONEXTERN_ARG} ${NOXPLATHEADER_ARG}
   COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/eventing_headers.timestamp
   DEPENDS ${EVENT_MANIFEST} ${GENEVENTING_SCRIPT}
   VERBATIM
@@ -35,10 +40,13 @@ add_custom_command(
 set_source_files_properties(${EventingHeaders} PROPERTIES GENERATED TRUE)
 
 add_custom_target(eventing_headers DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/eventing_headers.timestamp)
-add_dependencies(eventing_headers eventprovider)
-
-add_subdirectory(eventpipe)
 
 if(CLR_CMAKE_HOST_WIN32)
   add_subdirectory(EtwProvider)
 endif()
+
+if (TARGET eventprovider)
+  add_dependencies(eventing_headers eventprovider)
+endif()
+
+add_subdirectory(eventpipe)

@@ -9,12 +9,6 @@ namespace System.IO.Enumeration
 {
     internal static class FileSystemEnumerableFactory
     {
-        // These all have special meaning in DOS name matching. '\' is the escaping character (which conveniently
-        // is the directory separator and cannot be part of any path segment in Windows). The other three are the
-        // special case wildcards that we'll convert some * and ? into. They're also valid as filenames on Unix,
-        // which is not true in Windows and as such we'll escape any that occur on the input string.
-        private static readonly char[] s_unixEscapeChars = { '\\', '"', '<', '>' };
-
         /// <summary>
         /// Validates the directory and expression strings to check that they have no invalid characters, any special DOS wildcard characters in Win32 in the expression get replaced with their proper escaped representation, and if the expression string begins with a directory name, the directory name is moved and appended at the end of the directory string.
         /// </summary>
@@ -36,10 +30,10 @@ namespace System.IO.Enumeration
                 throw new ArgumentException(SR.Arg_Path2IsRooted, nameof(expression));
 
             if (expression.Contains('\0'))
-                throw new ArgumentException(SR.Argument_InvalidPathChars, expression);
+                throw new ArgumentException(SR.Argument_NullCharInPath, expression);
 
             if (directory.Contains('\0'))
-                throw new ArgumentException(SR.Argument_InvalidPathChars, directory);
+                throw new ArgumentException(SR.Argument_NullCharInPath, directory);
 
             // We always allowed breaking the passed ref directory and filter to be separated
             // any way the user wanted. Looking for "C:\foo\*.cs" could be passed as "C:\" and
@@ -76,15 +70,13 @@ namespace System.IO.Enumeration
                     }
                     else
                     {
-                        if (Path.DirectorySeparatorChar != '\\' && expression.IndexOfAny(s_unixEscapeChars) != -1)
+                        // These all have special meaning in DOS name matching. '\' is the escaping character (which conveniently
+                        // is the directory separator and cannot be part of any path segment in Windows). The other three are the
+                        // special case wildcards that we'll convert some * and ? into. They're also valid as filenames on Unix,
+                        // which is not true in Windows and as such we'll escape any that occur on the input string.
+                        if (Path.DirectorySeparatorChar != '\\')
                         {
-                            // Backslash isn't the default separator, need to escape (e.g. Unix)
-                            expression = expression.Replace("\\", "\\\\");
-
-                            // Also need to escape the other special wild characters ('"', '<', and '>')
-                            expression = expression.Replace("\"", "\\\"");
-                            expression = expression.Replace(">", "\\>");
-                            expression = expression.Replace("<", "\\<");
+                            expression = FileSystemName.EscapeExpression(expression);
                         }
 
                         // Need to convert the expression to match Win32 behavior
@@ -120,7 +112,9 @@ namespace System.IO.Enumeration
             return new FileSystemEnumerable<string>(
                 directory,
                 (ref FileSystemEntry entry) => entry.ToSpecifiedFullPath(),
-                options)
+                options,
+                isNormalized: false,
+                expression)
             {
                 ShouldIncludePredicate = (ref FileSystemEntry entry) =>
                     !entry.IsDirectory && MatchesPattern(expression, entry.FileName, options)
@@ -134,7 +128,9 @@ namespace System.IO.Enumeration
             return new FileSystemEnumerable<string>(
                 directory,
                 (ref FileSystemEntry entry) => entry.ToSpecifiedFullPath(),
-                options)
+                options,
+                isNormalized: false,
+                expression)
             {
                 ShouldIncludePredicate = (ref FileSystemEntry entry) =>
                     entry.IsDirectory && MatchesPattern(expression, entry.FileName, options)
@@ -148,7 +144,9 @@ namespace System.IO.Enumeration
             return new FileSystemEnumerable<string>(
                 directory,
                 (ref FileSystemEntry entry) => entry.ToSpecifiedFullPath(),
-                options)
+                options,
+                isNormalized: false,
+                expression)
             {
                 ShouldIncludePredicate = (ref FileSystemEntry entry) =>
                     MatchesPattern(expression, entry.FileName, options)
@@ -165,7 +163,8 @@ namespace System.IO.Enumeration
                directory,
                (ref FileSystemEntry entry) => (FileInfo)entry.ToFileSystemInfo(),
                options,
-               isNormalized)
+               isNormalized,
+               expression)
             {
                 ShouldIncludePredicate = (ref FileSystemEntry entry) =>
                     !entry.IsDirectory && MatchesPattern(expression, entry.FileName, options)
@@ -182,7 +181,8 @@ namespace System.IO.Enumeration
                directory,
                (ref FileSystemEntry entry) => (DirectoryInfo)entry.ToFileSystemInfo(),
                options,
-               isNormalized)
+               isNormalized,
+               expression)
             {
                 ShouldIncludePredicate = (ref FileSystemEntry entry) =>
                     entry.IsDirectory && MatchesPattern(expression, entry.FileName, options)
@@ -199,7 +199,8 @@ namespace System.IO.Enumeration
                directory,
                (ref FileSystemEntry entry) => entry.ToFileSystemInfo(),
                options,
-               isNormalized)
+               isNormalized,
+               expression)
             {
                 ShouldIncludePredicate = (ref FileSystemEntry entry) =>
                     MatchesPattern(expression, entry.FileName, options)

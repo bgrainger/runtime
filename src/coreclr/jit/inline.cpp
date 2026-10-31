@@ -230,7 +230,7 @@ bool InlDecisionIsFailure(InlineDecision d)
 }
 
 //------------------------------------------------------------------------
-// InlDecisionIsSuccess: check if this decision describes a sucessful inline
+// InlDecisionIsSuccess: check if this decision describes a successful inline
 //
 // Arguments:
 //    d - the decision in question
@@ -330,29 +330,30 @@ InlineContext::InlineContext(InlineStrategy* strategy)
     , m_Child(nullptr)
     , m_Sibling(nullptr)
     , m_Code(nullptr)
+    , m_Callee(nullptr)
+    , m_RuntimeContext(nullptr)
+    , m_PgoInfo()
     , m_ILSize(0)
     , m_ImportedILSize(0)
+    , m_ActualCallOffset(BAD_IL_OFFSET)
     , m_Observation(InlineObservation::CALLEE_UNUSED_INITIAL)
     , m_CodeSizeEstimate(0)
+    , m_Ordinal(0)
     , m_Success(true)
+#if defined(DEBUG)
+    , m_Policy(nullptr)
+    , m_TreeID(0)
     , m_Devirtualized(false)
     , m_Guarded(false)
     , m_Unboxed(false)
-#if defined(DEBUG) || defined(INLINE_DATA)
-    , m_Policy(nullptr)
-    , m_Callee(nullptr)
-    , m_TreeID(0)
-    , m_Ordinal(0)
-    , m_ActualCallOffset(BAD_IL_OFFSET)
-#endif // defined(DEBUG) || defined(INLINE_DATA)
-#ifdef DEBUG
+    , m_IsAsyncCall(false)
     , m_ILInstsSet(nullptr)
 #endif
 {
     // Empty
 }
 
-#if defined(DEBUG) || defined(INLINE_DATA)
+#if defined(DEBUG)
 
 //------------------------------------------------------------------------
 // Dump: Dump an InlineContext entry and all descendants to jitstdout
@@ -384,7 +385,7 @@ void InlineContext::Dump(bool verbose, unsigned indent)
 #if defined(DEBUG)
         calleeName = compiler->eeGetMethodFullName(m_Callee);
 #else
-        calleeName         = "callee";
+        calleeName = "callee";
 #endif // defined(DEBUG)
     }
 
@@ -415,36 +416,33 @@ void InlineContext::Dump(bool verbose, unsigned indent)
         const char* guarded       = m_Guarded ? " GUARDED" : "";
         const char* unboxed       = m_Unboxed ? " UNBOXED" : "";
 
-        IL_OFFSET offs = BAD_IL_OFFSET;
-
-#if defined(DEBUG) || defined(INLINE_DATA)
-        offs = m_ActualCallOffset;
-#endif
-
-        if (offs == BAD_IL_OFFSET && m_Location.IsValid())
+        const char* asyncness = "";
+        if (compiler->compIsAsync())
         {
-            offs = m_Location.GetOffset();
+            asyncness = m_IsAsyncCall ? " ASYNC" : " SYNC";
         }
+
+        IL_OFFSET offs = m_ActualCallOffset;
 
         if (verbose)
         {
             if (offs == BAD_IL_OFFSET)
             {
-                printf("%*s[" FMT_INL_CTX " IL=???? TR=%06u %08X] [%s%s: %s%s%s%s] %s\n", indent, "", m_Ordinal,
+                printf("%*s[" FMT_INL_CTX " IL=???? TR=%06u %08X] [%s%s: %s%s%s%s%s] %s\n", indent, "", m_Ordinal,
                        m_TreeID, calleeToken, inlineResult, inlineTarget, inlineReason, guarded, devirtualized, unboxed,
-                       calleeName);
+                       asyncness, calleeName);
             }
             else
             {
-                printf("%*s[" FMT_INL_CTX " IL=%04d TR=%06u %08X] [%s%s: %s%s%s%s] %s\n", indent, "", m_Ordinal, offs,
+                printf("%*s[" FMT_INL_CTX " IL=%04d TR=%06u %08X] [%s%s: %s%s%s%s%s] %s\n", indent, "", m_Ordinal, offs,
                        m_TreeID, calleeToken, inlineResult, inlineTarget, inlineReason, guarded, devirtualized, unboxed,
-                       calleeName);
+                       asyncness, calleeName);
             }
         }
         else
         {
-            printf("%*s[%s%s%s%s%s] %s\n", indent, "", inlineResult, inlineReason, guarded, devirtualized, unboxed,
-                   calleeName);
+            printf("%*s[%s%s%s%s%s%s] %s\n", indent, "", inlineResult, inlineReason, guarded, devirtualized, unboxed,
+                   asyncness, calleeName);
         }
     }
 
@@ -488,7 +486,7 @@ void InlineContext::DumpData(unsigned indent)
     {
         const char* inlineReason = InlGetObservationString(m_Observation);
         printf("%*s%u,\"%s\",\"%s\",", indent, "", GetOrdinal(), inlineReason, calleeName);
-        m_Policy->DumpData(jitstdout);
+        m_Policy->DumpData(jitstdout());
         printf("\n");
     }
 
@@ -631,7 +629,7 @@ void InlineContext::DumpXml(FILE* file, unsigned indent)
     }
 }
 
-#endif // defined(DEBUG) || defined(INLINE_DATA)
+#endif // defined(DEBUG)
 
 //------------------------------------------------------------------------
 // InlineResult: Construct an InlineResult to evaluate a particular call
@@ -642,17 +640,25 @@ void InlineContext::DumpXml(FILE* file, unsigned indent)
 //   call          - the call in question
 //   stmt          - statement containing the call (if known)
 //   description   - string describing the context of the decision
+//   callee        - the actual inline candidate, if different from the call target
 
-InlineResult::InlineResult(Compiler* compiler, GenTreeCall* call, Statement* stmt, const char* description)
+InlineResult::InlineResult(Compiler*             compiler,
+                           GenTreeCall*          call,
+                           Statement*            stmt,
+                           const char*           description,
+                           bool                  doNotReport,
+                           CORINFO_METHOD_HANDLE callee)
     : m_RootCompiler(nullptr)
     , m_Policy(nullptr)
     , m_Call(call)
     , m_InlineContext(nullptr)
     , m_Caller(nullptr)
-    , m_Callee(nullptr)
+    , m_Callee(callee)
     , m_ImportedILSize(0)
     , m_Description(description)
-    , m_Reported(false)
+    , m_successResult(INLINE_PASS)
+    , m_DoNotReport(doNotReport)
+    , m_reportFailureAsVmFailure(false)
 {
     // Set the compiler instance
     m_RootCompiler = compiler->impInlineRoot();
@@ -661,17 +667,26 @@ InlineResult::InlineResult(Compiler* compiler, GenTreeCall* call, Statement* stm
     const bool isPrejitRoot = false;
     m_Policy                = InlinePolicy::GetPolicy(m_RootCompiler, isPrejitRoot);
 
+#ifdef DEBUG
+    if (m_RootCompiler->compAsyncInliningStress() && call->IsAsync() && call->IsInlineCandidate() &&
+        !call->IsGuardedDevirtualizationCandidate())
+    {
+        m_Policy->NoteInt(InlineObservation::CALLSITE_ASYNC_STRESS_INDEX,
+                          call->GetSingleInlineCandidateInfo()->asyncStressIndex);
+    }
+#endif // DEBUG
+
     // Pass along some optional information to the policy.
     if (stmt != nullptr)
     {
         m_InlineContext = stmt->GetDebugInfo().GetInlineContext();
         m_Policy->NoteContext(m_InlineContext);
 
-#if defined(DEBUG) || defined(INLINE_DATA)
+#if defined(DEBUG)
         m_Policy->NoteOffset(call->gtRawILOffset);
 #else
         m_Policy->NoteOffset(stmt->GetDebugInfo().GetLocation().GetOffset());
-#endif // defined(DEBUG) || defined(INLINE_DATA)
+#endif // defined(DEBUG)
     }
 
     // Get method handle for caller. Note we use the
@@ -679,9 +694,15 @@ InlineResult::InlineResult(Compiler* compiler, GenTreeCall* call, Statement* stm
     m_Caller = compiler->info.compMethodHnd;
 
     // Get method handle for callee, if known
-    if (m_Call->AsCall()->gtCallType == CT_USER_FUNC)
+    if ((m_Callee == nullptr) && (m_Call->AsCall()->gtCallType == CT_USER_FUNC))
     {
         m_Callee = m_Call->AsCall()->gtCallMethHnd;
+    }
+
+    if (!m_DoNotReport)
+    {
+        COMP_HANDLE comp = m_RootCompiler->info.compCompHnd;
+        comp->beginInlining(m_Caller, m_Callee);
     }
 }
 
@@ -701,7 +722,7 @@ InlineResult::InlineResult(Compiler* compiler, GenTreeCall* call, Statement* stm
 //    We use the inlCallee member to track the method since logically
 //    it is the callee here.
 
-InlineResult::InlineResult(Compiler* compiler, CORINFO_METHOD_HANDLE method, const char* description)
+InlineResult::InlineResult(Compiler* compiler, CORINFO_METHOD_HANDLE method, const char* description, bool doNotReport)
     : m_RootCompiler(nullptr)
     , m_Policy(nullptr)
     , m_Call(nullptr)
@@ -709,7 +730,9 @@ InlineResult::InlineResult(Compiler* compiler, CORINFO_METHOD_HANDLE method, con
     , m_Caller(nullptr)
     , m_Callee(method)
     , m_Description(description)
-    , m_Reported(false)
+    , m_successResult(INLINE_PASS)
+    , m_DoNotReport(doNotReport)
+    , m_reportFailureAsVmFailure(false)
 {
     // Set the compiler instance
     m_RootCompiler = compiler->impInlineRoot();
@@ -717,6 +740,12 @@ InlineResult::InlineResult(Compiler* compiler, CORINFO_METHOD_HANDLE method, con
     // Set the policy
     const bool isPrejitRoot = true;
     m_Policy                = InlinePolicy::GetPolicy(m_RootCompiler, isPrejitRoot);
+
+    if (!m_DoNotReport)
+    {
+        COMP_HANDLE comp = m_RootCompiler->info.compCompHnd;
+        comp->beginInlining(m_Caller, m_Callee);
+    }
 }
 
 //------------------------------------------------------------------------
@@ -731,8 +760,6 @@ InlineResult::InlineResult(Compiler* compiler, CORINFO_METHOD_HANDLE method, con
 //    EE. Optionally update the method attribute to NOINLINE if
 //    observation and policy warrant.
 //
-//    All this can be suppressed if desired by calling setReported()
-//    before the InlineResult goes out of scope.
 
 void InlineResult::Report()
 {
@@ -743,7 +770,8 @@ void InlineResult::Report()
     if (IsFailure() && (m_Call != nullptr))
     {
         // compiler should have revoked candidacy on the call by now
-        assert((m_Call->gtFlags & GTF_CALL_INLINE_CANDIDATE) == 0);
+        // Unless it's a call has both failed and successful candidates (GDV candidates)
+        assert(((m_Call->gtFlags & GTF_CALL_INLINE_CANDIDATE) == 0) || m_Call->IsGuardedDevirtualizationCandidate());
 
         if (m_Call->gtInlineObservation == InlineObservation::CALLEE_UNUSED_INITIAL)
         {
@@ -753,13 +781,13 @@ void InlineResult::Report()
 #endif // DEBUG
 
     // If we weren't actually inlining, user may have suppressed
-    // reporting via setReported(). If so, do nothing.
-    if (m_Reported)
+    // reporting. If so, do nothing.
+    if (m_DoNotReport)
     {
         return;
     }
 
-    m_Reported = true;
+    m_DoNotReport = true;
 
 #ifdef DEBUG
     const char* callee = nullptr;
@@ -779,26 +807,29 @@ void InlineResult::Report()
     // Was the result NEVER? If so we might want to propagate this to
     // the runtime.
 
-    if (IsNever() && m_Policy->PropagateNeverToRuntime())
+    if (IsNever() && m_Policy->PropagateNeverToRuntime() && (m_Callee != nullptr))
     {
         // If we know the callee, and if the observation that got us
         // to this Never inline state is something *other* than
         // IS_NOINLINE, then we've uncovered a reason why this method
         // can't ever be inlined. Update the callee method attributes
         // so that future inline attempts for this callee fail faster.
-
+        //
         InlineObservation obs = m_Policy->GetObservation();
-
-        if ((m_Callee != nullptr) && (obs != InlineObservation::CALLEE_IS_NOINLINE))
+        if (obs != InlineObservation::CALLEE_IS_NOINLINE)
         {
-            JITDUMP("\nINLINER: Marking %s as NOINLINE because of %s\n", callee, InlGetObservationString(obs));
+            JITDUMP("\nINLINER: Marking %s as NOINLINE (observation %s)\n", callee, InlGetObservationString(obs));
 
             COMP_HANDLE comp = m_RootCompiler->info.compCompHnd;
             comp->setMethodAttribs(m_Callee, CORINFO_FLG_BAD_INLINEE);
         }
+        else
+        {
+            JITDUMP("\nINLINER: Not marking %s NOINLINE because it's already marked as such\n", callee);
+        }
     }
 
-    if (IsDecided())
+    if (IsDecided() || m_reportFailureAsVmFailure || m_successResult != INLINE_PASS)
     {
         const char* format = "INLINER: during '%s' result '%s' reason '%s'\n";
         JITLOG_THIS(m_RootCompiler, (LL_INFO100000, format, m_Description, ResultString(), ReasonString()));
@@ -808,13 +839,13 @@ void InlineResult::Report()
 }
 
 //------------------------------------------------------------------------
-// InlineStrategy construtor
+// InlineStrategy constructor
 //
 // Arguments
 //    compiler - root compiler instance
 
 InlineStrategy::InlineStrategy(Compiler* compiler)
-    : m_Compiler(compiler)
+    : m_compiler(compiler)
     , m_RootContext(nullptr)
     , m_LastSuccessfulPolicy(nullptr)
     , m_LastContext(nullptr)
@@ -829,6 +860,8 @@ InlineStrategy::InlineStrategy(Compiler* compiler)
     , m_InlineCount(0)
     , m_MaxInlineSize(DEFAULT_MAX_INLINE_SIZE)
     , m_MaxInlineDepth(DEFAULT_MAX_INLINE_DEPTH)
+    , m_MaxForceInlineDepth(DEFAULT_MAX_FORCE_INLINE_DEPTH)
+    , m_OverBudgetIntrinsicInlineCount(0)
     , m_InitialTimeBudget(0)
     , m_InitialTimeEstimate(0)
     , m_CurrentTimeBudget(0)
@@ -836,14 +869,15 @@ InlineStrategy::InlineStrategy(Compiler* compiler)
     , m_InitialSizeEstimate(0)
     , m_CurrentSizeEstimate(0)
     , m_HasForceViaDiscretionary(false)
-#if defined(DEBUG) || defined(INLINE_DATA)
+    , m_HasHardwareIntrinsicCheck(false)
+#if defined(DEBUG)
     , m_MethodXmlFilePosition(0)
     , m_Random(nullptr)
-#endif // defined(DEBUG) || defined(INLINE_DATA)
+#endif // defined(DEBUG)
 
 {
     // Verify compiler is a root compiler instance
-    assert(m_Compiler->impInlineRoot() == m_Compiler);
+    assert(m_compiler->impInlineRoot() == m_compiler);
 
 #ifdef DEBUG
 
@@ -854,7 +888,7 @@ InlineStrategy::InlineStrategy(Compiler* compiler)
     m_MaxInlineSize = JitConfig.JitInlineSize();
 
     // Up the max size under stress
-    if (m_Compiler->compInlineStress())
+    if (m_compiler->compInlineStress())
     {
         m_MaxInlineSize *= 10;
     }
@@ -879,6 +913,18 @@ InlineStrategy::InlineStrategy(Compiler* compiler)
     if (m_MaxInlineDepth > IMPLEMENTATION_MAX_INLINE_DEPTH)
     {
         m_MaxInlineDepth = IMPLEMENTATION_MAX_INLINE_DEPTH;
+    }
+
+    // Possibly modify the max force inline depth
+    //
+    // Default value of JitForceInlineDepth is the same as our default.
+    // So normally this next line does not change the size.
+    m_MaxForceInlineDepth = JitConfig.JitForceInlineDepth();
+
+    // But don't overdo it
+    if (m_MaxForceInlineDepth > m_MaxInlineDepth)
+    {
+        m_MaxForceInlineDepth = m_MaxInlineDepth;
     }
 
 #endif // DEBUG
@@ -908,7 +954,14 @@ InlineContext* InlineStrategy::GetRootContext()
         // Set the initial budget for inlining. Note this is
         // deliberately set very high and is intended to catch
         // only pathological runaway inline cases.
-        m_InitialTimeBudget = BUDGET * m_InitialTimeEstimate;
+        const unsigned budget = JitConfig.JitInlineBudget();
+
+        if (budget != DEFAULT_INLINE_BUDGET)
+        {
+            JITDUMP("Using non-default inline budget %u\n", budget);
+        }
+
+        m_InitialTimeBudget = budget * m_InitialTimeEstimate;
         m_CurrentTimeBudget = m_InitialTimeBudget;
 
         // Estimate the code size  if there's no inlining
@@ -1114,7 +1167,7 @@ void InlineStrategy::NoteOutcome(InlineContext* context)
     {
         m_InlineCount++;
 
-#if defined(DEBUG) || defined(INLINE_DATA)
+#if defined(DEBUG)
 
         // Keep track of the inline targeted for data collection or,
         // if we don't have one (yet), the last successful inline.
@@ -1132,7 +1185,7 @@ void InlineStrategy::NoteOutcome(InlineContext* context)
             assert(!context->m_Policy->IsDataCollectionTarget());
         }
 
-#endif // defined(DEBUG) || defined(INLINE_DATA)
+#endif // defined(DEBUG)
 
         // Budget update.
         //
@@ -1225,6 +1278,46 @@ bool InlineStrategy::BudgetCheck(unsigned ilSize)
 }
 
 //------------------------------------------------------------------------
+// NoteHardwareIntrinsicCheckObserved: record that the root method or an
+//   already-imported inlinee references a HW-intrinsic IsSupported /
+//   IsHardwareAccelerated capability check, and grow the inline time
+//   budget on the first such observation per root method.
+//
+// Notes:
+//   Methods with SIMD paths typically carry several ISA-specific fallbacks
+//   (e.g. Vector512/Vector256/Vector128/scalar variants), making them
+//   IL-heavy. Inlining one such callee can otherwise consume nearly the
+//   entire inline time budget for the root method, blocking subsequent
+//   inlines of trivial helpers (Span.Slice, property getters, etc.).
+//
+//   The boost is one-shot per root method and monotonic: it never lowers
+//   the current budget (preserving any prior growth from force inlines).
+//
+void InlineStrategy::NoteHardwareIntrinsicCheckObserved()
+{
+    if (m_HasHardwareIntrinsicCheck)
+    {
+        return;
+    }
+
+    m_HasHardwareIntrinsicCheck = true;
+
+    // Compute the boosted budget in 64-bit to avoid signed overflow when
+    // an unusually large JitInlineBudget is configured.
+    const int64_t boosted64 =
+        static_cast<int64_t>(m_InitialTimeBudget) * static_cast<int64_t>(SIMD_BUDGET_BOOST_MULTIPLIER);
+    const int boosted = (boosted64 > INT_MAX) ? INT_MAX : static_cast<int>(boosted64);
+
+    if (m_CurrentTimeBudget < boosted)
+    {
+        JITDUMP("\nBudget: HW intrinsic IsSupported/IsHardwareAccelerated check observed; "
+                "boosting inline time budget from %d to %d (initial=%d, multiplier=%d)\n",
+                m_CurrentTimeBudget, boosted, m_InitialTimeBudget, (int)SIMD_BUDGET_BOOST_MULTIPLIER);
+        m_CurrentTimeBudget = boosted;
+    }
+}
+
+//------------------------------------------------------------------------
 // NewRoot: construct an InlineContext for the root method
 //
 // Return Value:
@@ -1237,39 +1330,39 @@ bool InlineStrategy::BudgetCheck(unsigned ilSize)
 
 InlineContext* InlineStrategy::NewRoot()
 {
-    InlineContext* rootContext = new (m_Compiler, CMK_Inlining) InlineContext(this);
+    InlineContext* rootContext = new (m_compiler, CMK_Inlining) InlineContext(this);
 
-    rootContext->m_ILSize = m_Compiler->info.compILCodeSize;
-    rootContext->m_Code   = m_Compiler->info.compCode;
+    rootContext->m_ILSize = m_compiler->info.compILCodeSize;
+    rootContext->m_Code   = m_compiler->info.compCode;
+    rootContext->m_Callee = m_compiler->info.compMethodHnd;
 
-#if defined(DEBUG) || defined(INLINE_DATA)
-
-    rootContext->m_Callee = m_Compiler->info.compMethodHnd;
-
-#endif // defined(DEBUG) || defined(INLINE_DATA)
+    // May fail to block recursion for normal methods
+    // Might need the actual context handle here
+    rootContext->m_RuntimeContext = METHOD_BEING_COMPILED_CONTEXT();
 
     return rootContext;
 }
 
 InlineContext* InlineStrategy::NewContext(InlineContext* parentContext, Statement* stmt, GenTreeCall* call)
 {
-    InlineContext* context = new (m_Compiler, CMK_Inlining) InlineContext(this);
+    InlineContext* context = new (m_compiler, CMK_Inlining) InlineContext(this);
 
     context->m_InlineStrategy = this;
     context->m_Parent         = parentContext;
     context->m_Sibling        = parentContext->m_Child;
     parentContext->m_Child    = context;
 
-    // In debug builds we record inline contexts in all produced calls to be
-    // able to show all failed inlines in the inline tree, even non-candidates.
-    // These should always match the parent context we are seeing here.
+    // The inline context should always match the parent context we are seeing
+    // here.
     assert(parentContext == call->gtInlineContext);
 
     if (call->IsInlineCandidate())
     {
-        InlineCandidateInfo* info = call->gtInlineCandidateInfo;
-        context->m_Code           = info->methInfo.ILCode;
-        context->m_ILSize         = info->methInfo.ILCodeSize;
+        InlineCandidateInfo* info   = call->GetSingleInlineCandidateInfo();
+        context->m_Code             = info->methInfo.ILCode;
+        context->m_ILSize           = info->methInfo.ILCodeSize;
+        context->m_ActualCallOffset = info->ilOffset;
+        context->m_RuntimeContext   = info->exactContextHandle;
 
 #ifdef DEBUG
         // All inline candidates should get their own statements that have
@@ -1278,25 +1371,29 @@ InlineContext* InlineStrategy::NewContext(InlineContext* parentContext, Statemen
         assert(diInlineContext == nullptr || diInlineContext == parentContext);
 #endif
     }
+    else
+    {
+        // Should only get here in debug builds
+        INDEBUG(context->m_ActualCallOffset = call->gtRawILOffset);
+    }
 
-    // TODO-DEBUGINFO: Currently, to keep the same behavior as before, we use
-    // the location of the statement containing the call being inlined. This is
-    // not always the exact IL offset of the call instruction, consider e.g.
+    // We currently store both the statement location (used when reporting
+    // only-style mappings) and the actual call offset (used when reporting the
+    // inline tree for rich debug info).
+    // These are not always the same, consider e.g.
     // ldarg.0
     // call <foo>
     // which becomes a single statement where the IL location points to the
-    // ldarg instruction. For SPGO purposes we should consider always storing
-    // the exact offset of the call instruction which will be more precise. We
-    // may consider storing the statement itself as well.
-    context->m_Location      = stmt->GetDebugInfo().GetLocation();
+    // ldarg instruction.
+    context->m_Location = stmt->GetDebugInfo().GetLocation();
+    context->m_Callee   = call->gtCallMethHnd;
+
+#if defined(DEBUG)
     context->m_Devirtualized = call->IsDevirtualized();
     context->m_Guarded       = call->IsGuarded();
     context->m_Unboxed       = call->IsUnboxed();
-
-#if defined(DEBUG) || defined(INLINE_DATA)
-    context->m_TreeID           = call->gtTreeID;
-    context->m_Callee           = call->gtCallType == CT_INDIRECT ? nullptr : call->gtCallMethHnd;
-    context->m_ActualCallOffset = call->gtRawILOffset;
+    context->m_IsAsyncCall   = call->IsAsync();
+    context->m_TreeID        = call->gtTreeID;
 #endif
 
     return context;
@@ -1309,11 +1406,12 @@ void InlineContext::SetSucceeded(const InlineInfo* info)
     m_ImportedILSize = info->inlineResult->GetImportedILSize();
     m_Success        = true;
 
-#if defined(DEBUG) || defined(INLINE_DATA)
+#if defined(DEBUG)
     m_Policy           = info->inlineResult->GetPolicy();
     m_CodeSizeEstimate = m_Policy->CodeSizeEstimate();
-    m_Ordinal          = m_InlineStrategy->m_InlineCount + 1;
 #endif
+
+    m_Ordinal = m_InlineStrategy->m_InlineCount + 1;
 
     m_InlineStrategy->NoteOutcome(this);
 }
@@ -1325,7 +1423,7 @@ void InlineContext::SetFailed(const InlineResult* result)
     m_ImportedILSize = result->GetImportedILSize();
     m_Success        = false;
 
-#if defined(DEBUG) || defined(INLINE_DATA)
+#if defined(DEBUG)
     m_Policy           = result->GetPolicy();
     m_CodeSizeEstimate = m_Policy->CodeSizeEstimate();
 #endif
@@ -1333,7 +1431,7 @@ void InlineContext::SetFailed(const InlineResult* result)
     m_InlineStrategy->NoteOutcome(this);
 }
 
-#if defined(DEBUG) || defined(INLINE_DATA)
+#if defined(DEBUG)
 
 //------------------------------------------------------------------------
 // Dump: dump description of inline behavior
@@ -1426,15 +1524,14 @@ void InlineStrategy::DumpData()
 void InlineStrategy::DumpDataEnsurePolicyIsSet()
 {
     // Cache references to compiler substructures.
-    const Compiler::Info&    info = m_Compiler->info;
-    const Compiler::Options& opts = m_Compiler->opts;
+    const Compiler::Info& info = m_compiler->info;
 
     // If there weren't any successful inlines, we won't have a
     // successful policy, so fake one up.
     if (m_LastSuccessfulPolicy == nullptr)
     {
-        const bool isPrejitRoot = opts.jitFlags->IsSet(JitFlags::JIT_FLAG_PREJIT);
-        m_LastSuccessfulPolicy  = InlinePolicy::GetPolicy(m_Compiler, isPrejitRoot);
+        const bool isPrejitRoot = m_compiler->IsAot();
+        m_LastSuccessfulPolicy  = InlinePolicy::GetPolicy(m_compiler, isPrejitRoot);
 
         // Add in a bit of data....
         const bool isForceInline = (info.compFlags & CORINFO_FLG_FORCEINLINE) != 0;
@@ -1482,7 +1579,7 @@ void InlineStrategy::DumpDataContents(FILE* file)
     DumpDataEnsurePolicyIsSet();
 
     // Cache references to compiler substructures.
-    const Compiler::Info& info = m_Compiler->info;
+    const Compiler::Info& info = m_compiler->info;
 
     // We'd really like the method identifier to be unique and
     // durable across crossgen invocations. Not clear how to
@@ -1493,8 +1590,8 @@ void InlineStrategy::DumpDataContents(FILE* file)
     mdMethodDef currentMethodToken = info.compCompHnd->getMethodDefFromMethod(info.compMethodHnd);
 
     // Convert time spent jitting into microseconds
-    unsigned         microsecondsSpentJitting = 0;
-    unsigned __int64 compCycles               = m_Compiler->getInlineCycleCount();
+    unsigned microsecondsSpentJitting = 0;
+    uint64_t compCycles               = m_compiler->getInlineCycleCount();
     if (compCycles > 0)
     {
         double countsPerSec      = CachedCyclesPerSecond();
@@ -1571,10 +1668,9 @@ void InlineStrategy::DumpXml(FILE* file, unsigned indent)
     }
 
     // Cache references to compiler substructures.
-    const Compiler::Info&    info = m_Compiler->info;
-    const Compiler::Options& opts = m_Compiler->opts;
+    const Compiler::Info& info = m_compiler->info;
 
-    const bool isPrejitRoot = opts.jitFlags->IsSet(JitFlags::JIT_FLAG_PREJIT);
+    const bool isPrejitRoot = m_compiler->IsAot();
 
     // We'd really like the method identifier to be unique and
     // durable across crossgen invocations. Not clear how to
@@ -1587,8 +1683,8 @@ void InlineStrategy::DumpXml(FILE* file, unsigned indent)
     unsigned hash = info.compMethodHash();
 
     // Convert time spent jitting into microseconds
-    unsigned         microsecondsSpentJitting = 0;
-    unsigned __int64 compCycles               = m_Compiler->getInlineCycleCount();
+    unsigned microsecondsSpentJitting = 0;
+    uint64_t compCycles               = m_compiler->getInlineCycleCount();
     if (compCycles > 0)
     {
         double countsPerSec      = CachedCyclesPerSecond();
@@ -1598,7 +1694,7 @@ void InlineStrategy::DumpXml(FILE* file, unsigned indent)
 
     // Get method name just for root method, to make it a bit easier
     // to search for things in the inline xml.
-    const char* methodName = m_Compiler->eeGetMethodFullName(info.compMethodHnd);
+    const char* methodName = m_compiler->eeGetMethodFullName(info.compMethodHnd);
 
     char buf[1024];
     strncpy(buf, methodName, sizeof(buf));
@@ -1658,7 +1754,7 @@ void InlineStrategy::FinalizeXml(FILE* file)
         fprintf(file, "</InlineForest>\n");
         fflush(file);
 
-        // Workaroud compShutdown getting called twice.
+        // Workaround compShutdown getting called twice.
         s_HasDumpedXmlHeader = false;
     }
 
@@ -1688,10 +1784,10 @@ CLRRandom* InlineStrategy::GetRandom(int optionalSeed)
 
 #ifdef DEBUG
 
-        if (m_Compiler->compRandomInlineStress())
+        if (m_compiler->compRandomInlineStress())
         {
             externalSeed = getJitStressLevel();
-            // We can set COMPlus_JitStressModeNames without setting COMPlus_JitStress,
+            // We can set DOTNET_JitStressModeNames without setting DOTNET_JitStress,
             // but we need external seed to be non-zero.
             if (externalSeed == 0)
             {
@@ -1707,7 +1803,7 @@ CLRRandom* InlineStrategy::GetRandom(int optionalSeed)
             externalSeed = randomPolicyFlag;
         }
 
-        int internalSeed = m_Compiler->info.compMethodHash();
+        int internalSeed = m_compiler->info.compMethodHash();
 
         assert(externalSeed != 0);
         assert(internalSeed != 0);
@@ -1716,14 +1812,14 @@ CLRRandom* InlineStrategy::GetRandom(int optionalSeed)
 
         JITDUMP("\n*** Using random seed ext(%u) ^ int(%u) = %u\n", externalSeed, internalSeed, seed);
 
-        m_Random = new (m_Compiler, CMK_Inlining) CLRRandom();
+        m_Random = new (m_compiler, CMK_Inlining) CLRRandom();
         m_Random->Init(seed);
     }
 
     return m_Random;
 }
 
-#endif // defined(DEBUG) || defined(INLINE_DATA)
+#endif // defined(DEBUG)
 
 //------------------------------------------------------------------------
 // IsInliningDisabled: allow strategy to disable inlining in the method being jitted
@@ -1736,10 +1832,10 @@ CLRRandom* InlineStrategy::GetRandom(int optionalSeed)
 bool InlineStrategy::IsInliningDisabled()
 {
 
-#if defined(DEBUG) || defined(INLINE_DATA)
+#if defined(DEBUG)
 
     static ConfigMethodRange range;
-    const WCHAR*             noInlineRange = JitConfig.JitNoInlineRange();
+    const char*              noInlineRange = JitConfig.JitNoInlineRange();
 
     if (noInlineRange == nullptr)
     {
@@ -1750,9 +1846,9 @@ bool InlineStrategy::IsInliningDisabled()
     // number of spaces in our config string to see if there are
     // more. Number of ranges we need is 2x that value.
     unsigned entryCount = 1;
-    for (const WCHAR* p = noInlineRange; *p != 0; p++)
+    for (const char* p = noInlineRange; *p != 0; p++)
     {
-        if (*p == L' ')
+        if (*p == ' ')
         {
             entryCount++;
         }
@@ -1761,11 +1857,30 @@ bool InlineStrategy::IsInliningDisabled()
     range.EnsureInit(noInlineRange, 2 * entryCount);
     assert(!range.Error());
 
-    return range.Contains(m_Compiler->info.compMethodHash());
+    return range.Contains(m_compiler->info.compMethodHash());
 
 #else
 
     return false;
 
-#endif // defined(DEBUG) || defined(INLINE_DATA)
+#endif // defined(DEBUG)
+}
+
+PgoInfo::PgoInfo()
+{
+    PgoSchema      = nullptr;
+    PgoSchemaCount = 0;
+    PgoData        = nullptr;
+}
+
+PgoInfo::PgoInfo(Compiler* compiler)
+{
+    PgoSchema      = compiler->fgPgoSchema;
+    PgoSchemaCount = compiler->fgPgoSchemaCount;
+    PgoData        = compiler->fgPgoData;
+}
+
+PgoInfo::PgoInfo(InlineContext* context)
+{
+    *this = context->GetPgoInfo();
 }

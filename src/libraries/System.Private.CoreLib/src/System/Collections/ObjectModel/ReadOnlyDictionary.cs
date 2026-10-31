@@ -4,13 +4,14 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 
 namespace System.Collections.ObjectModel
 {
     [Serializable]
     [DebuggerTypeProxy(typeof(IDictionaryDebugView<,>))]
     [DebuggerDisplay("Count = {Count}")]
-    [System.Runtime.CompilerServices.TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
+    [TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
     public class ReadOnlyDictionary<TKey, TValue> : IDictionary<TKey, TValue>, IDictionary, IReadOnlyDictionary<TKey, TValue> where TKey : notnull
     {
         private readonly IDictionary<TKey, TValue> m_dictionary; // Do not rename (binary serialization)
@@ -22,20 +23,21 @@ namespace System.Collections.ObjectModel
 
         public ReadOnlyDictionary(IDictionary<TKey, TValue> dictionary)
         {
-            m_dictionary = dictionary ?? throw new ArgumentNullException(nameof(dictionary));
+            ArgumentNullException.ThrowIfNull(dictionary);
+
+            m_dictionary = dictionary;
         }
+
+        /// <summary>Gets an empty <see cref="ReadOnlyDictionary{TKey, TValue}"/>.</summary>
+        /// <value>An empty <see cref="ReadOnlyDictionary{TKey, TValue}"/>.</value>
+        /// <remarks>The returned instance is immutable and will always be empty.</remarks>
+        public static ReadOnlyDictionary<TKey, TValue> Empty { get; } = new ReadOnlyDictionary<TKey, TValue>(new Dictionary<TKey, TValue>());
 
         protected IDictionary<TKey, TValue> Dictionary => m_dictionary;
 
-        public KeyCollection Keys
-        {
-            get => _keys ?? (_keys = new KeyCollection(m_dictionary.Keys));
-        }
+        public KeyCollection Keys => _keys ??= new KeyCollection(m_dictionary.Keys);
 
-        public ValueCollection Values
-        {
-            get => _values ?? (_values = new ValueCollection(m_dictionary.Values));
-        }
+        public ValueCollection Values => _values ??= new ValueCollection(m_dictionary.Values);
 
         public bool ContainsKey(TKey key) => m_dictionary.ContainsKey(key);
 
@@ -107,10 +109,7 @@ namespace System.Collections.ObjectModel
 
         private static bool IsCompatibleKey(object key)
         {
-            if (key == null)
-            {
-                throw new ArgumentNullException(nameof(key));
-            }
+            ArgumentNullException.ThrowIfNull(key);
 
             return key is TKey;
         }
@@ -192,12 +191,7 @@ namespace System.Collections.ObjectModel
                 }
                 else
                 {
-                    object[]? objects = array as object[];
-                    if (objects == null)
-                    {
-                        throw new ArgumentException(SR.Argument_InvalidArrayType, nameof(array));
-                    }
-
+                    object[] objects = array as object[] ?? throw new ArgumentException(SR.Argument_IncompatibleArrayType, nameof(array));
                     try
                     {
                         foreach (var item in m_dictionary)
@@ -207,7 +201,7 @@ namespace System.Collections.ObjectModel
                     }
                     catch (ArrayTypeMismatchException)
                     {
-                        throw new ArgumentException(SR.Argument_InvalidArrayType, nameof(array));
+                        throw new ArgumentException(SR.Argument_IncompatibleArrayType, nameof(array));
                     }
                 }
             }
@@ -217,7 +211,7 @@ namespace System.Collections.ObjectModel
 
         object ICollection.SyncRoot => (m_dictionary is ICollection coll) ? coll.SyncRoot : this;
 
-        private struct DictionaryEnumerator : IDictionaryEnumerator
+        private readonly struct DictionaryEnumerator : IDictionaryEnumerator
         {
             private readonly IDictionary<TKey, TValue> _dictionary;
             private readonly IEnumerator<KeyValuePair<TKey, TValue>> _enumerator;
@@ -248,7 +242,7 @@ namespace System.Collections.ObjectModel
 
         IEnumerable<TValue> IReadOnlyDictionary<TKey, TValue>.Values => Values;
 
-        [DebuggerTypeProxy(typeof(ICollectionDebugView<>))]
+        [DebuggerTypeProxy(typeof(DictionaryKeyCollectionDebugView<,>))]
         [DebuggerDisplay("Count = {Count}")]
         public sealed class KeyCollection : ICollection<TKey>, ICollection, IReadOnlyCollection<TKey>
         {
@@ -256,7 +250,9 @@ namespace System.Collections.ObjectModel
 
             internal KeyCollection(ICollection<TKey> collection)
             {
-                _collection = collection ?? throw new ArgumentNullException(nameof(collection));
+                ArgumentNullException.ThrowIfNull(collection);
+
+                _collection = collection;
             }
 
             void ICollection<TKey>.Add(TKey item)
@@ -269,7 +265,7 @@ namespace System.Collections.ObjectModel
                 throw new NotSupportedException(SR.NotSupported_ReadOnlyCollection);
             }
 
-            bool ICollection<TKey>.Contains(TKey item)
+            public bool Contains(TKey item)
             {
                 return _collection.Contains(item);
             }
@@ -302,7 +298,7 @@ namespace System.Collections.ObjectModel
             object ICollection.SyncRoot => (_collection is ICollection coll) ? coll.SyncRoot : this;
         }
 
-        [DebuggerTypeProxy(typeof(ICollectionDebugView<>))]
+        [DebuggerTypeProxy(typeof(DictionaryValueCollectionDebugView<,>))]
         [DebuggerDisplay("Count = {Count}")]
         public sealed class ValueCollection : ICollection<TValue>, ICollection, IReadOnlyCollection<TValue>
         {
@@ -310,7 +306,9 @@ namespace System.Collections.ObjectModel
 
             internal ValueCollection(ICollection<TValue> collection)
             {
-                _collection = collection ?? throw new ArgumentNullException(nameof(collection));
+                ArgumentNullException.ThrowIfNull(collection);
+
+                _collection = collection;
             }
 
             void ICollection<TValue>.Add(TValue item)

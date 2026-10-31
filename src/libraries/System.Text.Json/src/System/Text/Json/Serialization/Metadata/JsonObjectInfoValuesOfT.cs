@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.ComponentModel;
+using System.Reflection;
 
 namespace System.Text.Json.Serialization.Metadata
 {
@@ -38,15 +39,33 @@ namespace System.Text.Json.Serialization.Metadata
         public Func<JsonParameterInfoValues[]>? ConstructorParameterMetadataInitializer { get; init; }
 
         /// <summary>
+        /// Provides a delayed attribute provider corresponding to the deserialization constructor.
+        /// </summary>
+        public Func<ICustomAttributeProvider>? ConstructorAttributeProviderFactory { get; init; }
+
+        /// <summary>
         /// Specifies how number properties and fields should be processed when serializing and deserializing.
         /// </summary>
         /// <remarks>This API is for use by the output of the System.Text.Json source generator and should not be called directly.</remarks>
         public JsonNumberHandling NumberHandling { get; init; }
 
         /// <summary>
+        /// Specifies polymorphism metadata to apply to the class or struct.
+        /// </summary>
+        /// <remarks>This API is for use by the output of the System.Text.Json source generator and should not be called directly.</remarks>
+        public JsonPolymorphismOptions? PolymorphismOptions { get; init; }
+
+        /// <summary>
         /// Provides a serialization implementation for instances of the class or struct which assumes options specified by <see cref="JsonSourceGenerationOptionsAttribute"/>.
         /// </summary>
         /// <remarks>This API is for use by the output of the System.Text.Json source generator and should not be called directly.</remarks>
         public Action<Utf8JsonWriter, T>? SerializeHandler { get; init; }
+
+        /// <summary>
+        /// Gets or sets a factory used to lazily construct a <see cref="JsonTypeClassifier"/>
+        /// from the polymorphic type's metadata at <see cref="JsonTypeInfo"/> configuration time.
+        /// </summary>
+        /// <remarks>This API is for use by the output of the System.Text.Json source generator and should not be called directly.</remarks>
+        public JsonTypeClassifierFactory? TypeClassifierFactory { get; init; }
     }
 }

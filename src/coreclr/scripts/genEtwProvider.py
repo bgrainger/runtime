@@ -164,7 +164,7 @@ def genEtwMacroHeader(manifest, exclusion_filename, intermediate):
 
         header_file.write("#define NO_OF_ETW_PROVIDERS " + str(numOfProviders) + "\n")
         header_file.write("#define MAX_BYTES_PER_ETW_PROVIDER " + str(nMaxEventBytesPerProvider) + "\n")
-        header_file.write("EXTERN_C constexpr BYTE etwStackSupportedEvents[NO_OF_ETW_PROVIDERS][MAX_BYTES_PER_ETW_PROVIDER] = \n{\n")
+        header_file.write("EXTERN_C inline constexpr BYTE etwStackSupportedEvents[NO_OF_ETW_PROVIDERS][MAX_BYTES_PER_ETW_PROVIDER] = \n{\n")
 
         for providerNode in tree.getElementsByTagName('provider'):
             stackSupportedEvents = [0]*nMaxEventBytesPerProvider
@@ -220,7 +220,7 @@ def main(argv):
 
     required = parser.add_argument_group('required arguments')
     required.add_argument('--man',  type=str, required=True,
-                                    help='full path to manifest containig the description of events')
+                                    help='full path to manifest containing the description of events')
     required.add_argument('--exc',  type=str, required=True,
                                     help='full path to exclusion list')
     required.add_argument('--intermediate', type=str, required=True,

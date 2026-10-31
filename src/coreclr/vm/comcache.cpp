@@ -8,10 +8,7 @@
 #include <crtwrap.h>
 #include "comcache.h"
 #include "runtimecallablewrapper.h"
-#include "mtx.h"
-#include "contxt.h"
-#include "ctxtcall.h"
-#include "win32threadpool.h"
+#include <mtx.h>
 
 #ifdef FEATURE_COMINTEROP_APARTMENT_SUPPORT
 #include "olecontexthelpers.h"
@@ -84,7 +81,7 @@ static IErrorInfo *CheckForFuncEvalAbortNoThrow(HRESULT hr)
             if (SafeQueryInterface(pErrorInfo, IID_IFuncEvalAbort, &pUnk) == S_OK)
             {
                 // QI succeeded, this is a func eval abort
-                return pErrorInfo.Extract();
+                return pErrorInfo.Detach();
             }
             else
             {
@@ -123,17 +120,15 @@ static void CheckForFuncEvalAbort(HRESULT hr)
 //
 STDAPI_(LPSTREAM) CreateMemStm(DWORD cb, BYTE** ppBuf)
 {
-    CONTRACT(LPSTREAM)
+    CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
         MODE_PREEMPTIVE;
-        INJECT_FAULT(CONTRACT_RETURN NULL);
         PRECONDITION(CheckPointer(ppBuf, NULL_OK));
         PRECONDITION(CheckPointer(ppBuf, NULL_OK));
-        POSTCONDITION(CheckPointer(RETVAL, NULL_OK));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     LPSTREAM        pstm = NULL;
 
@@ -147,7 +142,7 @@ STDAPI_(LPSTREAM) CreateMemStm(DWORD cb, BYTE** ppBuf)
     if(ppBuf)
         *ppBuf = pMem;
 
-    RETURN pstm;
+    return pstm;
 }
 
 //=====================================================================
@@ -341,18 +336,14 @@ CtxEntry* CtxEntryCache::FindCtxEntry(LPVOID pCtxCookie, Thread *pThread)
     CtxEntry *pCtxEntry = NULL;
     Thread *pSTAThread = NULL;
 
-    CONTRACT (CtxEntry*)
+    CONTRACTL
     {
         THROWS;
         GC_TRIGGERS;
         MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM());
         PRECONDITION(CheckPointer(pCtxCookie));
-        POSTCONDITION(CheckPointer(RETVAL));
-        POSTCONDITION(pCtxCookie == pCtxEntry->GetCtxCookie());
-        POSTCONDITION(pSTAThread == pCtxEntry->GetSTAThread());
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     // Find our STA (if any)
     if (pThread->GetApartment() == Thread::AS_InSTA)
@@ -396,7 +387,9 @@ CtxEntry* CtxEntryCache::FindCtxEntry(LPVOID pCtxCookie, Thread *pThread)
     }
 
     // Returned the found or allocated entry.
-    RETURN pCtxEntry;
+    _ASSERTE(pCtxCookie == pCtxEntry->GetCtxCookie());
+    _ASSERTE(pSTAThread == pCtxEntry->GetSTAThread());
+    return pCtxEntry;
 }
 
 
@@ -497,7 +490,7 @@ void IUnkEntry::Init(
 
 //================================================================
 // Release the interface pointer held by the IUnkEntry.
-VOID IUnkEntry::ReleaseInterface(RCW *pRCW)
+VOID IUnkEntry::ReleaseInterface()
 {
     CONTRACTL
     {
@@ -507,7 +500,7 @@ VOID IUnkEntry::ReleaseInterface(RCW *pRCW)
     }
     CONTRACTL_END;
 
-    if (g_fProcessDetach)
+    if (IsAtProcessExit())
     {
         // The Release call is unsafe if the process is going away (calls into
         // DLLs we don't know are even mapped).
@@ -518,7 +511,7 @@ VOID IUnkEntry::ReleaseInterface(RCW *pRCW)
         // now release the IUnknown that we hold
         if ((m_pUnknown != 0) && (m_pUnknown != (IUnknown *)0xBADF00D))
         {
-            ULONG cbRef = SafeReleasePreemp(m_pUnknown, pRCW);
+            ULONG cbRef = SafeReleasePreemp(m_pUnknown);
             LogInteropRelease(m_pUnknown, cbRef, "IUnkEntry::Free: Releasing the held ref");
         }
 
@@ -536,14 +529,14 @@ VOID IUnkEntry::Free()
         NOTHROW;
         GC_TRIGGERS;
         MODE_PREEMPTIVE;
-        PRECONDITION(g_fProcessDetach || m_pUnknown == (IUnknown *)0xBADF00D);
+        PRECONDITION(IsAtProcessExit() || m_pUnknown == (IUnknown *)0xBADF00D);
     }
     CONTRACTL_END;
 
     // Log the de-allocation of the IUnknown entry.
     LOG((LF_INTEROP, LL_INFO10000, "IUnkEntry::Free called for context 0x%08X, to release entry with m_pUnknown %p, on thread %p\n", m_pCtxCookie, m_pUnknown, GetThreadNULLOk()));
 
-    if (g_fProcessDetach)
+    if (IsAtProcessExit())
     {
         IStream *pOldStream = m_pStream;
         if (InterlockedExchangeT(&m_pStream, NULL) == pOldStream)
@@ -573,14 +566,13 @@ VOID IUnkEntry::Free()
 // Get IUnknown for the current context from IUnkEntry
 IUnknown* IUnkEntry::GetIUnknownForCurrContext(bool fNoAddRef)
 {
-    CONTRACT (IUnknown*)
+    CONTRACTL
     {
         THROWS;
         GC_TRIGGERS;
         MODE_ANY;
-        POSTCONDITION(CheckPointer(RETVAL, (fNoAddRef ? NULL_OK : NULL_NOT_OK)));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     IUnknown* pUnk = NULL;
     LPVOID pCtxCookie = GetCurrentCtxCookie();
@@ -603,22 +595,21 @@ IUnknown* IUnkEntry::GetIUnknownForCurrContext(bool fNoAddRef)
     if (pUnk == NULL && !fNoAddRef)
         pUnk = UnmarshalIUnknownForCurrContext();
 
-    RETURN pUnk;
+    return pUnk;
 }
 
 //================================================================
 // Unmarshal IUnknown for the current context from IUnkEntry
 IUnknown* IUnkEntry::UnmarshalIUnknownForCurrContext()
 {
-    CONTRACT (IUnknown*)
+    CONTRACTL
     {
         THROWS;
         GC_TRIGGERS;
         MODE_ANY;
         PRECONDITION(!IsFreeThreaded());
-        POSTCONDITION(CheckPointer(RETVAL));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     HRESULT     hrCDH               = S_OK;
     IUnknown*   pUnk                = NULL;
@@ -721,7 +712,7 @@ IUnknown* IUnkEntry::UnmarshalIUnknownForCurrContext()
 
                         // The proxy is no longer valid. This sometimes manifests itself by
                         // a failure during re-marshaling it to the stream. When this happens,
-                        // we need to release the the pUnk we extracted and the stream and try to
+                        // we need to release the pUnk we extracted and the stream and try to
                         // re-create the stream. We don't want to release the stream data since
                         // we already extracted the proxy from the stream and released it.
                         RCW_VTABLEPTR(GetRCW());
@@ -748,7 +739,7 @@ IUnknown* IUnkEntry::UnmarshalIUnknownForCurrContext()
         else
         {
             //================================================================
-            // We can potentially collide with the COM+ activity lock so spawn off
+            // We can potentially collide with the CLR activity lock so spawn off
             // another call that does its stream marshalling on the stack without
             // the need to do locking.
             fCallHelper = TRUE;
@@ -762,7 +753,7 @@ IUnknown* IUnkEntry::UnmarshalIUnknownForCurrContext()
         pUnk = UnmarshalIUnknownForCurrContextHelper();
     }
 
-    RETURN pUnk;
+    return pUnk;
 }
 
 //================================================================
@@ -849,7 +840,7 @@ HRESULT IUnkEntry::MarshalIUnknownToStreamCallback2(LPVOID pData)
         GC_TRIGGERS;
         MODE_ANY;
         PRECONDITION(CheckPointer(pData));
-        PRECONDITION(g_fProcessDetach == FALSE);
+        PRECONDITION(IsAtProcessExit() == FALSE);
     }
     CONTRACTL_END;
 
@@ -890,19 +881,18 @@ HRESULT IUnkEntry::MarshalIUnknownToStreamCallback2(LPVOID pData)
 // Unmarshal IUnknown for the current context if the lock is held
 IUnknown* IUnkEntry::UnmarshalIUnknownForCurrContextHelper()
 {
-    CONTRACT (IUnknown*)
+    CONTRACTL
     {
         THROWS;
         GC_TRIGGERS;
         MODE_ANY;
         PRECONDITION(!IsFreeThreaded());
-        POSTCONDITION(CheckPointer(RETVAL));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     HRESULT hrCDH = S_OK;
     IUnknown * pUnk = NULL;
-    SafeComHolder<IStream> spStream;
+    ReleaseHolderAnyMode<IStream> spStream;
 
     CheckValidIUnkEntry();
 
@@ -941,7 +931,7 @@ IUnknown* IUnkEntry::UnmarshalIUnknownForCurrContextHelper()
         // GetInterface for the current context
         HRESULT hr;
         hr = CoUnmarshalInterface(spStream, IID_IUnknown, reinterpret_cast<void**>(&pUnk));
-        spStream.Release();
+        spStream.Free();
 
         if (FAILED(hr))
         {
@@ -957,7 +947,7 @@ IUnknown* IUnkEntry::UnmarshalIUnknownForCurrContextHelper()
         }
     }
 
-    RETURN pUnk;
+    return pUnk;
 }
 
 //================================================================
@@ -970,7 +960,7 @@ HRESULT IUnkEntry::MarshalIUnknownToStreamCallback(LPVOID pData)
         GC_TRIGGERS;
         MODE_ANY;
         PRECONDITION(CheckPointer(pData));
-        PRECONDITION(g_fProcessDetach == FALSE);
+        PRECONDITION(IsAtProcessExit() == FALSE);
     }
     CONTRACTL_END;
 
@@ -1015,15 +1005,13 @@ bool IUnkEntry::IsComponentFreeThreaded(IUnknown *pUnk)
 {
     CONTRACTL
     {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_PREEMPTIVE;
+        STANDARD_VM_CHECK;
         PRECONDITION(CheckPointer(pUnk));
     }
     CONTRACTL_END;
 
     // First see if the object implements the IAgileObject marker interface
-    SafeComHolderPreemp<IAgileObject> pAgileObject;
+    ReleaseHolder<IAgileObject> pAgileObject;
     HRESULT hr = SafeQueryInterfacePreemp(pUnk, IID_IAgileObject, (IUnknown**)&pAgileObject);
     LogInteropQI(pUnk, IID_IAgileObject, hr, "IUnkEntry::IsComponentFreeThreaded: QI for IAgileObject");
 
@@ -1033,7 +1021,7 @@ bool IUnkEntry::IsComponentFreeThreaded(IUnknown *pUnk)
     }
     else
     {
-        SafeComHolderPreemp<IMarshal> pMarshal = NULL;
+        ReleaseHolder<IMarshal> pMarshal;
 
         // If not, then we can try to determine if the component aggregates the FTM via IMarshal.
         hr = SafeQueryInterfacePreemp(pUnk, IID_IMarshal, (IUnknown **)&pMarshal);
@@ -1102,7 +1090,7 @@ HRESULT IUnkEntry::MarshalIUnknownToStream()
 
     // Try to set the stream in the IUnkEntry. If another thread already set it,
     // then we need to release the stream we just set up.
-    if (FastInterlockCompareExchangePointer(&m_pStream, pStream, NULL) != NULL)
+    if (InterlockedCompareExchangeT(&m_pStream, pStream, NULL) != NULL)
         SafeReleaseStream(pStream);
 
     return hr;
@@ -1118,7 +1106,7 @@ bool IUnkEntry::TryUpdateEntry()
     if (((DWORD_PTR)pOldEntry & 1) == 0)
     {
         CtxEntry *pNewEntry = (CtxEntry *)((DWORD_PTR)pOldEntry | 1);
-        return (InterlockedExchangeT(&m_pCtxEntry, pNewEntry) == pOldEntry);
+        return InterlockedExchangeT(&m_pCtxEntry, pNewEntry) == pOldEntry;
     }
     return false;
 }
@@ -1202,7 +1190,7 @@ CtxEntry::~CtxEntry()
     CONTRACTL_END;
 
     // If the context is a valid context then release it.
-    if (m_pObjCtx && !g_fProcessDetach)
+    if (m_pObjCtx && !IsAtProcessExit())
     {
         SafeRelease(m_pObjCtx);
         m_pObjCtx = NULL;
@@ -1222,7 +1210,6 @@ VOID CtxEntry::Init()
         THROWS;
         GC_TRIGGERS;
         MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM());
 
         // Make sure COM has been started
         PRECONDITION(g_fComStarted == TRUE);
@@ -1250,7 +1237,7 @@ DWORD CtxEntry::AddRef()
     }
     CONTRACTL_END;
 
-    ULONG cbRef = FastInterlockIncrement((LONG*)&m_dwRefCount);
+    ULONG cbRef = InterlockedIncrement((LONG*)&m_dwRefCount);
     LOG((LF_INTEROP, LL_INFO100, "CtxEntry::Addref %8.8x with %d\n", this, cbRef));
     return cbRef;
 }
@@ -1271,7 +1258,7 @@ DWORD CtxEntry::Release()
 
     LPVOID pCtxCookie = m_pCtxCookie;
 
-    LONG cbRef = FastInterlockDecrement((LONG*)&m_dwRefCount);
+    LONG cbRef = InterlockedDecrement((LONG*)&m_dwRefCount);
     LOG((LF_INTEROP, LL_INFO100, "CtxEntry::Release %8.8x with %d\n", this, cbRef));
 
     // If the ref count falls to 0, try and delete the ctx entry.
@@ -1307,7 +1294,7 @@ HRESULT CtxEntry::EnterContext(PFNCTXCALLBACK pCallbackFunc, LPVOID pData)
 
     // If we are in process detach, we cannot safely try to enter another context
     // since we don't know if OLE32 is still loaded.
-    if (g_fProcessDetach)
+    if (IsAtProcessExit())
     {
         LOG((LF_INTEROP, LL_INFO100, "Entering into context 0x08%x has failed since we are in process detach\n", m_pCtxCookie));
         return RPC_E_DISCONNECTED;
@@ -1324,7 +1311,7 @@ HRESULT CtxEntry::EnterContext(PFNCTXCALLBACK pCallbackFunc, LPVOID pData)
     CallbackInfo.m_UserCallbackHR = E_FAIL;
 
     // Retrieve the IContextCallback interface from the IObjectContext.
-    SafeComHolderPreemp<IContextCallback> pCallback;
+    ReleaseHolder<IContextCallback> pCallback;
     hr = SafeQueryInterfacePreemp(m_pObjCtx, IID_IContextCallback, (IUnknown**)&pCallback);
     LogInteropQI(m_pObjCtx, IID_IContextCallback, hr, "QI for IID_IContextCallback");
     _ASSERTE(SUCCEEDED(hr) && pCallback);
@@ -1343,13 +1330,13 @@ HRESULT CtxEntry::EnterContext(PFNCTXCALLBACK pCallbackFunc, LPVOID pData)
     {
         hr = GET_EXCEPTION()->GetHR();
     }
-    EX_END_CATCH(SwallowAllExceptions);
+    EX_END_CATCH
 
     if (FAILED(hr))
     {
         // If the transition failed because of an aborted func eval, simply propagate
         // the HRESULT/IErrorInfo back to the caller as we cannot throw here.
-        SafeComHolder<IErrorInfo> pErrorInfo = CheckForFuncEvalAbortNoThrow(hr);
+        ReleaseHolder<IErrorInfo> pErrorInfo{ CheckForFuncEvalAbortNoThrow(hr) };
         if (pErrorInfo != NULL)
         {
             LOG((LF_INTEROP, LL_INFO100, "Entering into context 0x08X has failed since the debugger is blocking it\n", m_pCtxCookie));

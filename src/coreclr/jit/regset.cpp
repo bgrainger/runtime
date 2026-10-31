@@ -23,7 +23,7 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 /*****************************************************************************/
 
-#ifdef TARGET_ARM64
+#if defined(TARGET_ARM64)
 const regMaskSmall regMasks[] = {
 #define REGDEF(name, rnum, mask, xname, wname) mask,
 #include "register.h"
@@ -35,6 +35,10 @@ const regMaskSmall regMasks[] = {
 };
 #endif
 
+// TODO-WASM-Factoring: remove this whole file from !HAS_FIXED_REGISTER_SET compilation.
+// It is being kept for now to avoid ifdefing too much code related to spill temps (which
+// also should not be used with !HAS_FIXED_REGISTER_SET).
+#if HAS_FIXED_REGISTER_SET
 /*
 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
@@ -89,7 +93,7 @@ void RegSet::verifyRegUsed(regNumber reg)
 
 void RegSet::verifyRegistersUsed(regMaskTP regMask)
 {
-    if (m_rsCompiler->opts.OptimizationDisabled())
+    if (m_compiler->opts.OptimizationDisabled())
     {
         return;
     }
@@ -106,10 +110,10 @@ void RegSet::verifyRegistersUsed(regMaskTP regMask)
 
 void RegSet::rsClearRegsModified()
 {
-    assert(m_rsCompiler->lvaDoneFrameLayout < Compiler::FINAL_FRAME_LAYOUT);
+    assert(m_compiler->lvaDoneFrameLayout < Compiler::FINAL_FRAME_LAYOUT);
 
 #ifdef DEBUG
-    if (m_rsCompiler->verbose)
+    if (m_compiler->verbose)
     {
         printf("Clearing modified regs.\n");
     }
@@ -117,6 +121,16 @@ void RegSet::rsClearRegsModified()
 #endif // DEBUG
 
     rsModifiedRegsMask = RBM_NONE;
+
+#ifdef SWIFT_SUPPORT
+    // If this method has a SwiftError* parameter, we will return SwiftError::Value in REG_SWIFT_ERROR,
+    // so don't treat it as callee-save.
+    if (m_compiler->lvaSwiftErrorArg != BAD_VAR_NUM)
+    {
+        rsAllCalleeSavedMask &= ~RBM_SWIFT_ERROR;
+        rsIntCalleeSavedMask &= ~RBM_SWIFT_ERROR;
+    }
+#endif // SWIFT_SUPPORT
 }
 
 void RegSet::rsSetRegsModified(regMaskTP mask DEBUGARG(bool suppressDump))
@@ -130,12 +144,13 @@ void RegSet::rsSetRegsModified(regMaskTP mask DEBUGARG(bool suppressDump))
     // code generation isn't actually adding to set of modified registers.
     // Frame layout is only affected by callee-saved registers, so only ensure that callee-saved
     // registers aren't modified after final frame layout.
-    assert((m_rsCompiler->lvaDoneFrameLayout < Compiler::FINAL_FRAME_LAYOUT) || m_rsCompiler->compGeneratingProlog ||
-           m_rsCompiler->compGeneratingEpilog ||
+    assert((m_compiler->lvaDoneFrameLayout < Compiler::FINAL_FRAME_LAYOUT) ||
+           m_compiler->GetEmitter()->emitGeneratingPrologOrFuncletProlog() ||
+           m_compiler->GetEmitter()->emitGeneratingEpilogOrFuncletEpilog() ||
            (((rsModifiedRegsMask | mask) & RBM_CALLEE_SAVED) == (rsModifiedRegsMask & RBM_CALLEE_SAVED)));
 
 #ifdef DEBUG
-    if (m_rsCompiler->verbose && !suppressDump)
+    if (m_compiler->verbose && !suppressDump)
     {
         if (rsModifiedRegsMask != (rsModifiedRegsMask | mask))
         {
@@ -159,12 +174,13 @@ void RegSet::rsRemoveRegsModified(regMaskTP mask)
     assert(rsModifiedRegsMaskInitialized);
 
     // See comment in rsSetRegsModified().
-    assert((m_rsCompiler->lvaDoneFrameLayout < Compiler::FINAL_FRAME_LAYOUT) || m_rsCompiler->compGeneratingProlog ||
-           m_rsCompiler->compGeneratingEpilog ||
+    assert((m_compiler->lvaDoneFrameLayout < Compiler::FINAL_FRAME_LAYOUT) ||
+           m_compiler->GetEmitter()->emitGeneratingPrologOrFuncletProlog() ||
+           m_compiler->GetEmitter()->emitGeneratingEpilogOrFuncletEpilog() ||
            (((rsModifiedRegsMask & ~mask) & RBM_CALLEE_SAVED) == (rsModifiedRegsMask & RBM_CALLEE_SAVED)));
 
 #ifdef DEBUG
-    if (m_rsCompiler->verbose)
+    if (m_compiler->verbose)
     {
         printf("Removing modified regs: ");
         dspRegMask(mask);
@@ -190,7 +206,7 @@ void RegSet::rsRemoveRegsModified(regMaskTP mask)
 void RegSet::SetMaskVars(regMaskTP newMaskVars)
 {
 #ifdef DEBUG
-    if (m_rsCompiler->verbose)
+    if (m_compiler->verbose)
     {
         printf("\t\t\t\t\t\t\tLive regs: ");
         if (_rsMaskVars == newMaskVars)
@@ -199,22 +215,42 @@ void RegSet::SetMaskVars(regMaskTP newMaskVars)
         }
         else
         {
-            printRegMaskInt(_rsMaskVars);
-            m_rsCompiler->GetEmitter()->emitDispRegSet(_rsMaskVars);
+            printRegMask(_rsMaskVars);
+            m_compiler->GetEmitter()->emitDispRegSet(_rsMaskVars);
+
+            // deadSet = old - new
+            regMaskTP deadSet = _rsMaskVars & ~newMaskVars;
+
+            // bornSet = new - old
+            regMaskTP bornSet = newMaskVars & ~_rsMaskVars;
+
+            if (deadSet != RBM_NONE)
+            {
+                printf(" -");
+                m_compiler->GetEmitter()->emitDispRegSet(deadSet);
+            }
+
+            if (bornSet != RBM_NONE)
+            {
+                printf(" +");
+                m_compiler->GetEmitter()->emitDispRegSet(bornSet);
+            }
+
             printf(" => ");
         }
-        printRegMaskInt(newMaskVars);
-        m_rsCompiler->GetEmitter()->emitDispRegSet(newMaskVars);
+        printRegMask(newMaskVars);
+        m_compiler->GetEmitter()->emitDispRegSet(newMaskVars);
         printf("\n");
     }
 #endif // DEBUG
 
     _rsMaskVars = newMaskVars;
 }
+#endif // HAS_FIXED_REGISTER_SET
 
-/*****************************************************************************/
-
-RegSet::RegSet(Compiler* compiler, GCInfo& gcInfo) : m_rsCompiler(compiler), m_rsGCInfo(gcInfo)
+RegSet::RegSet(Compiler* compiler, GCInfo& gcInfo)
+    : m_compiler(compiler)
+    , m_rsGCInfo(gcInfo)
 {
     /* Initialize the spill logic */
 
@@ -228,14 +264,19 @@ RegSet::RegSet(Compiler* compiler, GCInfo& gcInfo) : m_rsCompiler(compiler), m_r
 
     rsMaskResvd = RBM_NONE;
 
-#ifdef TARGET_ARMARCH
+#if defined(TARGET_ARMARCH) || defined(TARGET_LOONGARCH64)
     rsMaskCalleeSaved = RBM_NONE;
-#endif // TARGET_ARMARCH
+#endif // TARGET_ARMARCH || TARGET_LOONGARCH64
 
 #ifdef TARGET_ARM
     rsMaskPreSpillRegArg = RBM_NONE;
     rsMaskPreSpillAlign  = RBM_NONE;
 #endif
+
+#ifdef SWIFT_SUPPORT
+    rsAllCalleeSavedMask = RBM_CALLEE_SAVED;
+    rsIntCalleeSavedMask = RBM_INT_CALLEE_SAVED;
+#endif // SWIFT_SUPPORT
 
 #ifdef DEBUG
     rsModifiedRegsMaskInitialized = false;
@@ -271,6 +312,7 @@ RegSet::SpillDsc* RegSet::rsGetSpillInfo(GenTree* tree, regNumber reg, SpillDsc*
     return dsc;
 }
 
+#if HAS_FIXED_REGISTER_SET
 //------------------------------------------------------------
 // rsSpillTree: Spill the tree held in 'reg'.
 //
@@ -292,36 +334,19 @@ void RegSet::rsSpillTree(regNumber reg, GenTree* tree, unsigned regIdx /* =0 */)
 {
     assert(tree != nullptr);
 
-    GenTreeCall*   call = nullptr;
-    GenTreeLclVar* lcl  = nullptr;
-    var_types      treeType;
-#if defined(TARGET_ARM)
-    GenTreePutArgSplit* splitArg = nullptr;
-    GenTreeMultiRegOp*  multiReg = nullptr;
-#endif
+    var_types treeType       = TYP_UNDEF;
+    bool      isMultiRegTree = false;
 
-    if (tree->IsMultiRegCall())
+    if (tree->IsMultiRegLclVar())
     {
-        call                              = tree->AsCall();
-        const ReturnTypeDesc* retTypeDesc = call->GetReturnTypeDesc();
-        treeType                          = retTypeDesc->GetReturnRegType(regIdx);
-    }
-#ifdef TARGET_ARM
-    else if (tree->OperIsPutArgSplit())
-    {
-        splitArg = tree->AsPutArgSplit();
-        treeType = splitArg->GetRegType(regIdx);
-    }
-    else if (tree->OperIsMultiRegOp())
-    {
-        multiReg = tree->AsMultiRegOp();
-        treeType = multiReg->GetRegType(regIdx);
-    }
-#endif // TARGET_ARM
-    else if (tree->IsMultiRegLclVar())
-    {
-        LclVarDsc* varDsc = m_rsCompiler->lvaGetDesc(tree->AsLclVar());
+        LclVarDsc* varDsc = m_compiler->lvaGetDesc(tree->AsLclVar());
         treeType          = varDsc->TypeGet();
+        isMultiRegTree    = true;
+    }
+    else if (tree->IsMultiRegNode())
+    {
+        treeType       = tree->GetRegTypeByIndex(regIdx);
+        isMultiRegTree = true;
     }
     else
     {
@@ -335,7 +360,7 @@ void RegSet::rsSpillTree(regNumber reg, GenTree* tree, unsigned regIdx /* =0 */)
     if (isFloatRegType(treeType))
     {
         floatSpill = true;
-        mask       = genRegMaskFloat(reg, treeType);
+        mask       = genRegMaskFloat(reg ARM_ARG(treeType));
     }
     else
     {
@@ -353,29 +378,9 @@ void RegSet::rsSpillTree(regNumber reg, GenTree* tree, unsigned regIdx /* =0 */)
     assert((tree->gtFlags & GTF_SPILL) != 0);
 
     GenTreeFlags regFlags = GTF_EMPTY;
-    if (call != nullptr)
+    if (isMultiRegTree)
     {
-        regFlags = call->GetRegSpillFlagByIdx(regIdx);
-        assert((regFlags & GTF_SPILL) != 0);
-        regFlags &= ~GTF_SPILL;
-    }
-#ifdef TARGET_ARM
-    else if (splitArg != nullptr)
-    {
-        regFlags = splitArg->GetRegSpillFlagByIdx(regIdx);
-        assert((regFlags & GTF_SPILL) != 0);
-        regFlags &= ~GTF_SPILL;
-    }
-    else if (multiReg != nullptr)
-    {
-        regFlags = multiReg->GetRegSpillFlagByIdx(regIdx);
-        assert((regFlags & GTF_SPILL) != 0);
-        regFlags &= ~GTF_SPILL;
-    }
-#endif // TARGET_ARM
-    else if (lcl != nullptr)
-    {
-        regFlags = lcl->GetRegSpillFlagByIdx(regIdx);
+        regFlags = tree->GetRegSpillFlagByIdx(regIdx);
         assert((regFlags & GTF_SPILL) != 0);
         regFlags &= ~GTF_SPILL;
     }
@@ -385,16 +390,10 @@ void RegSet::rsSpillTree(regNumber reg, GenTree* tree, unsigned regIdx /* =0 */)
         tree->gtFlags &= ~GTF_SPILL;
     }
 
-#if defined(TARGET_ARM)
-    assert(tree->GetRegNum() == reg || (call != nullptr && call->GetRegNumByIdx(regIdx) == reg) ||
-           (splitArg != nullptr && splitArg->GetRegNumByIdx(regIdx) == reg) ||
-           (multiReg != nullptr && multiReg->GetRegNumByIdx(regIdx) == reg));
-#else
-    assert(tree->GetRegNum() == reg || (call != nullptr && call->GetRegNumByIdx(regIdx) == reg));
-#endif // !TARGET_ARM
+    assert(tree->GetRegByIndex(regIdx) == reg);
 
     // Are any registers free for spillage?
-    SpillDsc* spill = SpillDsc::alloc(m_rsCompiler, this, tempType);
+    SpillDsc* spill = SpillDsc::alloc(m_compiler, this, tempType);
 
     // Grab a temp to store the spilled value
     TempDsc* temp    = tmpGetTemp(tempType);
@@ -405,10 +404,14 @@ void RegSet::rsSpillTree(regNumber reg, GenTree* tree, unsigned regIdx /* =0 */)
     spill->spillTree = tree;
 
 #ifdef DEBUG
-    if (m_rsCompiler->verbose)
+    if (m_compiler->verbose)
     {
-        printf("\t\t\t\t\t\t\tThe register %s spilled with    ", m_rsCompiler->compRegVarName(reg));
+        printf("\t\t\t\t\t\t\tThe register %s spilled with ", m_compiler->compRegVarName(reg));
         Compiler::printTreeID(spill->spillTree);
+        if (isMultiRegTree)
+        {
+            printf("[%u]", regIdx);
+        }
     }
 #endif
 
@@ -421,7 +424,7 @@ void RegSet::rsSpillTree(regNumber reg, GenTree* tree, unsigned regIdx /* =0 */)
     rsSpillDesc[reg]   = spill;
 
 #ifdef DEBUG
-    if (m_rsCompiler->verbose)
+    if (m_compiler->verbose)
     {
         printf("\n");
     }
@@ -430,49 +433,31 @@ void RegSet::rsSpillTree(regNumber reg, GenTree* tree, unsigned regIdx /* =0 */)
     // Generate the code to spill the register
     var_types storeType = floatSpill ? treeType : tempType;
 
-    m_rsCompiler->codeGen->spillReg(storeType, temp, reg);
+    m_compiler->codeGen->spillReg(storeType, temp, reg);
 
     // Mark the tree node as having been spilled
     rsMarkSpill(tree, reg);
 
-    // In case of multi-reg call node also mark the specific
-    // result reg as spilled.
-    if (call != nullptr)
+    // In case of multi-reg call node also mark the specific result reg as spilled.
+    if (isMultiRegTree)
     {
         regFlags |= GTF_SPILLED;
-        call->SetRegSpillFlagByIdx(regFlags, regIdx);
-    }
-#ifdef TARGET_ARM
-    else if (splitArg != nullptr)
-    {
-        regFlags |= GTF_SPILLED;
-        splitArg->SetRegSpillFlagByIdx(regFlags, regIdx);
-    }
-    else if (multiReg != nullptr)
-    {
-        regFlags |= GTF_SPILLED;
-        multiReg->SetRegSpillFlagByIdx(regFlags, regIdx);
-    }
-#endif // TARGET_ARM
-    else if (lcl != nullptr)
-    {
-        regFlags |= GTF_SPILLED;
-        lcl->SetRegSpillFlagByIdx(regFlags, regIdx);
+        tree->SetRegSpillFlagByIdx(regFlags, regIdx);
     }
 }
 
 #if defined(TARGET_X86)
 /*****************************************************************************
-*
-*  Spill the top of the FP x87 stack.
-*/
+ *
+ *  Spill the top of the FP x87 stack.
+ */
 void RegSet::rsSpillFPStack(GenTreeCall* call)
 {
     SpillDsc* spill;
     TempDsc*  temp;
     var_types treeType = call->TypeGet();
 
-    spill = SpillDsc::alloc(m_rsCompiler, this, treeType);
+    spill = SpillDsc::alloc(m_compiler, this, treeType);
 
     /* Grab a temp to store the spilled value */
 
@@ -488,11 +473,11 @@ void RegSet::rsSpillFPStack(GenTreeCall* call)
     rsSpillDesc[reg]   = spill;
 
 #ifdef DEBUG
-    if (m_rsCompiler->verbose)
+    if (m_compiler->verbose)
         printf("\n");
 #endif
 
-    m_rsCompiler->codeGen->GetEmitter()->emitIns_S(INS_fstp, emitActualTypeSize(treeType), temp->tdTempNum(), 0);
+    m_compiler->codeGen->GetEmitter()->emitIns_S(INS_fstp, emitActualTypeSize(treeType), temp->tdTempNum(), 0);
 
     /* Mark the tree node as having been spilled */
 
@@ -534,56 +519,30 @@ TempDsc* RegSet::rsGetSpillTempWord(regNumber reg, SpillDsc* dsc, SpillDsc* prev
 //     oldReg  -  reg of tree that was spilled.
 //
 //  Return Value:
-//     None.
+//     TempDsc the caller is expected to release.
 //
 //  Assumptions:
-//  1. It is the responsibility of the caller to free the spill temp.
-//  2. RyuJIT backend specific: In case of multi-reg call node
-//     GTF_SPILLED flag associated with reg is cleared.  It is the
-//     responsibility of caller to clear GTF_SPILLED flag on call node
-//     itself after ensuring there are no outstanding regs in GTF_SPILLED
-//     state.
+//     In case of multi-reg node GTF_SPILLED flag associated with reg is
+//     cleared. It is the responsibility of caller to clear GTF_SPILLED
+//     flag on call node itself after ensuring there are no outstanding
+//     regs in GTF_SPILLED state.
 //
 TempDsc* RegSet::rsUnspillInPlace(GenTree* tree, regNumber oldReg, unsigned regIdx /* =0 */)
 {
     // Get the tree's SpillDsc
     SpillDsc* prevDsc;
     SpillDsc* spillDsc = rsGetSpillInfo(tree, oldReg, &prevDsc);
-    PREFIX_ASSUME(spillDsc != nullptr);
+    assert(spillDsc != nullptr);
 
     // Get the temp
     TempDsc* temp = rsGetSpillTempWord(oldReg, spillDsc, prevDsc);
 
-    // The value is now unspilled
-    if (tree->IsMultiRegCall())
+    // The value is now unspilled.
+    if (tree->IsMultiRegNode())
     {
-        GenTreeCall* call  = tree->AsCall();
-        GenTreeFlags flags = call->GetRegSpillFlagByIdx(regIdx);
+        GenTreeFlags flags = tree->GetRegSpillFlagByIdx(regIdx);
         flags &= ~GTF_SPILLED;
-        call->SetRegSpillFlagByIdx(flags, regIdx);
-    }
-#if defined(TARGET_ARM)
-    else if (tree->OperIsPutArgSplit())
-    {
-        GenTreePutArgSplit* splitArg = tree->AsPutArgSplit();
-        GenTreeFlags        flags    = splitArg->GetRegSpillFlagByIdx(regIdx);
-        flags &= ~GTF_SPILLED;
-        splitArg->SetRegSpillFlagByIdx(flags, regIdx);
-    }
-    else if (tree->OperIsMultiRegOp())
-    {
-        GenTreeMultiRegOp* multiReg = tree->AsMultiRegOp();
-        GenTreeFlags       flags    = multiReg->GetRegSpillFlagByIdx(regIdx);
-        flags &= ~GTF_SPILLED;
-        multiReg->SetRegSpillFlagByIdx(flags, regIdx);
-    }
-#endif // TARGET_ARM
-    else if (tree->IsMultiRegLclVar())
-    {
-        GenTreeLclVar* lcl   = tree->AsLclVar();
-        GenTreeFlags   flags = lcl->GetRegSpillFlagByIdx(regIdx);
-        flags &= ~GTF_SPILLED;
-        lcl->SetRegSpillFlagByIdx(flags, regIdx);
+        tree->SetRegSpillFlagByIdx(flags, regIdx);
     }
     else
     {
@@ -591,10 +550,14 @@ TempDsc* RegSet::rsUnspillInPlace(GenTree* tree, regNumber oldReg, unsigned regI
     }
 
 #ifdef DEBUG
-    if (m_rsCompiler->verbose)
+    if (m_compiler->verbose)
     {
-        printf("\t\t\t\t\t\t\tTree-Node marked unspilled from  ");
+        printf("\t\t\t\t\t\t\tTree-Node marked unspilled from ");
         Compiler::printTreeID(tree);
+        if (tree->IsMultiRegNode())
+        {
+            printf("[%u]", regIdx);
+        }
         printf("\n");
     }
 #endif
@@ -606,6 +569,7 @@ void RegSet::rsMarkSpill(GenTree* tree, regNumber reg)
 {
     tree->gtFlags |= GTF_SPILLED;
 }
+#endif // HAS_FIXED_REGISTER_SET
 
 /*****************************************************************************/
 
@@ -642,7 +606,7 @@ var_types RegSet::tmpNormalizeType(var_types type)
     // We always spill SIMD12 to a 16-byte SIMD16 temp.
     // This is because we don't have a single instruction to store 12 bytes, so we want
     // to ensure that we always have the full 16 bytes for loading & storing the value.
-    // We also allocate non-argument locals as 16 bytes; see lvSize().
+    // We also allocate non-argument locals as 16 bytes; see lvaLclStackHomeSize().
     if (type == TYP_SIMD12)
     {
         type = TYP_SIMD16;
@@ -663,12 +627,9 @@ TempDsc* RegSet::tmpGetTemp(var_types type)
     type          = tmpNormalizeType(type);
     unsigned size = genTypeSize(type);
 
-    // If TYP_STRUCT ever gets in here we do bad things (tmpSlot returns -1)
-    noway_assert(size >= sizeof(int));
-
     /* Find the slot to search for a free temp of the right size */
 
-    unsigned slot = tmpSlot(size);
+    unsigned slot = tmpSlot(type);
 
     /* Look for a temp with a matching type */
 
@@ -696,7 +657,7 @@ TempDsc* RegSet::tmpGetTemp(var_types type)
     noway_assert(temp != nullptr);
 
 #ifdef DEBUG
-    if (m_rsCompiler->verbose)
+    if (m_compiler->verbose)
     {
         printf("%s temp #%u, slot %u, size = %u\n", isNewTemp ? "created" : "reused", -temp->tdTempNum(), slot,
                temp->tdTempSize());
@@ -725,19 +686,22 @@ void RegSet::tmpPreAllocateTemps(var_types type, unsigned count)
     assert(type == tmpNormalizeType(type));
     unsigned size = genTypeSize(type);
 
-    // If TYP_STRUCT ever gets in here we do bad things (tmpSlot returns -1)
-    noway_assert(size >= sizeof(int));
-
     // Find the slot to search for a free temp of the right size.
-    // Note that slots are shared by types of the identical size (e.g., TYP_REF and TYP_LONG on AMD64),
+    // Note that slots can be shared by types of the identical size (e.g., TYP_REF and TYP_LONG on AMD64),
     // so we can't assert that the slot is empty when we get here.
 
-    unsigned slot = tmpSlot(size);
+    unsigned slot = tmpSlot(type);
 
     for (unsigned i = 0; i < count; i++)
     {
         tmpCount++;
-        tmpSize += size;
+
+        if (size != SIZE_UNKNOWN)
+        {
+            // We don't count temps that have unknown size, because they will be allocated in a different
+            // part of the frame to temps that have a known size.
+            tmpSize += size;
+        }
 
 #ifdef TARGET_ARM
         if (type == TYP_DOUBLE)
@@ -748,10 +712,10 @@ void RegSet::tmpPreAllocateTemps(var_types type, unsigned count)
         }
 #endif // TARGET_ARM
 
-        TempDsc* temp = new (m_rsCompiler, CMK_Unknown) TempDsc(-((int)tmpCount), size, type);
+        TempDsc* temp = new (m_compiler, CMK_Unknown) TempDsc(-((int)tmpCount), size, type);
 
 #ifdef DEBUG
-        if (m_rsCompiler->verbose)
+        if (m_compiler->verbose)
         {
             printf("pre-allocated temp #%u, slot %u, size = %u\n", -temp->tdTempNum(), slot, temp->tdTempSize());
         }
@@ -776,10 +740,10 @@ void RegSet::tmpRlsTemp(TempDsc* temp)
 
     /* Add the temp to the 'free' list */
 
-    slot = tmpSlot(temp->tdTempSize());
+    slot = tmpSlot(temp->tdTempType());
 
 #ifdef DEBUG
-    if (m_rsCompiler->verbose)
+    if (m_compiler->verbose)
     {
         printf("release temp #%u, slot %u, size = %u\n", -temp->tdTempNum(), slot, temp->tdTempSize());
     }
@@ -833,6 +797,40 @@ TempDsc* RegSet::tmpFindNum(int tnum, TEMP_USAGE_TYPE usageType /* = TEMP_USAGE_
     return nullptr;
 }
 
+//----------------------------------------------------------------------------
+//  tmpGetNum: Given a temp number, get the corresponding temp.
+//
+//  This looks for temps in the free list and the used list, meaning it can only be used after code
+//  generation.
+//
+//  It will assert that the temp is found. This should be called for a temp that is known to exist.
+//
+TempDsc* RegSet::tmpGetNum(int tnum) const
+{
+    TempDsc* tmp = tmpFindNum(tnum, TEMP_USAGE_FREE);
+    if (tmp == nullptr)
+    {
+        tmp = tmpFindNum(tnum, TEMP_USAGE_USED);
+    }
+    assert(tmp != nullptr);
+    return tmp;
+}
+
+//----------------------------------------------------------------------------
+//  tmpIsUnknownSizeTemp: Given a temp number, does the corresponding temp have an unknown size?
+//
+//  It will assert that the temp is found. This should be called for a temp that is known to exist.
+//
+//  Arguments:
+//      tnum - Temp number to test
+//
+//  Returns:
+//      true when the temp has an unknown size at compile-time.
+bool RegSet::tmpIsUnknownSizeTemp(int tnum) const
+{
+    return varTypeHasUnknownSize(tmpGetNum(tnum)->tdTempType());
+}
+
 /*****************************************************************************
  *
  *  A helper function is used to iterate over all the temps.
@@ -870,12 +868,13 @@ TempDsc* RegSet::tmpListNxt(TempDsc* curTemp, TEMP_USAGE_TYPE usageType /* = TEM
     assert(curTemp != nullptr);
 
     TempDsc* temp = curTemp->tdNext;
+    unsigned size = curTemp->tdTempSize();
+
     if (temp == nullptr)
     {
-        unsigned size = curTemp->tdTempSize();
-
         // If there are no more temps in the list, check if there are more
-        // slots (for bigger sized temps) to walk.
+        // slots (for bigger sized temps) to walk. This is only possible if
+        // the temps have a known size.
 
         TempDsc* const* tmpLists;
         if (usageType == TEMP_USAGE_FREE)
@@ -887,14 +886,17 @@ TempDsc* RegSet::tmpListNxt(TempDsc* curTemp, TEMP_USAGE_TYPE usageType /* = TEM
             tmpLists = tmpUsed;
         }
 
-        while (size < TEMP_MAX_SIZE && temp == nullptr)
+        unsigned slot = tmpSlot(curTemp->tdTempType()) + 1;
+        while (slot < TEMP_SLOT_COUNT && temp == nullptr)
         {
-            size += sizeof(int);
-            unsigned slot = tmpSlot(size);
-            temp          = tmpLists[slot];
+            temp = tmpLists[slot];
+            slot++;
         }
 
-        assert((temp == nullptr) || (temp->tdTempSize() == size));
+        if (temp == nullptr)
+        {
+            assert(slot == TEMP_SLOT_COUNT);
+        }
     }
 
     return temp;
@@ -932,84 +934,6 @@ bool RegSet::tmpAllFree() const
 }
 
 #endif // DEBUG
-
-/*
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XX                                                                           XX
-XX  Register-related utility functions                                       XX
-XX                                                                           XX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-*/
-
-/*****************************************************************************
- *
- *  Given a register that is an argument register
- *   returns the next argument register
- *
- *  Note: that this method will return a non arg register
- *   when given REG_ARG_LAST
- *
- */
-
-regNumber genRegArgNext(regNumber argReg)
-{
-    assert(isValidIntArgReg(argReg) || isValidFloatArgReg(argReg));
-
-    switch (argReg)
-    {
-
-#ifdef TARGET_AMD64
-#ifdef UNIX_AMD64_ABI
-
-        // Linux x64 ABI: REG_RDI, REG_RSI, REG_RDX, REG_RCX, REG_R8, REG_R9
-        case REG_ARG_0:       // REG_RDI
-            return REG_ARG_1; // REG_RSI
-        case REG_ARG_1:       // REG_RSI
-            return REG_ARG_2; // REG_RDX
-        case REG_ARG_2:       // REG_RDX
-            return REG_ARG_3; // REG_RCX
-        case REG_ARG_3:       // REG_RCX
-            return REG_ARG_4; // REG_R8
-
-#else // !UNIX_AMD64_ABI
-
-        // Windows x64 ABI: REG_RCX, REG_RDX, REG_R8, REG_R9
-        case REG_ARG_1:       // REG_RDX
-            return REG_ARG_2; // REG_R8
-
-#endif // !UNIX_AMD64_ABI
-#endif // TARGET_AMD64
-
-        default:
-            return REG_NEXT(argReg);
-    }
-}
-
-/*****************************************************************************
- *
- *  The following table determines the order in which callee-saved registers
- *  are encoded in GC information at call sites (perhaps among other things).
- *  In any case, they establish a mapping from ordinal callee-save reg "indices" to
- *  register numbers and corresponding bitmaps.
- */
-
-const regNumber raRegCalleeSaveOrder[] = {REG_CALLEE_SAVED_ORDER};
-const regMaskTP raRbmCalleeSaveOrder[] = {RBM_CALLEE_SAVED_ORDER};
-
-regMaskSmall genRegMaskFromCalleeSavedMask(unsigned short calleeSaveMask)
-{
-    regMaskSmall res = 0;
-    for (int i = 0; i < CNT_CALLEE_SAVED; i++)
-    {
-        if ((calleeSaveMask & ((regMaskTP)1 << i)) != 0)
-        {
-            res |= raRbmCalleeSaveOrder[i];
-        }
-    }
-    return res;
-}
 
 /*****************************************************************************
  *

@@ -13,6 +13,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
         // BindImplicitConversion
         // ----------------------------------------------------------------------------
 
+        [RequiresDynamicCode(Binder.DynamicCodeWarning)]
         private sealed class ImplicitConversion
         {
             public ImplicitConversion(ExpressionBinder binder, Expr exprSrc, CType typeSrc, CType typeDest, bool needsExprDest, CONVERTTYPE flags)
@@ -246,7 +247,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
                   qs.HasValue ? (T?)(qs.Value) : default(T?)
                 * If imp/exp S => T then imp/exp S => T? implemented as new T?((T)s)
 
-                This method also handles calling bindUserDefinedConverion. This method does NOT handle
+                This method also handles calling bindUserDefinedConversion. This method does NOT handle
                 the following conversions:
 
                 * Implicit boxing conversion from S? to { object, ValueType, Enum, ifaces implemented by S }. (Handled by BindImplicitConversion.)
@@ -261,6 +262,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
                 then S? => T is not standard. Similarly if S => T is not implicit then S => T? is not standard.
             ***************************************************************************************************/
             [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+            [RequiresDynamicCode(Binder.DynamicCodeWarning)]
             private bool BindNubConversion(NullableType nubDst)
             {
                 // This code assumes that STANDARD and ISEXPLICIT are never both set.
@@ -665,6 +667,7 @@ namespace Microsoft.CSharp.RuntimeBinder.Semantics
             }
 
             [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+            [RequiresDynamicCode(Binder.DynamicCodeWarning)]
             private bool bindImplicitConversionBetweenSimpleTypes(AggregateType aggTypeSrc)
             {
                 AggregateSymbol aggSrc = aggTypeSrc.OwningAggregate;

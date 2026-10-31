@@ -15,10 +15,49 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 #pragma hdrstop
 #endif
 
-/*****************************************************************************
- * gsGSChecksInitCookie
- * Grabs the cookie for detecting overflow of unsafe buffers.
- */
+//------------------------------------------------------------------------
+// gsPhase: modify IR and symbols to implement stack security checks
+//
+// Returns:
+//    Suitable phase status
+//
+PhaseStatus Compiler::gsPhase()
+{
+    bool madeChanges = false;
+
+    if (getNeedsGSSecurityCookie())
+    {
+        unsigned const prevBBCount = fgBBcount;
+        gsGSChecksInitCookie();
+
+        if (compGSReorderStackLayout)
+        {
+            gsCopyShadowParams();
+        }
+
+        madeChanges = true;
+    }
+    else
+    {
+#ifdef DEBUG
+        if (compGSSecurityCheckBlocker != nullptr)
+        {
+            JITDUMP("GS security check requested, but not provided: %s\n", compGSSecurityCheckBlocker);
+        }
+        else
+        {
+            JITDUMP("No GS security needed\n");
+        }
+#endif
+    }
+
+    return madeChanges ? PhaseStatus::MODIFIED_EVERYTHING : PhaseStatus::MODIFIED_NOTHING;
+}
+
+//------------------------------------------------------------------------
+// gsGSChecksInitCookie:
+//   Initialize the GS cookie local and value.
+//
 void Compiler::gsGSChecksInitCookie()
 {
     var_types type = TYP_I_IMPL;
@@ -32,21 +71,19 @@ void Compiler::gsGSChecksInitCookie()
     info.compCompHnd->getGSCookie(&gsGlobalSecurityCookieVal, &gsGlobalSecurityCookieAddr);
 }
 
-const unsigned NO_SHADOW_COPY = UINT_MAX;
-
-/*****************************************************************************
- * gsCopyShadowParams
- * The current function has an unsafe buffer on the stack.  Search for vulnerable
- * parameters which could be used to modify a code address and take over the process
- * in the case of a buffer overrun. Create a safe local copy for each vulnerable parameter,
- * which will be allocated bellow the unsafe buffer.  Change uses of the param to the
- * shadow copy.
- *
- * A pointer under indirection is considered vulnerable. A malicious user could read from
- * protected memory or write to it. If a parameter is assigned/computed into another variable,
- * and is a pointer (i.e., under indirection), then we consider the variable to be part of the
- * equivalence class with the parameter. All parameters in the equivalence class are shadowed.
- */
+//------------------------------------------------------------------------
+// gsCopyShadowParams:
+//   The current function has an unsafe buffer on the stack. Search for vulnerable
+//   parameters which could be used to modify a code address and take over the process
+//   in the case of a buffer overrun. Create a safe local copy for each vulnerable parameter,
+//   which will be allocated below the unsafe buffer. Change uses of the param to the
+//   shadow copy.
+//
+//   A pointer under indirection is considered vulnerable. A malicious user could read from
+//   protected memory or write to it. If a parameter is assigned/computed into another variable,
+//   and is a pointer (i.e., under indirection), then we consider the variable to be part of the
+//   equivalence class with the parameter. All parameters in the equivalence class are shadowed.
+//
 void Compiler::gsCopyShadowParams()
 {
     if (info.compIsVarArgs)
@@ -55,230 +92,223 @@ void Compiler::gsCopyShadowParams()
     }
 
     // Allocate array for shadow param info
-    gsShadowVarInfo = new (this, CMK_Unknown) ShadowParamVarInfo[lvaCount]();
+    //
+    gsShadowVarInfo      = new (this, CMK_Unknown) ShadowParamVarInfo[lvaCount]();
+    gsShadowVarInfoCount = lvaCount;
 
     // Find groups of variables assigned to each other, and also
     // tracks variables which are dereferenced and marks them as ptrs.
-    // Look for assignments to *p, and ptrs passed to functions
+    // Look for stores to *p, and ptrs passed to functions
+    //
     if (gsFindVulnerableParams())
     {
         // Replace vulnerable params by shadow copies.
+        //
         gsParamsToShadows();
     }
+    else
+    {
+        // There are no vulnerable params.
+        // Clear out the info to avoid looking at stale data.
+        //
+        gsShadowVarInfo      = nullptr;
+        gsShadowVarInfoCount = 0;
+    }
 }
 
-// This struct tracks how a tree is being used
-
-struct MarkPtrsInfo
+//------------------------------------------------------------------------
+// gsUnionAssignGroups:
+//   Unify the assign groups of lclNum1 and lclNum2, indicating that these may
+//   take the same value during the function's execution.
+//
+// Parameters:
+//   lclNum1 - The first local
+//   lclNum2 - The second local
+//   reason  - The tree that is the reason for the union (for debugging only)
+//
+void Compiler::gsUnionAssignGroups(unsigned lclNum1, unsigned lclNum2, GenTree* reason)
 {
-    Compiler* comp;
-    unsigned  lvAssignDef;  // Which local variable is the tree being assigned to?
-    bool      isAssignSrc;  // Is this the source value for an assignment?
-    bool      isUnderIndir; // Is this a pointer value tree that is being dereferenced?
-    bool      skipNextNode; // Skip a single node during the tree-walk
+    ShadowParamVarInfo& info1 = gsShadowVarInfo[lclNum1];
+    ShadowParamVarInfo& info2 = gsShadowVarInfo[lclNum2];
 
 #ifdef DEBUG
-    void Print()
+    if (info1.assignGroup != info2.assignGroup)
     {
-        printf(
-            "[MarkPtrsInfo] = {comp = %p, lvAssignDef = %d, isAssignSrc = %d, isUnderIndir = %d, skipNextNode = %d}\n",
-            comp, lvAssignDef, isAssignSrc, isUnderIndir, skipNextNode);
+        JITDUMP("Unifying assign groups of V%02u and V%02u because of [%06u]\n", lclNum1, lclNum2, dspTreeID(reason));
     }
 #endif
-};
 
-/*****************************************************************************
- * gsMarkPtrsAndAssignGroups
- * Walk a tree looking for assignment groups, variables whose value is used
- * in a *p store or use, and variable passed to calls.  This info is then used
- * to determine parameters which are vulnerable.
- * This function carries a state to know if it is under an assign node, call node
- * or indirection node.  It starts a new tree walk for it's subtrees when the state
- * changes.
- */
-Compiler::fgWalkResult Compiler::gsMarkPtrsAndAssignGroups(GenTree** pTree, fgWalkData* data)
-{
-    struct MarkPtrsInfo* pState        = (MarkPtrsInfo*)data->pCallbackData;
-    struct MarkPtrsInfo  newState      = *pState;
-    Compiler*            comp          = data->compiler;
-    GenTree*             tree          = *pTree;
-    ShadowParamVarInfo*  shadowVarInfo = pState->comp->gsShadowVarInfo;
-    assert(shadowVarInfo);
-
-    assert(!pState->isAssignSrc || pState->lvAssignDef != (unsigned)-1);
-
-    if (pState->skipNextNode)
+    if (info1.assignGroup != nullptr)
     {
-        pState->skipNextNode = false;
-        return WALK_CONTINUE;
+        if (info2.assignGroup != nullptr)
+        {
+            info1.assignGroup->bitVectOr(info2.assignGroup);
+        }
+        else
+        {
+            info1.assignGroup->bitVectSet(lclNum2);
+        }
+
+        // Point both to the same bit vector
+        info2.assignGroup = info1.assignGroup;
     }
-
-    switch (tree->OperGet())
+    else if (info2.assignGroup != nullptr)
     {
-        // Indirections - look for *p uses and defs
-        case GT_IND:
-        case GT_BLK:
-        case GT_OBJ:
-        case GT_ARR_ELEM:
-        case GT_ARR_INDEX:
-        case GT_ARR_OFFSET:
-        case GT_FIELD:
+        info2.assignGroup->bitVectSet(lclNum1);
 
-            newState.isUnderIndir = true;
-            {
-                newState.skipNextNode = true; // Don't have to worry about which kind of node we're dealing with
-                comp->fgWalkTreePre(&tree, comp->gsMarkPtrsAndAssignGroups, (void*)&newState);
-            }
+        // Point both to the same bit vector
+        info1.assignGroup = info2.assignGroup;
+    }
+    else
+    {
+        FixedBitVect* bv = FixedBitVect::bitVectInit(lvaCount, this);
 
-            return WALK_SKIP_SUBTREES;
-
-        // local vars and param uses
-        case GT_LCL_VAR:
-        case GT_LCL_FLD:
-        {
-            unsigned lclNum = tree->AsLclVarCommon()->GetLclNum();
-
-            if (pState->isUnderIndir)
-            {
-                // The variable is being dereferenced for a read or a write.
-                comp->lvaTable[lclNum].lvIsPtr = 1;
-            }
-
-            if (pState->isAssignSrc)
-            {
-                //
-                // Add lvAssignDef and lclNum to a common assign group
-                if (shadowVarInfo[pState->lvAssignDef].assignGroup)
-                {
-                    if (shadowVarInfo[lclNum].assignGroup)
-                    {
-                        // OR both bit vector
-                        shadowVarInfo[pState->lvAssignDef].assignGroup->bitVectOr(shadowVarInfo[lclNum].assignGroup);
-                    }
-                    else
-                    {
-                        shadowVarInfo[pState->lvAssignDef].assignGroup->bitVectSet(lclNum);
-                    }
-
-                    // Point both to the same bit vector
-                    shadowVarInfo[lclNum].assignGroup = shadowVarInfo[pState->lvAssignDef].assignGroup;
-                }
-                else if (shadowVarInfo[lclNum].assignGroup)
-                {
-                    shadowVarInfo[lclNum].assignGroup->bitVectSet(pState->lvAssignDef);
-
-                    // Point both to the same bit vector
-                    shadowVarInfo[pState->lvAssignDef].assignGroup = shadowVarInfo[lclNum].assignGroup;
-                }
-                else
-                {
-                    FixedBitVect* bv = FixedBitVect::bitVectInit(pState->comp->lvaCount, pState->comp);
-
-                    // (shadowVarInfo[pState->lvAssignDef] == NULL && shadowVarInfo[lclNew] == NULL);
-                    // Neither of them has an assign group yet.  Make a new one.
-                    shadowVarInfo[pState->lvAssignDef].assignGroup = bv;
-                    shadowVarInfo[lclNum].assignGroup              = bv;
-                    bv->bitVectSet(pState->lvAssignDef);
-                    bv->bitVectSet(lclNum);
-                }
-            }
-            return WALK_CONTINUE;
-        }
-
-        // Calls - Mark arg variables
-        case GT_CALL:
-
-            newState.isUnderIndir = false;
-            newState.isAssignSrc  = false;
-            {
-                if (tree->AsCall()->gtCallThisArg != nullptr)
-                {
-                    newState.isUnderIndir = true;
-                    comp->fgWalkTreePre(&tree->AsCall()->gtCallThisArg->NodeRef(), gsMarkPtrsAndAssignGroups,
-                                        (void*)&newState);
-                }
-
-                for (GenTreeCall::Use& use : tree->AsCall()->Args())
-                {
-                    comp->fgWalkTreePre(&use.NodeRef(), gsMarkPtrsAndAssignGroups, (void*)&newState);
-                }
-                for (GenTreeCall::Use& use : tree->AsCall()->LateArgs())
-                {
-                    comp->fgWalkTreePre(&use.NodeRef(), gsMarkPtrsAndAssignGroups, (void*)&newState);
-                }
-
-                if (tree->AsCall()->gtCallType == CT_INDIRECT)
-                {
-                    newState.isUnderIndir = true;
-
-                    // A function pointer is treated like a write-through pointer since
-                    // it controls what code gets executed, and so indirectly can cause
-                    // a write to memory.
-                    comp->fgWalkTreePre(&tree->AsCall()->gtCallAddr, gsMarkPtrsAndAssignGroups, (void*)&newState);
-                }
-            }
-            return WALK_SKIP_SUBTREES;
-
-        case GT_ADDR:
-            newState.isUnderIndir = false;
-            // We'll assume p in "**p = " can be vulnerable because by changing 'p', someone
-            // could control where **p stores to.
-            {
-                comp->fgWalkTreePre(&tree->AsOp()->gtOp1, comp->gsMarkPtrsAndAssignGroups, (void*)&newState);
-            }
-            return WALK_SKIP_SUBTREES;
-
-        case GT_ASG:
-        {
-            GenTreeOp* asg = tree->AsOp();
-            GenTree*   dst = asg->gtGetOp1();
-            GenTree*   src = asg->gtGetOp2();
-            // Assignments - track assign groups and *p defs.
-
-            // Walk dst side
-            comp->fgWalkTreePre(&dst, comp->gsMarkPtrsAndAssignGroups, (void*)&newState);
-
-            // Now handle src side
-            if (dst->OperIs(GT_LCL_VAR, GT_LCL_FLD))
-            {
-                unsigned lclNum      = dst->AsLclVarCommon()->GetLclNum();
-                newState.lvAssignDef = lclNum;
-                newState.isAssignSrc = true;
-            }
-
-            comp->fgWalkTreePre(&src, comp->gsMarkPtrsAndAssignGroups, (void*)&newState);
-            assert(dst == asg->gtGetOp1());
-            assert(src == asg->gtGetOp2());
-
-            return WALK_SKIP_SUBTREES;
-        }
-
-        default:
-            return WALK_CONTINUE;
+        // Neither of them has an assign group yet. Make a new one.
+        info1.assignGroup = bv;
+        info2.assignGroup = bv;
+        bv->bitVectSet(lclNum1);
+        bv->bitVectSet(lclNum2);
     }
 }
 
-/*****************************************************************************
- * gsFindVulnerableParams
- * Walk all the trees looking for ptrs, args, assign groups, *p stores, etc.
- * Then use that info to figure out vulnerable pointers.
- *
- * It returns true if it found atleast one vulnerable pointer parameter that
- * needs to be shadow-copied.
- */
+//------------------------------------------------------------------------
+// gsVisitDependentLocals:
+//   Visit the local number of all locals that a specified node's value may
+//   depend on.
+//
+// Parameters:
+//   node - The node
+//   visit - A functor void(unsigned lclNum) called for each local number that
+//           directly contributes to node's value.
+//
+template <typename TVisit>
+void Compiler::gsVisitDependentLocals(GenTree* node, TVisit visit)
+{
+    class Visitor : public GenTreeVisitor<Visitor>
+    {
+        TVisit& m_visit;
+    public:
+        enum
+        {
+            DoPreOrder = true,
+        };
 
+        Visitor(Compiler* compiler, TVisit& visit)
+            : GenTreeVisitor<Visitor>(compiler)
+            , m_visit(visit)
+        {
+        }
+
+        fgWalkResult PreOrderVisit(GenTree** use, GenTree* user)
+        {
+            GenTree* node = *use;
+            if (node->OperIs(GT_IND, GT_BLK, GT_MDARR_LENGTH, GT_MDARR_LOWER_BOUND, GT_CALL))
+            {
+                return WALK_SKIP_SUBTREES;
+            }
+
+            if ((user != nullptr) && user->OperIs(GT_SELECT) && (node == user->AsConditional()->gtCond))
+            {
+                // The condition of a select does not contribute to the value
+                return WALK_SKIP_SUBTREES;
+            }
+
+            if (node->OperIs(GT_LCL_VAR, GT_LCL_FLD))
+            {
+                m_visit(node->AsLclVarCommon()->GetLclNum());
+            }
+
+            return WALK_CONTINUE;
+        }
+    };
+
+    Visitor visitor(this, visit);
+    visitor.WalkTree(&node, nullptr);
+}
+
+//------------------------------------------------------------------------
+// gsMarkPointers:
+//   Mark that dependent locals of the specified tree are pointers.
+//
+// Parameters:
+//   tree - The tree, typically an indirection
+//
+void Compiler::gsMarkPointers(GenTree* tree)
+{
+    gsVisitDependentLocals(tree, [=](unsigned lclNum) {
+        LclVarDsc* varDsc = lvaGetDesc(lclNum);
+
+#ifdef DEBUG
+        if (!varDsc->lvIsPtr)
+        {
+            JITDUMP("Marking V%02u as a pointer because of [%06u]\n", lclNum, dspTreeID(tree));
+        }
+#endif
+
+        varDsc->lvIsPtr = 1;
+    });
+}
+
+//------------------------------------------------------------------------
+// gsFindVulnerableParams:
+//   Walk all the trees looking for ptrs, args, assign groups, *p stores, etc.
+//   Then use that info to figure out vulnerable pointers.
+//
+// Returns:
+//   Returns true if it found atleast one vulnerable pointer parameter that
+//   needs to be shadow-copied.
+//
 bool Compiler::gsFindVulnerableParams()
 {
-    MarkPtrsInfo info;
+    for (BasicBlock* block : Blocks())
+    {
+        for (GenTree* node : LIR::AsRange(block))
+        {
+            switch (node->OperGet())
+            {
+                case GT_IND:
+                case GT_BLK:
+                case GT_MDARR_LENGTH:
+                case GT_MDARR_LOWER_BOUND:
+                case GT_STOREIND:
+                case GT_STORE_BLK:
+                {
+                    gsMarkPointers(node->gtGetOp1());
+                    break;
+                }
+                case GT_STORE_LCL_VAR:
+                case GT_STORE_LCL_FLD:
+                {
+                    GenTreeLclVarCommon* lcl = node->AsLclVarCommon();
+                    gsVisitDependentLocals(lcl->Data(), [=](unsigned lclNum) {
+                        gsUnionAssignGroups(lcl->GetLclNum(), lclNum, lcl);
+                    });
 
-    info.comp         = this;
-    info.lvAssignDef  = (unsigned)-1;
-    info.isUnderIndir = false;
-    info.isAssignSrc  = false;
-    info.skipNextNode = false;
+                    break;
+                }
+                case GT_CALL:
+                {
+                    CallArg* thisArg = node->AsCall()->gtArgs.GetThisArg();
+                    if (thisArg != nullptr)
+                    {
+                        gsMarkPointers(thisArg->GetNode());
+                    }
 
-    // Walk all the trees setting lvIsWritePtr, lvIsOutgoingArg, lvIsPtr and assignGroup.
-    fgWalkAllTreesPre(gsMarkPtrsAndAssignGroups, &info);
+                    if (node->AsCall()->gtCallType == CT_INDIRECT)
+                    {
+                        // A function pointer is treated like a write-through pointer since
+                        // it controls what code gets executed, and so indirectly can cause
+                        // a write to memory.
+                        gsMarkPointers(node->AsCall()->gtControlExpr);
+                    }
+
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+    }
 
     // Compute has vulnerable at the end of the loop.
     bool hasOneVulnerable = false;
@@ -287,7 +317,7 @@ bool Compiler::gsFindVulnerableParams()
     // some assign group.
     FixedBitVect* propagated = (lvaCount > 0) ? FixedBitVect::bitVectInit(lvaCount, this) : nullptr;
 
-    for (UINT lclNum = 0; lclNum < lvaCount; lclNum++)
+    for (unsigned lclNum = 0; lclNum < lvaCount; lclNum++)
     {
         LclVarDsc*          varDsc     = lvaGetDesc(lclNum);
         ShadowParamVarInfo* shadowInfo = &gsShadowVarInfo[lclNum];
@@ -307,12 +337,12 @@ bool Compiler::gsFindVulnerableParams()
         // Propagate lvIsPtr, so that:
         //   1. Any parameter in the equivalence class can be identified as lvIsPtr and hence shadowed.
         //   2. Buffers with pointers are placed at lower memory addresses than buffers without pointers.
-        UINT isUnderIndir = varDsc->lvIsPtr;
+        bool isUnderIndir = varDsc->lvIsPtr;
 
         // First pass -- find if any variable is vulnerable.
         FixedBitVect* assignGroup = shadowInfo->assignGroup;
-        for (UINT lclNum = assignGroup->bitVectGetFirst(); lclNum != (unsigned)-1 && !isUnderIndir;
-             lclNum      = assignGroup->bitVectGetNext(lclNum))
+        for (unsigned lclNum = assignGroup->bitVectGetFirst(); lclNum != (unsigned)-1 && !isUnderIndir;
+             lclNum          = assignGroup->bitVectGetNext(lclNum))
         {
             isUnderIndir |= lvaTable[lclNum].lvIsPtr;
         }
@@ -330,8 +360,8 @@ bool Compiler::gsFindVulnerableParams()
 
         // Second pass -- mark all are vulnerable.
         assert(isUnderIndir);
-        for (UINT lclNum = assignGroup->bitVectGetFirst(); lclNum != (unsigned)-1;
-             lclNum      = assignGroup->bitVectGetNext(lclNum))
+        for (unsigned lclNum = assignGroup->bitVectGetFirst(); lclNum != (unsigned)-1;
+             lclNum          = assignGroup->bitVectGetNext(lclNum))
         {
             lvaTable[lclNum].lvIsPtr = true;
             propagated->bitVectSet(lclNum);
@@ -341,8 +371,8 @@ bool Compiler::gsFindVulnerableParams()
         if (verbose)
         {
             printf("Equivalence assign group %s: ", isUnderIndir ? "isPtr " : "");
-            for (UINT lclNum = assignGroup->bitVectGetFirst(); lclNum != (unsigned)-1;
-                 lclNum      = assignGroup->bitVectGetNext(lclNum))
+            for (unsigned lclNum = assignGroup->bitVectGetFirst(); lclNum != (unsigned)-1;
+                 lclNum          = assignGroup->bitVectGetNext(lclNum))
             {
                 gtDispLclVar(lclNum, false);
                 printf(" ");
@@ -356,19 +386,94 @@ bool Compiler::gsFindVulnerableParams()
 }
 
 //-------------------------------------------------------------------------------
-// gsParamsToShadows: Copy each vulnerable param ptr or buffer to a local shadow
-//                    copy and replace uses of the param by the shadow copy.
+// gsParamsToShadows:
+//   Copy each vulnerable param ptr or buffer to a local shadow copy and
+//   replace uses of the param by the shadow copy.
+//
 void Compiler::gsParamsToShadows()
 {
-    // Cache old count since we'll add new variables, and
-    // gsShadowVarInfo will not grow to accomodate the new ones.
-    UINT lvaOldCount = lvaCount;
+    // Create the locals that shadow the parameters
+    if (!gsCreateShadowingLocals())
+    {
+        return;
+    }
 
+    // Redirect uses in the IR to the shadowed versions.
+    for (BasicBlock* block : Blocks())
+    {
+        for (GenTree* tree : LIR::AsRange(block))
+        {
+            gsRewriteTreeForShadowParam(tree);
+        }
+    }
+
+    // Now insert code to copy the params to their shadow copy at the beginning of the function.
+    for (unsigned lclNum = 0; lclNum < gsShadowVarInfoCount; lclNum++)
+    {
+        const LclVarDsc* varDsc = lvaGetDesc(lclNum);
+
+        const unsigned shadowLclNum = gsShadowVarInfo[lclNum].shadowCopy;
+        if (shadowLclNum == BAD_VAR_NUM)
+        {
+            continue;
+        }
+
+        gsCopyIntoShadow(lclNum, shadowLclNum);
+    }
+
+    // If the method has "Jmp CalleeMethod", then we need to copy shadow params back to original
+    // params before "jmp" to CalleeMethod.
+    if (compJmpOpUsed)
+    {
+        // There could be more than one basic block ending with a "Jmp" type tail call.
+        // We have to insert stores in all such blocks, just before GT_JMP stmnt.
+        for (BasicBlock* const block : Blocks())
+        {
+            if (!block->KindIs(BBJ_RETURN))
+            {
+                continue;
+            }
+
+            GenTree* lastNode = LIR::AsRange(block).LastNode();
+            if ((lastNode == nullptr) || !lastNode->OperIs(GT_JMP))
+            {
+                continue;
+            }
+
+            for (unsigned lclNum = 0; lclNum < info.compArgsCount; lclNum++)
+            {
+                const LclVarDsc* varDsc = lvaGetDesc(lclNum);
+
+                const unsigned shadowVarNum = gsShadowVarInfo[lclNum].shadowCopy;
+                if (shadowVarNum == BAD_VAR_NUM)
+                {
+                    continue;
+                }
+
+                GenTree* src   = gtNewLclVarNode(shadowVarNum);
+                GenTree* store = gtNewStoreLclVarNode(lclNum, src);
+
+                LIR::AsRange(block).InsertBefore(lastNode, LIR::SeqTree(this, store));
+            }
+        }
+    }
+}
+
+//-------------------------------------------------------------------------------
+// gsCreateShadowingLocals:
+//   For each parameter that should be shadowed, create a local variable to hold its copy.
+//
+// Returns:
+//   True if any shadowing locals were created.
+//
+bool Compiler::gsCreateShadowingLocals()
+{
+    bool createdAny = false;
     // Create shadow copy for each param candidate
-    for (UINT lclNum = 0; lclNum < lvaOldCount; lclNum++)
+    for (unsigned lclNum = 0; lclNum < gsShadowVarInfoCount; lclNum++)
     {
         LclVarDsc* varDsc                  = lvaGetDesc(lclNum);
-        gsShadowVarInfo[lclNum].shadowCopy = NO_SHADOW_COPY;
+        gsShadowVarInfo[lclNum].shadowCopy = BAD_VAR_NUM;
 
         // Only care about params whose values are on the stack
         if (!ShadowParamVarInfo::mayNeedShadowCopy(varDsc))
@@ -381,43 +486,39 @@ void Compiler::gsParamsToShadows()
             continue;
         }
 
-        int shadowVarNum = lvaGrabTemp(false DEBUGARG("shadowVar"));
+        int shadowVarNum = lvaGrabTemp(false DEBUGARG(printfAlloc("V%02u shadow", lclNum)));
         // reload varDsc as lvaGrabTemp may realloc the lvaTable[]
         varDsc                  = lvaGetDesc(lclNum);
         LclVarDsc* shadowVarDsc = lvaGetDesc(shadowVarNum);
 
         // Copy some info
-
-        var_types type       = varTypeIsSmall(varDsc->TypeGet()) ? TYP_INT : varDsc->TypeGet();
-        shadowVarDsc->lvType = type;
-
-#ifdef FEATURE_SIMD
-        shadowVarDsc->lvSIMDType            = varDsc->lvSIMDType;
-        shadowVarDsc->lvUsedInSIMDIntrinsic = varDsc->lvUsedInSIMDIntrinsic;
-        if (varDsc->lvSIMDType)
-        {
-            CorInfoType simdBaseJitType = varDsc->GetSimdBaseJitType();
-            shadowVarDsc->SetSimdBaseJitType(simdBaseJitType);
-        }
-#endif
+        var_types type            = varTypeIsSmall(varDsc->TypeGet()) ? TYP_INT : varDsc->TypeGet();
+        shadowVarDsc->lvType      = type;
         shadowVarDsc->lvRegStruct = varDsc->lvRegStruct;
-
         shadowVarDsc->SetAddressExposed(varDsc->IsAddressExposed() DEBUGARG(varDsc->GetAddrExposedReason()));
-        shadowVarDsc->lvDoNotEnregister = varDsc->lvDoNotEnregister;
+        shadowVarDsc->lvDoNotEnregister       = varDsc->lvDoNotEnregister;
+        shadowVarDsc->lvSingleDefRegCandidate = varDsc->lvSingleDefRegCandidate;
 #ifdef DEBUG
         shadowVarDsc->SetDoNotEnregReason(varDsc->GetDoNotEnregReason());
+        shadowVarDsc->SetDefinedViaAddress(varDsc->IsDefinedViaAddress());
 #endif
-        shadowVarDsc->lvVerTypeInfo = varDsc->lvVerTypeInfo;
+
         if (varTypeIsStruct(type))
         {
             // We don't need unsafe value cls check here since we are copying the params and this flag
             // would have been set on the original param before reaching here.
-            lvaSetStruct(shadowVarNum, varDsc->GetStructHnd(), false);
-            shadowVarDsc->lvIsMultiRegArg = varDsc->lvIsMultiRegArg;
-            shadowVarDsc->lvIsMultiRegRet = varDsc->lvIsMultiRegRet;
+            lvaSetStruct(shadowVarNum, varDsc->GetLayout(), false);
+            shadowVarDsc->lvIsMultiRegArg  = varDsc->lvIsMultiRegArg;
+            shadowVarDsc->lvIsMultiRegRet  = varDsc->lvIsMultiRegRet;
+            shadowVarDsc->lvIsMultiRegDest = varDsc->lvIsMultiRegDest;
         }
         shadowVarDsc->lvIsUnsafeBuffer = varDsc->lvIsUnsafeBuffer;
         shadowVarDsc->lvIsPtr          = varDsc->lvIsPtr;
+
+        if (varDsc->IsNeverNegative())
+        {
+            shadowVarDsc->SetIsNeverNegative(true);
+        }
 
 #ifdef DEBUG
         if (verbose)
@@ -427,148 +528,131 @@ void Compiler::gsParamsToShadows()
 #endif
 
         gsShadowVarInfo[lclNum].shadowCopy = shadowVarNum;
+        createdAny                         = true;
     }
 
-    class ReplaceShadowParamsVisitor final : public GenTreeVisitor<ReplaceShadowParamsVisitor>
+    return createdAny;
+}
+
+//-------------------------------------------------------------------------------
+// gsRewriteTreeForShadowParam:
+//   If necessary, rewrite the given tree to act on the shadowed version of a local.
+//
+// Parameters:
+//   tree - The tree
+//
+void Compiler::gsRewriteTreeForShadowParam(GenTree* tree)
+{
+    if (!tree->OperIsAnyLocal())
     {
-        // Walk the locals of the method (i.e. GT_LCL_FLD and GT_LCL_VAR nodes) and replace the ones that correspond to
-        // "vulnerable" parameters with their shadow copies. If an original local variable has small type then replace
-        // the GT_LCL_VAR node type with TYP_INT.
-    public:
-        enum
-        {
-            DoPreOrder    = true,
-            DoLclVarsOnly = true
-        };
+        return;
+    }
 
-        ReplaceShadowParamsVisitor(Compiler* compiler) : GenTreeVisitor<ReplaceShadowParamsVisitor>(compiler)
+    unsigned int lclNum = tree->AsLclVarCommon()->GetLclNum();
+    if (lclNum >= gsShadowVarInfoCount)
+    {
+        return;
+    }
+
+    unsigned int shadowLclNum = gsShadowVarInfo[lclNum].shadowCopy;
+    if (shadowLclNum == BAD_VAR_NUM)
+    {
+        return;
+    }
+
+    LclVarDsc* varDsc = lvaGetDesc(lclNum);
+    assert(ShadowParamVarInfo::mayNeedShadowCopy(varDsc));
+
+    tree->AsLclVarCommon()->SetLclNum(shadowLclNum);
+
+    if (varTypeIsSmall(varDsc))
+    {
+        if (tree->OperIsScalarLocal())
         {
+            tree->gtType = TYP_INT;
         }
-
-        Compiler::fgWalkResult PreOrderVisit(GenTree** use, GenTree* user)
+        else if (tree->OperIs(GT_STORE_LCL_FLD) && tree->IsPartialLclFld(this))
         {
-            GenTree* tree = *use;
+            tree->gtFlags |= GTF_VAR_USEASG;
+        }
+    }
+}
 
-            unsigned int lclNum       = tree->AsLclVarCommon()->GetLclNum();
-            unsigned int shadowLclNum = m_compiler->gsShadowVarInfo[lclNum].shadowCopy;
+//-------------------------------------------------------------------------------
+// gsCopyIntoShadow:
+//   Insert IR to copy the value of "lclNum" into "shadowLclNum" at the
+//   beginning of the function.
+//
+// Parameters:
+//   lclNum         - The original vulnerable local
+//   shadowLclNum   - The shadowing local
+//
+void Compiler::gsCopyIntoShadow(unsigned lclNum, unsigned shadowLclNum)
+{
+    LclVarDsc* varDsc = lvaGetDesc(lclNum);
+    if (varDsc->lvPromoted && !varDsc->lvDoNotEnregister)
+    {
+        lvaSetVarDoNotEnregister(lclNum DEBUGARG(DoNotEnregisterReason::BlockOp));
+    }
 
-            if (shadowLclNum != NO_SHADOW_COPY)
+#if defined(TARGET_X86) && defined(FEATURE_IJW)
+    if (lclNum < info.compArgsCount && argRequiresSpecialCopy(lclNum) && varDsc->TypeIs(TYP_STRUCT))
+    {
+        JITDUMP("arg%02u requires special copy, using special copy helper to copy to shadow var V%02u\n", lclNum,
+                shadowLclNum);
+        CORINFO_METHOD_HANDLE copyHelper =
+            info.compCompHnd->getSpecialCopyHelper(varDsc->GetLayout()->GetClassHandle());
+        GenTreeCall* call = gtNewUserCallNode(copyHelper, TYP_VOID);
+
+        GenTree* src = gtNewLclVarAddrNode(lclNum);
+        GenTree* dst = gtNewLclVarAddrNode(shadowLclNum);
+
+        call->gtArgs.PushBack(this, NewCallArg::Primitive(dst));
+        call->gtArgs.PushBack(this, NewCallArg::Primitive(src));
+
+        compCurBB = fgFirstBB; // Needed by some morphing
+        fgMorphTree(call);
+        compCurBB = nullptr;
+
+        // Insert the IR
+        if (opts.IsReversePInvoke())
+        {
+            GenTree* insertAfter = nullptr;
+            // If we are in a reverse P/Invoke then insert after the GC transition.
+            //
+            // TODO-Cleanup: We should be inserting reverse pinvoke transitions way
+            // later in the JIT to avoid having to search like this.
+
+            for (GenTree* node : LIR::AsRange(fgFirstBB))
             {
-                LclVarDsc* varDsc = m_compiler->lvaGetDesc(lclNum);
-                assert(ShadowParamVarInfo::mayNeedShadowCopy(varDsc));
-
-                tree->AsLclVarCommon()->SetLclNum(shadowLclNum);
-
-                if (varTypeIsSmall(varDsc->TypeGet()))
+                if (node->IsHelperCall(CORINFO_HELP_JIT_REVERSE_PINVOKE_ENTER) ||
+                    node->IsHelperCall(CORINFO_HELP_JIT_REVERSE_PINVOKE_ENTER_TRACK_TRANSITIONS))
                 {
-                    if (tree->OperIs(GT_LCL_VAR))
-                    {
-                        tree->gtType = TYP_INT;
-
-                        if (user->OperIs(GT_ASG) && user->gtGetOp1() == tree)
-                        {
-                            user->gtType = TYP_INT;
-                        }
-                    }
+                    insertAfter = node;
+                    break;
                 }
             }
 
-            return WALK_CONTINUE;
-        }
-    };
+            noway_assert(insertAfter != nullptr);
 
-    for (BasicBlock* const block : Blocks())
-    {
-        for (Statement* const stmt : block->Statements())
-        {
-            ReplaceShadowParamsVisitor replaceShadowParamsVisitor(this);
-            replaceShadowParamsVisitor.WalkTree(stmt->GetRootNodePointer(), nullptr);
-        }
-    }
-
-    // Now insert code to copy the params to their shadow copy.
-    for (UINT lclNum = 0; lclNum < lvaOldCount; lclNum++)
-    {
-        const LclVarDsc* varDsc = lvaGetDesc(lclNum);
-
-        const unsigned shadowVarNum = gsShadowVarInfo[lclNum].shadowCopy;
-        if (shadowVarNum == NO_SHADOW_COPY)
-        {
-            continue;
-        }
-
-        const LclVarDsc* shadowVarDsc = lvaGetDesc(shadowVarNum);
-        var_types        type         = shadowVarDsc->TypeGet();
-
-        GenTree* src = gtNewLclvNode(lclNum, varDsc->TypeGet());
-        GenTree* dst = gtNewLclvNode(shadowVarNum, type);
-
-        src->gtFlags |= GTF_DONT_CSE;
-        dst->gtFlags |= GTF_DONT_CSE;
-
-        GenTree* opAssign = nullptr;
-        if (type == TYP_STRUCT)
-        {
-            assert(shadowVarDsc->GetLayout() != nullptr);
-            assert(shadowVarDsc->lvExactSize != 0);
-            opAssign = gtNewBlkOpNode(dst, src, false, true);
+            JITDUMP("Inserting IR after Reverse P/Invoke transition [%06u]\n", dspTreeID(insertAfter));
+            LIR::AsRange(fgFirstBB).InsertAfter(insertAfter, LIR::SeqTree(this, call));
+            DISPTREERANGE(LIR::AsRange(fgFirstBB), call);
         }
         else
         {
-            opAssign = gtNewAssignNode(dst, src);
+            LIR::AsRange(fgFirstBB).InsertAtBeginning(LIR::SeqTree(this, call));
+            DISPTREERANGE(LIR::AsRange(fgFirstBB), call);
         }
-        fgEnsureFirstBBisScratch();
-        (void)fgNewStmtAtBeg(fgFirstBB, fgMorphTree(opAssign));
+
+        return;
     }
+#endif
 
-    // If the method has "Jmp CalleeMethod", then we need to copy shadow params back to original
-    // params before "jmp" to CalleeMethod.
-    if (compJmpOpUsed)
-    {
-        // There could be more than one basic block ending with a "Jmp" type tail call.
-        // We would have to insert assignments in all such blocks, just before GT_JMP stmnt.
-        for (BasicBlock* const block : Blocks())
-        {
-            if (block->bbJumpKind != BBJ_RETURN)
-            {
-                continue;
-            }
+    GenTree* src   = gtNewLclvNode(lclNum, varDsc->TypeGet());
+    GenTree* store = gtNewStoreLclVarNode(shadowLclNum, src);
 
-            if ((block->bbFlags & BBF_HAS_JMP) == 0)
-            {
-                continue;
-            }
-
-            for (UINT lclNum = 0; lclNum < info.compArgsCount; lclNum++)
-            {
-                const LclVarDsc* varDsc = lvaGetDesc(lclNum);
-
-                const unsigned shadowVarNum = gsShadowVarInfo[lclNum].shadowCopy;
-                if (shadowVarNum == NO_SHADOW_COPY)
-                {
-                    continue;
-                }
-
-                const LclVarDsc* shadowVarDsc = lvaGetDesc(shadowVarNum);
-
-                GenTree* src = gtNewLclvNode(shadowVarNum, shadowVarDsc->TypeGet());
-                GenTree* dst = gtNewLclvNode(lclNum, varDsc->TypeGet());
-
-                src->gtFlags |= GTF_DONT_CSE;
-                dst->gtFlags |= GTF_DONT_CSE;
-
-                GenTree* opAssign = nullptr;
-                if (varDsc->TypeGet() == TYP_STRUCT)
-                {
-                    opAssign = gtNewBlkOpNode(dst, src, false, true);
-                }
-                else
-                {
-                    opAssign = gtNewAssignNode(dst, src);
-                }
-
-                (void)fgNewStmtNearEnd(block, fgMorphTree(opAssign));
-            }
-        }
-    }
+    LIR::AsRange(fgFirstBB).InsertAtBeginning(src, store);
+    JITDUMP("Created shadow param copy for V%02u to V%02u\n", lclNum, shadowLclNum);
+    DISPTREERANGE(LIR::AsRange(fgFirstBB), store);
 }

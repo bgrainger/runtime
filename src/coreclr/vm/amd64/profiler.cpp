@@ -12,51 +12,11 @@
 #include "common.h"
 
 #ifdef PROFILING_SUPPORTED
+#include "asmconstants.h"
 #include "proftoeeinterfaceimpl.h"
 #include "argdestination.h"
 
 MethodDesc *FunctionIdToMethodDesc(FunctionID functionID);
-
-// TODO: move these to some common.h file
-// FLAGS
-#define PROFILE_ENTER        0x1
-#define PROFILE_LEAVE        0x2
-#define PROFILE_TAILCALL     0x4
-
-#define PROFILE_PLATFORM_SPECIFIC_DATA_BUFFER_SIZE 16
-
-typedef struct _PROFILE_PLATFORM_SPECIFIC_DATA
-{
-    FunctionID  functionId;
-    void       *rbp;
-    void       *probeRsp;
-    void       *ip;
-    void       *profiledRsp;
-    UINT64      rax;
-    LPVOID      hiddenArg;
-    UINT64      flt0;   // floats stored as doubles
-    UINT64      flt1;
-    UINT64      flt2;
-    UINT64      flt3;
-#if defined(UNIX_AMD64_ABI)
-    UINT64      flt4;
-    UINT64      flt5;
-    UINT64      flt6;
-    UINT64      flt7;
-    UINT64      rdi;
-    UINT64      rsi;
-    UINT64      rdx;
-    UINT64      rcx;
-    UINT64      r8;
-    UINT64      r9;
-#endif
-    UINT32      flags;
-#if defined(UNIX_AMD64_ABI)
-    // A buffer to copy structs in to so they are sequential for GetFunctionEnter3Info.
-    UINT64      buffer[PROFILE_PLATFORM_SPECIFIC_DATA_BUFFER_SIZE];
-#endif
-} PROFILE_PLATFORM_SPECIFIC_DATA, *PPROFILE_PLATFORM_SPECIFIC_DATA;
-
 
 /*
  * ProfileGetIPFromPlatformSpecificHandle
@@ -96,7 +56,7 @@ void ProfileSetFunctionIDInPlatformSpecificHandle(void * pPlatformSpecificHandle
 {
     LIMITED_METHOD_CONTRACT;
     _ASSERTE(pPlatformSpecificHandle != NULL);
-    _ASSERTE(functionID != NULL);
+    _ASSERTE(functionID != 0);
 
     PROFILE_PLATFORM_SPECIFIC_DATA * pData = reinterpret_cast<PROFILE_PLATFORM_SPECIFIC_DATA *>(pPlatformSpecificHandle);
     pData->functionId = functionID;
@@ -196,7 +156,7 @@ ProfileArgIterator::ProfileArgIterator(MetaSig * pSig, void * platformSpecificHa
             EECodeInfo codeInfo((PCODE)pData->ip);
 
             // We want to pass the caller SP here.
-            pData->hiddenArg = EECodeManager::GetExactGenericsToken((SIZE_T)(pData->profiledRsp), &codeInfo);
+            pData->hiddenArg = EECodeManager::GetExactGenericsToken((TADDR)(pData->probeRsp), (TADDR)(pData->rbp), &codeInfo);
         }
     }
 }
@@ -219,7 +179,6 @@ LPVOID ProfileArgIterator::CopyStructFromRegisters()
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
     STATIC_CONTRACT_MODE_COOPERATIVE;
 
 
@@ -235,13 +194,12 @@ LPVOID ProfileArgIterator::CopyStructFromRegisters()
     int fieldBytes = th.AsMethodTable()->GetNumInstanceFieldBytes();
     INDEBUG(int remainingBytes = fieldBytes;)
 
-    EEClass* eeClass = argLocDesc->m_eeClass;
-    _ASSERTE(eeClass != NULL);
+    _ASSERTE(argLocDesc->m_eightByteInfo.GetNumEightBytes() > 0);
 
-    for (int i = 0; i < eeClass->GetNumberEightBytes(); i++)
+    for (int i = 0; i < argLocDesc->m_eightByteInfo.GetNumEightBytes(); i++)
     {
-        int eightByteSize = eeClass->GetEightByteSize(i);
-        SystemVClassificationType eightByteClassification = eeClass->GetEightByteClassification(i);
+        int eightByteSize = argLocDesc->m_eightByteInfo.GetEightByteSize(i);
+        SystemVClassificationType eightByteClassification = argLocDesc->m_eightByteInfo.GetEightByteClassification(i);
 
         _ASSERTE(remainingBytes >= eightByteSize);
 
@@ -507,7 +465,7 @@ LPVOID ProfileArgIterator::GetReturnBufferAddr(void)
         EEClass* eeClass = pMT->GetClass();
         UINT fpReturnSize = m_argIterator.GetFPReturnSize();
 
-        if (eeClass->GetNumberEightBytes() == 1)
+        if (eeClass->GetEightByteRegistersInfo().GetNumEightBytes() == 1)
         {
             if (fpReturnSize != 0)
             {

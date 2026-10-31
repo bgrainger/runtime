@@ -43,7 +43,7 @@ These cases have proven to be problematic:
 - Classes with empty base classes. (I the only issue is with multiple base classes.)
   - By default `gcc` use an empty base class optimization to eliminate the 1 byte of space these empty base classes normally consume (alone).
   - By default `Windows` compilers do not do this optimization. This is to preserve backward binary compatibility.
-  - The Windows compilers allow this optimization to be enabled. Our code uses `EMPTY_BASES_DECL` to enable this optimization. It has to be applied to every structure that has multiple base classes or derives from a such a structure. See `__declspec(empty_bases)`.
+  - The Windows compilers allow this optimization to be enabled. Our code uses `EMPTY_BASES` to enable this optimization. It has to be applied to every structure that has multiple base classes or derives from a such a structure. See `__declspec(empty_bases)`.
 - Packing of the first member of the derived class. In the case where the base class ended with padding:
   - `gcc` compilers reuse the padding for the first member of the derived class. This effectively removes the padding of the base class in the derived class.
   - Windows compilers do not remove this padding.
@@ -85,7 +85,7 @@ I use the term `DAC` in this document to refer to both the `DAC` and the `DBI` d
 
 ### Build entry point
 
-The main build systme change is adding the ability to set the Target OS on a Windows build.
+The main build system change is adding the ability to set the Target OS on a Windows build.
 
 - See [build-runtime.cmd changes](https://github.com/dotnet/runtime/blob/0049c629381c5a18e4dadd1038c2bd6b3ae6e3e6/src/coreclr/build-runtime.cmd#L133-L134)
 - See [Subsets.props](https://github.com/dotnet/runtime/blob/0049c629381c5a18e4dadd1038c2bd6b3ae6e3e6/eng/Subsets.props#L191-L197)

@@ -29,6 +29,12 @@ GetFrameLocation(CONTEXT* pContext, uint64_t* ip, uint64_t* sp)
 #elif defined(__arm__)
     *ip = pContext->Pc & ~THUMB_CODE;
     *sp = pContext->Sp;
+#elif defined(__riscv)
+    *ip = pContext->Pc;
+    *sp = pContext->Sp;
+#elif defined(__loongarch64)
+    *ip = pContext->Pc;
+    *sp = pContext->Sp;
 #endif
 }
 
@@ -45,6 +51,8 @@ ThreadInfo::UnwindNativeFrames(CONTEXT* pContext)
     uint64_t previousSp = 0;
     uint64_t previousIp = 0;
     int ipMatchCount = 0;
+    bool isSignalFrame = false;
+    bool crossedSignalTrampoline = false;
 
     // For each native frame, add a page around the IP and any unwind info not already
     // added in VisitProgramHeader (Linux) and VisitSection (MacOS) to the dump.
@@ -53,9 +61,28 @@ ThreadInfo::UnwindNativeFrames(CONTEXT* pContext)
         uint64_t ip = 0, sp = 0;
         GetFrameLocation(pContext, &ip, &sp);
 
-        if (ip == 0 || sp <= previousSp) {
+#if defined(__aarch64__)
+        // ARM64 can have frames with the same SP but different IPs. Increment sp so it gets added to the stack
+        // frames in the correct order and to prevent the below loop termination on non-increasing sp. Since stack
+        // pointers are always 8 byte align, this increase is masked off in StackFrame::StackPointer() to get the
+        // original stack pointer.
+        if (sp == previousSp && ip != previousIp)
+        {
+            sp++;
+        }
+#endif
+        // When a signal handler uses SA_ONSTACK (alternate signal stack), the SP can legitimately
+        // decrease when unwinding crosses the signal trampoline back to the original thread stack.
+        // Allow the SP decrease if the current frame is a signal trampoline (detected by the
+        // previous unwind call) and we haven't already crossed one (limit to one crossing to
+        // bound corruption damage).
+        if (ip == 0 || sp == 0 || (sp <= previousSp && (!isSignalFrame || crossedSignalTrampoline))) {
             TRACE_VERBOSE("Unwind: sp not increasing or ip == 0 sp %p ip %p\n", (void*)sp, (void*)ip);
             break;
+        }
+        if (sp < previousSp)
+        {
+            crossedSignalTrampoline = true;
         }
         // Break out of the endless loop if the IP matches over a 1000 times. This is a fallback
         // behavior of libunwind when the module the IP is in doesn't have unwind info and for
@@ -88,7 +115,8 @@ ThreadInfo::UnwindNativeFrames(CONTEXT* pContext)
 
         // Unwind the native frame adding all the memory accessed to the core dump via the read memory adapter.
         ULONG64 functionStart;
-        if (!PAL_VirtualUnwindOutOfProc(pContext, nullptr, &functionStart, baseAddress, ReadMemoryAdapter)) {
+        isSignalFrame = false;
+        if (!PAL_VirtualUnwindOutOfProc(pContext, &functionStart, baseAddress, ReadMemoryAdapter, &isSignalFrame)) {
             TRACE("Unwind: PAL_VirtualUnwindOutOfProc returned false\n");
             break;
         }
@@ -170,10 +198,10 @@ ThreadInfo::UnwindThread(IXCLRDataProcess* pClrDataProcess, ISOSDacInterface* pS
                     ReleaseHolder<IXCLRDataTypeInstance> pExceptionType;
                     if (SUCCEEDED(pExceptionValue->GetType(&pExceptionType)))
                     {
-                        ArrayHolder<WCHAR> typeName = new WCHAR[MAX_LONGPATH + 1];
-                        if (SUCCEEDED(pExceptionType->GetName(0, MAX_LONGPATH, nullptr, typeName.GetPtr())))
+                        WStringHolder typeName = new WCHAR[MAX_LONGPATH + 1];
+                        if (SUCCEEDED(pExceptionType->GetName(0, MAX_LONGPATH, nullptr, typeName)))
                         {
-                            m_exceptionType = FormatString("%S", typeName.GetPtr());
+                            m_exceptionType = ConvertString(typeName);
                             TRACE("Unwind: exception type %s\n", m_exceptionType.c_str());
                         }
                     }
@@ -271,15 +299,16 @@ ThreadInfo::GatherStackFrames(CONTEXT* pContext, IXCLRDataStackWalk* pStackwalk)
     }
 
     // Add managed stack frame for the crash info notes
-    StackFrame frame(moduleAddress, ip, sp, pMethod.Detach(), nativeOffset, token, ilOffset);
+    StackFrame frame(moduleAddress, ip, sp, pMethod, nativeOffset, token, ilOffset);
+    pMethod.Detach();
     AddStackFrame(frame);
 }
 
-// This function deals with two types of frames: duplicate stack frames (SP is equal) and repeated frames (IP is 
+// This function deals with two types of frames: duplicate stack frames (SP is equal) and repeated frames (IP is
 // equal) because of a stack overflow.
-// 
+//
 // The list of constraints:
-// 
+//
 // 1) The StackFrame is immutable i.e. can't add some kind of repeat count to the frame. Making it mutable is big hassle.
 // 2) The native unwinding can repeat the same frame SP/IP. These frames are not counted as repeated stack overflow ones.
 // 3) Only add the repeated stack overflow frames once to frames set. This saves time and memory.
@@ -324,7 +353,7 @@ ThreadInfo::AddStackFrame(const StackFrame& frame)
             }
         }
 
-        // Add the non-duplicate and (if stack overflow) non-repeating frames to set 
+        // Add the non-duplicate and (if stack overflow) non-repeating frames to set
         std::pair<std::set<StackFrame>::iterator, bool> result = m_frames.insert(frame);
         assert(result.second);
 
@@ -343,7 +372,7 @@ ThreadInfo::AddStackFrame(const StackFrame& frame)
             {
                 framesRepeated++;
             }
-            // The total number of individually repeated frames has to be greater than the number of frames in the repeating sequence 
+            // The total number of individually repeated frames has to be greater than the number of frames in the repeating sequence
             m_repeatedFrames = framesRepeated > 0 && m_repeatedFrames >= framesRepeated ? (m_repeatedFrames / framesRepeated) + 1 : 0;
         }
     }
@@ -359,8 +388,8 @@ ThreadInfo::GetThreadStack()
     {
         MemoryRegion search(0, startAddress, startAddress + PAGE_SIZE);
         const MemoryRegion* region = CrashInfo::SearchMemoryRegions(m_crashInfo.OtherMappings(), search);
-        if (region != nullptr) {
-
+        if (region != nullptr)
+        {
             // Use the mapping found for the size of the thread's stack
             size = region->EndAddress() - startAddress;
 
@@ -376,4 +405,10 @@ ThreadInfo::GetThreadStack()
     {
         TRACE("Thread %04x null stack pointer\n", m_tid);
     }
+}
+
+bool
+ThreadInfo::IsCrashThread() const
+{
+    return m_tid == m_crashInfo.CrashThread();
 }

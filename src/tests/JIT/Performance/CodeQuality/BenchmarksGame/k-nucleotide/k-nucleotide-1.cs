@@ -7,6 +7,7 @@
 // Best-scoring single-threaded C# .NET Core version as of 2017-09-01
 
 /* The Computer Language Benchmarks Game
+using TestLibrary;
    http://benchmarksgame.alioth.debian.org/
  *
  * byte processing version using C# *3.0 idioms by Robert F. Tobler
@@ -16,6 +17,7 @@ using System;
 using System.IO;
 using System.Collections.Generic;
 using System.Text;
+using Xunit;
 
 namespace BenchmarksGame
 {
@@ -81,7 +83,9 @@ namespace BenchmarksGame
     public class KNucleotide_1
     {
 
-        public static int Main(string[] args)
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+        [Fact]
+        public static int TestEntryPoint()
         {
             var helpers = new TestHarnessHelpers(bigInput: false);
 

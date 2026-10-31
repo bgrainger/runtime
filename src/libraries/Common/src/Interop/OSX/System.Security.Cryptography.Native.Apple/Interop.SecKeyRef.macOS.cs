@@ -3,6 +3,7 @@
 
 using System;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.Apple;
@@ -26,7 +27,7 @@ internal static partial class Interop
                 out ppKeyOut,
                 out pOSStatus);
 
-        [GeneratedDllImport(Libraries.AppleCryptoNative)]
+        [LibraryImport(Libraries.AppleCryptoNative)]
         private static partial int AppleCryptoNative_SecKeyImportEphemeral(
             ref byte pbKeyBlob,
             int cbKeyBlob,
@@ -36,7 +37,7 @@ internal static partial class Interop
 
         internal static SafeSecKeyRefHandle ImportEphemeralKey(ReadOnlySpan<byte> keyBlob, bool hasPrivateKey)
         {
-            Debug.Assert(keyBlob != null);
+            Debug.Assert(!Unsafe.IsNullRef(ref MemoryMarshal.GetReference(keyBlob)));
 
             SafeSecKeyRefHandle keyHandle;
             int osStatus;
@@ -54,14 +55,17 @@ internal static partial class Interop
 
             if (ret == 0)
             {
-                throw CreateExceptionForOSStatus(osStatus);
+                Exception e = CreateExceptionForOSStatus(osStatus);
+                keyHandle.Dispose();
+                throw e;
             }
 
             Debug.Fail($"SecKeyImportEphemeral returned {ret}");
+            keyHandle.Dispose();
             throw new CryptographicException();
         }
 
-        [GeneratedDllImport(Libraries.AppleCryptoNative)]
+        [LibraryImport(Libraries.AppleCryptoNative)]
         private static partial int AppleCryptoNative_SecKeyExport(
             SafeSecKeyRefHandle? key,
             int exportPrivate,

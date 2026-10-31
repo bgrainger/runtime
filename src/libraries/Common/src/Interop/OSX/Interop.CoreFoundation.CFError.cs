@@ -8,16 +8,16 @@ using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
 // Declared as signed long, which has sizeof(void*) on OSX.
-using CFIndex=System.IntPtr;
+using CFIndex = System.IntPtr;
 
 internal static partial class Interop
 {
     internal static partial class CoreFoundation
     {
-        [GeneratedDllImport(Libraries.CoreFoundationLibrary)]
+        [LibraryImport(Libraries.CoreFoundationLibrary)]
         private static partial CFIndex CFErrorGetCode(SafeCFErrorHandle cfError);
 
-        [GeneratedDllImport(Libraries.CoreFoundationLibrary)]
+        [LibraryImport(Libraries.CoreFoundationLibrary)]
         private static partial SafeCFStringHandle CFErrorCopyDescription(SafeCFErrorHandle cfError);
 
         internal static int GetErrorCode(SafeCFErrorHandle cfError)

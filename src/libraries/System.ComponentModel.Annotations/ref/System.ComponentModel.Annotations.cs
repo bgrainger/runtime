@@ -6,11 +6,19 @@
 
 namespace System.ComponentModel.DataAnnotations
 {
+    [System.AttributeUsageAttribute(System.AttributeTargets.Field | System.AttributeTargets.Parameter | System.AttributeTargets.Property, AllowMultiple=false)]
+    [System.CLSCompliantAttribute(false)]
+    public partial class AllowedValuesAttribute : System.ComponentModel.DataAnnotations.ValidationAttribute
+    {
+        public AllowedValuesAttribute(params object?[] values) { }
+        public object?[] Values { get { throw null; } }
+        public override bool IsValid(object? value) { throw null; }
+    }
     public partial class AssociatedMetadataTypeTypeDescriptionProvider : System.ComponentModel.TypeDescriptionProvider
     {
         public AssociatedMetadataTypeTypeDescriptionProvider(System.Type type) { }
-        public AssociatedMetadataTypeTypeDescriptionProvider(System.Type type, [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.All)] System.Type associatedMetadataType) { }
-        public override System.ComponentModel.ICustomTypeDescriptor GetTypeDescriptor([System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.All)] System.Type objectType, object? instance) { throw null; }
+        public AssociatedMetadataTypeTypeDescriptionProvider(System.Type type, [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllConstructors | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllEvents | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllFields | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllMethods | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllNestedTypes | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllProperties | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.Interfaces)] System.Type associatedMetadataType) { }
+        public override System.ComponentModel.ICustomTypeDescriptor GetTypeDescriptor([System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllConstructors | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllEvents | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllFields | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllMethods | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllNestedTypes | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllProperties | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.Interfaces)] System.Type objectType, object? instance) { throw null; }
     }
     [System.AttributeUsageAttribute(System.AttributeTargets.Field | System.AttributeTargets.Property, AllowMultiple=false, Inherited=true)]
     [System.ObsoleteAttribute("AssociationAttribute has been deprecated and is not supported.")]
@@ -24,6 +32,22 @@ namespace System.ComponentModel.DataAnnotations
         public string ThisKey { get { throw null; } }
         public System.Collections.Generic.IEnumerable<string> ThisKeyMembers { get { throw null; } }
     }
+    public abstract partial class AsyncValidationAttribute : System.ComponentModel.DataAnnotations.ValidationAttribute
+    {
+        protected AsyncValidationAttribute() { }
+        protected AsyncValidationAttribute(System.Func<string> errorMessageAccessor) { }
+        protected AsyncValidationAttribute(string errorMessage) { }
+        public System.Threading.Tasks.Task<System.ComponentModel.DataAnnotations.ValidationResult?> GetValidationResultAsync(object? value, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) { throw null; }
+        public sealed override bool IsValid(object? value) { throw null; }
+        protected abstract override System.ComponentModel.DataAnnotations.ValidationResult? IsValid(object? value, System.ComponentModel.DataAnnotations.ValidationContext validationContext);
+        protected abstract System.Threading.Tasks.Task<System.ComponentModel.DataAnnotations.ValidationResult?> IsValidAsync(object? value, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Threading.CancellationToken cancellationToken);
+    }
+    [System.AttributeUsageAttribute(System.AttributeTargets.Field | System.AttributeTargets.Parameter | System.AttributeTargets.Property, AllowMultiple=false)]
+    public partial class Base64StringAttribute : System.ComponentModel.DataAnnotations.ValidationAttribute
+    {
+        public Base64StringAttribute() { }
+        public override bool IsValid(object? value) { throw null; }
+    }
     [System.AttributeUsageAttribute(System.AttributeTargets.Property, AllowMultiple=false)]
     public partial class CompareAttribute : System.ComponentModel.DataAnnotations.ValidationAttribute
     {
@@ -33,6 +57,7 @@ namespace System.ComponentModel.DataAnnotations
         public string? OtherPropertyDisplayName { get { throw null; } }
         public override bool RequiresValidationContext { get { throw null; } }
         public override string FormatErrorMessage(string name) { throw null; }
+        public override string FormatMessage([System.Diagnostics.CodeAnalysis.StringSyntaxAttribute("CompositeFormat")] string format, string name) { throw null; }
         protected override System.ComponentModel.DataAnnotations.ValidationResult? IsValid(object? value, System.ComponentModel.DataAnnotations.ValidationContext validationContext) { throw null; }
     }
     [System.AttributeUsageAttribute(System.AttributeTargets.Field | System.AttributeTargets.Property, AllowMultiple=false, Inherited=true)]
@@ -85,6 +110,14 @@ namespace System.ComponentModel.DataAnnotations
         public System.ComponentModel.DataAnnotations.DataType DataType { get { throw null; } }
         public System.ComponentModel.DataAnnotations.DisplayFormatAttribute? DisplayFormat { get { throw null; } protected set { } }
         public virtual string GetDataTypeName() { throw null; }
+        public override bool IsValid(object? value) { throw null; }
+    }
+    [System.AttributeUsageAttribute(System.AttributeTargets.Field | System.AttributeTargets.Parameter | System.AttributeTargets.Property, AllowMultiple=false)]
+    [System.CLSCompliantAttribute(false)]
+    public partial class DeniedValuesAttribute : System.ComponentModel.DataAnnotations.ValidationAttribute
+    {
+        public DeniedValuesAttribute(params object?[] values) { }
+        public object?[] Values { get { throw null; } }
         public override bool IsValid(object? value) { throw null; }
     }
     [System.AttributeUsageAttribute(System.AttributeTargets.Class | System.AttributeTargets.Field | System.AttributeTargets.Method | System.AttributeTargets.Parameter | System.AttributeTargets.Property, AllowMultiple=false)]
@@ -159,6 +192,7 @@ namespace System.ComponentModel.DataAnnotations
         public FileExtensionsAttribute() : base (default(System.ComponentModel.DataAnnotations.DataType)) { }
         public string Extensions { get { throw null; } set { } }
         public override string FormatErrorMessage(string name) { throw null; }
+        public override string FormatMessage([System.Diagnostics.CodeAnalysis.StringSyntaxAttribute("CompositeFormat")] string format, string name) { throw null; }
         public override bool IsValid(object? value) { throw null; }
     }
     [System.AttributeUsageAttribute(System.AttributeTargets.Field | System.AttributeTargets.Property, AllowMultiple=false)]
@@ -174,6 +208,10 @@ namespace System.ComponentModel.DataAnnotations
         public override bool Equals([System.Diagnostics.CodeAnalysis.NotNullWhenAttribute(true)] object? obj) { throw null; }
         public override int GetHashCode() { throw null; }
     }
+    public partial interface IAsyncValidatableObject : System.ComponentModel.DataAnnotations.IValidatableObject
+    {
+        System.Collections.Generic.IAsyncEnumerable<System.ComponentModel.DataAnnotations.ValidationResult> ValidateAsync(System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken));
+    }
     public partial interface IValidatableObject
     {
         System.Collections.Generic.IEnumerable<System.ComponentModel.DataAnnotations.ValidationResult> Validate(System.ComponentModel.DataAnnotations.ValidationContext validationContext);
@@ -184,6 +222,17 @@ namespace System.ComponentModel.DataAnnotations
         public KeyAttribute() { }
     }
     [System.AttributeUsageAttribute(System.AttributeTargets.Field | System.AttributeTargets.Parameter | System.AttributeTargets.Property, AllowMultiple=false)]
+    public partial class LengthAttribute : System.ComponentModel.DataAnnotations.ValidationAttribute
+    {
+        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("Uses reflection to get the 'Count' property on types that don't implement ICollection. This 'Count' property may be trimmed. Ensure it is preserved.")]
+        public LengthAttribute(int minimumLength, int maximumLength) { }
+        public int MaximumLength { get { throw null; } }
+        public int MinimumLength { get { throw null; } }
+        public override string FormatErrorMessage(string name) { throw null; }
+        public override string FormatMessage([System.Diagnostics.CodeAnalysis.StringSyntaxAttribute("CompositeFormat")] string format, string name) { throw null; }
+        public override bool IsValid(object? value) { throw null; }
+    }
+    [System.AttributeUsageAttribute(System.AttributeTargets.Field | System.AttributeTargets.Parameter | System.AttributeTargets.Property, AllowMultiple=false)]
     public partial class MaxLengthAttribute : System.ComponentModel.DataAnnotations.ValidationAttribute
     {
         [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("Uses reflection to get the 'Count' property on types that don't implement ICollection. This 'Count' property may be trimmed. Ensure it is preserved.")]
@@ -192,13 +241,14 @@ namespace System.ComponentModel.DataAnnotations
         public MaxLengthAttribute(int length) { }
         public int Length { get { throw null; } }
         public override string FormatErrorMessage(string name) { throw null; }
+        public override string FormatMessage([System.Diagnostics.CodeAnalysis.StringSyntaxAttribute("CompositeFormat")] string format, string name) { throw null; }
         public override bool IsValid(object? value) { throw null; }
     }
     [System.AttributeUsageAttribute(System.AttributeTargets.Class, AllowMultiple=false)]
     public sealed partial class MetadataTypeAttribute : System.Attribute
     {
-        public MetadataTypeAttribute([System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.All)] System.Type metadataClassType) { }
-        [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.All)]
+        public MetadataTypeAttribute([System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllConstructors | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllEvents | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllFields | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllMethods | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllNestedTypes | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllProperties | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.Interfaces)] System.Type metadataClassType) { }
+        [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllConstructors | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllEvents | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllFields | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllMethods | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllNestedTypes | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllProperties | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.Interfaces)]
         public System.Type MetadataClassType { get { throw null; } }
     }
     [System.AttributeUsageAttribute(System.AttributeTargets.Field | System.AttributeTargets.Parameter | System.AttributeTargets.Property, AllowMultiple=false)]
@@ -208,6 +258,7 @@ namespace System.ComponentModel.DataAnnotations
         public MinLengthAttribute(int length) { }
         public int Length { get { throw null; } }
         public override string FormatErrorMessage(string name) { throw null; }
+        public override string FormatMessage([System.Diagnostics.CodeAnalysis.StringSyntaxAttribute("CompositeFormat")] string format, string name) { throw null; }
         public override bool IsValid(object? value) { throw null; }
     }
     [System.AttributeUsageAttribute(System.AttributeTargets.Field | System.AttributeTargets.Parameter | System.AttributeTargets.Property, AllowMultiple=false)]
@@ -222,23 +273,28 @@ namespace System.ComponentModel.DataAnnotations
         public RangeAttribute(double minimum, double maximum) { }
         public RangeAttribute(int minimum, int maximum) { }
         [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("Generic TypeConverters may require the generic types to be annotated. For example, NullableConverter requires the underlying type to be DynamicallyAccessedMembers All.")]
-        public RangeAttribute([System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.All)] System.Type type, string minimum, string maximum) { }
+        public RangeAttribute([System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllConstructors | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllEvents | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllFields | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllMethods | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllNestedTypes | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllProperties | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.Interfaces)] System.Type type, string minimum, string maximum) { }
         public bool ConvertValueInInvariantCulture { get { throw null; } set { } }
         public object Maximum { get { throw null; } }
+        public bool MaximumIsExclusive { get { throw null; } set { } }
         public object Minimum { get { throw null; } }
-        [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.All)]
+        public bool MinimumIsExclusive { get { throw null; } set { } }
+        [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembersAttribute(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllConstructors | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllEvents | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllFields | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllMethods | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllNestedTypes | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.AllProperties | System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.Interfaces)]
         public System.Type OperandType { get { throw null; } }
         public bool ParseLimitsInInvariantCulture { get { throw null; } set { } }
         public override string FormatErrorMessage(string name) { throw null; }
+        public override string FormatMessage([System.Diagnostics.CodeAnalysis.StringSyntaxAttribute("CompositeFormat")] string format, string name) { throw null; }
         public override bool IsValid(object? value) { throw null; }
     }
     [System.AttributeUsageAttribute(System.AttributeTargets.Field | System.AttributeTargets.Parameter | System.AttributeTargets.Property, AllowMultiple=false)]
     public partial class RegularExpressionAttribute : System.ComponentModel.DataAnnotations.ValidationAttribute
     {
-        public RegularExpressionAttribute(string pattern) { }
+        public RegularExpressionAttribute([System.Diagnostics.CodeAnalysis.StringSyntaxAttribute("Regex")] string pattern) { }
+        public System.TimeSpan MatchTimeout { get { throw null; } }
         public int MatchTimeoutInMilliseconds { get { throw null; } set { } }
         public string Pattern { get { throw null; } }
         public override string FormatErrorMessage(string name) { throw null; }
+        public override string FormatMessage([System.Diagnostics.CodeAnalysis.StringSyntaxAttribute("CompositeFormat")] string format, string name) { throw null; }
         public override bool IsValid(object? value) { throw null; }
     }
     [System.AttributeUsageAttribute(System.AttributeTargets.Field | System.AttributeTargets.Parameter | System.AttributeTargets.Property, AllowMultiple=false)]
@@ -261,6 +317,7 @@ namespace System.ComponentModel.DataAnnotations
         public int MaximumLength { get { throw null; } }
         public int MinimumLength { get { throw null; } set { } }
         public override string FormatErrorMessage(string name) { throw null; }
+        public override string FormatMessage([System.Diagnostics.CodeAnalysis.StringSyntaxAttribute("CompositeFormat")] string format, string name) { throw null; }
         public override bool IsValid(object? value) { throw null; }
     }
     [System.AttributeUsageAttribute(System.AttributeTargets.Field | System.AttributeTargets.Property, AllowMultiple=false, Inherited=true)]
@@ -298,6 +355,7 @@ namespace System.ComponentModel.DataAnnotations
         protected string ErrorMessageString { get { throw null; } }
         public virtual bool RequiresValidationContext { get { throw null; } }
         public virtual string FormatErrorMessage(string name) { throw null; }
+        public virtual string FormatMessage([System.Diagnostics.CodeAnalysis.StringSyntaxAttribute("CompositeFormat")] string format, string name) { throw null; }
         public System.ComponentModel.DataAnnotations.ValidationResult? GetValidationResult(object? value, System.ComponentModel.DataAnnotations.ValidationContext validationContext) { throw null; }
         public virtual bool IsValid(object? value) { throw null; }
         protected virtual System.ComponentModel.DataAnnotations.ValidationResult? IsValid(object? value, System.ComponentModel.DataAnnotations.ValidationContext validationContext) { throw null; }
@@ -306,12 +364,13 @@ namespace System.ComponentModel.DataAnnotations
     }
     public sealed partial class ValidationContext : System.IServiceProvider
     {
-        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("The Type of instance cannot be statically discovered.")]
+        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("Constructing a ValidationContext without a display name is not trim-safe because it uses reflection to discover the type of the instance being validated in order to resolve the DisplayNameAttribute when a display name is not provided.")]
         public ValidationContext(object instance) { }
-        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("The Type of instance cannot be statically discovered.")]
+        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("Constructing a ValidationContext without a display name is not trim-safe because it uses reflection to discover the type of the instance being validated in order to resolve the DisplayNameAttribute when a display name is not provided.")]
         public ValidationContext(object instance, System.Collections.Generic.IDictionary<object, object?>? items) { }
-        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("The Type of instance cannot be statically discovered.")]
+        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("Constructing a ValidationContext without a display name is not trim-safe because it uses reflection to discover the type of the instance being validated in order to resolve the DisplayNameAttribute when a display name is not provided.")]
         public ValidationContext(object instance, System.IServiceProvider? serviceProvider, System.Collections.Generic.IDictionary<object, object?>? items) { }
+        public ValidationContext(object instance, string displayName, System.IServiceProvider? serviceProvider, System.Collections.Generic.IDictionary<object, object?>? items) { }
         public string DisplayName { get { throw null; } set { } }
         public System.Collections.Generic.IDictionary<object, object?> Items { get { throw null; } }
         public string? MemberName { get { throw null; } set { } }
@@ -324,6 +383,8 @@ namespace System.ComponentModel.DataAnnotations
     {
         public ValidationException() { }
         public ValidationException(System.ComponentModel.DataAnnotations.ValidationResult validationResult, System.ComponentModel.DataAnnotations.ValidationAttribute? validatingAttribute, object? value) { }
+        [System.ObsoleteAttribute("This API supports obsolete formatter-based serialization. It should not be called or extended by application code.", DiagnosticId = "SYSLIB0051", UrlFormat = "https://aka.ms/dotnet-warnings/{0}")]
+        [System.ComponentModel.EditorBrowsableAttribute(System.ComponentModel.EditorBrowsableState.Never)]
         protected ValidationException(System.Runtime.Serialization.SerializationInfo info, System.Runtime.Serialization.StreamingContext context) { }
         public ValidationException(string? message) { }
         public ValidationException(string? errorMessage, System.ComponentModel.DataAnnotations.ValidationAttribute? validatingAttribute, object? value) { }
@@ -344,20 +405,34 @@ namespace System.ComponentModel.DataAnnotations
     }
     public static partial class Validator
     {
-        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("The Type of instance cannot be statically discovered.")]
+        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("Constructing a ValidationContext without a display name is not trim-safe because it uses reflection to discover the type of the instance being validated in order to resolve the DisplayNameAttribute when a display name is not provided.")]
         public static bool TryValidateObject(object instance, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Collections.Generic.ICollection<System.ComponentModel.DataAnnotations.ValidationResult>? validationResults) { throw null; }
-        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("The Type of instance cannot be statically discovered.")]
+        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("Constructing a ValidationContext without a display name is not trim-safe because it uses reflection to discover the type of the instance being validated in order to resolve the DisplayNameAttribute when a display name is not provided.")]
         public static bool TryValidateObject(object instance, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Collections.Generic.ICollection<System.ComponentModel.DataAnnotations.ValidationResult>? validationResults, bool validateAllProperties) { throw null; }
+        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("Constructing a ValidationContext without a display name is not trim-safe because it uses reflection to discover the type of the instance being validated in order to resolve the DisplayNameAttribute when a display name is not provided.")]
+        public static System.Threading.Tasks.Task<bool> TryValidateObjectAsync(object instance, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Collections.Generic.ICollection<System.ComponentModel.DataAnnotations.ValidationResult>? validationResults, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) { throw null; }
+        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("Constructing a ValidationContext without a display name is not trim-safe because it uses reflection to discover the type of the instance being validated in order to resolve the DisplayNameAttribute when a display name is not provided.")]
+        public static System.Threading.Tasks.Task<bool> TryValidateObjectAsync(object instance, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Collections.Generic.ICollection<System.ComponentModel.DataAnnotations.ValidationResult>? validationResults, bool validateAllProperties, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) { throw null; }
         [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("The Type of validationContext.ObjectType cannot be statically discovered.")]
         public static bool TryValidateProperty(object? value, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Collections.Generic.ICollection<System.ComponentModel.DataAnnotations.ValidationResult>? validationResults) { throw null; }
-        public static bool TryValidateValue(object value, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Collections.Generic.ICollection<System.ComponentModel.DataAnnotations.ValidationResult>? validationResults, System.Collections.Generic.IEnumerable<System.ComponentModel.DataAnnotations.ValidationAttribute> validationAttributes) { throw null; }
-        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("The Type of instance cannot be statically discovered.")]
+        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("The Type of validationContext.ObjectType cannot be statically discovered.")]
+        public static System.Threading.Tasks.Task<bool> TryValidatePropertyAsync(object? value, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Collections.Generic.ICollection<System.ComponentModel.DataAnnotations.ValidationResult>? validationResults, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) { throw null; }
+        public static bool TryValidateValue(object? value, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Collections.Generic.ICollection<System.ComponentModel.DataAnnotations.ValidationResult>? validationResults, System.Collections.Generic.IEnumerable<System.ComponentModel.DataAnnotations.ValidationAttribute> validationAttributes) { throw null; }
+        public static System.Threading.Tasks.Task<bool> TryValidateValueAsync(object? value, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Collections.Generic.ICollection<System.ComponentModel.DataAnnotations.ValidationResult>? validationResults, System.Collections.Generic.IEnumerable<System.ComponentModel.DataAnnotations.ValidationAttribute> validationAttributes, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) { throw null; }
+        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("Constructing a ValidationContext without a display name is not trim-safe because it uses reflection to discover the type of the instance being validated in order to resolve the DisplayNameAttribute when a display name is not provided.")]
         public static void ValidateObject(object instance, System.ComponentModel.DataAnnotations.ValidationContext validationContext) { }
-        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("The Type of instance cannot be statically discovered.")]
+        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("Constructing a ValidationContext without a display name is not trim-safe because it uses reflection to discover the type of the instance being validated in order to resolve the DisplayNameAttribute when a display name is not provided.")]
         public static void ValidateObject(object instance, System.ComponentModel.DataAnnotations.ValidationContext validationContext, bool validateAllProperties) { }
+        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("Constructing a ValidationContext without a display name is not trim-safe because it uses reflection to discover the type of the instance being validated in order to resolve the DisplayNameAttribute when a display name is not provided.")]
+        public static System.Threading.Tasks.Task ValidateObjectAsync(object instance, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) { throw null; }
+        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("Constructing a ValidationContext without a display name is not trim-safe because it uses reflection to discover the type of the instance being validated in order to resolve the DisplayNameAttribute when a display name is not provided.")]
+        public static System.Threading.Tasks.Task ValidateObjectAsync(object instance, System.ComponentModel.DataAnnotations.ValidationContext validationContext, bool validateAllProperties, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) { throw null; }
         [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("The Type of validationContext.ObjectType cannot be statically discovered.")]
         public static void ValidateProperty(object? value, System.ComponentModel.DataAnnotations.ValidationContext validationContext) { }
-        public static void ValidateValue(object value, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Collections.Generic.IEnumerable<System.ComponentModel.DataAnnotations.ValidationAttribute> validationAttributes) { }
+        [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute("The Type of validationContext.ObjectType cannot be statically discovered.")]
+        public static System.Threading.Tasks.Task ValidatePropertyAsync(object? value, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) { throw null; }
+        public static void ValidateValue(object? value, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Collections.Generic.IEnumerable<System.ComponentModel.DataAnnotations.ValidationAttribute> validationAttributes) { }
+        public static System.Threading.Tasks.Task ValidateValueAsync(object? value, System.ComponentModel.DataAnnotations.ValidationContext validationContext, System.Collections.Generic.IEnumerable<System.ComponentModel.DataAnnotations.ValidationAttribute> validationAttributes, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) { throw null; }
     }
 }
 namespace System.ComponentModel.DataAnnotations.Schema

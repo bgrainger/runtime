@@ -47,39 +47,43 @@ namespace System.Text.Json.Tests
 
             string json = JsonSerializer.Serialize(initial, new JsonSerializerOptions { WriteIndented = true });
 
-            Assert.Equal(@"{
-  ""Id"": ""00000001-0002-0003-0405-060708090a0b"",
-  ""Year"": 2010,
-  ""Company"": ""Company!"",
-  ""DecimalRange"": {
-    ""First"": 0,
-    ""Last"": 1
-  },
-  ""IntRange"": {
-    ""First"": -2147483648,
-    ""Last"": 2147483647
-  },
-  ""NullDecimalRange"": null
-}".NormalizeLineEndings(), json);
+            Assert.Equal("""
+                {
+                  "Id": "00000001-0002-0003-0405-060708090a0b",
+                  "Year": 2010,
+                  "Company": "Company!",
+                  "DecimalRange": {
+                    "First": 0,
+                    "Last": 1
+                  },
+                  "IntRange": {
+                    "First": -2147483648,
+                    "Last": 2147483647
+                  },
+                  "NullDecimalRange": null
+                }
+                """.NormalizeLineEndings(), json);
         }
 
         [Fact]
         public void DeserializeAndConvertNullValue()
         {
-            string json = @"{
-  ""Id"": ""00000001-0002-0003-0405-060708090a0b"",
-  ""Year"": 2010,
-  ""Company"": ""Company!"",
-  ""DecimalRange"": {
-    ""First"": 0,
-    ""Last"": 1
-  },
-  ""IntRange"": {
-    ""First"": -2147483648,
-    ""Last"": 2147483647
-  },
-  ""NullDecimalRange"": null
-}";
+            string json = """
+                {
+                  "Id": "00000001-0002-0003-0405-060708090a0b",
+                  "Year": 2010,
+                  "Company": "Company!",
+                  "DecimalRange": {
+                    "First": 0,
+                    "Last": 1
+                  },
+                  "IntRange": {
+                    "First": -2147483648,
+                    "Last": 2147483647
+                  },
+                  "NullDecimalRange": null
+                }
+                """;
 
             JsonSerializer.Serialize(json, new JsonSerializerOptions { WriteIndented = true });
 
@@ -98,10 +102,12 @@ namespace System.Text.Json.Tests
         [Fact]
         public void DeserializeByteArrayFromJsonArray()
         {
-            string json = @"{
-  ""ByteArray"": ""AAECAw=="",
-  ""NullByteArray"": null
-}";
+            string json = """
+                {
+                  "ByteArray": "AAECAw==",
+                  "NullByteArray": null
+                }
+                """;
 
             ByteArrayClass c = JsonSerializer.Deserialize<ByteArrayClass>(json);
             Assert.NotNull(c.ByteArray);
@@ -118,19 +124,23 @@ namespace System.Text.Json.Tests
 
             string json = JsonSerializer.Serialize(byteArrayClass, new JsonSerializerOptions { WriteIndented = true });
 
-            Assert.Equal(@"{
-  ""ByteArray"": ""VGhpcyBpcyBzb21lIHRlc3QgZGF0YSEhIQ=="",
-  ""NullByteArray"": null
-}".NormalizeLineEndings(), json);
+            Assert.Equal("""
+                {
+                  "ByteArray": "VGhpcyBpcyBzb21lIHRlc3QgZGF0YSEhIQ==",
+                  "NullByteArray": null
+                }
+                """.NormalizeLineEndings(), json);
         }
 
         [Fact]
         public void DeserializeByteArrayClass()
         {
-            string json = @"{
-  ""ByteArray"": ""VGhpcyBpcyBzb21lIHRlc3QgZGF0YSEhIQ=="",
-  ""NullByteArray"": null
-}";
+            string json = """
+                {
+                  "ByteArray": "VGhpcyBpcyBzb21lIHRlc3QgZGF0YSEhIQ==",
+                  "NullByteArray": null
+                }
+                """;
 
             ByteArrayClass byteArrayClass = JsonSerializer.Deserialize<ByteArrayClass>(json);
 
@@ -138,7 +148,7 @@ namespace System.Text.Json.Tests
             Assert.Null(byteArrayClass.NullByteArray);
         }
 
-        private static readonly byte[] s_testData = Encoding.UTF8.GetBytes("This is some test data!!!");
+        private static readonly byte[] s_testData = "This is some test data!!!"u8.ToArray();
 
         [Fact]
         public void AssertShouldSerializeTest()
@@ -150,7 +160,7 @@ namespace System.Text.Json.Tests
             };
             string json = JsonSerializer.Serialize(myClass);
 
-            const string expected = @"{""Value"":""Foo"",""Thing"":{""Number"":456}}";
+            const string expected = """{"Value":"Foo","Thing":{"Number":456}}""";
             Assert.Equal(expected, json);
         }
 
@@ -158,22 +168,26 @@ namespace System.Text.Json.Tests
         public void AssertDoesNotDeserializeInterface()
         {
             const string validJson =
-                @"[{
-                    ""Value"": ""A value"",
-                    ""Thing"": {
-                        ""Number"": 123
-                    }
-                }]";
+                """
+                        [{
+                                            "Value": "A value",
+                                            "Thing": {
+                                                "Number": 123
+                                            }
+                                        }]
+                    """;
 
             Assert.Throws<NotSupportedException>(() => JsonSerializer.Deserialize<List<MyClass>>(validJson));
 
             const string invalidJson =
-                @"{
-                    ""Value"": ""A value"",
-                    ""Thing"": {
-                        ""Number"": 123
-                    }
-                }";
+                """
+                        {
+                                            "Value": "A value",
+                                            "Thing": {
+                                                "Number": 123
+                                            }
+                                        }
+                    """;
 
             Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<List<MyClass>>(invalidJson));
         }
@@ -192,14 +206,14 @@ namespace System.Text.Json.Tests
         public virtual string Company { get; set; }
         public virtual Range<decimal> DecimalRange { get; set; }
         public virtual Range<int> IntRange { get; set; }
-        public virtual Range<decimal> NullDecimalRange { get; set; }
+        public virtual Range<decimal>? NullDecimalRange { get; set; }
     }
 
     internal class MyClass
     {
-        public string Value { get; set; }
+        public string? Value { get; set; }
 
-        public IThing Thing { get; set; }
+        public IThing? Thing { get; set; }
     }
 
     internal interface IThing
@@ -215,6 +229,6 @@ namespace System.Text.Json.Tests
     internal class ByteArrayClass
     {
         public byte[] ByteArray { get; set; }
-        public byte[] NullByteArray { get; set; }
+        public byte[]? NullByteArray { get; set; }
     }
 }

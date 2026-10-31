@@ -40,6 +40,13 @@ typedef enum
     PAL_GSS_C_DELEG_POLICY_FLAG = 0x8000
 } PAL_GssFlags;
 
+typedef enum
+{
+    PAL_GSS_NEGOTIATE = 0,
+    PAL_GSS_NTLM = 1,
+    PAL_GSS_KERBEROS = 2,
+} PAL_GssPackageType;
+
 /*
 Issue: #7342
 Disable padded warning which occurs in case of 32-bit builds
@@ -111,7 +118,7 @@ Shims the gss_init_sec_context method with SPNEGO oids.
 PALEXPORT uint32_t NetSecurityNative_InitSecContext(uint32_t* minorStatus,
                                                     GssCredId* claimantCredHandle,
                                                     GssCtxId** contextHandle,
-                                                    uint32_t isNtlm,
+                                                    uint32_t packageType,
                                                     GssName* targetName,
                                                     uint32_t reqFlags,
                                                     uint8_t* inputBytes,
@@ -123,7 +130,7 @@ PALEXPORT uint32_t NetSecurityNative_InitSecContext(uint32_t* minorStatus,
 PALEXPORT uint32_t NetSecurityNative_InitSecContextEx(uint32_t* minorStatus,
                                                       GssCredId* claimantCredHandle,
                                                       GssCtxId** contextHandle,
-                                                      uint32_t isNtlm,
+                                                      uint32_t packageType,
                                                       void* cbt,
                                                       int32_t cbtSize,
                                                       GssName* targetName,
@@ -140,6 +147,8 @@ Shims the gss_accept_sec_context method.
 PALEXPORT uint32_t NetSecurityNative_AcceptSecContext(uint32_t* minorStatus,
                                                       GssCredId* acceptorCredHandle,
                                                       GssCtxId** contextHandle,
+                                                      void* cbt,
+                                                      int32_t cbtSize,
                                                       uint8_t* inputBytes,
                                                       uint32_t inputLength,
                                                       PAL_GssBuffer* outBuffer,
@@ -157,7 +166,7 @@ Shims the gss_wrap method.
 */
 PALEXPORT uint32_t NetSecurityNative_Wrap(uint32_t* minorStatus,
                                           GssCtxId* contextHandle,
-                                          int32_t isEncrypt,
+                                          int32_t* isEncrypt,
                                           uint8_t* inputBytes,
                                           int32_t count,
                                           PAL_GssBuffer* outBuffer);
@@ -167,16 +176,35 @@ Shims the gss_unwrap method.
 */
 PALEXPORT uint32_t NetSecurityNative_Unwrap(uint32_t* minorStatus,
                                             GssCtxId* contextHandle,
+                                            int32_t* isEncrypt,
                                             uint8_t* inputBytes,
-                                            int32_t offset,
                                             int32_t count,
                                             PAL_GssBuffer* outBuffer);
+
+/*
+Shims the gss_get_mic method.
+*/
+PALEXPORT uint32_t NetSecurityNative_GetMic(uint32_t* minorStatus,
+                                            GssCtxId* contextHandle,
+                                            uint8_t* inputBytes,
+                                            int32_t inputLength,
+                                            PAL_GssBuffer* outBuffer);
+
+/*
+Shims the gss_verify_mic method.
+*/
+PALEXPORT uint32_t NetSecurityNative_VerifyMic(uint32_t* minorStatus,
+                                               GssCtxId* contextHandle,
+                                               uint8_t* inputBytes,
+                                               int32_t inputLength,
+                                               uint8_t* tokenBytes,
+                                               int32_t tokenLength);
 
 /*
 Shims the gss_acquire_cred_with_password method with GSS_C_INITIATE.
 */
 PALEXPORT uint32_t NetSecurityNative_InitiateCredWithPassword(uint32_t* minorStatus,
-                                                              int32_t isNtlm,
+                                                              int32_t packageType,
                                                               GssName* desiredName,
                                                               char* password,
                                                               uint32_t passwdLen,
@@ -188,11 +216,37 @@ Shims the gss_indicate_mechs method to detect if NTLM mech is installed.
 PALEXPORT uint32_t NetSecurityNative_IsNtlmInstalled(void);
 
 /*
+Returns whether gss_get_name_attribute is available from the loaded GSSAPI implementation.
+*/
+PALEXPORT int32_t NetSecurityNative_IsGetNameAttributeSupported(void);
+
+/*
 Shims gss_inquire_context and gss_display_name to get the remote user principal name.
 */
 PALEXPORT uint32_t NetSecurityNative_GetUser(uint32_t* minorStatus,
                                              GssCtxId* contextHandle,
                                              PAL_GssBuffer* outBuffer);
+
+/*
+Shims gss_inquire_context and gss_get_name_attribute to retrieve a named attribute of the
+peer principal, such as "urn:mspac:logon-info" for the Kerberos PAC logon information.
+
+Name attributes are an optional GSSAPI feature (RFC 6680) and individual attributes are
+frequently absent, so neither condition is reported as an error. Both are reported by
+setting isAvailable to 0 and returning GSS_S_COMPLETE with an empty outBuffer. Failures
+while querying the established context or retrieving an available attribute are returned
+to the caller.
+
+isAuthenticated reports whether the GSSAPI mechanism vouches for the attribute value. A
+value of 0 means the mechanism could not verify it and it must not be trusted.
+*/
+PALEXPORT uint32_t NetSecurityNative_GetNameAttribute(uint32_t* minorStatus,
+                                                      GssCtxId* contextHandle,
+                                                      const char* attributeName,
+                                                      uint32_t attributeNameLen,
+                                                      int32_t* isAvailable,
+                                                      int32_t* isAuthenticated,
+                                                      PAL_GssBuffer* outBuffer);
 
 /*
 Performs initialization of GSS shim, if necessary.

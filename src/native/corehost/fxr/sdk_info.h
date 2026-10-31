@@ -6,6 +6,7 @@
 
 #include "pal.h"
 #include "fx_ver.h"
+#include <functional>
 
 struct sdk_info
 {
@@ -15,11 +16,16 @@ struct sdk_info
         , version(version)
         , hive_depth(hive_depth) { }
 
+    static void enumerate_sdk_paths(
+        const pal::string_t& sdk_dir,
+        std::function<bool(const fx_ver_t&, const pal::string_t&)> should_skip_version,
+        std::function<void(const fx_ver_t&, const pal::string_t&, const pal::string_t&)> callback);
+
     static void get_all_sdk_infos(
-        const pal::string_t& own_dir,
+        const pal::string_t& dotnet_dir,
         std::vector<sdk_info>* sdk_infos);
 
-    static bool print_all_sdks(const pal::string_t& own_dir, const pal::string_t& leading_whitespace);
+    static bool print_all_sdks(const pal::string_t& dotnet_dir, const pal::char_t* leading_whitespace);
 
     pal::string_t base_path;
     pal::string_t full_path;

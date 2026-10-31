@@ -8,6 +8,14 @@ namespace System.IO.Strategies
 {
     internal static partial class FileStreamHelpers
     {
+        internal const FileOptions NoBuffering = (FileOptions)0x20000000;
+        internal const FileOptions BackupOrRestore = (FileOptions)0x02000000;
+
+        // NOTE: any change to FileOptions enum needs to be matched here as it's used in the error validation
+        private const FileOptions ValidFileOptions = FileOptions.WriteThrough | FileOptions.Asynchronous | FileOptions.RandomAccess
+            | FileOptions.DeleteOnClose | FileOptions.SequentialScan | FileOptions.Encrypted
+            | NoBuffering | BackupOrRestore;
+
         /// <summary>Caches whether Serialization Guard has been disabled for file writes</summary>
         private static int s_cachedSerializationSwitch;
 
@@ -19,10 +27,10 @@ namespace System.IO.Strategies
             return WrapIfDerivedType(fileStream, strategy);
         }
 
-        internal static FileStreamStrategy ChooseStrategy(FileStream fileStream, string path, FileMode mode, FileAccess access, FileShare share, int bufferSize, FileOptions options, long preallocationSize)
+        internal static FileStreamStrategy ChooseStrategy(FileStream fileStream, string path, FileMode mode, FileAccess access, FileShare share, int bufferSize, FileOptions options, long preallocationSize, UnixFileMode? unixCreateMode)
         {
             FileStreamStrategy strategy =
-                EnableBufferingIfNeeded(ChooseStrategyCore(path, mode, access, share, options, preallocationSize), bufferSize);
+                EnableBufferingIfNeeded(ChooseStrategyCore(path, mode, access, share, options, preallocationSize, unixCreateMode), bufferSize);
 
             return WrapIfDerivedType(fileStream, strategy);
         }
@@ -49,18 +57,11 @@ namespace System.IO.Strategies
             // e is SecurityException ||
             e is UnauthorizedAccessException ||
             e is NotSupportedException ||
-            (e is ArgumentException && !(e is ArgumentNullException));
+            (e is ArgumentException && e is not ArgumentNullException);
 
         internal static void ValidateArguments(string path, FileMode mode, FileAccess access, FileShare share, int bufferSize, FileOptions options, long preallocationSize)
         {
-            if (path == null)
-            {
-                throw new ArgumentNullException(nameof(path), SR.ArgumentNull_Path);
-            }
-            else if (path.Length == 0)
-            {
-                throw new ArgumentException(SR.Argument_EmptyPath, nameof(path));
-            }
+            ArgumentException.ThrowIfNullOrEmpty(path);
 
             // don't include inheritable in our bounds check for share
             FileShare tempshare = share & ~FileShare.Inheritable;
@@ -85,7 +86,7 @@ namespace System.IO.Strategies
             }
 
             // NOTE: any change to FileOptions enum needs to be matched here in the error validation
-            if (options != FileOptions.None && (options & ~(FileOptions.WriteThrough | FileOptions.Asynchronous | FileOptions.RandomAccess | FileOptions.DeleteOnClose | FileOptions.SequentialScan | FileOptions.Encrypted | (FileOptions)0x20000000 /* NoBuffering */)) != 0)
+            if (AreInvalid(options))
             {
                 throw new ArgumentOutOfRangeException(nameof(options), SR.ArgumentOutOfRange_Enum);
             }
@@ -145,5 +146,7 @@ namespace System.IO.Strategies
                 SerializationInfo.ThrowIfDeserializationInProgress("AllowFileWrites", ref s_cachedSerializationSwitch);
             }
         }
+
+        internal static bool AreInvalid(FileOptions options) => options != FileOptions.None && (options & ~ValidFileOptions) != 0;
     }
 }

@@ -11,10 +11,6 @@ namespace System.Speech.Internal
     {
         #region Constructors
 
-        internal StreamMarshaler()
-        {
-        }
-
         internal StreamMarshaler(Stream stream)
         {
             _stream = stream;
@@ -29,6 +25,7 @@ namespace System.Speech.Internal
 
         #region internal Methods
         internal void ReadArray<T>(T[] ao, int c)
+            where T : struct
         {
             int sizeOfOne = Marshal.SizeOf<T>();
             int sizeObject = sizeOfOne * c;
@@ -39,11 +36,12 @@ namespace System.Speech.Internal
             Marshal.Copy(ab, 0, buffer, sizeObject);
             for (int i = 0; i < c; i++)
             {
-                ao[i] = Marshal.PtrToStructure<T>((IntPtr)((long)buffer + i * sizeOfOne));
+                ao[i] = Marshal.PtrToStructure<T>((nint)buffer + (nint)i * sizeOfOne);
             }
         }
 
         internal void WriteArray<T>(T[] ao, int c)
+            where T : notnull
         {
             int sizeOfOne = Marshal.SizeOf<T>();
             int sizeObject = sizeOfOne * c;
@@ -52,7 +50,7 @@ namespace System.Speech.Internal
 
             for (int i = 0; i < c; i++)
             {
-                Marshal.StructureToPtr<T>(ao[i], (IntPtr)((long)buffer + i * sizeOfOne), false);
+                Marshal.StructureToPtr<T>(ao[i], (nint)buffer + (nint)i * sizeOfOne, false);
             }
 
             Marshal.Copy(buffer, ab, 0, sizeObject);
@@ -115,6 +113,7 @@ namespace System.Speech.Internal
         }
 
         internal void ReadStream<T>(T o)
+            where T : notnull
         {
             int sizeObject = Marshal.SizeOf<T>();
             byte[] ab = Helpers.ReadStreamToByteArray(_stream, sizeObject);
@@ -126,6 +125,7 @@ namespace System.Speech.Internal
         }
 
         internal void WriteStream<T>(T o)
+            where T : notnull
         {
             int sizeObject = Marshal.SizeOf<T>();
             byte[] ab = new byte[sizeObject];

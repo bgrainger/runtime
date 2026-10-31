@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+
 namespace System.Runtime.InteropServices
 {
     /// <summary>
@@ -10,17 +13,30 @@ namespace System.Runtime.InteropServices
     /// </summary>
     internal static class DynamicInterfaceCastableHelpers
     {
-        [Diagnostics.StackTraceHidden]
+        [StackTraceHidden]
         internal static bool IsInterfaceImplemented(IDynamicInterfaceCastable castable, RuntimeType interfaceType, bool throwIfNotImplemented)
         {
-            bool isImplemented= castable.IsInterfaceImplemented(new RuntimeTypeHandle(interfaceType), throwIfNotImplemented);
+            bool isImplemented = castable.IsInterfaceImplemented(new RuntimeTypeHandle(interfaceType), throwIfNotImplemented);
             if (!isImplemented && throwIfNotImplemented)
                 throw new InvalidCastException(SR.Format(SR.InvalidCast_FromTo, castable.GetType(), interfaceType));
 
             return isImplemented;
         }
 
-        [Diagnostics.StackTraceHidden]
+        [UnmanagedCallersOnly]
+        private static unsafe void IsInterfaceImplemented(IDynamicInterfaceCastable* pCastable, RuntimeType* pInterfaceType, bool throwIfNotImplemented, bool* pResult, Exception* pException)
+        {
+            try
+            {
+                *pResult = IsInterfaceImplemented(*pCastable, *pInterfaceType, throwIfNotImplemented);
+            }
+            catch (Exception ex)
+            {
+                *pException = ex;
+            }
+        }
+
+        [StackTraceHidden]
         internal static RuntimeType? GetInterfaceImplementation(IDynamicInterfaceCastable castable, RuntimeType interfaceType)
         {
             RuntimeTypeHandle handle = castable.GetInterfaceImplementation(new RuntimeTypeHandle(interfaceType));
@@ -28,7 +44,7 @@ namespace System.Runtime.InteropServices
                 throw new InvalidCastException(SR.Format(SR.InvalidCast_FromTo, castable.GetType(), interfaceType));
 
             RuntimeType implType = handle.GetRuntimeType();
-            if (!implType.IsInterface)
+            if (!implType.IsActualInterface)
                 throw new InvalidOperationException(SR.Format(SR.IDynamicInterfaceCastable_NotInterface, implType.ToString()));
 
             if (!implType.IsDefined(typeof(DynamicInterfaceCastableImplementationAttribute), inherit: false))
@@ -38,6 +54,19 @@ namespace System.Runtime.InteropServices
                 throw new InvalidOperationException(SR.Format(SR.IDynamicInterfaceCastable_DoesNotImplementRequested, implType, interfaceType));
 
             return implType;
+        }
+
+        [UnmanagedCallersOnly]
+        private static unsafe void GetInterfaceImplementation(IDynamicInterfaceCastable* pCastable, RuntimeType* pInterfaceType, RuntimeType* pResult, Exception* pException)
+        {
+            try
+            {
+                *pResult = GetInterfaceImplementation(*pCastable, *pInterfaceType);
+            }
+            catch (Exception ex)
+            {
+                *pException = ex;
+            }
         }
     }
 }

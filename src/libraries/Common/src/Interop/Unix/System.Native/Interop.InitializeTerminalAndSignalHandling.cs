@@ -2,15 +2,20 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 internal static partial class Interop
 {
     internal static partial class Sys
     {
-        [GeneratedDllImport(Libraries.SystemNative, EntryPoint = "SystemNative_InitializeTerminalAndSignalHandling", SetLastError = true)]
+        [LibraryImport(Libraries.SystemNative, EntryPoint = "SystemNative_InitializeTerminalAndSignalHandling", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
         internal static partial bool InitializeTerminalAndSignalHandling();
 
-        [GeneratedDllImport(Libraries.SystemNative, EntryPoint = "SystemNative_SetKeypadXmit", CharSet = CharSet.Ansi)]
-        internal static partial void SetKeypadXmit(string terminfoString);
+        [LibraryImport(Libraries.SystemNative, EntryPoint = "SystemNative_SetKeypadXmit", StringMarshalling = StringMarshalling.Utf8)]
+        internal static partial void SetKeypadXmit(SafeFileHandle terminalHandle, string terminfoString);
+
+        [LibraryImport(Libraries.SystemNative, EntryPoint = "SystemNative_UninitializeTerminal")]
+        internal static partial void UninitializeTerminal();
     }
 }

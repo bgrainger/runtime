@@ -1,8 +1,13 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Runtime.CompilerServices;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+#if NET
+using System.Runtime.Intrinsics;
+#endif
 
 namespace System.Text.Unicode
 {
@@ -83,6 +88,64 @@ namespace System.Text.Unicode
             uint mask = (combinedIndicator & 0x0080_0080u) >> 2;
 
             return value ^ mask; // bit flip lowercase letters [a-z] => [A-Z]
+        }
+
+        /// <summary>
+        /// Given a UInt64 that represents four ASCII UTF-16 characters, returns the invariant
+        /// uppercase representation of those characters. Requires the input value to contain
+        /// four ASCII UTF-16 characters in machine endianness.
+        /// </summary>
+        /// <remarks>
+        /// This is a branchless implementation.
+        /// </remarks>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static ulong ConvertAllAsciiCharsInUInt64ToUppercase(ulong value)
+        {
+            // ASSUMPTION: Caller has validated that input value is ASCII.
+            Debug.Assert(AllCharsInUInt64AreAscii(value));
+
+            // the 0x80 bit of each word of 'lowerIndicator' will be set iff the word has value >= 'a'
+            ulong lowerIndicator = value + 0x0080_0080_0080_0080ul - 0x0061_0061_0061_0061ul;
+
+            // the 0x80 bit of each word of 'upperIndicator' will be set iff the word has value > 'z'
+            ulong upperIndicator = value + 0x0080_0080_0080_0080ul - 0x007B_007B_007B_007Bul;
+
+            // the 0x80 bit of each word of 'combinedIndicator' will be set iff the word has value >= 'a' and <= 'z'
+            ulong combinedIndicator = (lowerIndicator ^ upperIndicator);
+
+            // the 0x20 bit of each word of 'mask' will be set iff the word has value >= 'a' and <= 'z'
+            ulong mask = (combinedIndicator & 0x0080_0080_0080_0080ul) >> 2;
+
+            return value ^ mask; // bit flip lowercase letters [a-z] => [A-Z]
+        }
+
+        /// <summary>
+        /// Given a UInt64 that represents four ASCII UTF-16 characters, returns the invariant
+        /// lowercase representation of those characters. Requires the input value to contain
+        /// four ASCII UTF-16 characters in machine endianness.
+        /// </summary>
+        /// <remarks>
+        /// This is a branchless implementation.
+        /// </remarks>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static ulong ConvertAllAsciiCharsInUInt64ToLowercase(ulong value)
+        {
+            // ASSUMPTION: Caller has validated that input value is ASCII.
+            Debug.Assert(AllCharsInUInt64AreAscii(value));
+
+            // the 0x80 bit of each word of 'lowerIndicator' will be set iff the word has value >= 'A'
+            ulong lowerIndicator = value + 0x0080_0080_0080_0080ul - 0x0041_0041_0041_0041ul;
+
+            // the 0x80 bit of each word of 'upperIndicator' will be set iff the word has value > 'Z'
+            ulong upperIndicator = value + 0x0080_0080_0080_0080ul - 0x005B_005B_005B_005Bul;
+
+            // the 0x80 bit of each word of 'combinedIndicator' will be set iff the word has value >= 'a' and <= 'z'
+            ulong combinedIndicator = (lowerIndicator ^ upperIndicator);
+
+            // the 0x20 bit of each word of 'mask' will be set iff the word has value >= 'a' and <= 'z'
+            ulong mask = (combinedIndicator & 0x0080_0080_0080_0080ul) >> 2;
+
+            return value ^ mask; // bit flip uppercase letters [A-Z] => [a-z]
         }
 
         /// <summary>
@@ -217,5 +280,35 @@ namespace System.Text.Unicode
             indicator |= 0xFF7F_FF7F_FF7F_FF7Ful;
             return (differentBits & indicator) == 0;
         }
+
+#if SYSTEM_PRIVATE_CORELIB
+        /// <summary>
+        /// Returns true iff the TVector represents ASCII UTF-16 characters in machine endianness.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static bool AllCharsInVectorAreAscii<TVector>(TVector vec)
+            where TVector : struct, ISimdVector<TVector, ushort>
+        {
+            return (vec & TVector.Create(unchecked((ushort)~0x007F))) == TVector.Zero;
+        }
+#endif
+
+#if NET
+        /// <summary>
+        /// Returns the char index in <paramref name="utf16Data"/> where the first invalid UTF-16 sequence begins,
+        /// or -1 if the buffer contains no invalid sequences.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static unsafe int GetIndexOfFirstInvalidUtf16Sequence(ReadOnlySpan<char> utf16Data)
+        {
+            fixed (char* pValue = &MemoryMarshal.GetReference(utf16Data))
+            {
+                char* pFirstInvalidChar = GetPointerToFirstInvalidChar(pValue, utf16Data.Length, out _, out _);
+                int index = (int)(pFirstInvalidChar - pValue);
+
+                return (index < utf16Data.Length) ? index : -1;
+            }
+        }
+#endif
     }
 }

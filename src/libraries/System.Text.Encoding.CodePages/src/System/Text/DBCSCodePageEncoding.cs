@@ -3,12 +3,12 @@
 
 using System;
 using System.Buffers.Binary;
-using System.IO;
 using System.Diagnostics;
+using System.IO;
+using System.Runtime.CompilerServices;
+using System.Security;
 using System.Text;
 using System.Threading;
-using System.Security;
-using System.Runtime.CompilerServices;
 
 namespace System.Text
 {
@@ -135,7 +135,8 @@ namespace System.Text
                 lock (s_streamLock)
                 {
                     s_codePagesEncodingDataStream.Seek(m_firstDataWordOffset, SeekOrigin.Begin);
-                    s_codePagesEncodingDataStream.Read(buffer, 0, m_dataSize);
+                    int bytesRead = s_codePagesEncodingDataStream.Read(buffer, 0, m_dataSize);
+                    Debug.Assert(bytesRead == m_dataSize, "s_codePagesEncodingDataStream.Read should have read a full buffer.");
                 }
 
                 fixed (byte* pBuffer = buffer)
@@ -224,22 +225,11 @@ namespace System.Text
         }
 
         // Private object for locking instead of locking on a public type for SQL reliability work.
-        private static object? s_InternalSyncObject;
-        private static object InternalSyncObject
-        {
-            get
-            {
-                if (s_InternalSyncObject == null)
-                {
-                    object o = new object();
-                    Interlocked.CompareExchange<object?>(ref s_InternalSyncObject, o, null);
-                }
-                return s_InternalSyncObject;
-            }
-        }
+        private static object InternalSyncObject =>
+            field ?? Interlocked.CompareExchange(ref field, new object(), null) ?? field;
 
         // Read in our best fit table
-        protected unsafe override void ReadBestFitTable()
+        protected override unsafe void ReadBestFitTable()
         {
             // Lock so we don't confuse ourselves.
             lock (InternalSyncObject)
@@ -257,7 +247,8 @@ namespace System.Text
                     lock (s_streamLock)
                     {
                         s_codePagesEncodingDataStream.Seek(m_firstDataWordOffset, SeekOrigin.Begin);
-                        s_codePagesEncodingDataStream.Read(buffer, 0, m_dataSize);
+                        int bytesRead = s_codePagesEncodingDataStream.Read(buffer, 0, m_dataSize);
+                        Debug.Assert(bytesRead == m_dataSize, "s_codePagesEncodingDataStream.Read should have read a full buffer.");
                     }
 
                     fixed (byte* pBuffer = buffer)
@@ -711,7 +702,7 @@ namespace System.Text
                     if (bytes + 1 >= byteEnd)
                     {
                         // didn't use this char, we'll throw or use buffer
-                        if (fallbackBuffer == null || fallbackHelper.bFallingBack == false)
+                        if (fallbackBuffer == null || !fallbackHelper.bFallingBack)
                         {
                             Debug.Assert(chars > charStart,
                                 "[DBCSCodePageEncoding.GetBytes]Expected chars to have advanced (double byte case)");
@@ -730,7 +721,7 @@ namespace System.Text
                 else if (bytes >= byteEnd)
                 {
                     // didn't use this char, we'll throw or use buffer
-                    if (fallbackBuffer == null || fallbackHelper.bFallingBack == false)
+                    if (fallbackBuffer == null || !fallbackHelper.bFallingBack)
                     {
                         Debug.Assert(chars > charStart,
                             "[DBCSCodePageEncoding.GetBytes]Expected chars to have advanced (single byte case)");
@@ -1095,7 +1086,7 @@ namespace System.Text
             if (decoder != null)
             {
                 // Clear it in case of MustFlush
-                if (bUsedDecoder == false)
+                if (!bUsedDecoder)
                 {
                     decoder.bLeftOver = 0;
                 }
@@ -1169,8 +1160,7 @@ namespace System.Text
             public override void Reset()
             {
                 bLeftOver = 0;
-                if (m_fallbackBuffer != null)
-                    m_fallbackBuffer.Reset();
+                m_fallbackBuffer?.Reset();
             }
 
             // Anything left in our decoder?

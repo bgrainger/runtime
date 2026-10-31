@@ -673,11 +673,6 @@ namespace System.Linq.Expressions.Compiler
                     }
                     else
                     {
-                        if (tf == TypeCode.Byte)
-                        {
-                            return;
-                        }
-
                         convCode = OpCodes.Conv_I1;
                     }
 
@@ -689,11 +684,6 @@ namespace System.Linq.Expressions.Compiler
                     }
                     else
                     {
-                        if (tf == TypeCode.SByte)
-                        {
-                            return;
-                        }
-
                         convCode = OpCodes.Conv_U1;
                     }
 
@@ -704,14 +694,6 @@ namespace System.Linq.Expressions.Compiler
                         case TypeCode.SByte:
                         case TypeCode.Byte:
                             return;
-                        case TypeCode.Char:
-                        case TypeCode.UInt16:
-                            if (!isChecked)
-                            {
-                                return;
-                            }
-
-                            break;
                     }
 
                     convCode = isChecked
@@ -726,14 +708,6 @@ namespace System.Linq.Expressions.Compiler
                         case TypeCode.Char:
                         case TypeCode.UInt16:
                             return;
-                        case TypeCode.SByte:
-                        case TypeCode.Int16:
-                            if (!isChecked)
-                            {
-                                return;
-                            }
-
-                            break;
                     }
 
                     convCode = isChecked
@@ -1001,7 +975,7 @@ namespace System.Linq.Expressions.Compiler
 
         private static void EmitDecimal(this ILGenerator il, decimal value)
         {
-            Span<int> bits = stackalloc int[4];
+            Span<int> bits = [0, 0, 0, 0];
             decimal.GetBits(value, bits);
 
             int scale = (bits[3] & int.MaxValue) >> 16;

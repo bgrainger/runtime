@@ -3,10 +3,9 @@
 
 using System.Collections.Generic;
 using System.Linq;
+using System.Numerics;
 using System.Reflection.Metadata.Ecma335;
 using Xunit;
-
-using BitArithmetic = System.Reflection.Internal.BitArithmetic;
 
 namespace System.Reflection.Metadata.Tests
 {
@@ -23,6 +22,8 @@ namespace System.Reflection.Metadata.Tests
             public Func<string, uint?> GetTagValue;
             public string Name;
         }
+
+        private delegate ReadOnlySpan<uint> GetTagToTokenTypeArrayFunc();
 
         private IEnumerable<XxxTag> GetTags()
         {
@@ -48,14 +49,14 @@ namespace System.Reflection.Metadata.Tests
                    {
                        GetTagToTokenTypeArray = () =>
                        {
-                           var array = typeInfo.GetDeclaredField("TagToTokenTypeArray");
+                           var array = typeInfo.GetDeclaredProperty("TagToTokenTypeArray");
                            var vector = typeInfo.GetDeclaredField("TagToTokenTypeByteVector");
 
                            Assert.True((array == null) ^ (vector == null), typeInfo.Name + " does not have exactly one of TagToTokenTypeArray or TagToTokenTypeByteVector");
 
                            if (array != null)
                            {
-                               return (uint[])array.GetValue(null);
+                               return ((GetTagToTokenTypeArrayFunc)array.GetGetMethod(nonPublic: true).CreateDelegate(typeof(GetTagToTokenTypeArrayFunc)))().ToArray();
                            }
 
                            Assert.Contains(vector.FieldType, new[] { typeof(uint), typeof(ulong) });
@@ -93,8 +94,7 @@ namespace System.Reflection.Metadata.Tests
                    };
         }
 
-        [Fact]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/50714", typeof(PlatformDetection), nameof(PlatformDetection.IsBuiltWithAggressiveTrimming), nameof(PlatformDetection.IsBrowser))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsNotBuiltWithAggressiveTrimming))]
         public void ValidateTagToTokenConversion()
         {
             foreach (var tag in GetTags())
@@ -160,7 +160,7 @@ namespace System.Reflection.Metadata.Tests
                         tag.Name + " did not round trip coded index -> handle -> coded index");
                 }
 
-                Assert.True(badTagCount == (1 << tag.GetNumberOfBits()) - BitArithmetic.CountBits((ulong)tag.GetTablesReferenced()),
+                Assert.True(badTagCount == (1 << tag.GetNumberOfBits()) - BitOperations.PopCount((ulong)tag.GetTablesReferenced()),
                     tag.Name + " did not find the correct number of bad tags.");
 
                 Assert.True(tablesNotUsed == 0,

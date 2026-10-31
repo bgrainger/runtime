@@ -5,6 +5,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Http.Functional.Tests;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,7 +21,7 @@ namespace System.Net.WebSockets.Tests
         {
             if (!Debugger.IsAttached)
             {
-                _cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                _cancellation = new CancellationTokenSource(TestHelper.PassingTestTimeout);
             }
         }
 
@@ -44,7 +45,7 @@ namespace System.Net.WebSockets.Tests
             stream.Enqueue(0xc1, 0x07, 0xf2, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00);
             using WebSocket websocket = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions
             {
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
             });
 
             Memory<byte> buffer = new byte[5];
@@ -67,21 +68,21 @@ namespace System.Net.WebSockets.Tests
             Assert.Equal("Hello", Encoding.UTF8.GetString(buffer.Span));
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public async Task SendHelloWithContextTakeover()
         {
             WebSocketTestStream stream = new();
             using WebSocket websocket = WebSocket.CreateFromStream(stream.Remote, new WebSocketCreationOptions
             {
                 IsServer = true,
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
             });
 
-            await websocket.SendAsync(Encoding.UTF8.GetBytes("Hello"), WebSocketMessageType.Text, true, CancellationToken);
+            await websocket.SendAsync("Hello"u8.ToArray(), WebSocketMessageType.Text, true, CancellationToken);
             Assert.Equal("C107F248CDC9C90700", Convert.ToHexString(stream.NextAvailableBytes));
 
             stream.Clear();
-            await websocket.SendAsync(Encoding.UTF8.GetBytes("Hello"), WebSocketMessageType.Text, true, CancellationToken);
+            await websocket.SendAsync("Hello"u8.ToArray(), WebSocketMessageType.Text, true, CancellationToken);
 
             // Because context takeover is set by default if we try to send
             // the same message it should result in fewer bytes.
@@ -95,10 +96,10 @@ namespace System.Net.WebSockets.Tests
             using WebSocket websocket = WebSocket.CreateFromStream(stream.Remote, new WebSocketCreationOptions
             {
                 IsServer = true,
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
             });
 
-            byte[] bytes = Encoding.UTF8.GetBytes("Hello");
+            byte[] bytes = "Hello"u8.ToArray();
             WebSocketMessageFlags flags = WebSocketMessageFlags.DisableCompression | WebSocketMessageFlags.EndOfMessage;
             await websocket.SendAsync(bytes, WebSocketMessageType.Text, flags, CancellationToken);
 
@@ -113,17 +114,17 @@ namespace System.Net.WebSockets.Tests
             using WebSocket websocket = WebSocket.CreateFromStream(stream.Remote, new WebSocketCreationOptions
             {
                 IsServer = true,
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
             });
 
-            byte[] bytes = Encoding.UTF8.GetBytes("Hello");
+            byte[] bytes = "Hello"u8.ToArray();
             await websocket.SendAsync(Memory<byte>.Empty, WebSocketMessageType.Text, endOfMessage: false, CancellationToken);
             await websocket.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, CancellationToken);
 
             using WebSocket client = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions
             {
                 IsServer = false,
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
             });
 
             ValueWebSocketReceiveResult result = await client.ReceiveAsync(bytes.AsMemory(), CancellationToken);
@@ -141,7 +142,7 @@ namespace System.Net.WebSockets.Tests
             WebSocketTestStream stream = new();
             using WebSocket websocket = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions
             {
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
                 {
                     ClientContextTakeover = false
                 }
@@ -164,14 +165,14 @@ namespace System.Net.WebSockets.Tests
             }
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public async Task SendHelloWithoutContextTakeover()
         {
             WebSocketTestStream stream = new();
             using WebSocket websocket = WebSocket.CreateFromStream(stream.Remote, new WebSocketCreationOptions
             {
                 IsServer = true,
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
                 {
                     ServerContextTakeover = false
                 }
@@ -181,7 +182,7 @@ namespace System.Net.WebSockets.Tests
 
             for (var i = 0; i < 100; ++i)
             {
-                await websocket.SendAsync(Encoding.UTF8.GetBytes("Hello"), WebSocketMessageType.Text, true, CancellationToken);
+                await websocket.SendAsync("Hello"u8.ToArray(), WebSocketMessageType.Text, true, CancellationToken);
 
                 // Without context takeover the message should look the same every time
                 Assert.Equal("C107F248CDC9C90700", Convert.ToHexString(stream.NextAvailableBytes));
@@ -196,7 +197,7 @@ namespace System.Net.WebSockets.Tests
             WebSocketTestStream stream = new();
             using WebSocket websocket = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions
             {
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
             });
             // The first 3 octets(0xf2 0x48 0x05) and the least significant two
             // bits of the 4th octet(0x00) constitute one DEFLATE block with
@@ -285,14 +286,14 @@ namespace System.Net.WebSockets.Tests
             using WebSocket server = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions
             {
                 IsServer = true,
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
                 {
                     ClientMaxWindowBits = windowBits
                 }
             });
             using WebSocket client = WebSocket.CreateFromStream(stream.Remote, new WebSocketCreationOptions
             {
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
                 {
                     ClientMaxWindowBits = windowBits
                 }
@@ -466,7 +467,7 @@ namespace System.Net.WebSockets.Tests
             using WebSocket server = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions
             {
                 IsServer = true,
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
                 {
                     ClientContextTakeover = false,
                     ClientMaxWindowBits = clientWindowBits,
@@ -476,7 +477,7 @@ namespace System.Net.WebSockets.Tests
             });
             using WebSocket client = WebSocket.CreateFromStream(stream.Remote, new WebSocketCreationOptions
             {
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
                 {
                     ClientContextTakeover = false,
                     ClientMaxWindowBits = clientWindowBits,
@@ -568,7 +569,7 @@ namespace System.Net.WebSockets.Tests
             {
                 IsServer = true,
                 KeepAliveInterval = TimeSpan.Zero,
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
                 {
                     ClientMaxWindowBits = 9,
                     ServerMaxWindowBits = 9
@@ -577,7 +578,7 @@ namespace System.Net.WebSockets.Tests
             using WebSocket client = WebSocket.CreateFromStream(stream.Remote, new WebSocketCreationOptions
             {
                 KeepAliveInterval = TimeSpan.Zero,
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
                 {
                     ClientMaxWindowBits = 9,
                     ServerMaxWindowBits = 9
@@ -609,7 +610,7 @@ namespace System.Net.WebSockets.Tests
             {
                 IsServer = true,
                 KeepAliveInterval = TimeSpan.Zero,
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
             });
 
             byte[] frame1 = new byte[1024];
@@ -626,7 +627,7 @@ namespace System.Net.WebSockets.Tests
             {
                 IsServer = false,
                 KeepAliveInterval = TimeSpan.Zero,
-                DangerousDeflateOptions = new()
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
             });
 
             int messageSize = 0;
@@ -644,6 +645,100 @@ namespace System.Net.WebSockets.Tests
             }
 
             Assert.Equal(frame1.Length + frame2.Length, messageSize);
+        }
+
+        public static IEnumerable<object[]> BFinalTerminatedFrames()
+        {
+            // A complete (FIN=1) compressed message terminated with a BFINAL=1 final block (decodes
+            // to "Hello"). 0xf3 sets the BFINAL bit.
+            yield return new object[] { new byte[] { 0xc1, 0x07, 0xf3, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00 } };
+
+            // A non-final (FIN=0) compressed frame whose payload is a BFINAL=1 final block ("Hello")
+            // followed by trailing bytes that can never be consumed.
+            yield return new object[] { new byte[] { 0x42, 0x09, 0xf3, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, 0x00, 0x00 } };
+        }
+
+        [Theory]
+        [MemberData(nameof(BFinalTerminatedFrames))]
+        public async Task CompressedMessageWithBFinalBitSet_Throws(byte[] frame)
+        {
+            // permessage-deflate messages are not expected to contain a final DEFLATE block. zlib stops
+            // at the BFINAL=1 block leaving compressed bytes unconsumed, so the message is rejected
+            // instead of having the inflater spin forever returning empty results.
+            WebSocketTestStream stream = new();
+            stream.Enqueue(frame);
+            using WebSocket websocket = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions
+            {
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
+            });
+
+            Memory<byte> buffer = new byte[64];
+            var exception = await Assert.ThrowsAsync<WebSocketException>(
+                async () => await websocket.ReceiveAsync(buffer, CancellationToken));
+            Assert.Contains("BFINAL", exception.Message);
+            Assert.Equal(WebSocketState.Aborted, websocket.State);
+        }
+
+        [Fact]
+        public async Task CompressedMessageWithBFinalBitSet_PrecededByValidMessage_Throws()
+        {
+            WebSocketTestStream stream = new();
+            // A valid sync-flushed message (0xf2, BFINAL not set) decodes successfully...
+            stream.Enqueue(0xc1, 0x07, 0xf2, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00);
+            using WebSocket websocket = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions
+            {
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
+            });
+
+            Memory<byte> buffer = new byte[64];
+            ValueWebSocketReceiveResult result = await websocket.ReceiveAsync(buffer, CancellationToken);
+
+            Assert.True(result.EndOfMessage);
+            Assert.Equal("Hello".Length, result.Count);
+            Assert.Equal(WebSocketMessageType.Text, result.MessageType);
+            Assert.Equal("Hello", Encoding.UTF8.GetString(buffer.Span.Slice(0, result.Count)));
+
+            // ...but a subsequent message terminated with BFINAL=1 (0xf3) is rejected.
+            stream.Enqueue(0xc1, 0x07, 0xf3, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00);
+            buffer.Span.Clear();
+            var exception = await Assert.ThrowsAsync<WebSocketException>(
+                async () => await websocket.ReceiveAsync(buffer, CancellationToken));
+            Assert.Contains("BFINAL", exception.Message);
+        }
+
+        [Fact]
+        public async Task DisposeShouldNotCorruptStateWhileReceiving()
+        {
+            WebSocketTestStream stream = new();
+            using WebSocket server = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions
+            {
+                IsServer = true,
+                KeepAliveInterval = TimeSpan.Zero,
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
+            });
+            using WebSocket client = WebSocket.CreateFromStream(stream.Remote, new WebSocketCreationOptions
+            {
+                IsServer = false,
+                KeepAliveInterval = TimeSpan.Zero,
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
+            });
+
+            byte[] buffer = new byte[64];
+
+            // Send two messages so that the zlib stream has data in its internal dictionary
+            await SendTextAsync("Hello World", client);
+            await server.ReceiveAsync(buffer, CancellationToken.None);
+            buffer.AsSpan().Clear();
+
+            stream.DelayForNextRead = TimeSpan.FromSeconds(1);
+            stream.IgnoreCancellationToken = true;
+            await SendTextAsync("Hello Worlds", client);
+
+            Task<WebSocketReceiveResult> receiveTask = server.ReceiveAsync(buffer, CancellationToken.None);
+            server.Dispose();
+
+            var result = await receiveTask;
+            Assert.Equal("Hello Worlds", Encoding.UTF8.GetString(buffer.AsSpan(0, result.Count)));
         }
 
         private ValueTask SendTextAsync(string text, WebSocket websocket, bool disableCompression = false)

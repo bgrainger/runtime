@@ -1,8 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Runtime.InteropServices;
 using System;
+using System.Runtime.InteropServices;
 
 internal static partial class Interop
 {
@@ -16,13 +16,10 @@ internal static partial class Interop
             AvailabilityChanged = 2
         }
 
-        [GeneratedDllImport(Libraries.SystemNative, EntryPoint = "SystemNative_CreateNetworkChangeListenerSocket")]
-        public static unsafe partial Error CreateNetworkChangeListenerSocket(int* socket);
+        [LibraryImport(Libraries.SystemNative, EntryPoint = "SystemNative_CreateNetworkChangeListenerSocket", SetLastError = true)]
+        public static unsafe partial Error CreateNetworkChangeListenerSocket(IntPtr* socket);
 
-        [GeneratedDllImport(Libraries.SystemNative, EntryPoint = "SystemNative_CloseNetworkChangeListenerSocket")]
-        public static partial Error CloseNetworkChangeListenerSocket(int socket);
-
-        [GeneratedDllImport(Libraries.SystemNative, EntryPoint = "SystemNative_ReadEvents")]
-        public static unsafe partial void ReadEvents(int socket, delegate* unmanaged<int, NetworkChangeKind, void> onNetworkChange);
+        [LibraryImport(Libraries.SystemNative, EntryPoint = "SystemNative_ReadEvents")]
+        public static unsafe partial Error ReadEvents(SafeHandle socket, delegate* unmanaged<IntPtr, NetworkChangeKind, void> onNetworkChange);
     }
 }

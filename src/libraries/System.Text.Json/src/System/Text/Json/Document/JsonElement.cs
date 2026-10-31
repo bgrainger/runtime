@@ -1,10 +1,13 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Buffers.Text;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Text;
 
 namespace System.Text.Json
 {
@@ -85,6 +88,23 @@ namespace System.Text.Json
         }
 
         /// <summary>
+        ///   Get the number of properties contained within the current object value.
+        /// </summary>
+        /// <returns>The number of properties contained within the current object value.</returns>
+        /// <exception cref="InvalidOperationException">
+        ///   This value's <see cref="ValueKind"/> is not <see cref="JsonValueKind.Object"/>.
+        /// </exception>
+        /// <exception cref="ObjectDisposedException">
+        ///   The parent <see cref="JsonDocument"/> has been disposed.
+        /// </exception>
+        public int GetPropertyCount()
+        {
+            CheckValidInstance();
+
+            return _parent.GetPropertyCount(_idx);
+        }
+
+        /// <summary>
         ///   Gets a <see cref="JsonElement"/> representing the value of a required property identified
         ///   by <paramref name="propertyName"/>.
         /// </summary>
@@ -113,15 +133,14 @@ namespace System.Text.Json
         /// </exception>
         public JsonElement GetProperty(string propertyName)
         {
-            if (propertyName == null)
-                throw new ArgumentNullException(nameof(propertyName));
+            ArgumentNullException.ThrowIfNull(propertyName);
 
             if (TryGetProperty(propertyName, out JsonElement property))
             {
                 return property;
             }
 
-            throw new KeyNotFoundException();
+            throw new KeyNotFoundException(SR.Format(SR.Arg_KeyNotFoundWithKey, propertyName));
         }
 
         /// <summary>
@@ -159,7 +178,7 @@ namespace System.Text.Json
                 return property;
             }
 
-            throw new KeyNotFoundException();
+            throw new KeyNotFoundException(SR.Format(SR.Arg_KeyNotFoundWithKey, propertyName.ToString()));
         }
 
         /// <summary>
@@ -199,7 +218,7 @@ namespace System.Text.Json
                 return property;
             }
 
-            throw new KeyNotFoundException();
+            throw new KeyNotFoundException(SR.Format(SR.Arg_KeyNotFoundWithKey, Encoding.UTF8.GetString(utf8PropertyName)));
         }
 
         /// <summary>
@@ -234,8 +253,7 @@ namespace System.Text.Json
         /// <seealso cref="EnumerateObject"/>
         public bool TryGetProperty(string propertyName, out JsonElement value)
         {
-            if (propertyName == null)
-                throw new ArgumentNullException(nameof(propertyName));
+            ArgumentNullException.ThrowIfNull(propertyName);
 
             return TryGetProperty(propertyName.AsSpan(), out value);
         }
@@ -455,12 +473,12 @@ namespace System.Text.Json
         [CLSCompliant(false)]
         public sbyte GetSByte()
         {
-            if (TryGetSByte(out sbyte value))
+            if (!TryGetSByte(out sbyte value))
             {
-                return value;
+                ThrowHelper.ThrowFormatException();
             }
 
-            throw new FormatException();
+            return value;
         }
 
         /// <summary>
@@ -505,12 +523,12 @@ namespace System.Text.Json
         /// </exception>
         public byte GetByte()
         {
-            if (TryGetByte(out byte value))
+            if (!TryGetByte(out byte value))
             {
-                return value;
+                ThrowHelper.ThrowFormatException();
             }
 
-            throw new FormatException();
+            return value;
         }
 
         /// <summary>
@@ -552,12 +570,12 @@ namespace System.Text.Json
         /// </exception>
         public short GetInt16()
         {
-            if (TryGetInt16(out short value))
+            if (!TryGetInt16(out short value))
             {
-                return value;
+                ThrowHelper.ThrowFormatException();
             }
 
-            throw new FormatException();
+            return value;
         }
 
         /// <summary>
@@ -604,12 +622,12 @@ namespace System.Text.Json
         [CLSCompliant(false)]
         public ushort GetUInt16()
         {
-            if (TryGetUInt16(out ushort value))
+            if (!TryGetUInt16(out ushort value))
             {
-                return value;
+                ThrowHelper.ThrowFormatException();
             }
 
-            throw new FormatException();
+            return value;
         }
 
         /// <summary>
@@ -1159,6 +1177,13 @@ namespace System.Text.Json
             return _parent.GetNameOfPropertyValue(_idx);
         }
 
+        internal ReadOnlySpan<byte> GetPropertyNameRaw()
+        {
+            CheckValidInstance();
+
+            return _parent.GetPropertyNameRaw(_idx);
+        }
+
         /// <summary>
         ///   Gets the original input data backing this value, returning it as a <see cref="string"/>.
         /// </summary>
@@ -1189,6 +1214,213 @@ namespace System.Text.Json
             return _parent.GetPropertyRawValueAsString(_idx);
         }
 
+        internal bool ValueIsEscaped
+        {
+            get
+            {
+                CheckValidInstance();
+
+                return _parent.ValueIsEscaped(_idx, isPropertyName: false);
+            }
+        }
+
+        internal ReadOnlySpan<byte> ValueSpan
+        {
+            get
+            {
+                CheckValidInstance();
+
+                return _parent.GetRawValue(_idx, includeQuotes: false).Span;
+            }
+        }
+
+        /// <summary>
+        /// Compares the values of two <see cref="JsonElement"/> values for equality, including the values of all descendant elements.
+        /// </summary>
+        /// <param name="element1">The first <see cref="JsonElement"/> to compare.</param>
+        /// <param name="element2">The second <see cref="JsonElement"/> to compare.</param>
+        /// <returns><see langword="true"/> if the two values are equal; otherwise, <see langword="false"/>.</returns>
+        /// <remarks>
+        /// Deep equality of two JSON values is defined as follows:
+        /// <list type="bullet">
+        /// <item>JSON values of different kinds are not equal.</item>
+        /// <item>JSON constants <see langword="null"/>, <see langword="false"/>, and <see langword="true"/> only equal themselves.</item>
+        /// <item>JSON numbers are equal if and only if they have they have equivalent decimal representations, with no rounding being used.</item>
+        /// <item>JSON strings are equal if and only if they are equal using ordinal string comparison.</item>
+        /// <item>JSON arrays are equal if and only if they are of equal length and each of their elements are pairwise equal.</item>
+        /// <item>
+        ///     JSON objects are equal if and only if they have the same number of properties and each property in the first object
+        ///     has a corresponding property in the second object with the same name and equal value. The order of properties is not
+        ///     significant, with the exception of repeated properties that must be specified in the same order (with interleaving allowed).
+        /// </item>
+        /// </list>
+        /// </remarks>
+        public static bool DeepEquals(JsonElement element1, JsonElement element2)
+        {
+            if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
+            {
+                ThrowHelper.ThrowInsufficientExecutionStackException_JsonElementDeepEqualsInsufficientExecutionStack();
+            }
+
+            element1.CheckValidInstance();
+            element2.CheckValidInstance();
+
+            JsonValueKind kind = element1.ValueKind;
+            if (kind != element2.ValueKind)
+            {
+                return false;
+            }
+
+            switch (kind)
+            {
+                case JsonValueKind.Null or JsonValueKind.False or JsonValueKind.True:
+                    return true;
+
+                case JsonValueKind.Number:
+                    return JsonHelpers.AreEqualJsonNumbers(element1.GetRawValue().Span, element2.GetRawValue().Span);
+
+                case JsonValueKind.String:
+                    if (element2.ValueIsEscaped)
+                    {
+                        if (element1.ValueIsEscaped)
+                        {
+                            // Need to unescape and compare both inputs.
+                            return JsonReaderHelper.UnescapeAndCompareBothInputs(element1.ValueSpan, element2.ValueSpan);
+                        }
+
+                        // Swap values so that unescaping is handled by the LHS.
+                        (element1, element2) = (element2, element1);
+                    }
+
+                    return element1.ValueEquals(element2.ValueSpan);
+
+                case JsonValueKind.Array:
+                    if (element1.GetArrayLength() != element2.GetArrayLength())
+                    {
+                        return false;
+                    }
+
+                    ArrayEnumerator arrayEnumerator2 = element2.EnumerateArray();
+                    foreach (JsonElement e1 in element1.EnumerateArray())
+                    {
+                        bool success = arrayEnumerator2.MoveNext();
+                        Debug.Assert(success, "enumerators must have matching length");
+
+                        if (!DeepEquals(e1, arrayEnumerator2.Current))
+                        {
+                            return false;
+                        }
+                    }
+
+                    Debug.Assert(!arrayEnumerator2.MoveNext());
+                    return true;
+
+                default:
+                    Debug.Assert(kind is JsonValueKind.Object);
+
+                    int count = element1.GetPropertyCount();
+                    if (count != element2.GetPropertyCount())
+                    {
+                        return false;
+                    }
+
+                    ObjectEnumerator objectEnumerator1 = element1.EnumerateObject();
+                    ObjectEnumerator objectEnumerator2 = element2.EnumerateObject();
+
+                    // Two JSON objects are considered equal if they define the same set of properties.
+                    // Start optimistically with pairwise comparison, but fall back to unordered
+                    // comparison as soon as a mismatch is encountered.
+
+                    while (objectEnumerator1.MoveNext())
+                    {
+                        bool success = objectEnumerator2.MoveNext();
+                        Debug.Assert(success, "enumerators should have matching lengths");
+
+                        JsonProperty prop1 = objectEnumerator1.Current;
+                        JsonProperty prop2 = objectEnumerator2.Current;
+
+                        if (!NameEquals(prop1, prop2))
+                        {
+                            // We have our first mismatch, fall back to unordered comparison.
+                            return UnorderedObjectDeepEquals(objectEnumerator1, objectEnumerator2, remainingProps: count);
+                        }
+
+                        if (!DeepEquals(prop1.Value, prop2.Value))
+                        {
+                            return false;
+                        }
+
+                        count--;
+                    }
+
+                    Debug.Assert(!objectEnumerator2.MoveNext());
+                    return true;
+
+                    static bool UnorderedObjectDeepEquals(ObjectEnumerator objectEnumerator1, ObjectEnumerator objectEnumerator2, int remainingProps)
+                    {
+                        // JsonElement objects allow duplicate property names, which is optional per the JSON RFC.
+                        // Even though this implementation of equality does not take property ordering into account,
+                        // repeated property names must be specified in the same order (although they may be interleaved).
+                        // This is to preserve a degree of coherence with JSON serialization, where either the first
+                        // or last occurrence of a repeated property name is used. It also simplifies the implementation
+                        // and keeps it at O(n + m) complexity.
+
+                        Dictionary<string, ValueQueue<JsonElement>> properties2 = new(capacity: remainingProps, StringComparer.Ordinal);
+                        do
+                        {
+                            JsonProperty prop2 = objectEnumerator2.Current;
+#if NET
+                            ref ValueQueue<JsonElement> values = ref CollectionsMarshal.GetValueRefOrAddDefault(properties2, prop2.Name, out bool _);
+#else
+                            properties2.TryGetValue(prop2.Name, out ValueQueue<JsonElement> values);
+#endif
+                            values.Enqueue(prop2.Value);
+#if !NET
+                            properties2[prop2.Name] = values;
+#endif
+                        }
+                        while (objectEnumerator2.MoveNext());
+
+                        do
+                        {
+                            JsonProperty prop = objectEnumerator1.Current;
+#if NET
+                            ref ValueQueue<JsonElement> values = ref CollectionsMarshal.GetValueRefOrAddDefault(properties2, prop.Name, out bool exists);
+#else
+                            bool exists = properties2.TryGetValue(prop.Name, out ValueQueue<JsonElement> values);
+#endif
+                            if (!exists || !values.TryDequeue(out JsonElement value) || !DeepEquals(prop.Value, value))
+                            {
+                                return false;
+                            }
+#if !NET
+                            properties2[prop.Name] = values;
+#endif
+                        }
+                        while (objectEnumerator1.MoveNext());
+
+                        return true;
+                    }
+
+                    static bool NameEquals(JsonProperty left, JsonProperty right)
+                    {
+                        if (right.NameIsEscaped)
+                        {
+                            if (left.NameIsEscaped)
+                            {
+                                // Need to unescape and compare both inputs.
+                                return JsonReaderHelper.UnescapeAndCompareBothInputs(left.NameSpan, right.NameSpan);
+                            }
+
+                            // Swap values so that unescaping is handled by the LHS
+                            (left, right) = (right, left);
+                        }
+
+                        return left.NameEquals(right.NameSpan);
+                    }
+            }
+        }
+
         /// <summary>
         ///   Compares <paramref name="text" /> to the string value of this element.
         /// </summary>
@@ -1210,7 +1442,7 @@ namespace System.Text.Json
 
             if (TokenType == JsonTokenType.Null)
             {
-                return text == null;
+                return text is null;
             }
 
             return TextEqualsHelper(text.AsSpan(), isPropertyName: false);
@@ -1239,7 +1471,9 @@ namespace System.Text.Json
             if (TokenType == JsonTokenType.Null)
             {
                 // This is different than Length == 0, in that it tests true for null, but false for ""
-                return utf8Text == default;
+#pragma warning disable CA2265
+                return utf8Text.Slice(0, 0) == default;
+#pragma warning restore CA2265
             }
 
             return TextEqualsHelper(utf8Text, isPropertyName: false, shouldUnescape: true);
@@ -1267,7 +1501,9 @@ namespace System.Text.Json
             if (TokenType == JsonTokenType.Null)
             {
                 // This is different than Length == 0, in that it tests true for null, but false for ""
-                return text == default;
+#pragma warning disable CA2265
+                return text.Slice(0, 0) == default;
+#pragma warning restore CA2265
             }
 
             return TextEqualsHelper(text, isPropertyName: false);
@@ -1287,6 +1523,13 @@ namespace System.Text.Json
             return _parent.TextEquals(_idx, text, isPropertyName);
         }
 
+        internal bool ValueIsEscapedHelper(bool isPropertyName)
+        {
+            CheckValidInstance();
+
+            return _parent.ValueIsEscaped(_idx, isPropertyName);
+        }
+
         /// <summary>
         ///   Write the element into the provided writer as a JSON value.
         /// </summary>
@@ -1302,14 +1545,18 @@ namespace System.Text.Json
         /// </exception>
         public void WriteTo(Utf8JsonWriter writer)
         {
-            if (writer == null)
-            {
-                throw new ArgumentNullException(nameof(writer));
-            }
+            ArgumentNullException.ThrowIfNull(writer);
 
             CheckValidInstance();
 
             _parent.WriteElementTo(_idx, writer);
+        }
+
+        internal void WritePropertyNameTo(Utf8JsonWriter writer)
+        {
+            CheckValidInstance();
+
+            _parent.WritePropertyName(_idx, writer);
         }
 
         /// <summary>
@@ -1414,7 +1661,7 @@ namespace System.Text.Json
                 case JsonTokenType.StartObject:
                     {
                         // null parent should have hit the None case
-                        Debug.Assert(_parent != null);
+                        Debug.Assert(_parent is not null);
                         return _parent.GetRawValueAsString(_idx);
                     }
                 case JsonTokenType.String:
@@ -1457,11 +1704,13 @@ namespace System.Text.Json
 
         private void CheckValidInstance()
         {
-            if (_parent == null)
+            if (_parent is null)
             {
                 throw new InvalidOperationException();
             }
         }
+
+        internal readonly int MetadataDbIndex => _idx;
 
         [DebuggerBrowsable(DebuggerBrowsableState.Never)]
         private string DebuggerDisplay => $"ValueKind = {ValueKind} : \"{ToString()}\"";

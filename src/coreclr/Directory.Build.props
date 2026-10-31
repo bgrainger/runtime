@@ -14,14 +14,15 @@
   <Import Project="..\..\Directory.Build.props" />
 
   <PropertyGroup>
-    <BaseIntermediateOutputPath>$([MSBuild]::NormalizeDirectory('$(ArtifactsObjDir)', 'coreclr', '$(MSBuildProjectName)'))</BaseIntermediateOutputPath>
+    <IsNativeAotProject Condition="$(MSBuildProjectDirectory.Contains('nativeaot'))">true</IsNativeAotProject>
+    <BaseIntermediateOutputPath Condition="'$(IsNativeAotProject)' != 'true'">$([MSBuild]::NormalizeDirectory('$(ArtifactsObjDir)', 'coreclr', '$(MSBuildProjectName)'))</BaseIntermediateOutputPath>
+    <BaseIntermediateOutputPath Condition="'$(IsNativeAotProject)' == 'true'">$([MSBuild]::NormalizeDirectory('$(ArtifactsObjDir)', 'coreclr', 'nativeaot', '$(MSBuildProjectName)'))</BaseIntermediateOutputPath>
     <IntermediateOutputPath Condition="'$(PlatformName)' == 'AnyCPU'">$(BaseIntermediateOutputPath)$(Configuration)\</IntermediateOutputPath>
-    <IntermediateOutputPath Condition="'$(PlatformName)' != 'AnyCPU'">$(BaseIntermediateOutputPath)$(PlatformName)\$(Configuration)\</IntermediateOutputPath>
+    <IntermediateOutputPath Condition="'$(PlatformName)' != 'AnyCPU'">$(BaseIntermediateOutputPath)$(TargetOS).$(TargetArchitecture).$(Configuration)\</IntermediateOutputPath>
     <ProjectDir>$(MSBuildThisFileDirectory)</ProjectDir>
-    <RuntimeBinDir>$([MSBuild]::NormalizeDirectory('$(ArtifactsBinDir)', 'coreclr', '$(TargetOS).$(TargetArchitecture).$(Configuration)'))</RuntimeBinDir>
+    <RuntimeBinDir>$(CoreclrRuntimeBinDir)</RuntimeBinDir>
 
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <SignAssembly Condition="'$(UsingMicrosoftNETSdk)' != 'true'">false</SignAssembly>
-    <CL_MPCount>$(NumberOfCores)</CL_MPCount>
   </PropertyGroup>
 </Project>

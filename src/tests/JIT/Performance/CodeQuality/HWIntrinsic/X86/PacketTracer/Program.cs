@@ -9,8 +9,10 @@ using System.Threading.Tasks;
 using System.Collections.Concurrent;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
+using Xunit;
+using TestLibrary;
 
-class Program
+public class Program
 {
 #if DEBUG
 
@@ -48,7 +50,9 @@ class Program
         _freeBuffers = new ObjectPool<int[]>(() => new int[_width * 3 * _height]); // Each pixel has 3 fields (RGB)
     }
 
-    static unsafe int Main(string[] args)
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+    [Fact]
+    public static unsafe int TestEntryPoint()
     {
         if (Avx2.IsSupported)
         {
@@ -131,7 +135,7 @@ class Program
         return true;
     }
 
-    private unsafe void RenderTo(string fileName, bool wirteToFile)
+    private unsafe void RenderTo(string fileName, bool writeToFile)
     {
         var packetTracer = new Packet256Tracer(_width, _height);
         var scene = packetTracer.DefaultScene;
@@ -149,7 +153,7 @@ class Program
            ts.Milliseconds / 10);
         Console.WriteLine("RunTime " + elapsedTime);
 
-        if (wirteToFile)
+        if (writeToFile)
         {
             using (var file = new System.IO.StreamWriter(fileName))
             {

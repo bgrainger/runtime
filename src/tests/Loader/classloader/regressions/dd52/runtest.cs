@@ -2,11 +2,15 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using Xunit;
+using TestLibrary;
 
 public class Test_runtest
 
 {
-   public static int Main()
+   [ActiveIssue("https://github.com/dotnet/runtime/issues/102741", typeof(Utilities), nameof(Utilities.IsNativeAot))]
+   [Fact]
+   public static int TestEntryPoint()
    {
       Console.WriteLine();
       bool failed = false;

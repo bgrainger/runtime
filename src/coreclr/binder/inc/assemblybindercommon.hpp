@@ -16,7 +16,7 @@
 
 #include "bindertypes.hpp"
 #include "bindresult.hpp"
-#include "bundle.h"
+#include <assemblyprobeextension.h>
 
 class AssemblyBinder;
 class DefaultAssemblyBinder;
@@ -25,16 +25,15 @@ class PEImage;
 
 namespace BINDER_SPACE
 {
-    class AssemblyIdentityUTF8;
-
     class AssemblyBinderCommon
     {
     public:
-        static HRESULT BindAssembly(/* in */  AssemblyBinder      *pBinder, 
+        static HRESULT BindAssembly(/* in */  AssemblyBinder      *pBinder,
                                     /* in */  AssemblyName        *pAssemblyName,
-                                    /* in */  LPCWSTR              szCodeBase,
                                     /* in */  bool                 excludeAppPaths,
-                                    /* out */ Assembly           **ppAssembly);
+                                    /* out */ Assembly           **ppAssembly,
+                                    /* [out, optional] */ Assembly **ppExistingAssemblyOnFailure = nullptr,
+                                    /* out */ SString            *pDiagnosticInfo = NULL);
 
         static HRESULT BindToSystem(/* in */ SString    &systemDirectory,
                                     /* out */ Assembly **ppSystemAssembly);
@@ -47,18 +46,22 @@ namespace BINDER_SPACE
         static HRESULT GetAssembly(/* in */  SString     &assemblyPath,
                                    /* in */  BOOL         fIsInTPA,
                                    /* out */ Assembly   **ppAssembly,
-                                   /* in */  BundleFileLocation bundleFileLocation = BundleFileLocation::Invalid());
+                                   /* in */  ProbeExtensionResult probeExtensionResult = ProbeExtensionResult::Invalid(),
+                                   /* out */ SString    *pDiagnosticInfo = NULL);
 
 #if !defined(DACCESS_COMPILE)
-        static HRESULT BindUsingHostAssemblyResolver (/* in */ INT_PTR pManagedAssemblyLoadContextToBindWithin,
+        static HRESULT BindUsingHostAssemblyResolver (/* in */ INT_PTR pAssemblyLoadContextToBindWithin,
                                                       /* in */ AssemblyName       *pAssemblyName,
                                                       /* in */ DefaultAssemblyBinder *pDefaultBinder,
+                                                      /* in */ AssemblyBinder *pBinder,
                                                       /* out */ Assembly           **ppAssembly);
 
         static HRESULT BindUsingPEImage(/* in */  AssemblyBinder     *pBinder,
                                         /* in */  BINDER_SPACE::AssemblyName *pAssemblyName,
                                         /* in */  PEImage            *pPEImage,
-                                        /* [retval] [out] */  Assembly **ppAssembly);
+                                        /* in */  bool              excludeAppPaths,
+                                        /* [retval] [out] */  Assembly **ppAssembly,
+                                        /* [out, optional] */ Assembly **ppExistingAssemblyOnConflict = nullptr);
 #endif // !defined(DACCESS_COMPILE)
 
         static HRESULT TranslatePEToArchitectureType(DWORD  *pdwPAFlags, PEKIND *PeKind);
@@ -73,22 +76,19 @@ namespace BINDER_SPACE
                                   /* in */  bool                skipFailureCaching,
                                   /* in */  bool                skipVersionCompatibilityCheck,
                                   /* in */  bool                excludeAppPaths,
-                                  /* out */ BindResult         *pBindResult);
-
-        static HRESULT BindWhereRef(/* in */  ApplicationContext *pApplicationContext,
-                                    /* in */  PathString         &assemblyPath,
-                                    /* in */  bool                excludeAppPaths,
-                                    /* out */ BindResult         *pBindResult);
+                                  /* out */ BindResult         *pBindResult,
+                                  /* [out, optional] */ Assembly **ppExistingAssemblyOnFailure = nullptr);
 
         static HRESULT BindLocked(/* in */  ApplicationContext *pApplicationContext,
                                   /* in */  AssemblyName       *pAssemblyName,
                                   /* in */  bool                skipVersionCompatibilityCheck,
                                   /* in */  bool                excludeAppPaths,
-                                  /* out */ BindResult         *pBindResult);
+                                  /* out */ BindResult         *pBindResult,
+                                  /* [out, optional] */ Assembly **ppExistingAssemblyOnFailure = nullptr);
 
         static HRESULT FindInExecutionContext(/* in */  ApplicationContext  *pApplicationContext,
                                               /* in */  AssemblyName        *pAssemblyName,
-                                              /* out */ ContextEntry       **ppContextEntry);
+                                              /* out */ Assembly           **ppAssembly);
 
         static HRESULT BindByTpaList(/* in */  ApplicationContext  *pApplicationContext,
                                      /* in */  AssemblyName        *pRequestedAssemblyName,

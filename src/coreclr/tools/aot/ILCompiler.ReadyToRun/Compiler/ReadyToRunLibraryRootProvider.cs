@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
+using System.Reflection.Metadata;
 
 using Internal.TypeSystem.Ecma;
 using Internal.TypeSystem;
@@ -10,89 +11,44 @@ using Internal.JitInterface;
 namespace ILCompiler
 {
     /// <summary>
-    /// Provides compilation group for a library that compiles everything in the input IL module.
+    /// Roots methods in the input IL module, choosing representative instantiations for generic definitions.
     /// </summary>
-    public class ReadyToRunRootProvider : ICompilationRootProvider
+    public class ReadyToRunLibraryRootProvider : ICompilationRootProvider
     {
-        private EcmaModule _module;
-        private IEnumerable<MethodDesc> _profileData;
-        private readonly bool _profileDrivenPartialNGen;
+        private const string SuppressCanonicalRootingAttributeName = "SuppressReadyToRunCanonicalRootingAttribute";
 
-        public ReadyToRunRootProvider(EcmaModule module, ProfileDataManager profileDataManager, bool profileDrivenPartialNGen)
+        private EcmaModule _module;
+        private InstructionSetSupport _instructionSetSupport;
+
+        public ReadyToRunLibraryRootProvider(EcmaModule module)
         {
             _module = module;
-            _profileData = profileDataManager.GetMethodsForModuleDesc(module);
-            _profileDrivenPartialNGen = profileDrivenPartialNGen;
+            _instructionSetSupport = ((ReadyToRunCompilerContext)module.Context).InstructionSetSupport;
         }
 
         public void AddCompilationRoots(IRootingServiceProvider rootProvider)
         {
-            foreach (var method in _profileData)
+            foreach (MetadataType type in _module.GetAllTypes())
             {
-                try
+                bool skipCanonicalInstantiation = SkipCanonicalInstantiation(type);
+                MetadataType typeWithMethods = type;
+                if (type.HasInstantiation)
                 {
-                    // Validate that this method is fully instantiated
-                    if (method.OwningType.IsGenericDefinition || method.OwningType.ContainsSignatureVariables())
-                    {
-                        continue;
-                    }
-
-                    if (method.IsGenericMethodDefinition)
-                    {
-                        continue;
-                    }
-
-                    bool containsSignatureVariables = false;
-                    foreach (TypeDesc t in method.Instantiation)
-                    {
-                        if (t.IsGenericDefinition)
-                        {
-                            containsSignatureVariables = true;
-                            break;
-                        }
-
-                        if (t.ContainsSignatureVariables())
-                        {
-                            containsSignatureVariables = true;
-                            break;
-                        }
-                    }
-                    if (containsSignatureVariables)
+                    if (skipCanonicalInstantiation)
                         continue;
 
-                    if (!CorInfoImpl.ShouldSkipCompilation(method))
-                    {
-                        CheckCanGenerateMethod(method);
-                        rootProvider.AddCompilationRoot(method, rootMinimalDependencies: true, reason: "Profile triggered method");
-                    }
+                    typeWithMethods = InstantiateTypeIfPossible(type);
+                    if (typeWithMethods == null)
+                        continue;
                 }
-                catch (TypeSystemException)
-                {
-                    // Individual methods can fail to load types referenced in their signatures.
-                    // Skip them in library mode since they're not going to be callable.
-                    continue;
-                }
-            }
 
-            if (!_profileDrivenPartialNGen)
-            {
-                foreach (MetadataType type in _module.GetAllTypes())
-                {
-                    MetadataType typeWithMethods = type;
-                    if (type.HasInstantiation)
-                    {
-                        typeWithMethods = InstantiateIfPossible(type);
-                        if (typeWithMethods == null)
-                            continue;
-                    }
-
-                    RootMethods(typeWithMethods, "Library module method", rootProvider);
-                }
+                RootMethods(typeWithMethods, skipCanonicalInstantiation, "Library module method", rootProvider);
             }
         }
 
-        private void RootMethods(TypeDesc type, string reason, IRootingServiceProvider rootProvider)
+        private void RootMethods(MetadataType type, bool skipCanonicalInstantiation, string reason, IRootingServiceProvider rootProvider)
         {
+            bool typeHasInstantiation = type.HasInstantiation;
             foreach (MethodDesc method in type.GetAllMethods())
             {
                 // Skip methods with no IL
@@ -102,10 +58,15 @@ namespace ILCompiler
                 if (method.IsInternalCall)
                     continue;
 
+                bool methodHasInstantiation = method.HasInstantiation;
+                if ((typeHasInstantiation || methodHasInstantiation)
+                    && SkipCanonicalInstantiation(method, skipCanonicalInstantiation))
+                    continue;
+
                 MethodDesc methodToRoot = method;
-                if (method.HasInstantiation)
+                if (methodHasInstantiation)
                 {
-                    methodToRoot = InstantiateIfPossible(method);
+                    methodToRoot = InstantiateMethodIfPossible(method);
 
                     if (methodToRoot == null)
                         continue;
@@ -113,7 +74,7 @@ namespace ILCompiler
 
                 try
                 {
-                    if (!CorInfoImpl.ShouldSkipCompilation(method))
+                    if (!CorInfoImpl.ShouldSkipCompilation(_instructionSetSupport, method))
                     {
                         CheckCanGenerateMethod(methodToRoot);
                         rootProvider.AddCompilationRoot(methodToRoot, rootMinimalDependencies: false, reason: reason);
@@ -165,11 +126,13 @@ namespace ILCompiler
                     // If a method's signature refers to a type with an indeterminate size,
                     // the compilation will eventually fail when we generate the GCRefMap.
                     //
-                    // Therefore we need to avoid adding these method into the graph
+                    // Therefore we need to avoid adding these methods into the graph
                     //
                     ThrowHelper.ThrowTypeLoadException(ExceptionStringID.ClassLoadGeneral, type);
                 }
             }
+
+            ((CompilerTypeSystemContext)type.Context).EnsureLoadableType(type);
         }
 
         private static Instantiation GetInstantiationThatMeetsConstraints(Instantiation definition)
@@ -192,7 +155,15 @@ namespace ILCompiler
             return new Instantiation(args);
         }
 
-        private static InstantiatedType InstantiateIfPossible(MetadataType type)
+        public static InstantiatedType InstantiateIfPossible(MetadataType type)
+        {
+            if (SkipCanonicalInstantiation(type))
+                return null;
+
+            return InstantiateTypeIfPossible(type);
+        }
+
+        internal static InstantiatedType InstantiateTypeIfPossible(MetadataType type)
         {
             Instantiation inst = GetInstantiationThatMeetsConstraints(type.Instantiation);
             if (inst.IsNull)
@@ -203,7 +174,15 @@ namespace ILCompiler
             return type.MakeInstantiatedType(inst);
         }
 
-        private static MethodDesc InstantiateIfPossible(MethodDesc method)
+        public static MethodDesc InstantiateIfPossible(MethodDesc method)
+        {
+            if (SkipCanonicalInstantiation(method, method.OwningType is MetadataType type && SkipCanonicalInstantiation(type)))
+                return null;
+
+            return InstantiateMethodIfPossible(method);
+        }
+
+        internal static MethodDesc InstantiateMethodIfPossible(MethodDesc method)
         {
             Instantiation inst = GetInstantiationThatMeetsConstraints(method.Instantiation);
             if (inst.IsNull)
@@ -212,6 +191,24 @@ namespace ILCompiler
             }
 
             return method.MakeInstantiatedMethod(inst);
+        }
+
+        internal static bool SkipCanonicalInstantiation(MethodDesc method, bool skipCanonicalInstantiation)
+        {
+            return skipCanonicalInstantiation || method.HasCustomAttribute("System.Runtime", SuppressCanonicalRootingAttributeName);
+        }
+
+        internal static bool SkipCanonicalInstantiation(MetadataType type)
+        {
+            while (type is not null)
+            {
+                if (type.HasCustomAttribute("System.Runtime", SuppressCanonicalRootingAttributeName))
+                    return true;
+
+                type = type.ContainingType as MetadataType;
+            }
+
+            return false;
         }
     }
 }

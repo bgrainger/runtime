@@ -27,7 +27,7 @@ void
 ds_ipc_advertise_cookie_v1_init (void);
 
 bool
-ds_icp_advertise_v1_send (DiagnosticsIpcStream *stream);
+ds_ipc_advertise_v1_send (DiagnosticsIpcStream *stream);
 
 /*
 * DiagnosticsIpcHeader
@@ -59,8 +59,24 @@ struct _DiagnosticsIpcHeader {
 #endif
 
 DS_DEFINE_GETTER_ARRAY_REF(DiagnosticsIpcHeader *, ipc_header, uint8_t *, const uint8_t *, magic, magic[0])
-DS_DEFINE_GETTER(DiagnosticsIpcHeader *, ipc_header, uint8_t, commandset)
-DS_DEFINE_GETTER(DiagnosticsIpcHeader *, ipc_header, uint8_t, commandid)
+DS_DEFINE_GETTER(DiagnosticsIpcHeader *, ipc_header, uint8_t, commandset) // ds_ipc_header_get_commandset
+DS_DEFINE_GETTER(DiagnosticsIpcHeader *, ipc_header, uint8_t, commandid) // ds_ipc_header_get_commandid
+
+// Validates that a payload size fits within the uint16_t message-size field
+// (which must also accommodate the header) and writes the narrowed value to
+// size_out. Returns true on success, false if the payload is too large.
+static
+inline
+bool
+ds_ipc_payload_size_try_narrow (size_t size, uint16_t *size_out)
+{
+	EP_ASSERT (size_out != NULL);
+	EP_ASSERT (size <= UINT16_MAX - sizeof (DiagnosticsIpcHeader));
+	if (size > UINT16_MAX - sizeof (DiagnosticsIpcHeader))
+		return false;
+	*size_out = (uint16_t)size;
+	return true;
+}
 
 /*
 * DiagnosticsIpcMessage
@@ -87,7 +103,7 @@ struct _DiagnosticsIpcMessage {
 };
 #endif
 
-DS_DEFINE_GETTER_REF(DiagnosticsIpcMessage *, ipc_message, DiagnosticsIpcHeader *, header)
+DS_DEFINE_GETTER_REF(DiagnosticsIpcMessage *, ipc_message, DiagnosticsIpcHeader *, header) // ds_ipc_message_get_header_ref
 
 DiagnosticsIpcMessage *
 ds_ipc_message_init (DiagnosticsIpcMessage *message);
@@ -112,21 +128,16 @@ ds_ipc_message_try_parse_value (
 	uint32_t value_len);
 
 bool
+ds_ipc_message_try_parse_bool (
+	uint8_t **buffer,
+	uint32_t *buffer_len,
+	bool *value);
+
+bool
 ds_ipc_message_try_parse_uint64_t (
 	uint8_t **buffer,
 	uint32_t *buffer_len,
 	uint64_t *value);
-
-static
-inline
-bool
-ds_ipc_message_try_parse_int64_t (
-	uint8_t **buffer,
-	uint32_t *buffer_len,
-	int64_t *value)
-{
-	return ds_ipc_message_try_parse_uint64_t (buffer, buffer_len, (uint64_t *)value);
-}
 
 bool
 ds_ipc_message_try_parse_uint32_t (
@@ -134,16 +145,18 @@ ds_ipc_message_try_parse_uint32_t (
 	uint32_t *buffer_len,
 	uint32_t *value);
 
-static
-inline
 bool
-ds_ipc_message_try_parse_int32_t (
+ds_ipc_message_try_parse_string_utf16_t_string_utf8_t_alloc (
+    uint8_t **buffer,
+    uint32_t *buffer_len,
+    ep_char8_t **string_utf8);
+
+bool
+ds_ipc_message_try_parse_string_utf16_t_byte_array_alloc (
 	uint8_t **buffer,
 	uint32_t *buffer_len,
-	int32_t *value)
-{
-	return ds_ipc_message_try_parse_uint32_t (buffer, buffer_len, (uint32_t *)value);
-}
+	uint8_t **string_byte_array,
+	uint32_t *string_byte_array_len);
 
 bool
 ds_ipc_message_try_parse_string_utf16_t (
@@ -173,17 +186,6 @@ ds_ipc_message_initialize_header_uint64_t_payload (
 	DiagnosticsIpcMessage *message,
 	const DiagnosticsIpcHeader *header,
 	uint64_t payload);
-
-static
-inline
-bool
-ds_ipc_message_initialize_header_int64_t_payload (
-	DiagnosticsIpcMessage *message,
-	const DiagnosticsIpcHeader *header,
-	int64_t payload)
-{
-	return ds_ipc_message_initialize_header_uint64_t_payload (message, header, (uint64_t)payload);
-}
 
 bool
 ds_ipc_message_initialize_buffer (

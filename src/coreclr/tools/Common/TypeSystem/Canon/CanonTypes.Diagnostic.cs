@@ -1,13 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
-
-using Internal.NativeFormat;
-
-using Debug = System.Diagnostics.Debug;
-
 namespace Internal.TypeSystem
 {
     internal sealed partial class CanonType
@@ -16,14 +9,14 @@ namespace Internal.TypeSystem
         {
             get
             {
-                return _Name;
+                return GetName();
             }
         }
         public override string DiagnosticNamespace
         {
             get
             {
-                return _Namespace;
+                return GetNamespace();
             }
         }
     }
@@ -34,14 +27,14 @@ namespace Internal.TypeSystem
         {
             get
             {
-                return _Name;
+                return GetName();
             }
         }
         public override string DiagnosticNamespace
         {
             get
             {
-                return _Namespace;
+                return GetNamespace();
             }
         }
     }

@@ -8,7 +8,8 @@ internal static partial class Interop
 {
     internal static partial class User32
     {
-        [GeneratedDllImport(Libraries.User32, CharSet = CharSet.Unicode, ExactSpelling = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.User32, StringMarshalling = StringMarshalling.Utf16)]
         public static partial IntPtr FindWindowW(string lpClassName, string lpWindowName);
     }
 }

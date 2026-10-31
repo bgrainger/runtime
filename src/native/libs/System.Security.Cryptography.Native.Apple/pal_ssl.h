@@ -15,6 +15,8 @@ enum
     PAL_TlsHandshakeState_WouldBlock = 2,
     PAL_TlsHandshakeState_ServerAuthCompleted = 3,
     PAL_TlsHandshakeState_ClientAuthCompleted = 4,
+    PAL_TlsHandshakeState_ClientCertRequested = 5,
+    PAL_TlsHandshakeState_ClientHelloReceived = 6,
 };
 typedef int32_t PAL_TlsHandshakeState;
 
@@ -27,6 +29,40 @@ enum
     PAL_TlsIo_Renegotiate = 4,
 };
 typedef int32_t PAL_TlsIo;
+
+enum
+{
+    PAL_TlsAlertMessage_UnexpectedMessage = 10,
+    PAL_TlsAlertMessage_BadRecordMac = 20,
+    PAL_TlsAlertMessage_DecryptionFailed = 21,
+    PAL_TlsAlertMessage_RecordOverflow = 22,
+    PAL_TlsAlertMessage_DecompressionFail = 30,
+    PAL_TlsAlertMessage_HandshakeFailure = 40,
+    PAL_TlsAlertMessage_BadCertificate = 42,
+    PAL_TlsAlertMessage_UnsupportedCert = 43,
+    PAL_TlsAlertMessage_CertificateRevoked = 44,
+    PAL_TlsAlertMessage_CertificateExpired = 45,
+    PAL_TlsAlertMessage_CertificateUnknown = 46,
+    PAL_TlsAlertMessage_IllegalParameter = 47,
+    PAL_TlsAlertMessage_UnknownCA = 48,
+    PAL_TlsAlertMessage_AccessDenied = 49,
+    PAL_TlsAlertMessage_DecodeError = 50,
+    PAL_TlsAlertMessage_DecryptError = 51,
+    PAL_TlsAlertMessage_ExportRestriction = 60,
+    PAL_TlsAlertMessage_ProtocolVersion = 70,
+    PAL_TlsAlertMessage_InsufficientSecurity = 71,
+    PAL_TlsAlertMessage_InternalError = 80,
+    PAL_TlsAlertMessage_InappropriateFallback = 86,
+    PAL_TlsAlertMessage_UserCanceled = 90,
+    PAL_TlsAlertMessage_NoRenegotiation = 100,
+    PAL_TlsAlertMessage_MissingExtension = 109,
+    PAL_TlsAlertMessage_UnsupportedExtension = 110,
+    PAL_TlsAlertMessage_UnrecognizedName = 112,
+    PAL_TlsAlertMessage_BadCertificateStatusResponse = 113,
+    PAL_TlsAlertMessage_UnknownPskIdentity = 115,
+    PAL_TlsAlertMessage_CertificateRequired = 116,
+};
+typedef int32_t PAL_TlsAlertMessage;
 
 /*
 Create an SSL context, for the Server or Client role as determined by isServer.
@@ -101,6 +137,17 @@ PALEXPORT int32_t
 AppleCryptoNative_SslSetBreakOnServerAuth(SSLContextRef sslContext, int32_t setBreak, int32_t* pOSStatus);
 
 /*
+Sets the policy of whether or not to break when certificate request was received on client.
+
+Returns 1 on success, 0 on failure, other values on invalid state.
+
+Output:
+pOSStatus: Receives the value returned by SSLSetSessionOption
+*/
+PALEXPORT int32_t
+AppleCryptoNative_SslSetBreakOnCertRequested(SSLContextRef sslContext, int32_t setBreak, int32_t* pOSStatus);
+
+/*
 Sets the policy of whether or not to break when a client identity has been presented.
 
 Returns 1 on success, 0 on failure, other values on invalid state.
@@ -110,6 +157,17 @@ pOSStatus: Receives the value returned by SSLSetSessionOption
 */
 PALEXPORT int32_t
 AppleCryptoNative_SslSetBreakOnClientAuth(SSLContextRef sslContext, int32_t setBreak, int32_t* pOSStatus);
+
+/*
+Sets the policy of whether or not to break when server receives ClientHello.
+
+Returns 1 on success, 0 on failure, other values on invalid state.
+
+Output:
+pOSStatus: Receives the value returned by SSLSetSessionOption
+*/
+PALEXPORT int32_t
+AppleCryptoNative_SslSetBreakOnClientHello(SSLContextRef sslContext, int32_t setBreak, int32_t* pOSStatus);
 
 /*
 Set the certificate chain for the ServerHello or ClientHello message.
@@ -146,6 +204,16 @@ pOSStatus: Receives the value from SSLSetALPNData()
 PALEXPORT int32_t AppleCryptoNative_SSLSetALPNProtocols(SSLContextRef sslContext, CFArrayRef protocols, int32_t* pOSStatus);
 
 /*
+Set selected protocol on server side.
+
+Returns 1 on success, 0 on failure, other values for invalid state.
+
+Output:
+pOSStatus: Receives the value from SSLSetALPNData()
+*/
+PALEXPORT int32_t AppleCryptoNative_SSLSetALPNProtocol(SSLContextRef sslContext, const void* protocol, int length, int32_t* pOSStatus);
+
+/*
 Get negotiated protocol value from ServerHello.
 */
 PALEXPORT int32_t AppleCryptoNative_SslGetAlpnSelected(SSLContextRef sslContext, CFDataRef *protocol);
@@ -164,6 +232,17 @@ Pump the TLS handshake.
 Returns an indication of what state the error is in. Any negative number means an error occurred.
 */
 PALEXPORT PAL_TlsHandshakeState AppleCryptoNative_SslHandshake(SSLContextRef sslContext);
+
+/*
+Set the TLS alert to send when the handshake is aborted.
+
+Returns 1 on success, 0 on failure, other values for invalid state.
+
+Output:
+pOSStatus: Receives the value returned by SSLSetError.
+*/
+PALEXPORT int32_t
+AppleCryptoNative_SslSetError(SSLContextRef sslContext, PAL_TlsAlertMessage alertMessage, int32_t* pOSStatus);
 
 /*
 Take bufLen bytes of cleartext data from buf and encrypt/frame the data.
@@ -191,17 +270,6 @@ written: Receives the number of bytes written into buf
 */
 PALEXPORT PAL_TlsIo
 AppleCryptoNative_SslRead(SSLContextRef sslContext, uint8_t* buf, uint32_t bufLen, uint32_t* written);
-
-/*
-Check to see if the server identity certificate for this connection matches the requested hostname.
-
-notBefore: Specify the EE/leaf certificate's notBefore value to prevent a false negative due to
-the certificate being expired (or not yet valid).
-
-Returns 1 on match, 0 on mismatch, any other value indicates an invalid state.
-*/
-PALEXPORT int32_t
-AppleCryptoNative_SslIsHostnameMatch(SSLContextRef sslContext, CFStringRef cfHostname, CFDateRef notBefore, int32_t* pOSStatus);
 
 /*
 Generate a TLS Close alert to terminate the session.
@@ -237,3 +305,10 @@ Sets enabled cipher suites for the current session.
 Returns the output of SSLSetEnabledCiphers.
 */
 PALEXPORT int32_t AppleCryptoNative_SslSetEnabledCipherSuites(SSLContextRef sslContext, const uint32_t* cipherSuites, int32_t numCipherSuites);
+
+/*
+Adds one or more certificates to a server's list of certification authorities (CAs) acceptable for client authentication.
+
+Returns the output of SSLSetCertificateAuthorities.
+*/
+PALEXPORT int32_t AppleCryptoNative_SslSetCertificateAuthorities(SSLContextRef sslContext, CFArrayRef certificates, int32_t replaceExisting);

@@ -2,28 +2,28 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.Runtime.InteropServices;
-using System.Reflection;
 using System.Threading;
+using TestLibrary;
 
 /*
  * Issue description:
   Running foreground threads do not prevent runtime shutdown
   on return from main
-
-Change description:
-  For CoreCLR: introduce BOOL waitForOtherThreads parameter
-  to Assembly::ExecuteMainMethod and exit conditionally;
-  For CoreRT aka NativeAOT: implement missing logic
 */
 
 public class Test_foreground_shutdown
 {
     public static int Main()
     {
+        if (!PlatformDetection.IsMultithreadingSupported)
+        {
+            Console.WriteLine("Multithreading is not supported, skipping test.");
+            return 100;
+        }
+
         new Thread(() =>
         {
-            Thread.Sleep(TimeSpan.FromSeconds(1));
+            Thread.Sleep(TimeSpan.FromSeconds(2));
             Environment.Exit(100);
         }).Start();
 

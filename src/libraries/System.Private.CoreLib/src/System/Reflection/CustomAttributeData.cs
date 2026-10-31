@@ -1,4 +1,4 @@
-// Licensed to the .NET Foundation under one or more agreements.
+﻿// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
@@ -12,32 +12,28 @@ namespace System.Reflection
         #region Public Static Members
         public static IList<CustomAttributeData> GetCustomAttributes(MemberInfo target)
         {
-            if (target is null)
-                throw new ArgumentNullException(nameof(target));
+            ArgumentNullException.ThrowIfNull(target);
 
             return target.GetCustomAttributesData();
         }
 
         public static IList<CustomAttributeData> GetCustomAttributes(Module target)
         {
-            if (target is null)
-                throw new ArgumentNullException(nameof(target));
+            ArgumentNullException.ThrowIfNull(target);
 
             return target.GetCustomAttributesData();
         }
 
         public static IList<CustomAttributeData> GetCustomAttributes(Assembly target)
         {
-            if (target is null)
-                throw new ArgumentNullException(nameof(target));
+            ArgumentNullException.ThrowIfNull(target);
 
             return target.GetCustomAttributesData();
         }
 
         public static IList<CustomAttributeData> GetCustomAttributes(ParameterInfo target)
         {
-            if (target is null)
-                throw new ArgumentNullException(nameof(target));
+            ArgumentNullException.ThrowIfNull(target);
 
             return target.GetCustomAttributesData();
         }
@@ -48,7 +44,7 @@ namespace System.Reflection
         }
 
         #region Object Override
-        public override string ToString()
+        public override unsafe string ToString()
         {
             var vsb = new ValueStringBuilder(stackalloc char[256]);
 
@@ -80,14 +76,12 @@ namespace System.Reflection
 
             return vsb.ToString();
         }
-        public override int GetHashCode() => base.GetHashCode();
-        public override bool Equals(object? obj) => obj == (object)this;
         #endregion
 
         #region Public Members
         public virtual Type AttributeType => Constructor.DeclaringType!;
 
-        // Expected to be overriden
+        // Expected to be overridden
         public virtual ConstructorInfo Constructor => null!;
         public virtual IList<CustomAttributeTypedArgument> ConstructorArguments => null!;
         public virtual IList<CustomAttributeNamedArgument> NamedArguments => null!;

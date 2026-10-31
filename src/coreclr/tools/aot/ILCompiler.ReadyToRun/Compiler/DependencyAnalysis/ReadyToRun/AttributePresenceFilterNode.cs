@@ -9,6 +9,7 @@ using System.Numerics;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 
+using Internal;
 using Internal.Text;
 using Internal.TypeSystem.Ecma;
 
@@ -21,7 +22,6 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         public override int ClassCode => 56456113;
 
         public AttributePresenceFilterNode(EcmaModule module)
-            : base(module.Context.Target)
         {
             _module = module;
         }
@@ -29,7 +29,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         public override void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
         {
             sb.Append(nameMangler.CompilationUnitPrefix);
-            sb.Append("__ReadyToRunAttributePresenceFilter__");
+            sb.Append("__ReadyToRunAttributePresenceFilter__"u8);
             sb.Append(_module.Assembly.GetName().Name);
         }
 
@@ -76,6 +76,15 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                 {
                     // Historical attribute in the System.Reflection namespace
                     if (customAttributeTypeName == "DefaultMemberAttribute")
+                    {
+                        addToTable = true;
+                    }
+                }
+                else if (customAttributeTypeNamespace == "System.Diagnostics.CodeAnalysis")
+                {
+                    // Consulted by the JIT (via canValueClassInstancePointerEscape) to reason
+                    // about escaping receivers of value type instance methods.
+                    if (customAttributeTypeName == "UnscopedRefAttribute")
                     {
                         addToTable = true;
                     }
@@ -335,8 +344,8 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                 {
                     string name = customAttributeEntry.TypeNamespace + "." + customAttributeEntry.TypeName;
                     // This hashing algorithm MUST match exactly the logic in NativeCuckooFilter
-                    int hashOfAttribute = ReadyToRunHashCode.NameHashCode(name);
-                    uint hash = unchecked((uint)ReadyToRunHashCode.CombineTwoValuesIntoHash((uint)hashOfAttribute, (uint)customAttributeEntry.Parent));
+                    int hashOfAttribute = VersionResilientHashCode.NameHashCode(System.Text.Encoding.UTF8.GetBytes(name));
+                    uint hash = unchecked((uint)VersionResilientHashCode.CombineTwoValuesIntoHash((uint)hashOfAttribute, (uint)customAttributeEntry.Parent));
                     ushort fingerprint = (ushort)(hash >> 16);
                     if (fingerprint == 0)
                     {
@@ -384,7 +393,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                                 return;
                             }
                         }
-                        Debug.Assert(false, "Not possible to reach here");
+                        Debug.Fail("Not possible to reach here");
                     };
                     // Scan for pre-existing fingerprint entry in buckets
                     if (hasEntryInBucket(bucketAIndex, fingerprint) || hasEntryInBucket(bucketBIndex, fingerprint))
@@ -440,7 +449,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                     bucketCount *= 2;
                 }
             }
-            while(tryAgainWithBiggerTable && ((countOfRetries++) < 2));
+            while (tryAgainWithBiggerTable && ((countOfRetries++) < 2));
 
             byte[] result;
             if (tryAgainWithBiggerTable)

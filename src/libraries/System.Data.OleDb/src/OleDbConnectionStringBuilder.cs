@@ -15,6 +15,9 @@ namespace System.Data.OleDb
     [DefaultProperty("Provider")]
     [RefreshProperties(RefreshProperties.All)]
     [TypeConverter(typeof(OleDbConnectionStringBuilder.OleDbConnectionStringBuilderConverter))]
+#if NET
+    [RequiresDynamicCode(OleDbConnection.TrimWarning)]
+#endif
     public sealed class OleDbConnectionStringBuilder : DbConnectionStringBuilder
     {
         private enum Keywords
@@ -115,7 +118,7 @@ namespace System.Data.OleDb
                                 PersistSecurityInfo = ConvertToBoolean(value);
                                 break;
                             default:
-                                Debug.Assert(false, "unexpected keyword");
+                                Debug.Fail("unexpected keyword");
                                 throw ADP.KeywordNotSupported(keyword);
                         }
                     }
@@ -310,7 +313,7 @@ namespace System.Data.OleDb
                 case Keywords.Provider:
                     return Provider;
                 default:
-                    Debug.Assert(false, "unexpected keyword");
+                    Debug.Fail("unexpected keyword");
                     throw ADP.KeywordNotSupported(s_validKeywords[(int)index]);
             }
         }
@@ -354,7 +357,7 @@ namespace System.Data.OleDb
                     RestartProvider();
                     break;
                 default:
-                    Debug.Assert(false, "unexpected keyword");
+                    Debug.Fail("unexpected keyword");
                     throw ADP.KeywordNotSupported(s_validKeywords[(int)index]);
             }
         }
@@ -528,6 +531,7 @@ namespace System.Data.OleDb
             return providerInfo;
         }
 
+        [RequiresDynamicCode(OleDbConnection.TrimWarning)]
         private sealed class OleDbProviderConverter : StringConverter
         {
             private const int DBSOURCETYPE_DATASOURCE_TDP = 1;
@@ -599,6 +603,7 @@ namespace System.Data.OleDb
             Default = ~(ClientCursor | AggregationAfterSession),
         };
 
+        [RequiresDynamicCode(OleDbConnection.TrimWarning)]
         internal sealed class OleDbServicesConverter : TypeConverter
         {
             private StandardValuesCollection? _standardValues;
@@ -626,36 +631,36 @@ namespace System.Data.OleDb
                     }
                     else
                     {
-                        if (svalue.IndexOf(',') != -1)
+                        if (svalue.Contains(','))
                         {
                             int convertedValue = 0;
-                            string[] values = svalue.Split(new char[] { ',' });
+                            string[] values = svalue.Split(OleDbConnectionInternal.s_comma);
                             foreach (string v in values)
                             {
-                                convertedValue |= (int)(OleDbServiceValues)Enum.Parse(typeof(OleDbServiceValues), v, true);
+                                convertedValue |= (int)Enum.Parse<OleDbServiceValues>(v, true);
                             }
-                            return (int)convertedValue;
+                            return convertedValue;
                         }
                         else
                         {
-                            return (int)(OleDbServiceValues)Enum.Parse(typeof(OleDbServiceValues), svalue, true);
+                            return (int)Enum.Parse<OleDbServiceValues>(svalue, true);
                         }
                     }
                 }
                 return base.ConvertFrom(context, culture, value);
             }
 
-            public override bool CanConvertTo(ITypeDescriptorContext? context, Type? destinationType)
+            public override bool CanConvertTo(ITypeDescriptorContext? context, [NotNullWhen(true)] Type? destinationType)
             {
                 // Only know how to convert to the NetworkLibrary enumeration
                 return ((typeof(string) == destinationType) || base.CanConvertTo(context, destinationType));
             }
 
-            public override object? ConvertTo(ITypeDescriptorContext? context, System.Globalization.CultureInfo? culture, object? value, Type destinationType)
+            public override object? ConvertTo(ITypeDescriptorContext? context, CultureInfo? culture, object? value, Type destinationType)
             {
                 if ((typeof(string) == destinationType) && (null != value) && (typeof(int) == value.GetType()))
                 {
-                    return Enum.Format(typeof(OleDbServiceValues), ((OleDbServiceValues)(int)value), "G");
+                    return ((OleDbServiceValues)(int)(value)).ToString("G");
                 }
                 return base.ConvertTo(context, culture, value, destinationType);
             }
@@ -675,7 +680,7 @@ namespace System.Data.OleDb
                 StandardValuesCollection? standardValues = _standardValues;
                 if (null == standardValues)
                 {
-                    Array objValues = Enum.GetValues(typeof(OleDbServiceValues));
+                    OleDbServiceValues[] objValues = Enum.GetValues<OleDbServiceValues>();
                     Array.Sort(objValues, 0, objValues.Length);
                     standardValues = new StandardValuesCollection(objValues);
                     _standardValues = standardValues;
@@ -697,7 +702,7 @@ namespace System.Data.OleDb
             {
             }
 
-            public override bool CanConvertTo(ITypeDescriptorContext? context, Type? destinationType)
+            public override bool CanConvertTo(ITypeDescriptorContext? context, [NotNullWhen(true)] Type? destinationType)
             {
                 if (typeof(System.ComponentModel.Design.Serialization.InstanceDescriptor) == destinationType)
                 {
@@ -723,7 +728,7 @@ namespace System.Data.OleDb
                 return base.ConvertTo(context, culture, value, destinationType);
             }
 
-            private System.ComponentModel.Design.Serialization.InstanceDescriptor ConvertToInstanceDescriptor(OleDbConnectionStringBuilder options)
+            private static System.ComponentModel.Design.Serialization.InstanceDescriptor ConvertToInstanceDescriptor(OleDbConnectionStringBuilder options)
             {
                 Type[] ctorParams = new Type[] { typeof(string) };
                 object[] ctorValues = new object[] { options.ConnectionString };

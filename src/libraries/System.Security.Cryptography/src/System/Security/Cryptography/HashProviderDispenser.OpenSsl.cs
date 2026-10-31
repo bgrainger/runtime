@@ -4,234 +4,57 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
+using Internal.Cryptography;
 using Microsoft.Win32.SafeHandles;
 
-namespace Internal.Cryptography
+namespace System.Security.Cryptography
 {
     internal static partial class HashProviderDispenser
     {
-        internal static HashProvider CreateHashProvider(string hashAlgorithmId)
+        internal static bool KmacSupported(string algorithmId)
         {
-            IntPtr evpType = Interop.Crypto.HashAlgorithmToEvp(hashAlgorithmId);
-            return new EvpHashProvider(evpType);
+            return algorithmId switch
+            {
+                HashAlgorithmNames.KMAC128 => Interop.Crypto.EvpMacAlgs.Kmac128 is not null,
+                HashAlgorithmNames.KMAC256 => Interop.Crypto.EvpMacAlgs.Kmac256 is not null,
+                _ => false,
+            };
         }
 
-        internal static HashProvider CreateMacProvider(string hashAlgorithmId, ReadOnlySpan<byte> key)
+        internal static partial class OneShotHashProvider
         {
-            IntPtr evpType = Interop.Crypto.HashAlgorithmToEvp(hashAlgorithmId);
-            return new HmacHashProvider(evpType, key);
-        }
-
-        internal static class OneShotHashProvider
-        {
-            public static int MacData(
-                string hashAlgorithmId,
+            public static void KmacData(
+                string algorithmId,
                 ReadOnlySpan<byte> key,
                 ReadOnlySpan<byte> source,
-                Span<byte> destination)
+                Span<byte> destination,
+                ReadOnlySpan<byte> customizationString,
+                bool xof)
+            {
+                SafeEvpMacHandle? macHandle = algorithmId switch
+                {
+                    HashAlgorithmNames.KMAC128 => Interop.Crypto.EvpMacAlgs.Kmac128,
+                    HashAlgorithmNames.KMAC256 => Interop.Crypto.EvpMacAlgs.Kmac256,
+                    _ => throw new CryptographicException(),
+                };
+
+                Debug.Assert(macHandle is not null);
+                Interop.Crypto.EvpMacOneShot(macHandle, key, customizationString, source, destination, xof);
+            }
+
+            public static unsafe void HashDataXof(string hashAlgorithmId, ReadOnlySpan<byte> source, Span<byte> destination)
             {
                 IntPtr evpType = Interop.Crypto.HashAlgorithmToEvp(hashAlgorithmId);
                 Debug.Assert(evpType != IntPtr.Zero);
 
-                int hashSize = Interop.Crypto.EvpMdSize(evpType);
+                const int Success = 1;
+                int ret = Interop.Crypto.EvpDigestXOFOneShot(evpType, source, destination);
 
-                if (hashSize <= 0 || destination.Length < hashSize)
+                if (ret != Success)
                 {
-                    Debug.Fail("Destination length or hash size not valid.");
-                    throw new CryptographicException();
+                    Debug.Assert(ret == 0);
+                    throw Interop.Crypto.CreateOpenSslCryptographicException();
                 }
-
-                int written = Interop.Crypto.HmacOneShot(evpType, key, source, destination);
-                Debug.Assert(written == hashSize);
-                return written;
-            }
-
-            public static unsafe int HashData(string hashAlgorithmId, ReadOnlySpan<byte> source, Span<byte> destination)
-            {
-                IntPtr evpType = Interop.Crypto.HashAlgorithmToEvp(hashAlgorithmId);
-                Debug.Assert(evpType != IntPtr.Zero);
-
-                int hashSize = Interop.Crypto.EvpMdSize(evpType);
-
-                if (hashSize <= 0 || destination.Length < hashSize)
-                    throw new CryptographicException();
-
-                fixed (byte* pSource = source)
-                fixed (byte* pDestination = destination)
-                {
-                    uint length = (uint)destination.Length;
-                    Check(Interop.Crypto.EvpDigestOneShot(evpType, pSource, source.Length, pDestination, &length));
-                    Debug.Assert(length == hashSize);
-                }
-
-                return hashSize;
-            }
-        }
-
-        private sealed class EvpHashProvider : HashProvider
-        {
-            private readonly IntPtr _algorithmEvp;
-            private readonly int _hashSize;
-            private readonly SafeEvpMdCtxHandle _ctx;
-            private bool _running;
-
-            public EvpHashProvider(IntPtr algorithmEvp)
-            {
-                _algorithmEvp = algorithmEvp;
-                Debug.Assert(algorithmEvp != IntPtr.Zero);
-
-                _hashSize = Interop.Crypto.EvpMdSize(_algorithmEvp);
-                if (_hashSize <= 0 || _hashSize > Interop.Crypto.EVP_MAX_MD_SIZE)
-                {
-                    throw new CryptographicException();
-                }
-
-                _ctx = Interop.Crypto.EvpMdCtxCreate(_algorithmEvp);
-
-                Interop.Crypto.CheckValidOpenSslHandle(_ctx);
-            }
-
-            public override void AppendHashData(ReadOnlySpan<byte> data)
-            {
-                if (data.IsEmpty)
-                {
-                    return;
-                }
-
-                _running = true;
-                Check(Interop.Crypto.EvpDigestUpdate(_ctx, data, data.Length));
-            }
-
-            public override int FinalizeHashAndReset(Span<byte> destination)
-            {
-                Debug.Assert(destination.Length >= _hashSize);
-
-                uint length = (uint)destination.Length;
-                Check(Interop.Crypto.EvpDigestFinalEx(_ctx, ref MemoryMarshal.GetReference(destination), ref length));
-                Debug.Assert(length == _hashSize);
-
-                // Reset the algorithm provider.
-                Check(Interop.Crypto.EvpDigestReset(_ctx, _algorithmEvp));
-                _running = false;
-
-                return _hashSize;
-            }
-
-            public override int GetCurrentHash(Span<byte> destination)
-            {
-                Debug.Assert(destination.Length >= _hashSize);
-
-                uint length = (uint)destination.Length;
-                Check(Interop.Crypto.EvpDigestCurrent(_ctx, ref MemoryMarshal.GetReference(destination), ref length));
-                Debug.Assert(length == _hashSize);
-
-                return _hashSize;
-            }
-
-            public override int HashSizeInBytes => _hashSize;
-
-            public override void Dispose(bool disposing)
-            {
-                if (disposing)
-                {
-                    _ctx.Dispose();
-                }
-            }
-
-            public override void Reset()
-            {
-                if (_running)
-                {
-                    Check(Interop.Crypto.EvpDigestReset(_ctx, _algorithmEvp));
-                    _running = false;
-                }
-            }
-        }
-
-        private sealed class HmacHashProvider : HashProvider
-        {
-            private readonly int _hashSize;
-            private SafeHmacCtxHandle _hmacCtx;
-            private bool _running;
-
-            public HmacHashProvider(IntPtr algorithmEvp, ReadOnlySpan<byte> key)
-            {
-                Debug.Assert(algorithmEvp != IntPtr.Zero);
-
-                _hashSize = Interop.Crypto.EvpMdSize(algorithmEvp);
-                if (_hashSize <= 0 || _hashSize > Interop.Crypto.EVP_MAX_MD_SIZE)
-                {
-                    throw new CryptographicException();
-                }
-
-                _hmacCtx = Interop.Crypto.HmacCreate(ref MemoryMarshal.GetReference(key), key.Length, algorithmEvp);
-                Interop.Crypto.CheckValidOpenSslHandle(_hmacCtx);
-            }
-
-            public override void AppendHashData(ReadOnlySpan<byte> data)
-            {
-                if (data.IsEmpty)
-                {
-                    return;
-                }
-
-                _running = true;
-                Check(Interop.Crypto.HmacUpdate(_hmacCtx, data, data.Length));
-            }
-
-            public override int FinalizeHashAndReset(Span<byte> destination)
-            {
-                Debug.Assert(destination.Length >= _hashSize);
-
-                int length = destination.Length;
-                Check(Interop.Crypto.HmacFinal(_hmacCtx, ref MemoryMarshal.GetReference(destination), ref length));
-                Debug.Assert(length == _hashSize);
-
-                Check(Interop.Crypto.HmacReset(_hmacCtx));
-                _running = false;
-                return _hashSize;
-            }
-
-            public override int GetCurrentHash(Span<byte> destination)
-            {
-                Debug.Assert(destination.Length >= _hashSize);
-
-                int length = destination.Length;
-                Check(Interop.Crypto.HmacCurrent(_hmacCtx, ref MemoryMarshal.GetReference(destination), ref length));
-                Debug.Assert(length == _hashSize);
-
-                return _hashSize;
-            }
-
-            public override int HashSizeInBytes => _hashSize;
-
-            public override void Dispose(bool disposing)
-            {
-                if (disposing && _hmacCtx != null)
-                {
-                    _hmacCtx.Dispose();
-                    _hmacCtx = null!;
-                }
-            }
-
-            public override void Reset()
-            {
-                if (_running)
-                {
-                    Check(Interop.Crypto.HmacReset(_hmacCtx));
-                    _running = false;
-                }
-            }
-        }
-
-        private static void Check(int result)
-        {
-            const int Success = 1;
-            if (result != Success)
-            {
-                Debug.Assert(result == 0);
-                throw Interop.Crypto.CreateOpenSslCryptographicException();
             }
         }
     }

@@ -1,15 +1,16 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Buffers.Text;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+#if NET
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.Arm;
+using System.Runtime.Intrinsics.Wasm;
 using System.Runtime.Intrinsics.X86;
-
-#if SYSTEM_PRIVATE_CORELIB
-using Internal.Runtime.CompilerServices;
 #endif
 
 namespace System.Text.Unicode
@@ -30,21 +31,18 @@ namespace System.Text.Unicode
             Debug.Assert(pInputBuffer != null || inputLength == 0, "Input length must be zero if input buffer pointer is null.");
 
             // First, try to drain off as many ASCII bytes as we can from the beginning.
+            nuint numAsciiBytesCounted = Ascii.GetIndexOfFirstNonAsciiByte(pInputBuffer, (uint)inputLength);
+            pInputBuffer += numAsciiBytesCounted;
 
+            // Quick check - did we just end up consuming the entire input buffer?
+            // If so, short-circuit the remainder of the method.
+
+            inputLength -= (int)numAsciiBytesCounted;
+            if (inputLength == 0)
             {
-                nuint numAsciiBytesCounted = ASCIIUtility.GetIndexOfFirstNonAsciiByte(pInputBuffer, (uint)inputLength);
-                pInputBuffer += numAsciiBytesCounted;
-
-                // Quick check - did we just end up consuming the entire input buffer?
-                // If so, short-circuit the remainder of the method.
-
-                inputLength -= (int)numAsciiBytesCounted;
-                if (inputLength == 0)
-                {
-                    utf16CodeUnitCountAdjustment = 0;
-                    scalarCountAdjustment = 0;
-                    return pInputBuffer;
-                }
+                utf16CodeUnitCountAdjustment = 0;
+                scalarCountAdjustment = 0;
+                return pInputBuffer;
             }
 
 #if DEBUG
@@ -86,7 +84,7 @@ namespace System.Text.Unicode
 
                 // First, check for the common case of all-ASCII bytes.
 
-                if (ASCIIUtility.AllBytesInUInt32AreAscii(thisDWord))
+                if (Ascii.AllBytesInUInt32AreAscii(thisDWord))
                 {
                     // We read an all-ASCII sequence.
 
@@ -106,7 +104,7 @@ namespace System.Text.Unicode
                         // the read pointer up to the next aligned address.
 
                         thisDWord = Unsafe.ReadUnaligned<uint>(pInputBuffer);
-                        if (!ASCIIUtility.AllBytesInUInt32AreAscii(thisDWord))
+                        if (!Ascii.AllBytesInUInt32AreAscii(thisDWord))
                         {
                             goto AfterReadDWordSkipAllBytesAsciiCheck;
                         }
@@ -119,13 +117,14 @@ namespace System.Text.Unicode
                         // the alignment check consumes at most a single DWORD.)
 
                         byte* pInputBufferFinalPosAtWhichCanSafelyLoop = pFinalPosWhereCanReadDWordFromInputBuffer - 3 * sizeof(uint); // can safely read 4 DWORDs here
-                        nuint trailingZeroCount;
 
                         // pInputBuffer is 32-bit aligned but not necessary 128-bit aligned, so we're
                         // going to perform an unaligned load. We don't necessarily care about aligning
                         // this because we pessimistically assume we'll encounter non-ASCII data at some
                         // point in the not-too-distant future (otherwise we would've stayed entirely
                         // within the all-ASCII vectorized code at the entry to this method).
+#if NET
+                        nuint trailingZeroCount;
                         if (AdvSimd.Arm64.IsSupported && BitConverter.IsLittleEndian)
                         {
                             // declare bitMask128 inside of the AdvSimd.Arm64.IsSupported check
@@ -146,9 +145,11 @@ namespace System.Text.Unicode
                             } while (pInputBuffer <= pInputBufferFinalPosAtWhichCanSafelyLoop);
                         }
                         else
+#endif
                         {
                             do
                             {
+#if NET
                                 if (Sse2.IsSupported)
                                 {
                                     uint mask = (uint)Sse2.MoveMask(Sse2.LoadVector128(pInputBuffer));
@@ -158,14 +159,24 @@ namespace System.Text.Unicode
                                         goto LoopTerminatedEarlyDueToNonAsciiData;
                                     }
                                 }
-                                else
+                                else if (PackedSimd.IsSupported)
                                 {
-                                    if (!ASCIIUtility.AllBytesInUInt32AreAscii(((uint*)pInputBuffer)[0] | ((uint*)pInputBuffer)[1]))
+                                    uint mask = Vector128.LoadUnsafe(ref *pInputBuffer).ExtractMostSignificantBits();
+                                    if (mask != 0)
+                                    {
+                                        trailingZeroCount = (nuint)BitOperations.TrailingZeroCount(mask);
+                                        goto LoopTerminatedEarlyDueToNonAsciiData;
+                                    }
+                                }
+                                else
+#endif
+                                {
+                                    if (!Ascii.AllBytesInUInt32AreAscii(((uint*)pInputBuffer)[0] | ((uint*)pInputBuffer)[1]))
                                     {
                                         goto LoopTerminatedEarlyDueToNonAsciiDataInFirstPair;
                                     }
 
-                                    if (!ASCIIUtility.AllBytesInUInt32AreAscii(((uint*)pInputBuffer)[2] | ((uint*)pInputBuffer)[3]))
+                                    if (!Ascii.AllBytesInUInt32AreAscii(((uint*)pInputBuffer)[2] | ((uint*)pInputBuffer)[3]))
                                     {
                                         goto LoopTerminatedEarlyDueToNonAsciiDataInSecondPair;
                                     }
@@ -177,10 +188,11 @@ namespace System.Text.Unicode
 
                         continue; // need to perform a bounds check because we might be running out of data
 
+#if NET
                     LoopTerminatedEarlyDueToNonAsciiData:
-                        // x86 can only be little endian, while ARM can be big or little endian
-                        // so if we reached this label we need to check both combinations are supported
-                        Debug.Assert((AdvSimd.Arm64.IsSupported && BitConverter.IsLittleEndian) || Sse2.IsSupported);
+                        // x86 and Wasm can only be little endian, while ARM can be big or little endian,
+                        // so if we reached this label we need to check the LE-restricted combinations as well.
+                        Debug.Assert((AdvSimd.Arm64.IsSupported && BitConverter.IsLittleEndian) || Sse2.IsSupported || PackedSimd.IsSupported);
 
 
                         // The 'mask' value will have a 0 bit for each ASCII byte we saw and a 1 bit
@@ -198,6 +210,7 @@ namespace System.Text.Unicode
 
                         thisDWord = Unsafe.ReadUnaligned<uint>(pInputBuffer); // no longer guaranteed to be aligned
                         goto BeforeProcessTwoByteSequence;
+#endif
 
                     LoopTerminatedEarlyDueToNonAsciiDataInSecondPair:
 
@@ -210,7 +223,7 @@ namespace System.Text.Unicode
                         // Let's perform a quick check here to bypass the logic at the beginning of the main loop.
 
                         thisDWord = *(uint*)pInputBuffer; // still aligned here
-                        if (ASCIIUtility.AllBytesInUInt32AreAscii(thisDWord))
+                        if (Ascii.AllBytesInUInt32AreAscii(thisDWord))
                         {
                             pInputBuffer += sizeof(uint); // consumed 1 more DWORD
                             thisDWord = *(uint*)pInputBuffer; // still aligned here
@@ -224,13 +237,13 @@ namespace System.Text.Unicode
 
             AfterReadDWordSkipAllBytesAsciiCheck:
 
-                Debug.Assert(!ASCIIUtility.AllBytesInUInt32AreAscii(thisDWord)); // this should have been handled earlier
+                Debug.Assert(!Ascii.AllBytesInUInt32AreAscii(thisDWord)); // this should have been handled earlier
 
                 // Next, try stripping off ASCII bytes one at a time.
                 // We only handle up to three ASCII bytes here since we handled the four ASCII byte case above.
 
                 {
-                    uint numLeadingAsciiBytes = ASCIIUtility.CountNumberOfLeadingAsciiBytesFromUInt32WithSomeNonAsciiData(thisDWord);
+                    uint numLeadingAsciiBytes = Ascii.CountNumberOfLeadingAsciiBytesFromUInt32WithSomeNonAsciiData(thisDWord);
                     pInputBuffer += numLeadingAsciiBytes;
 
                     if (pFinalPosWhereCanReadDWordFromInputBuffer < pInputBuffer)
@@ -745,7 +758,9 @@ namespace System.Text.Unicode
             return pInputBuffer;
         }
 
+#if NET
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        [CompExactlyDependsOn(typeof(AdvSimd.Arm64))]
         private static ulong GetNonAsciiBytes(Vector128<byte> value, Vector128<byte> bitMask128)
         {
             if (!AdvSimd.Arm64.IsSupported || !BitConverter.IsLittleEndian)
@@ -753,10 +768,11 @@ namespace System.Text.Unicode
                 throw new PlatformNotSupportedException();
             }
 
-            Vector128<byte> mostSignificantBitIsSet = AdvSimd.ShiftRightArithmetic(value.AsSByte(), 7).AsByte();
-            Vector128<byte> extractedBits = AdvSimd.And(mostSignificantBitIsSet, bitMask128);
+            Vector128<byte> mostSignificantBitIsSet = (value.AsSByte() >> 7).AsByte();
+            Vector128<byte> extractedBits = mostSignificantBitIsSet & bitMask128;
             extractedBits = AdvSimd.Arm64.AddPairwise(extractedBits, extractedBits);
             return extractedBits.AsUInt64().ToScalar();
         }
+#endif
     }
 }

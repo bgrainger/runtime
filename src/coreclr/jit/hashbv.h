@@ -4,7 +4,7 @@
 #ifndef HASHBV_H
 #define HASHBV_H
 
-#if defined(_M_AMD64) || defined(_M_X86)
+#if defined(HOST_AMD64) || defined(HOST_X86)
 #include <xmmintrin.h>
 #endif
 
@@ -13,19 +13,19 @@
 #include <memory.h>
 #include <windows.h>
 
-//#define TESTING 1
+// #define TESTING 1
 
-#define LOG2_BITS_PER_ELEMENT 5
+#define LOG2_BITS_PER_ELEMENT  5
 #define LOG2_ELEMENTS_PER_NODE 2
-#define LOG2_BITS_PER_NODE (LOG2_BITS_PER_ELEMENT + LOG2_ELEMENTS_PER_NODE)
+#define LOG2_BITS_PER_NODE     (LOG2_BITS_PER_ELEMENT + LOG2_ELEMENTS_PER_NODE)
 
-#define BITS_PER_ELEMENT (1 << LOG2_BITS_PER_ELEMENT)
+#define BITS_PER_ELEMENT  (1 << LOG2_BITS_PER_ELEMENT)
 #define ELEMENTS_PER_NODE (1 << LOG2_ELEMENTS_PER_NODE)
-#define BITS_PER_NODE (1 << LOG2_BITS_PER_NODE)
+#define BITS_PER_NODE     (1 << LOG2_BITS_PER_NODE)
 
 #ifdef TARGET_AMD64
-typedef unsigned __int64 elemType;
-typedef unsigned __int64 indexType;
+typedef uint64_t elemType;
+typedef uint64_t indexType;
 #else
 typedef unsigned int elemType;
 typedef unsigned int indexType;
@@ -37,8 +37,6 @@ class hashBvIterator;
 class hashBvGlobalData;
 
 typedef void bitAction(indexType);
-typedef void nodeAction(hashBvNode*);
-typedef void dualNodeAction(hashBv* left, hashBv* right, hashBvNode* a, hashBvNode* b);
 
 #define NOMOREBITS -1
 
@@ -85,34 +83,7 @@ inline int log2(int number)
 // return greatest power of 2 that is less than or equal
 inline int nearest_pow2(unsigned number)
 {
-    int result = 0;
-
-    if (number > 0xffff)
-    {
-        number >>= 16;
-        result += 16;
-    }
-    if (number > 0xff)
-    {
-        number >>= 8;
-        result += 8;
-    }
-    if (number > 0xf)
-    {
-        number >>= 4;
-        result += 4;
-    }
-    if (number > 0x3)
-    {
-        number >>= 2;
-        result += 2;
-    }
-    if (number > 0x1)
-    {
-        number >>= 1;
-        result += 1;
-    }
-    return 1 << result;
+    return 1 << BitOperations::Log2(number);
 }
 
 class hashBvNode
@@ -128,8 +99,8 @@ public:
     {
     }
     static hashBvNode* Create(indexType base, Compiler* comp);
-    void Reconstruct(indexType base);
-    int numElements()
+    void               Reconstruct(indexType base);
+    int                numElements()
     {
         return ELEMENTS_PER_NODE;
     }
@@ -140,10 +111,8 @@ public:
     bool anySet();
     bool belongsIn(indexType index);
     int  countBits();
-    bool anyBits();
     void foreachBit(bitAction x);
     void freeNode(hashBvGlobalData* glob);
-    bool sameAs(hashBvNode* other);
     void copyFrom(hashBvNode* other);
 
     void AndWith(hashBvNode* other);
@@ -172,11 +141,7 @@ public:
     hashBvNode** nodeArr;
     hashBvNode*  initialVector[1];
 
-    union {
-        Compiler* compiler;
-        // for freelist
-        hashBv* next;
-    };
+    Compiler* m_compiler;
 
     unsigned short log2_hashSize;
     // used for heuristic resizing... could be overflowed in rare circumstances
@@ -186,33 +151,27 @@ public:
 public:
     hashBv(Compiler* comp);
     static hashBv* Create(Compiler* comp);
-    static void Init(Compiler* comp);
-    static hashBv* CreateFrom(hashBv* other, Compiler* comp);
-    void hbvFree();
+    static void    Init(Compiler* comp);
 #ifdef DEBUG
     void dump();
     void dumpFancy();
 #endif // DEBUG
-    __forceinline int hashtable_size()
+    FORCEINLINE int hashtable_size() const
     {
         return 1 << this->log2_hashSize;
     }
 
     hashBvGlobalData* globalData();
 
-    static hashBvNode*& nodeFreeList(hashBvGlobalData* globalData);
-    static hashBv*& hbvFreeList(hashBvGlobalData* data);
-
     hashBvNode** getInsertionPointForIndex(indexType index);
 
 private:
     hashBvNode* getNodeForIndexHelper(indexType index, bool canAdd);
-    int getHashForIndex(indexType index, int table_size);
-    int getRehashForIndex(indexType thisIndex, int thisTableSize, int newTableSize);
+    int         getHashForIndex(indexType index, int table_size);
 
     // maintain free lists for vectors
     hashBvNode** getNewVector(int vectorLength);
-    int getNodeCount();
+    int          getNodeCount();
 
 public:
     inline hashBvNode* getOrAddNodeForIndex(indexType index)
@@ -220,8 +179,6 @@ public:
         hashBvNode* temp = getNodeForIndexHelper(index, true);
         return temp;
     }
-    hashBvNode* getNodeForIndex(indexType index);
-    void removeNodeAtBase(indexType index);
 
 public:
     void setBit(indexType index);
@@ -232,20 +189,14 @@ public:
     bool anySet();
     void copyFrom(hashBv* other, Compiler* comp);
     void ZeroAll();
-    bool CompareWith(hashBv* other);
 
     void AndWith(hashBv* other);
     void OrWith(hashBv* other);
     void XorWith(hashBv* other);
     void Subtract(hashBv* other);
-    void Subtract3(hashBv* other, hashBv* other2);
-
-    void UnionMinus(hashBv* a, hashBv* b, hashBv* c);
 
     bool AndWithChange(hashBv* other);
     bool OrWithChange(hashBv* other);
-    bool OrWithChangeRight(hashBv* other);
-    bool OrWithChangeLeft(hashBv* other);
     bool XorWithChange(hashBv* other);
     bool SubtractWithChange(hashBv* other);
 
@@ -260,15 +211,8 @@ public:
     template <class Action>
     bool MultiTraverse(hashBv* other);
 
-    void InorderTraverse(nodeAction a);
-    void InorderTraverseTwo(hashBv* other, dualNodeAction a);
-
     void Resize(int newSize);
     void Resize();
-    void MergeLists(hashBvNode** a, hashBvNode** b);
-
-    bool TooSmall();
-    bool TooBig();
     bool IsValid();
 };
 
@@ -289,7 +233,6 @@ public:
     elemType current_data;
 
     hashBvIterator(hashBv* bv);
-    void initFrom(hashBv* bv);
     hashBvIterator();
     indexType nextBit();
 
@@ -303,38 +246,49 @@ class hashBvGlobalData
     friend class hashBvNode;
 
     hashBvNode* hbvNodeFreeList;
-    hashBv*     hbvFreeList;
 };
 
-// clang-format off
-#define FOREACH_HBV_BIT_SET(index, bv) \
-    { \
-        for (int hashNum=0; hashNum<(bv)->hashtable_size(); hashNum++) {\
-            hashBvNode *node = (bv)->nodeArr[hashNum];\
-            while (node) { \
-                indexType base = node->baseIndex; \
-                for (int el=0; el<node->numElements(); el++) {\
-                    elemType _i = 0; \
-                    elemType _e = node->elements[el]; \
-                    while (_e) { \
-                    int _result = BitScanForwardPtr((DWORD *) &_i, _e); \
-                        assert(_result); \
-                        (index) = base + (el*BITS_PER_ELEMENT) + _i; \
-                        _e ^= (elemType(1) << _i);
+enum class HbvWalk
+{
+    Continue,
+    Abort,
+};
 
-#define NEXT_HBV_BIT_SET \
-                    }\
-                }\
-                node = node->next; \
-            }\
-        }\
-    } \
-//clang-format on
+template <typename TFunctor>
+HbvWalk ForEachHbvBitSet(const hashBv& bv, TFunctor func)
+{
+    for (int hashNum = 0; hashNum < bv.hashtable_size(); hashNum++)
+    {
+        hashBvNode* node = bv.nodeArr[hashNum];
+        while (node)
+        {
+            indexType base = node->baseIndex;
+            for (int el = 0; el < node->numElements(); el++)
+            {
+                elemType e = node->elements[el];
+                while (e)
+                {
+                    unsigned  i     = BitOperations::BitScanForward(e);
+                    indexType index = base + (el * BITS_PER_ELEMENT) + i;
+                    e ^= (elemType(1) << i);
+
+                    if (func(index) == HbvWalk::Abort)
+                    {
+                        return HbvWalk::Abort;
+                    }
+                }
+            }
+            node = node->next;
+        }
+    }
+
+    return HbvWalk::Continue;
+}
 
 #ifdef DEBUG
-void SimpleDumpNode(hashBvNode *n);
-void DumpNode(hashBvNode *n);
-void SimpleDumpDualNode(hashBv *a, hashBv *b, hashBvNode *n, hashBvNode *m);
+void SimpleDumpNode(hashBvNode* n);
+void DumpNode(hashBvNode* n);
+void SimpleDumpDualNode(hashBv* a, hashBv* b, hashBvNode* n, hashBvNode* m);
 #endif // DEBUG
 
 #endif

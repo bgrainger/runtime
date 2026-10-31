@@ -10,6 +10,7 @@
 
 #include <windows.h>
 #include <runtimeinfo.h>
+#include <runtime_version.h>
 
 // Runtime information public export
 #ifdef HOST_UNIX
@@ -19,14 +20,21 @@ RuntimeInfo DotNetRuntimeInfo = {
     {
         RUNTIME_INFO_SIGNATURE
     },
-    1,
+    RUNTIME_INFO_VERSION,
     {
         #include <runtimemoduleindex.h>
     },
     {
+#ifndef OMIT_DAC_DBI_INDEX
         #include <dacmoduleindex.h>
+#endif
     },
     {
+#ifndef OMIT_DAC_DBI_INDEX
         #include <dbimoduleindex.h>
+#endif
+    },
+    {
+        RuntimeFileMajorVersion, RuntimeFileMinorVersion, RuntimeFileBuildVersion, RuntimeFileRevisionVersion
     },
 };

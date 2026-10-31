@@ -1,19 +1,16 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-//
+
+// ======================================================================================
 // File: DataBlob.inl
 //
-
-//
 // Class code:MetaData::DataBlob provides secure access to a block of memory from MetaData (i.e. with fixed
-// endianess).
-//
+// endianness).
 // ======================================================================================
 
 #pragma once
 
 #include "datablob.h"
-#include "compressedinteger.h"
 
 #include "debug_metadata.h"
 
@@ -36,7 +33,7 @@ DataBlob::DataBlob()
 //
 inline
 DataBlob::DataBlob(
-    __in_bcount(cbSize) BYTE  *pbData,
+    _In_reads_bytes_(cbSize) BYTE  *pbData,
                         UINT32 cbSize)
 {
     m_pbData = pbData;
@@ -63,15 +60,18 @@ DataBlob::DataBlob(
 
 // --------------------------------------------------------------------------------------
 //
-// Initializes memory block to empty data. The object could be already initialzied.
+// Initializes memory block to empty data. The object could be already initialized.
 //
 inline
 void
 DataBlob::Clear()
 {
     m_cbSize = 0;
+#ifndef TARGET_WASM
     // For debugging purposes let's put invalid non-NULL pointer here
+    // Emscripten doesn't handle this case well in memcpy, so don't do it for WASM target.
     INDEBUG_MD(m_pbData = const_pbBadFood);
+#endif // !TARGET_WASM
 } // DataBlob::Clear
 
 #undef const_pbBadFood
@@ -83,7 +83,7 @@ DataBlob::Clear()
 inline
 void
 DataBlob::Init(
-    __in_bcount(cbSize) BYTE  *pbData,
+    _In_reads_bytes_(cbSize) BYTE  *pbData,
                         UINT32 cbSize)
 {
     m_pbData = pbData;
@@ -107,7 +107,7 @@ __checkReturn
 _Success_(return)
 inline
 BOOL
-DataBlob::PeekU1(__out BYTE *pnValue) const
+DataBlob::PeekU1(_Out_ BYTE *pnValue) const
 {
     if (m_cbSize < sizeof(BYTE))
     {
@@ -125,7 +125,7 @@ __checkReturn
 _Success_(return)
 inline
 BOOL
-DataBlob::PeekU2(__out UINT16 *pnValue) const
+DataBlob::PeekU2(_Out_ UINT16 *pnValue) const
 {
     if (m_cbSize < sizeof(UINT16))
     {
@@ -143,7 +143,7 @@ __checkReturn
 _Success_(return)
 inline
 BOOL
-DataBlob::PeekU4(__out UINT32 *pnValue) const
+DataBlob::PeekU4(_Out_ UINT32 *pnValue) const
 {
     if (m_cbSize < sizeof(UINT32))
     {
@@ -161,7 +161,7 @@ __checkReturn
 _Success_(return)
 inline
 BOOL
-DataBlob::PeekU8(__out UINT64 *pnValue) const
+DataBlob::PeekU8(_Out_ UINT64 *pnValue) const
 {
     if (m_cbSize < sizeof(UINT64))
     {
@@ -188,7 +188,7 @@ __checkReturn
 _Success_(return)
 inline
 BOOL
-DataBlob::GetU1(__out BYTE *pnValue)
+DataBlob::GetU1(_Out_ BYTE *pnValue)
 {
     if (m_cbSize < sizeof(BYTE))
     {
@@ -207,7 +207,7 @@ __checkReturn
 _Success_(return)
 inline
 BOOL
-DataBlob::GetU2(__out UINT16 *pnValue)
+DataBlob::GetU2(_Out_ UINT16 *pnValue)
 {
     if (m_cbSize < sizeof(UINT16))
     {
@@ -226,7 +226,7 @@ __checkReturn
 _Success_(return)
 inline
 BOOL
-DataBlob::GetU4(__out UINT32 *pnValue)
+DataBlob::GetU4(_Out_ UINT32 *pnValue)
 {
     if (m_cbSize < sizeof(UINT32))
     {
@@ -245,7 +245,7 @@ __checkReturn
 _Success_(return)
 inline
 BOOL
-DataBlob::GetU8(__out UINT64 *pnValue)
+DataBlob::GetU8(_Out_ UINT64 *pnValue)
 {
     if (m_cbSize < sizeof(UINT64))
     {
@@ -258,7 +258,7 @@ DataBlob::GetU8(__out UINT64 *pnValue)
 
 // --------------------------------------------------------------------------------------
 //
-// Reads compressed integer (1, 2 or 4 bytes of format code:CompressedInteger#Format) from the data blob
+// Reads compressed integer (1, 2 or 4 bytes of format ECMA-335 II.23.2) from the data blob
 // and skips the read data.
 // Returns FALSE if there's not enough data in the blob or the compression is invalid (starts with byte
 // 111? ????), doesn't initialize the value *pnValue then.
@@ -267,7 +267,7 @@ DataBlob::GetU8(__out UINT64 *pnValue)
 __checkReturn
 inline
 BOOL
-DataBlob::GetCompressedU(__out UINT32 *pnValue)
+DataBlob::GetCompressedU(_Out_ UINT32 *pnValue)
 {
     UINT32 cbCompressedValueSize_Ignore;
     return GetCompressedU(pnValue, &cbCompressedValueSize_Ignore);
@@ -275,7 +275,7 @@ DataBlob::GetCompressedU(__out UINT32 *pnValue)
 
 // --------------------------------------------------------------------------------------
 //
-// Reads compressed integer (1, 2 or 4 bytes of format code:CompressedInteger#Format - returns the size
+// Reads compressed integer (1, 2 or 4 bytes of format ECMA-335 II.23.2 - returns the size
 // in *pcbCompressedValueSize) from the data blob without skipping the read data.
 // Returns FALSE if there's not enough data in the blob or the compression is invalid (starts with byte
 // 111? ????), doesn't initialize the value *pnValue nor the size of the compressed value
@@ -288,10 +288,10 @@ _Success_(return)
 inline
 BOOL
 DataBlob::PeekCompressedU(
-    __out UINT32 *pnValue,
-    __out UINT32 *pcbCompressedValueSize)
+    _Out_ UINT32 *pnValue,
+    _Out_ UINT32 *pcbCompressedValueSize)
 {
-    // This algorithm has to be in sync with code:CompressedInteger#Format encoding definition.
+    // This algorithm implements the compressed integer encoding defined in ECMA-335 II.23.2.
     //
     // Note that this algorithm accepts technically invalid encodings, e.g.
     // encoding of value 0 is accepted as 0000 0000 (0x00, valid) and 1000 0000 0000 000 (0x8000, invalid).
@@ -347,7 +347,7 @@ DataBlob::PeekCompressedU(
 
 // --------------------------------------------------------------------------------------
 //
-// Reads compressed integer (1, 2 or 4 bytes of format code:CompressedInteger#Format - returns the size
+// Reads compressed integer (1, 2 or 4 bytes of format ECMA-335 II.23.2 - returns the size
 // in *pcbCompressedValueSize) from the data blob and skips the read data.
 // Returns FALSE if there's not enough data in the blob or the compression is invalid (starts with byte
 // 111? ????), doesn't initialize the value *pnValue nor the size of the compressed value
@@ -359,8 +359,8 @@ __checkReturn
 inline
 BOOL
 DataBlob::GetCompressedU(
-    __out UINT32 *pnValue,
-    __out UINT32 *pcbCompressedValueSize)
+    _Out_ UINT32 *pnValue,
+    _Out_ UINT32 *pcbCompressedValueSize)
 {
     // Read the compressed integer from withou skipping the read data
     BOOL fReadResult = PeekCompressedU(
@@ -389,7 +389,7 @@ inline
 BOOL
 DataBlob::GetDataOfSize(
           UINT32    cbDataSize,
-    __out DataBlob *pData)
+    _Out_ DataBlob *pData)
 {
     if (m_cbSize < cbDataSize)
     {   // There's not enough data in the memory block
@@ -486,57 +486,6 @@ DataBlob::Debug_GetByteAtOffset(UINT32 nOffset) const
 
 // --------------------------------------------------------------------------------------
 //
-// Writes compressed integer (1, 2 or 4 bytes of format code:CompressedInteger#Format) to the data blob
-// and skips the written data.
-// Returns FALSE if there's not enough data in the blob or the value cannot be encoded as compressed
-// integer (bigger than code:CompressedInteger::const_Max).
-// Returns TRUE on success and moves the memory block behind the written data.
-//
-__checkReturn
-inline
-BOOL
-DataBlob::StoreCompressedU(UINT32 nValue)
-{
-    if (nValue <= CompressedInteger::const_Max1Byte)
-    {   // The value fits into 1 byte
-        if (m_cbSize < 1)
-        {   // The data blob is empty, we cannot store compressed integer as 1 byte
-            return FALSE;
-        }
-        *m_pbData = (BYTE)nValue;
-        SkipBytes_InternalInsecure(1);
-        return TRUE;
-    }
-    if (nValue <= CompressedInteger::const_Max2Bytes)
-    {   // The value fits into 2 bytes
-        if (m_cbSize < 2)
-        {   // The data blob is too short, we cannot store compressed integer as 2 bytes
-            return FALSE;
-        }
-        *m_pbData = (BYTE)(nValue >> 8) | 0x80;
-        *(m_pbData + 1) = (BYTE)(nValue & 0xff);
-        SkipBytes_InternalInsecure(2);
-        return TRUE;
-    }
-    if (nValue <= CompressedInteger::const_Max4Bytes)
-    {   // The value fits into 4 bytes
-        if (m_cbSize < 4)
-        {   // The data blob is too short, we cannot store compressed integer as 4 bytes
-            return FALSE;
-        }
-        *m_pbData = (BYTE)(nValue >> 24) | 0xC0;
-        *(m_pbData + 1) = (BYTE)((nValue >> 16) & 0xff);
-        *(m_pbData + 2) = (BYTE)((nValue >> 8) & 0xff);
-        *(m_pbData + 3) = (BYTE)(nValue & 0xff);
-        SkipBytes_InternalInsecure(4);
-        return TRUE;
-    }
-    // The value cannot be encoded as compressed integer
-    return FALSE;
-} // DataBlob::StoreCompressedU
-
-// --------------------------------------------------------------------------------------
-//
 // Writes data from *pSource to the data blob and skips the written data.
 // Returns FALSE if there's not enough data in the blob.
 // Returns TRUE on success and moves memory block behind the written data.
@@ -544,7 +493,7 @@ DataBlob::StoreCompressedU(UINT32 nValue)
 __checkReturn
 inline
 BOOL
-DataBlob::StoreData(__in const DataBlob *pSource)
+DataBlob::StoreData(_In_ const DataBlob *pSource)
 {
     // Check that we have enough space to store the *pSource data
     if (m_cbSize < pSource->m_cbSize)

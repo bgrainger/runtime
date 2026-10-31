@@ -20,8 +20,11 @@ typedef struct _DiagnosticsStartupProfilerCommandPayload DiagnosticsStartupProfi
 typedef struct _DiagnosticsConnectPort DiagnosticsConnectPort;
 typedef struct _DiagnosticsEnvironmentInfoPayload DiagnosticsEnvironmentInfoPayload;
 typedef struct _DiagnosticsGenerateCoreDumpCommandPayload DiagnosticsGenerateCoreDumpCommandPayload;
+typedef struct _DiagnosticsGenerateCoreDumpResponsePayload DiagnosticsGenerateCoreDumpResponsePayload;
 typedef struct _DiagnosticsSetEnvironmentVariablePayload DiagnosticsSetEnvironmentVariablePayload;
 typedef struct _DiagnosticsGetEnvironmentVariablePayload DiagnosticsGetEnvironmentVariablePayload;
+typedef struct _DiagnosticsEnablePerfmapPayload DiagnosticsEnablePerfmapPayload;
+typedef struct _DiagnosticsApplyStartupHookPayload DiagnosticsApplyStartupHookPayload;
 typedef struct _DiagnosticsIpcHeader DiagnosticsIpcHeader;
 typedef struct _DiagnosticsIpcMessage DiagnosticsIpcMessage;
 typedef struct _DiagnosticsListenPort DiagnosticsListenPort;
@@ -30,8 +33,8 @@ typedef struct _DiagnosticsPortBuilder DiagnosticsPortBuilder;
 typedef struct _DiagnosticsPortVtable DiagnosticsPortVtable;
 typedef struct _DiagnosticsProcessInfoPayload DiagnosticsProcessInfoPayload;
 typedef struct _DiagnosticsProcessInfo2Payload DiagnosticsProcessInfo2Payload;
+typedef struct _DiagnosticsProcessInfo3Payload DiagnosticsProcessInfo3Payload;
 typedef struct _EventPipeCollectTracingCommandPayload EventPipeCollectTracingCommandPayload;
-typedef struct _EventPipeCollectTracing2CommandPayload EventPipeCollectTracing2CommandPayload;
 typedef struct _EventPipeStopTracingCommandPayload EventPipeStopTracingCommandPayload;
 
 #include "ds-rt-types.h"
@@ -39,14 +42,6 @@ typedef struct _EventPipeStopTracingCommandPayload EventPipeStopTracingCommandPa
 /*
  * Diagnostics Enums.
  */
-
-// The Diagnostic command set is 0x01
-typedef enum {
-	DS_DUMP_COMMANDID_RESERVED = 0x00,
-	DS_DUMP_COMMANDID_GENERATE_CORE_DUMP = 0x01,
-	DS_DUMP_COMMANDID_GENERATE_CORE_DUMP2 = 0x02,
-	// future
-} DiagnosticsDumpCommandId;
 
 typedef enum {
 	DS_IPC_MAGIC_VERSION_DOTNET_IPC_V1 = 0x01,
@@ -62,24 +57,48 @@ typedef enum {
 	DS_SERVER_COMMANDSET_SERVER = 0xFF
 } DiagnosticsServerCommandSet;
 
-// The event pipe command set is 0x02
-// see ds-ipc.h and ds-server.h for more details
+// The dump command set is 0x01
 typedef enum {
-	DS_PROCESS_COMMANDID_GET_PROCESS_INFO = 0x00,
-	DS_PROCESS_COMMANDID_RESUME_RUNTIME = 0x01,
-	DS_PROCESS_COMMANDID_GET_PROCESS_ENV = 0x02,
-	DS_PROCESS_COMMANDID_SET_ENV_VAR = 0x03,
-	DS_PROCESS_COMMANDID_GET_PROCESS_INFO_2 = 0x04
+	DS_DUMP_COMMANDID_RESERVED = 0x00,
+	DS_DUMP_COMMANDID_GENERATE_CORE_DUMP = 0x01,
+	DS_DUMP_COMMANDID_GENERATE_CORE_DUMP2 = 0x02,
+	DS_DUMP_COMMANDID_GENERATE_CORE_DUMP3 = 0x03,
 	// future
-} DiagnosticsProcessCommandId;
+} DiagnosticsDumpCommandId;
 
-// The Diagnostic command set is 0x01
+// The event pipe command set is 0x02
+typedef enum {
+	EP_COMMANDID_STOP_TRACING = 0x01,
+	EP_COMMANDID_COLLECT_TRACING  = 0x02,
+	EP_COMMANDID_COLLECT_TRACING_2 = 0x03,
+	EP_COMMANDID_COLLECT_TRACING_3 = 0x04,
+	EP_COMMANDID_COLLECT_TRACING_4 = 0x05,
+	EP_COMMANDID_COLLECT_TRACING_5 = 0x06,
+	EP_COMMANDID_COLLECT_TRACING_6 = 0x07,
+	// future
+} EventPipeCommandId;
+
+// The profiler command set is 0x03
 typedef enum {
 	DS_PROFILER_COMMANDID_RESERVED = 0x00,
 	DS_PROFILER_COMMANDID_ATTACH_PROFILER = 0x01,
 	DS_PROFILER_COMMANDID_STARTUP_PROFILER = 0x02,
 	// future
 } DiagnosticsProfilerCommandId;
+
+// The process command set is 0x04
+typedef enum {
+	DS_PROCESS_COMMANDID_GET_PROCESS_INFO = 0x00,
+	DS_PROCESS_COMMANDID_RESUME_RUNTIME = 0x01,
+	DS_PROCESS_COMMANDID_GET_PROCESS_ENV = 0x02,
+	DS_PROCESS_COMMANDID_SET_ENV_VAR = 0x03,
+	DS_PROCESS_COMMANDID_GET_PROCESS_INFO_2 = 0x04,
+	DS_PROCESS_COMMANDID_ENABLE_PERFMAP = 0x05,
+	DS_PROCESS_COMMANDID_DISABLE_PERFMAP = 0x06,
+	DS_PROCESS_COMMANDID_APPLY_STARTUP_HOOK = 0x07,
+	DS_PROCESS_COMMANDID_GET_PROCESS_INFO_3 = 0x08
+	// future
+} DiagnosticsProcessCommandId;
 
 // Overlaps with DiagnosticsServerCommandId
 // DON'T create overlapping values
@@ -88,15 +107,6 @@ typedef enum {
 	// future
 	DS_SERVER_RESPONSEID_ERROR = 0xFF,
 } DiagnosticsServerResponseId;
-
-// The event pipe command set is 0x02
-// see ds-ipc.h and ds-server.h for more details
-typedef enum {
-	EP_COMMANDID_STOP_TRACING = 0x01,
-	EP_COMMANDID_COLLECT_TRACING  = 0x02,
-	EP_COMMANDID_COLLECT_TRACING_2 = 0x03,
-	// future
-} EventPipeCommandId;
 
 typedef enum {
 	DS_PORT_TYPE_LISTEN = 0,
@@ -111,16 +121,6 @@ typedef enum {
 #define DOTNET_IPC_V1_MAGIC "DOTNET_IPC_V1"
 #define DOTNET_IPC_V1_ADVERTISE_MAGIC "ADVR_V1"
 #define DOTNET_IPC_V1_ADVERTISE_SIZE 34
-
-#if BIGENDIAN
-#define DS_VAL16(x)    (((x) >> 8) | ((x) << 8))
-#define DS_VAL32(y)    (((y) >> 24) | (((y) >> 8) & 0x0000FF00L) | (((y) & 0x0000FF00L) << 8) | ((y) << 24))
-#define DS_VAL64(z)    (((uint64_t)DS_VAL32(z) << 32) | DS_VAL32((z) >> 32))
-#else
-#define DS_VAL16(x) x
-#define DS_VAL32(x) x
-#define DS_VAL64(x) x
-#endif // BIGENDIAN
 
 typedef int32_t ds_ipc_result_t;
 

@@ -11,5 +11,8 @@
 // Types of Loop Cloning based optimizations.
 LC_OPT(LcMdArray)
 LC_OPT(LcJaggedArray)
+LC_OPT(LcTypeTest)
+LC_OPT(LcMethodAddrTest)
+LC_OPT(LcSpan)
 
 #undef LC_OPT

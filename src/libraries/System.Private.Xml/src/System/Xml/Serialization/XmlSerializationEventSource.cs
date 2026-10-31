@@ -5,12 +5,10 @@ using System.Diagnostics.Tracing;
 
 namespace System.Xml.Serialization
 {
-    [EventSource(
-        Name = "System.Xml.Serialzation.XmlSerialization",
-        LocalizationResources = "FxResources.System.Private.Xml.SR")]
-    internal sealed class XmlSerializationEventSource : EventSource
+    [EventSource(Name = "System.Xml.Serialzation.XmlSerialization")]
+    internal sealed partial class XmlSerializationEventSource : EventSource
     {
-        internal static XmlSerializationEventSource Log = new XmlSerializationEventSource();
+        internal static readonly XmlSerializationEventSource Log = new XmlSerializationEventSource();
 
         [Event(EventIds.XmlSerializerExpired, Level = EventLevel.Informational)]
         internal void XmlSerializerExpired(string serializerName, string type)

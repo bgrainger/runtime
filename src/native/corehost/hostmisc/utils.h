@@ -6,44 +6,113 @@
 
 #include "pal.h"
 #include "trace.h"
-#include <type_traits>
+#include <runtime_version.h>
+#include <minipal/utils.h>
 
-#define _STRINGIFY(s) _X(s)
-#if defined(_WIN32)
-#define DOTNET_CORE_INSTALL_PREREQUISITES_URL _X("https://go.microsoft.com/fwlink/?linkid=798306")
-#elif defined(TARGET_OSX)
-#define DOTNET_CORE_INSTALL_PREREQUISITES_URL _X("https://go.microsoft.com/fwlink/?linkid=2063366")
-#else
-#define DOTNET_CORE_INSTALL_PREREQUISITES_URL _X("https://go.microsoft.com/fwlink/?linkid=2063370")
+#ifdef __cplusplus
+#include <type_traits>
 #endif
-#define DOTNET_CORE_DOWNLOAD_URL _X("https://aka.ms/dotnet-download")
+
+#define DOTNET_CORE_DOWNLOAD_URL _X("https://aka.ms/dotnet/download")
 #define DOTNET_CORE_APPLAUNCH_URL _X("https://aka.ms/dotnet-core-applaunch")
 
-#define RUNTIME_STORE_DIRECTORY_NAME _X("store")
+#define DOTNET_INFO_URL _X("https://aka.ms/dotnet/info")
+#define DOTNET_APP_LAUNCH_FAILED_URL _X("https://aka.ms/dotnet/app-launch-failed")
+#define DOTNET_SDK_NOT_FOUND_URL _X("https://aka.ms/dotnet/sdk-not-found")
 
-bool ends_with(const pal::string_t& value, const pal::string_t& suffix, bool match_case);
-bool starts_with(const pal::string_t& value, const pal::string_t& prefix, bool match_case);
+// This message is defined here for consistency between errors on the command line and GUI (Windows apphost).
+#define INSTALL_OR_UPDATE_NET_ERROR_MESSAGE _X("You must install or update .NET to run this application.")
+
+#define INSTALL_NET_ERROR_MESSAGE _X("You must install .NET to run this application.")
+#define INSTALL_NET_DESKTOP_ERROR_MESSAGE _X("You must install .NET Desktop Runtime to run this application.")
+
+#define DOC_LINK_INTRO _X("Learn more:")
+
+#define MISSING_RUNTIME_ERROR_FORMAT \
+    _X("%s\n\n")                                \
+    _X("App: %s\n")                             \
+    _X("Architecture: %s\n")                    \
+    _X("App host version: %s\n")                \
+    _X(".NET location: %s\n")                   \
+    _X("\n")                                    \
+    DOC_LINK_INTRO _X("\n")                     \
+    DOTNET_APP_LAUNCH_FAILED_URL                \
+    _X("\n\n")                                  \
+    _X("Download the .NET runtime:\n")          \
+    _X("%s&apphost_version=%s")
+
+#define DOTNET_ROOT_ENV_VAR _X("DOTNET_ROOT")
+#define DOTNET_ROOT_ARCH_ENV_VAR DOTNET_ROOT_ENV_VAR _X("_") _STRINGIFY(CURRENT_ARCH_NAME_UPPER)
+
+#define SDK_DOTNET_DLL _X("dotnet.dll")
+
+#define _TEXT(x) #x
+#define _QUOTE(x) _TEXT(x)
+
+#define HOST_VERSION _QUOTE(RuntimeProductVersion)
+
+#ifdef __cplusplus
+
+namespace utils
+{
+    template<size_t L>
+    inline constexpr size_t strlen(const pal::char_t(&)[L])
+    {
+        return L - 1;
+    }
+
+    bool ends_with(const pal::string_t& value, const pal::char_t *suffix, size_t suffix_len, bool match_case);
+    bool starts_with(const pal::string_t& value, const pal::char_t* prefix, size_t prefix_len, bool match_case);
+
+    template<size_t L>
+    bool ends_with(const pal::string_t& value, const pal::char_t (&suffix)[L], bool match_case)
+    {
+        return ends_with(value, suffix, L - 1, match_case);
+    }
+
+    template<size_t L>
+    bool starts_with(const pal::string_t& value, const pal::char_t (&prefix)[L], bool match_case)
+    {
+        return starts_with(value, prefix, L - 1, match_case);
+    }
+
+    template <typename... Args>
+    pal::string_t format_string(const pal::char_t* format, Args&&... args)
+    {
+        int len = pal::strlen_printf(format, std::forward<Args>(args)...) + 1;
+        std::vector<pal::char_t> buffer(len);
+        pal::str_printf(&buffer[0], len, format, std::forward<Args>(args)...);
+        return pal::string_t(buffer.data(), buffer.size() - 1);
+    }
+}
+
 pal::string_t strip_executable_ext(const pal::string_t& filename);
 pal::string_t get_directory(const pal::string_t& path);
 pal::string_t strip_file_ext(const pal::string_t& path);
 pal::string_t get_filename(const pal::string_t& path);
 pal::string_t get_filename_without_ext(const pal::string_t& path);
+
+// Concatenate path1 and path2 into path1, ensuring there is a directory separator.
+// This does not check for rooted paths or make any attempt to root the returned path.
 void append_path(pal::string_t* path1, const pal::char_t* path2);
-bool library_exists_in_dir(const pal::string_t& lib_dir, const pal::string_t& lib_name, pal::string_t* p_lib_path);
+
+bool file_exists_in_dir(const pal::string_t& dir, const pal::char_t* file_name, pal::string_t* out_file_path);
 bool coreclr_exists_in_dir(const pal::string_t& candidate);
-void remove_trailing_dir_seperator(pal::string_t* dir);
+void remove_trailing_dir_separator(pal::string_t* dir);
 void replace_char(pal::string_t* path, pal::char_t match, pal::char_t repl);
 pal::string_t get_replaced_char(const pal::string_t& path, pal::char_t match, pal::char_t repl);
-const pal::char_t* get_arch();
-pal::string_t get_current_runtime_id(bool use_fallback);
-bool get_env_shared_store_dirs(std::vector<pal::string_t>* dirs, const pal::string_t& arch, const pal::string_t& tfm);
-bool get_global_shared_store_dirs(std::vector<pal::string_t>* dirs, const pal::string_t& arch, const pal::string_t& tfm);
-bool multilevel_lookup_enabled();
-void get_framework_and_sdk_locations(const pal::string_t& dotnet_dir, std::vector<pal::string_t>* locations);
+
+pal::architecture get_current_arch();
+const pal::char_t* get_arch_name(pal::architecture arch);
+const pal::char_t* get_current_arch_name();
+
+pal::string_t get_runtime_id();
+bool try_get_runtime_id_from_env(pal::string_t& out_rid);
+
 bool get_file_path_from_env(const pal::char_t* env_key, pal::string_t* recv);
 size_t index_of_non_numeric(const pal::string_t& str, size_t i);
 bool try_stou(const pal::string_t& str, unsigned* num);
-bool get_dotnet_root_from_env(pal::string_t* used_dotnet_root_env_var_name, pal::string_t* recv);
+
 pal::string_t get_deps_from_app_binary(const pal::string_t& app_base, const pal::string_t& app);
 pal::string_t get_runtime_config_path(const pal::string_t& path, const pal::string_t& name);
 pal::string_t get_runtime_config_dev_path(const pal::string_t& path, const pal::string_t& name);
@@ -54,8 +123,9 @@ pal::string_t get_dotnet_root_from_fxr_path(const pal::string_t& fxr_path);
 // If no framework is specified, a download URL for the runtime is returned
 pal::string_t get_download_url(const pal::char_t* framework_name = nullptr, const pal::char_t* framework_version = nullptr);
 
+pal::string_t get_host_version_description();
+
 pal::string_t to_lower(const pal::char_t* in);
-pal::string_t to_upper(const pal::char_t* in);
 
 // Retrieves environment variable which is only used for testing.
 // This will return the value of the variable only if the product binary is stamped
@@ -127,5 +197,56 @@ size_t to_size_t_dbgchecked(T value)
     assert(static_cast<T>(result) == value);
     return result;
 }
+
+#endif // __cplusplus
+
+// ============================================================================
+// C-compatible declarations
+// ============================================================================
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void utils_get_filename(const pal_char_t* path, pal_char_t* out_name, size_t out_name_len);
+
+bool utils_starts_with(const pal_char_t* value, size_t value_len, const pal_char_t* prefix, size_t prefix_len, bool match_case);
+bool utils_ends_with(const pal_char_t* value, size_t value_len, const pal_char_t* suffix, size_t suffix_len, bool match_case);
+
+void utils_append_path(pal_char_t* path_buffer, size_t path_buffer_len, const pal_char_t* component);
+
+// Caller should free() the returned pointer.
+pal_char_t* utils_append_path_alloc(const pal_char_t* path, const pal_char_t* component);
+
+// Return <dir>/<file_name> if the file exists, otherwise NULL.
+// Caller should free() the returned pointer.
+pal_char_t* utils_find_file_in_dir(const pal_char_t* dir, const pal_char_t* file_name);
+
+// Return the directory portion of `path`, always ending with DIR_SEPARATOR.
+// Caller should free() the returned pointer.
+pal_char_t* utils_get_directory(const pal_char_t* path);
+
+// Caller should free() the returned pointer.
+pal_char_t* utils_get_file_path_from_env(const pal_char_t* env_key);
+
+// Caller should free() the returned pointer.
+pal_char_t* utils_test_only_getenv(const pal_char_t* name);
+
+// Find the .NET install root from environment variables in priority order:
+//  - DOTNET_ROOT_<ARCH>
+//  - If running Windows WOW64 only, DOTNET_ROOT(x86)
+//  - DOTNET_ROOT
+// Caller should free() out_dotnet_root.
+bool utils_get_dotnet_root_from_env(const pal_char_t** out_env_var_name, pal_char_t** out_dotnet_root);
+
+// Caller should free() the returned pointer.
+pal_char_t* utils_get_runtime_id(void);
+
+#define MAX_DOWNLOAD_URL_LEN 512
+void utils_get_download_url(pal_char_t* out_url, size_t out_url_len, const pal_char_t* framework_name, const pal_char_t* framework_version);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

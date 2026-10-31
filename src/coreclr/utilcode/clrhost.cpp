@@ -18,7 +18,25 @@ extern "C" IMAGE_DOS_HEADER __ImageBase;
 static void* pImageBase = NULL;
 #endif
 
+#ifdef DACCESS_COMPILE
+
+TADDR g_ClrModuleBase;
+
 void* GetClrModuleBase()
+{
+    return (void*)g_ClrModuleBase;
+}
+
+#else // DACCESS_COMPILE
+
+void* GetClrModuleBase()
+{
+    return GetCurrentModuleBase();
+}
+
+#endif // DACCESS_COMPILE
+
+void* GetCurrentModuleBase()
 {
     LIMITED_METHOD_CONTRACT;
 
@@ -39,85 +57,18 @@ void* GetClrModuleBase()
 
 thread_local int t_CantAllocCount;
 
-#ifdef FAILPOINTS_ENABLED
-typedef int (*FHashStack) ();
-
-static FHashStack fHashStack = 0;
-static _TEB *HashStackSetupThread = NULL;
-static _TEB *RFSCustomDataSetupThread = NULL;
-
-static void SetupHashStack ()
-{
-    CANNOT_HAVE_CONTRACT;
-
-    FHashStack oldValue = InterlockedCompareExchangeT(&fHashStack,
-        reinterpret_cast<FHashStack>(1), reinterpret_cast<FHashStack>(0));
-    if ((size_t) oldValue >= 2) {
-        return;
-    }
-    else if ((size_t) oldValue == 0) {
-        // We are the first thread to initialize
-        HashStackSetupThread = NtCurrentTeb();
-
-        if (CLRConfig::GetConfigValue(CLRConfig::INTERNAL_HashStack) == 0) {
-            fHashStack = (FHashStack) 2;
-            return;
-        }
-
-        PAL_TRY(void *, unused, NULL) {
-            FHashStack func;
-            HMODULE hmod = LoadLibraryExA ("mscorrfs.dll", NULL, 0);
-            if (hmod) {
-                func = (FHashStack)GetProcAddress (hmod, "HashStack");
-                if (func == 0) {
-                    func = (FHashStack)2;
-                }
-            }
-            else
-                func = (FHashStack)2;
-            fHashStack = func;
-        }
-        PAL_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
-        {
-            fHashStack = (FHashStack) 2;
-        }
-        PAL_ENDTRY;
-    }
-    else if (NtCurrentTeb() == HashStackSetupThread) {
-        // We get here while initializing
-        return;
-    }
-    else {
-        // All other threads will wait
-        while (fHashStack == (FHashStack) 1) {
-            ClrSleepEx (100, FALSE);
-        }
-    }
-}
-
-int RFS_HashStack ()
-{
-    CANNOT_HAVE_CONTRACT;
-
-    if ((size_t)fHashStack < 2) {
-        SetupHashStack ();
-    }
-
-    if ((size_t)fHashStack <= 2) {
-        return 0;
-    }
-    else
-        return fHashStack ();
-}
-
-#endif // FAILPOINTS_ENABLED
-
 DWORD GetClrModulePathName(SString& buffer)
 {
 #ifdef HOST_WINDOWS
     return WszGetModuleFileName((HINSTANCE)GetClrModuleBase(), buffer);
 #else
-    return WszGetModuleFileName(PAL_GetPalHostModule(), buffer);
+#ifndef HOST_WASM
+    HMODULE hModule = PAL_GetPalHostModule();
+#else
+    // on wasm the PAL library is statically linked
+    HMODULE hModule = nullptr;
+#endif
+    return WszGetModuleFileName(hModule, buffer);
 #endif
 }
 
@@ -132,7 +83,7 @@ HMODULE CLRLoadLibrary(LPCWSTR lpLibFileName)
 HMODULE CLRLoadLibraryEx(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags)
 {
     WRAPPER_NO_CONTRACT;
-    return WszLoadLibraryEx(lpLibFileName, hFile, dwFlags);
+    return WszLoadLibrary(lpLibFileName, hFile, dwFlags);
 }
 
 BOOL CLRFreeLibrary(HMODULE hModule)
@@ -186,7 +137,6 @@ LoadsTypeHolder::LoadsTypeHolder(BOOL       fConditional,
     // This fcn makes non-scoped changes to ClrDebugState so we cannot use a runtime CONTRACT here.
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
 
     m_fConditional = fConditional;
@@ -237,7 +187,6 @@ LoadsTypeHolder::~LoadsTypeHolder()
     // This fcn makes non-scoped changes to ClrDebugState so we cannot use a runtime CONTRACT here.
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
 
     if (m_fConditional)

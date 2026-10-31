@@ -24,13 +24,13 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
         public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)
         {
-            ObjectDataSignatureBuilder dataBuilder = new ObjectDataSignatureBuilder();
+            ObjectDataSignatureBuilder dataBuilder = new ObjectDataSignatureBuilder(factory, relocsOnly);
 
             if (!relocsOnly)
             {
                 dataBuilder.AddSymbol(this);
 
-                EcmaModule targetModule = factory.SignatureContext.GetTargetModule(_typeDesc);
+                IEcmaModule targetModule = factory.SignatureContext.GetTargetModule(_typeDesc);
                 SignatureContext innerContext = dataBuilder.EmitFixup(factory, ReadyToRunFixupKind.NewObject, targetModule, factory.SignatureContext);
                 dataBuilder.EmitTypeSignature(_typeDesc, innerContext);
             }
@@ -49,6 +49,12 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         {
             NewObjectFixupSignature otherNode = (NewObjectFixupSignature)other;
             return comparer.Compare(_typeDesc, otherNode._typeDesc);
+        }
+
+        protected override void ComputeNonRelocationBasedDependencies(DependencySink sink, NodeFactory factory)
+        {
+            base.ComputeNonRelocationBasedDependencies(sink, factory);
+            factory.AddVirtualMethodDiscoveryDependencies(sink, _typeDesc);
         }
     }
 }

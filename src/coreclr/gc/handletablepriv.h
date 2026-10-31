@@ -5,115 +5,13 @@
  * Generational GC handle manager.  Internal Implementation Header.
  *
  * Shared defines and declarations for handle table implementation.
- *
-
- *
  */
 
 #include "common.h"
 
 #include "handletable.h"
 
-/*--------------------------------------------------------------------------*/
-
-//<TODO>@TODO: find a home for this in a project-level header file</TODO>
-#define BITS_PER_BYTE               (8)
-/*--------------------------------------------------------------------------*/
-
-
-
-/****************************************************************************
- *
- * MAJOR TABLE DEFINITIONS THAT CHANGE DEPENDING ON THE WEATHER
- *
- ****************************************************************************/
-
-// 64k reserved per segment with 4k as header.
-#define HANDLE_SEGMENT_SIZE     (0x10000)   // MUST be a power of 2 (and currently must be 64K due to VirtualAlloc semantics)
-#define HANDLE_HEADER_SIZE      (0x1000)    // SHOULD be <= OS page size
-
-#define HANDLE_SEGMENT_ALIGNMENT     HANDLE_SEGMENT_SIZE
-
-
-#if !BIGENDIAN
-
-    // little-endian write barrier mask manipulation
-    #define GEN_CLUMP_0_MASK        (0x000000FF)
-    #define NEXT_CLUMP_IN_MASK(dw)  ((dw) >> BITS_PER_BYTE)
-
-#else
-
-    // big-endian write barrier mask manipulation
-    #define GEN_CLUMP_0_MASK        (0xFF000000)
-    #define NEXT_CLUMP_IN_MASK(dw)  ((dw) << BITS_PER_BYTE)
-
-#endif
-
-
-// if the above numbers change than these will likely change as well
-#define HANDLE_HANDLES_PER_CLUMP    (16)        // segment write-barrier granularity
-#define HANDLE_HANDLES_PER_BLOCK    (64)        // segment suballocation granularity
-#define HANDLE_OPTIMIZE_FOR_64_HANDLE_BLOCKS    // flag for certain optimizations
-
-// number of types allowed for public callers
-#define HANDLE_MAX_PUBLIC_TYPES     (HANDLE_MAX_INTERNAL_TYPES - 1) // reserve one internal type
-
-// internal block types
-#define HNDTYPE_INTERNAL_DATABLOCK  (HANDLE_MAX_INTERNAL_TYPES - 1) // reserve last type for data blocks
-
-// max number of generations to support statistics on
-#define MAXSTATGEN                  (5)
-
-/*--------------------------------------------------------------------------*/
-
-
-
-/****************************************************************************
- *
- * MORE DEFINITIONS
- *
- ****************************************************************************/
-
-// fast handle-to-segment mapping
-#define HANDLE_SEGMENT_CONTENT_MASK     (HANDLE_SEGMENT_SIZE - 1)
-#define HANDLE_SEGMENT_ALIGN_MASK       (~HANDLE_SEGMENT_CONTENT_MASK)
-
-// table layout metrics
-#define HANDLE_SIZE                     sizeof(_UNCHECKED_OBJECTREF)
-#define HANDLE_HANDLES_PER_SEGMENT      ((HANDLE_SEGMENT_SIZE - HANDLE_HEADER_SIZE) / HANDLE_SIZE)
-#define HANDLE_BLOCKS_PER_SEGMENT       (HANDLE_HANDLES_PER_SEGMENT / HANDLE_HANDLES_PER_BLOCK)
-#define HANDLE_CLUMPS_PER_SEGMENT       (HANDLE_HANDLES_PER_SEGMENT / HANDLE_HANDLES_PER_CLUMP)
-#define HANDLE_CLUMPS_PER_BLOCK         (HANDLE_HANDLES_PER_BLOCK / HANDLE_HANDLES_PER_CLUMP)
-#define HANDLE_BYTES_PER_BLOCK          (HANDLE_HANDLES_PER_BLOCK * HANDLE_SIZE)
-#define HANDLE_HANDLES_PER_MASK         (sizeof(uint32_t) * BITS_PER_BYTE)
-#define HANDLE_MASKS_PER_SEGMENT        (HANDLE_HANDLES_PER_SEGMENT / HANDLE_HANDLES_PER_MASK)
-#define HANDLE_MASKS_PER_BLOCK          (HANDLE_HANDLES_PER_BLOCK / HANDLE_HANDLES_PER_MASK)
-#define HANDLE_CLUMPS_PER_MASK          (HANDLE_HANDLES_PER_MASK / HANDLE_HANDLES_PER_CLUMP)
-
-// We use this relation to check for free mask per block.
-C_ASSERT (HANDLE_HANDLES_PER_MASK * 2 == HANDLE_HANDLES_PER_BLOCK);
-
-
-// cache layout metrics
-#define HANDLE_CACHE_TYPE_SIZE          128 // 128 == 63 handles per bank
-#define HANDLES_PER_CACHE_BANK          ((HANDLE_CACHE_TYPE_SIZE / 2) - 1)
-
-// cache policy defines
-#define REBALANCE_TOLERANCE             (HANDLES_PER_CACHE_BANK / 3)
-#define REBALANCE_LOWATER_MARK          (HANDLES_PER_CACHE_BANK - REBALANCE_TOLERANCE)
-#define REBALANCE_HIWATER_MARK          (HANDLES_PER_CACHE_BANK + REBALANCE_TOLERANCE)
-
-// bulk alloc policy defines
-#define SMALL_ALLOC_COUNT               (HANDLES_PER_CACHE_BANK / 10)
-
-// misc constants
-#define MASK_FULL                       (0)
-#define MASK_EMPTY                      (0xFFFFFFFF)
-#define MASK_LOBYTE                     (0x000000FF)
-#define TYPE_INVALID                    ((uint8_t)0xFF)
-#define BLOCK_INVALID                   ((uint8_t)0xFF)
-
-/*--------------------------------------------------------------------------*/
+#include "handletableconstants.h"
 
 
 
@@ -248,7 +146,7 @@ struct _TableSegmentHeader
     /*
      * Commit Line
      *
-     * Index of the first uncommited block in the segment.
+     * Index of the first uncommitted block in the segment.
      */
     uint8_t bCommitLine;
 
@@ -266,6 +164,8 @@ struct _TableSegmentHeader
      */
     uint8_t bSequence;
 };
+
+static_assert(offsetof(_TableSegmentHeader, rgBlockType) == HANDLE_SEGMENT_BLOCK_TYPE_OFFSET);
 
 typedef DPTR(struct _TableSegmentHeader) PTR__TableSegmentHeader;
 typedef DPTR(uintptr_t) PTR_uintptr_t;
@@ -477,6 +377,11 @@ struct HandleTable
     uint32_t rgTypeFlags[HANDLE_MAX_INTERNAL_TYPES];
 
     /*
+     * head of segment list for this table
+     */
+    PTR_TableSegment pSegmentList;
+
+    /*
      * lock for this table
      */
     CrstStatic Lock;
@@ -491,11 +396,6 @@ struct HandleTable
      * (this includes the handles residing in rgMainCache and rgQuickCache)
      */
     uint32_t dwCount;
-
-    /*
-     * head of segment list for this table
-     */
-    PTR_TableSegment pSegmentList;
 
     /*
      * information on current async scan (if any)
@@ -566,7 +466,7 @@ void QuickSort(uintptr_t *pData, int left, int right, PFNCOMPARE pfnCompare);
  *
  * Returns:
  *  <0 - handle P should be freed before handle Q
- *  =0 - handles are eqivalent for free order purposes
+ *  =0 - handles are equivalent for free order purposes
  *  >0 - handle Q should be freed before handle P
  *
  */
@@ -705,16 +605,28 @@ PTR_uintptr_t HandleQuickFetchUserDataPointer(OBJECTHANDLE handle);
  * Less validation is performed.
  *
  */
-void HandleQuickSetUserData(OBJECTHANDLE handle, uintptr_t lUserData);
+#ifndef DACCESS_COMPILE
+FORCEINLINE void HandleQuickSetUserData(OBJECTHANDLE handle, uintptr_t lUserData)
+{
+    WRAPPER_NO_CONTRACT;
 
+    /*
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_ANY;
+    */
 
-/*
- * HandleFetchType
- *
- * Computes the type index for a given handle.
- *
- */
-uint32_t HandleFetchType(OBJECTHANDLE handle);
+    // fetch the user data slot for this handle
+    uintptr_t *pUserData = HandleQuickFetchUserDataPointer(handle);
+
+    // is there a slot?
+    if (pUserData)
+    {
+        // yes - store the info
+        *pUserData = lUserData;
+    }
+}
+#endif // !DACCESS_COMPILE
 
 
 /*
@@ -742,11 +654,6 @@ TableSegment *SegmentAlloc(HandleTable *pTable);
  *
  */
 void SegmentFree(TableSegment *pSegment);
-
-/*
- * Check if a handle is part of a HandleTable
- */
-BOOL TableContainHandle(HandleTable *pTable, OBJECTHANDLE handle);
 
 /*
  * SegmentRemoveFreeBlocks
@@ -789,7 +696,7 @@ void SegmentTrimExcessPages(TableSegment *pSegment);
 /*
  * TableAllocBulkHandles
  *
- * Attempts to allocate the requested number of handes of the specified type.
+ * Attempts to allocate the requested number of handles of the specified type.
  *
  * Returns the number of handles that were actually allocated.  This is always
  * the same as the number of handles requested except in out-of-memory conditions,
@@ -810,14 +717,6 @@ uint32_t TableAllocBulkHandles(HandleTable *pTable, uint32_t uType, OBJECTHANDLE
 void TableFreeBulkPreparedHandles(HandleTable *pTable, uint32_t uType, OBJECTHANDLE *pHandleBase, uint32_t uCount);
 
 
-/*
- * TableFreeBulkUnpreparedHandles
- *
- * Frees an array of handles of the specified type by preparing them and calling TableFreeBulkPreparedHandles.
- *
- */
-void TableFreeBulkUnpreparedHandles(HandleTable *pTable, uint32_t uType, const OBJECTHANDLE *pHandles, uint32_t uCount);
-
 /*--------------------------------------------------------------------------*/
 
 
@@ -829,6 +728,16 @@ void TableFreeBulkUnpreparedHandles(HandleTable *pTable, uint32_t uType, const O
  ****************************************************************************/
 
 /*
+ * TableCacheMissOnAlloc
+ *
+ * Called when a handle cannot be fetched from the reserve cache for its type
+ * because the cache is empty.
+ *
+ */
+OBJECTHANDLE TableCacheMissOnAlloc(HandleTable *pTable, HandleTypeCache *pCache, uint32_t uType);
+
+
+/*
  * TableAllocSingleHandleFromCache
  *
  * Gets a single handle of the specified type from the handle table by
@@ -836,7 +745,61 @@ void TableFreeBulkUnpreparedHandles(HandleTable *pTable, uint32_t uType, const O
  * reserve cache is empty, this routine calls TableCacheMissOnAlloc.
  *
  */
-OBJECTHANDLE TableAllocSingleHandleFromCache(HandleTable *pTable, uint32_t uType);
+#ifndef DACCESS_COMPILE
+FORCEINLINE OBJECTHANDLE TableAllocSingleHandleFromCache(HandleTable *pTable, uint32_t uType)
+{
+    WRAPPER_NO_CONTRACT;
+
+    // we use this in two places
+    OBJECTHANDLE handle;
+
+    // first try to get a handle from the quick cache
+    if (pTable->rgQuickCache[uType])
+    {
+        // try to grab the handle we saw
+        handle = Interlocked::ExchangePointer(pTable->rgQuickCache + uType, (OBJECTHANDLE)NULL);
+
+        // if it worked then we're done
+        if (handle)
+            return handle;
+    }
+
+    // ok, get the main handle cache for this type
+    HandleTypeCache *pCache = pTable->rgMainCache + uType;
+
+    // try to take a handle from the main cache
+    int32_t lReserveIndex = Interlocked::Decrement(&pCache->lReserveIndex);
+
+    // did we underflow?
+    if (lReserveIndex < 0)
+    {
+        // yep - the cache is out of handles
+        return TableCacheMissOnAlloc(pTable, pCache, uType);
+    }
+
+    // get our handle
+    handle = pCache->rgReserveBank[lReserveIndex];
+
+    // zero the handle slot
+    pCache->rgReserveBank[lReserveIndex] = 0;
+
+    // sanity
+    _ASSERTE(handle);
+
+    // return our handle
+    return handle;
+}
+#endif // !DACCESS_COMPILE
+
+
+/*
+ * TableCacheMissOnFree
+ *
+ * Called when a handle cannot be stored in the free cache for its type
+ * because the cache is full.
+ *
+ */
+void TableCacheMissOnFree(HandleTable *pTable, HandleTypeCache *pCache, uint32_t uType, OBJECTHANDLE handle);
 
 
 /*
@@ -847,27 +810,59 @@ OBJECTHANDLE TableAllocSingleHandleFromCache(HandleTable *pTable, uint32_t uType
  * free cache is full, this routine calls TableCacheMissOnFree.
  *
  */
-void TableFreeSingleHandleToCache(HandleTable *pTable, uint32_t uType, OBJECTHANDLE handle);
+#ifndef DACCESS_COMPILE
+FORCEINLINE void TableFreeSingleHandleToCache(HandleTable *pTable, uint32_t uType, OBJECTHANDLE handle)
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_ANY;
+        CAN_TAKE_LOCK;         // because of TableCacheMissOnFree
+    }
+    CONTRACTL_END;
 
+#ifdef DEBUG_DestroyedHandleValue
+    *(_UNCHECKED_OBJECTREF *)handle = DEBUG_DestroyedHandleValue;
+#else
+    // zero the handle's object pointer
+    *(_UNCHECKED_OBJECTREF *)handle = NULL;
+#endif
 
-/*
- * TableAllocHandlesFromCache
- *
- * Allocates multiple handles of the specified type by repeatedly
- * calling TableAllocSingleHandleFromCache.
- *
- */
-uint32_t TableAllocHandlesFromCache(HandleTable *pTable, uint32_t uType, OBJECTHANDLE *pHandleBase, uint32_t uCount);
+    // if this handle type has user data then clear it - AFTER the referent is cleared!
+    if (TypeHasUserData(pTable, uType))
+        HandleQuickSetUserData(handle, 0L);
 
+    // is there room in the quick cache?
+    if (!pTable->rgQuickCache[uType])
+    {
+        // yup - try to stuff our handle in the slot we saw
+        handle = Interlocked::ExchangePointer(&pTable->rgQuickCache[uType], handle);
 
-/*
- * TableFreeHandlesToCache
- *
- * Frees multiple handles of the specified type by repeatedly
- * calling TableFreeSingleHandleToCache.
- *
- */
-void TableFreeHandlesToCache(HandleTable *pTable, uint32_t uType, const OBJECTHANDLE *pHandleBase, uint32_t uCount);
+        // if we didn't end up with another handle then we're done
+        if (!handle)
+            return;
+    }
+
+    // ok, get the main handle cache for this type
+    HandleTypeCache *pCache = pTable->rgMainCache + uType;
+
+    // try to take a free slot from the main cache
+    int32_t lFreeIndex = Interlocked::Decrement(&pCache->lFreeIndex);
+
+    // did we underflow?
+    if (lFreeIndex < 0)
+    {
+        // yep - we're out of free slots
+        TableCacheMissOnFree(pTable, pCache, uType, handle);
+        return;
+    }
+
+    // we got a slot - save the handle in the free bank
+    pCache->rgFreeBank[lFreeIndex] = handle;
+}
+#endif // !DACCESS_COMPILE
+
 
 /*--------------------------------------------------------------------------*/
 

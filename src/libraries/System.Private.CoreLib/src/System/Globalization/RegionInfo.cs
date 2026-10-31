@@ -21,14 +21,11 @@ namespace System.Globalization
         private readonly CultureData _cultureData;
 
         // The RegionInfo for our current region
-        internal static volatile RegionInfo? s_currentRegionInfo;
+        internal static RegionInfo? s_currentRegionInfo;
 
         public RegionInfo(string name)
         {
-            if (name == null)
-            {
-                throw new ArgumentNullException(nameof(name));
-            }
+            ArgumentNullException.ThrowIfNull(name);
 
             // The InvariantCulture has no matching region
             if (name.Length == 0)
@@ -63,10 +60,10 @@ namespace System.Globalization
                 throw new ArgumentException(SR.Format(SR.Argument_CultureIsNeutral, culture), nameof(culture));
             }
 
-            if (culture == CultureInfo.LOCALE_CUSTOM_DEFAULT)
+            if (culture == CultureInfo.LOCALE_CUSTOM_DEFAULT || culture == CultureInfo.LOCALE_CUSTOM_UNSPECIFIED)
             {
                 // Not supposed to be neutral
-                throw new ArgumentException(SR.Format(SR.Argument_CustomCultureCannotBePassedByNumber, culture), nameof(culture));
+                throw new ArgumentException(SR.Argument_CustomCultureCannotBePassedByNumber, nameof(culture));
             }
 
             _cultureData = CultureData.GetCultureData(culture, true);
@@ -87,7 +84,6 @@ namespace System.Globalization
 
         /// <summary>
         /// This instance provides methods based on the current user settings.
-        /// These settings are volatile and may change over the lifetime of the
         /// </summary>
         public static RegionInfo CurrentRegion
         {

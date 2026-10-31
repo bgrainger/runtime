@@ -1,20 +1,20 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+using System.Reflection;
+using System.Text;
+using System.Xml;
+using System.Xml.Schema;
+using System.Xml.Serialization;
+
 namespace System.Xml.Serialization
 {
-    using System.Reflection;
-    using System.Collections;
-    using System.Collections.Generic;
-    using System.Diagnostics;
-    using System.Xml.Schema;
-    using System;
-    using System.Text;
-    using System.ComponentModel;
-    using System.Xml;
-    using System.Xml.Serialization;
-    using System.Diagnostics.CodeAnalysis;
-
     // These classes represent a mapping between classes and a particular XML format.
     // There are two class of mapping information: accessors (such as elements and
     // attributes), and mappings (which specify the type of an accessor).
@@ -54,7 +54,7 @@ namespace System.Xml.Serialization
         [AllowNull]
         internal virtual string Name
         {
-            get { return _name == null ? string.Empty : _name; }
+            get { return _name ?? string.Empty; }
             set { _name = value; }
         }
 
@@ -100,17 +100,17 @@ namespace System.Xml.Serialization
             set { _topLevelInSchema = value; }
         }
 
-        [return: NotNullIfNotNull("name")]
+        [return: NotNullIfNotNull(nameof(name))]
         internal static string? EscapeName(string? name)
         {
-            if (name == null || name.Length == 0) return name;
+            if (string.IsNullOrEmpty(name)) return name;
             return XmlConvert.EncodeLocalName(name);
         }
 
-        [return: NotNullIfNotNull("name")]
+        [return: NotNullIfNotNull(nameof(name))]
         internal static string? EscapeQName(string? name)
         {
-            if (name == null || name.Length == 0) return name;
+            if (string.IsNullOrEmpty(name)) return name;
             int colon = name.LastIndexOf(':');
             if (colon < 0)
                 return XmlConvert.EncodeLocalName(name);
@@ -122,7 +122,7 @@ namespace System.Xml.Serialization
             }
         }
 
-        [return: NotNullIfNotNull("name")]
+        [return: NotNullIfNotNull(nameof(name))]
         internal static string? UnescapeName(string? name)
         {
             return XmlConvert.DecodeName(name);
@@ -132,7 +132,7 @@ namespace System.Xml.Serialization
         {
             if (Any)
             {
-                return $"{(Namespace == null ? "##any" : Namespace)}:{Name}";
+                return $"{Namespace ?? "##any"}:{Name}";
             }
             else
             {
@@ -209,6 +209,21 @@ namespace System.Xml.Serialization
 
     internal sealed class TextAccessor : Accessor
     {
+        private bool _isList;
+
+        // Per-accessor decision to serialize this [XmlText] array-like member as a whitespace-separated
+        // list of values (space-separated on write, split on read), analogous to AttributeAccessor.IsList.
+        // Unlike AttributeAccessor, which keeps an independently computed flag, this value is snapshotted
+        // from the type-level Mapping.IsList at import time (as XmlSchemaImporter does for its accessors),
+        // then narrowed further: it is only true when the mapping is itself a list (Mapping.IsList), the
+        // member is pure text (no mixed element content), and the UseLegacyXmlListSeparation opt-out switch
+        // is off. It is therefore a strict refinement of Mapping.IsList, not a second independent source of
+        // truth: because it is derived from Mapping.IsList it can never mark a non-list mapping as a list.
+        internal bool IsList
+        {
+            get { return _isList; }
+            set { _isList = value; }
+        }
     }
 
     internal sealed class XmlnsAccessor : Accessor
@@ -341,7 +356,7 @@ namespace System.Xml.Serialization
         [MemberNotNullWhen(false, nameof(_typeName))]
         internal bool IsAnonymousType
         {
-            get { return _typeName == null || _typeName.Length == 0; }
+            get { return string.IsNullOrEmpty(_typeName); }
         }
 
         internal virtual string DefaultElementName
@@ -446,14 +461,14 @@ namespace System.Xml.Serialization
         [AllowNull]
         internal string XmlName
         {
-            get { return _xmlName == null ? string.Empty : _xmlName; }
+            get { return _xmlName ?? string.Empty; }
             set { _xmlName = value; }
         }
 
         [AllowNull]
         internal string Name
         {
-            get { return _name == null ? string.Empty : _name; }
+            get { return _name ?? string.Empty; }
             set { _name = value; }
         }
 
@@ -476,7 +491,6 @@ namespace System.Xml.Serialization
         private bool _isSequence;
         private NameTable? _elements;
         private NameTable? _attributes;
-        private CodeIdentifiers? _scope;
 
         [DisallowNull]
         internal StructMapping? BaseMapping
@@ -514,24 +528,8 @@ namespace System.Xml.Serialization
             get { return _baseMapping != null && Members != null; }
         }
 
-        internal NameTable LocalElements
-        {
-            get
-            {
-                if (_elements == null)
-                    _elements = new NameTable();
-                return _elements;
-            }
-        }
-        internal NameTable LocalAttributes
-        {
-            get
-            {
-                if (_attributes == null)
-                    _attributes = new NameTable();
-                return _attributes;
-            }
-        }
+        internal NameTable LocalElements => _elements ??= new NameTable();
+        internal NameTable LocalAttributes => _attributes ??= new NameTable();
         object? INameScope.this[string? name, string? ns]
         {
             get
@@ -593,13 +591,8 @@ namespace System.Xml.Serialization
 
         internal CodeIdentifiers Scope
         {
-            get
-            {
-                if (_scope == null)
-                    _scope = new CodeIdentifiers();
-                return _scope;
-            }
-            set { _scope = value; }
+            get => field ??= new CodeIdentifiers();
+            set => field = value;
         }
 
         internal MemberMapping? FindDeclaringMapping(MemberMapping member, out StructMapping? declaringMapping, string? parent)
@@ -630,8 +623,7 @@ namespace System.Xml.Serialization
         }
         internal bool Declares(MemberMapping member, string? parent)
         {
-            StructMapping? m;
-            return (FindDeclaringMapping(member, out m, parent) != null);
+            return (FindDeclaringMapping(member, out _, parent) != null);
         }
 
         internal void SetContentModel(TextAccessor? text, bool hasElements)
@@ -954,7 +946,7 @@ namespace System.Xml.Serialization
 
         internal string Name
         {
-            get { return _name == null ? string.Empty : _name; }
+            get { return _name ?? string.Empty; }
             set { _name = value; }
         }
 
@@ -1002,6 +994,31 @@ namespace System.Xml.Serialization
         internal MemberMapping Clone()
         {
             return new MemberMapping(this);
+        }
+
+        internal bool Hides(MemberMapping mapping)
+        {
+            // Semantics. But all mappings would hide a null mapping, so indicating that this particular instance of mapping
+            // specifically hides a null mapping is not necessary and could be misleading. So just return false.
+            if (mapping == null)
+                return false;
+
+            var baseMember = mapping.MemberInfo;
+            var derivedMember = this.MemberInfo;
+
+            // Similarly, if either mapping (or both) lacks MemberInfo, then its not appropriate to say that one hides the other.
+            if (baseMember == null || derivedMember == null)
+                return false;
+
+            // If the member names are different, they don't hide each other
+            if (baseMember.Name != derivedMember.Name)
+                return false;
+
+            // Names are the same. So, regardless of field or property or accessibility or return type, if derivedDeclaringType is a
+            // subclass of baseDeclaringType, then the base member is hidden.
+            Type? baseDeclaringType = baseMember.DeclaringType;
+            Type? derivedDeclaringType = derivedMember.DeclaringType;
+            return baseDeclaringType != null && derivedDeclaringType != null && baseDeclaringType.IsAssignableFrom(derivedDeclaringType);
         }
     }
 
@@ -1239,7 +1256,7 @@ namespace System.Xml.Serialization
             if (element.Parent == null || !(element.Parent is XmlSchema))
                 return;
 
-            XmlSchemaObjectTable? elements = null;
+            XmlSchemaObjectTable? elements;
             if (Schema != null && Schema.TargetNamespace == elementNs)
             {
                 XmlSchemas.Preprocess(Schema);
@@ -1265,7 +1282,7 @@ namespace System.Xml.Serialization
             }
         }
 
-        private bool Match(XmlSchemaElement e1, XmlSchemaElement e2)
+        private static bool Match(XmlSchemaElement e1, XmlSchemaElement e2)
         {
             if (e1.IsNillable != e2.IsNillable)
                 return false;
@@ -1296,8 +1313,7 @@ namespace System.Xml.Serialization
                 if (_getSchemaMethod != null)
                 {
                     // get the type info
-                    if (_schemas == null)
-                        _schemas = new XmlSchemaSet();
+                    _schemas ??= new XmlSchemaSet();
                     object? typeInfo = _getSchemaMethod.Invoke(null, new object[] { _schemas });
                     _xsiType = XmlQualifiedName.Empty;
 
@@ -1359,7 +1375,7 @@ namespace System.Xml.Serialization
                             {
                                 throw new InvalidOperationException(SR.Format(SR.XmlGetSchemaTypeMissing, _getSchemaMethod.DeclaringType!.FullName, _getSchemaMethod.Name, _xsiType.Name, _xsiType.Namespace));
                             }
-                            _xsdType = _xsdType.Redefined != null ? _xsdType.Redefined : _xsdType;
+                            _xsdType = _xsdType.Redefined ?? _xsdType;
                         }
                     }
                 }
@@ -1370,7 +1386,7 @@ namespace System.Xml.Serialization
 
                     if (_schema != null)
                     {
-                        if (_schema.Id == null || _schema.Id.Length == 0) throw new InvalidOperationException(SR.Format(SR.XmlSerializableNameMissing1, _type!.FullName));
+                        if (string.IsNullOrEmpty(_schema.Id)) throw new InvalidOperationException(SR.Format(SR.XmlSerializableNameMissing1, _type!.FullName));
                     }
                 }
             }

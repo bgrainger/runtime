@@ -8,8 +8,10 @@
 
 using System;
 using System.Runtime.CompilerServices;
+using Xunit;
+using TestLibrary;
 
-class Test_vsw529206ModuleCctor
+public class Test_vsw529206ModuleCctor
 {
 	public static bool pass;
     	
@@ -28,7 +30,9 @@ class Test_vsw529206ModuleCctor
 		TriggerModuleCctorClass.intStatic = 5;
 	}
 
-    	public static int Main()
+     [ActiveIssue("needs triage", TestRuntimes.Mono)]
+    	[Fact]
+    	public static int TestEntryPoint()
     	{
     		pass = true;
 			

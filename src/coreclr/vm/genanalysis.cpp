@@ -28,7 +28,7 @@ bool gcGenAnalysisDump = false;
         {
             // Get the managed command line.
             LPCWSTR pCmdLine = GetCommandLineForDiagnostics();
-            match = wcsncmp(pCmdLine, gcGenAnalysisCmd, wcslen(gcGenAnalysisCmd)) == 0;
+            match = u16_strncmp(pCmdLine, gcGenAnalysisCmd, u16_strlen(gcGenAnalysisCmd)) == 0;
         }
         if (match && !CLRConfig::IsConfigOptionSpecified(W("GCGenAnalysisGen")))
         {
@@ -76,8 +76,10 @@ bool gcGenAnalysisDump = false;
 
 /* static */ void GenAnalysis::EnableGenerationalAwareSession()
 {
-    LPCWSTR outputPath = nullptr;
-    outputPath = GENAWARE_TRACE_FILE_NAME;
+#ifdef FEATURE_EVENT_TRACE
+    WCHAR outputPath[MAX_PATH];
+    ReplacePid(GENAWARE_TRACE_FILE_NAME, outputPath, MAX_PATH);
+
     NewArrayHolder<COR_PRF_EVENTPIPE_PROVIDER_CONFIG> pProviders;
     int providerCnt = 1;
     pProviders = new COR_PRF_EVENTPIPE_PROVIDER_CONFIG[providerCnt];
@@ -88,7 +90,7 @@ bool gcGenAnalysisDump = false;
     const uint64_t keyword                          = GCHeapAndTypeNamesKeyword|GCHeapSurvivalAndMovementKeyword|GCHeapDumpKeyword|TypeKeyword;
     pProviders[0].providerName = W("Microsoft-Windows-DotNETRuntime");
     pProviders[0].keywords = keyword;
-    pProviders[0].loggingLevel = (uint32_t)EP_EVENT_LEVEL_VERBOSE;
+    pProviders[0].loggingLevel = (uint32_t)EP_EVENT_LEVEL_INFORMATIONAL;
     pProviders[0].filterData = nullptr;
 
     EventPipeProviderConfigurationAdapter configAdapter(pProviders, providerCnt);
@@ -110,4 +112,11 @@ bool gcGenAnalysisDump = false;
         EventPipeAdapter::StartStreaming(gcGenAnalysisEventPipeSessionId);
         gcGenAnalysisState = GcGenAnalysisState::Enabled;
     }
+    else
+    {
+        gcGenAnalysisTrace = false;
+    }
+#else
+    gcGenAnalysisTrace = false;
+#endif //FEATURE_EVENT_TRACE
 }

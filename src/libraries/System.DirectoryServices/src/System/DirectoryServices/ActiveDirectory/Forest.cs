@@ -1,12 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Text;
 using System.Collections;
-using System.Globalization;
 using System.ComponentModel;
-using System.Runtime.InteropServices;
 using System.Diagnostics;
+using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Text;
 
 namespace System.DirectoryServices.ActiveDirectory
 {
@@ -239,10 +239,7 @@ namespace System.DirectoryServices.ActiveDirectory
         {
             CheckIfDisposed();
 
-            if (siteName == null)
-            {
-                throw new ArgumentNullException(nameof(siteName));
-            }
+            ArgumentNullException.ThrowIfNull(siteName);
 
             return GlobalCatalog.FindOneInternal(_context, Name, siteName, 0);
         }
@@ -258,10 +255,7 @@ namespace System.DirectoryServices.ActiveDirectory
         {
             CheckIfDisposed();
 
-            if (siteName == null)
-            {
-                throw new ArgumentNullException(nameof(siteName));
-            }
+            ArgumentNullException.ThrowIfNull(siteName);
 
             return GlobalCatalog.FindOneInternal(_context, Name, siteName, flag);
         }
@@ -277,10 +271,7 @@ namespace System.DirectoryServices.ActiveDirectory
         {
             CheckIfDisposed();
 
-            if (siteName == null)
-            {
-                throw new ArgumentNullException(nameof(siteName));
-            }
+            ArgumentNullException.ThrowIfNull(siteName);
 
             return GlobalCatalog.FindAllInternal(_context, siteName);
         }
@@ -299,10 +290,7 @@ namespace System.DirectoryServices.ActiveDirectory
 
             CheckIfDisposed();
 
-            if (siteName == null)
-            {
-                throw new ArgumentNullException(nameof(siteName));
-            }
+            ArgumentNullException.ThrowIfNull(siteName);
 
             if (siteName.Length == 0)
             {
@@ -352,7 +340,7 @@ namespace System.DirectoryServices.ActiveDirectory
             if (targetForestName.Length == 0)
                 throw new ArgumentException(SR.EmptyStringParameter, nameof(targetForestName));
 
-            return TrustHelper.GetTrustedDomainInfoStatus(_context, Name, targetForestName, TRUST_ATTRIBUTE.TRUST_ATTRIBUTE_CROSS_ORGANIZATION, true);
+            return TrustHelper.GetTrustedDomainInfoStatus(_context, Name, targetForestName, Interop.Advapi32.TRUST_ATTRIBUTE.TRUST_ATTRIBUTE_CROSS_ORGANIZATION, true);
         }
 
         public void SetSelectiveAuthenticationStatus(string targetForestName, bool enable)
@@ -365,7 +353,7 @@ namespace System.DirectoryServices.ActiveDirectory
             if (targetForestName.Length == 0)
                 throw new ArgumentException(SR.EmptyStringParameter, nameof(targetForestName));
 
-            TrustHelper.SetTrustedDomainInfoStatus(_context, Name, targetForestName, TRUST_ATTRIBUTE.TRUST_ATTRIBUTE_CROSS_ORGANIZATION, enable, true);
+            TrustHelper.SetTrustedDomainInfoStatus(_context, Name, targetForestName, Interop.Advapi32.TRUST_ATTRIBUTE.TRUST_ATTRIBUTE_CROSS_ORGANIZATION, enable, true);
         }
 
         public bool GetSidFilteringStatus(string targetForestName)
@@ -378,7 +366,7 @@ namespace System.DirectoryServices.ActiveDirectory
             if (targetForestName.Length == 0)
                 throw new ArgumentException(SR.EmptyStringParameter, nameof(targetForestName));
 
-            return TrustHelper.GetTrustedDomainInfoStatus(_context, Name, targetForestName, TRUST_ATTRIBUTE.TRUST_ATTRIBUTE_TREAT_AS_EXTERNAL, true);
+            return TrustHelper.GetTrustedDomainInfoStatus(_context, Name, targetForestName, Interop.Advapi32.TRUST_ATTRIBUTE.TRUST_ATTRIBUTE_TREAT_AS_EXTERNAL, true);
         }
 
         public void SetSidFilteringStatus(string targetForestName, bool enable)
@@ -391,7 +379,7 @@ namespace System.DirectoryServices.ActiveDirectory
             if (targetForestName.Length == 0)
                 throw new ArgumentException(SR.EmptyStringParameter, nameof(targetForestName));
 
-            TrustHelper.SetTrustedDomainInfoStatus(_context, Name, targetForestName, TRUST_ATTRIBUTE.TRUST_ATTRIBUTE_TREAT_AS_EXTERNAL, enable, true);
+            TrustHelper.SetTrustedDomainInfoStatus(_context, Name, targetForestName, Interop.Advapi32.TRUST_ATTRIBUTE.TRUST_ATTRIBUTE_TREAT_AS_EXTERNAL, enable, true);
         }
 
         public void DeleteLocalSideOfTrustRelationship(string targetForestName)
@@ -649,11 +637,7 @@ namespace System.DirectoryServices.ActiveDirectory
             get
             {
                 CheckIfDisposed();
-                if (_cachedSites == null)
-                {
-                    _cachedSites = new ReadOnlySiteCollection(GetSites());
-                }
-                return _cachedSites;
+                return _cachedSites ??= new ReadOnlySiteCollection(GetSites());
             }
         }
 
@@ -662,11 +646,7 @@ namespace System.DirectoryServices.ActiveDirectory
             get
             {
                 CheckIfDisposed();
-                if (_cachedDomains == null)
-                {
-                    _cachedDomains = new DomainCollection(GetDomains());
-                }
-                return _cachedDomains;
+                return _cachedDomains ??= new DomainCollection(GetDomains());
             }
         }
 
@@ -675,11 +655,7 @@ namespace System.DirectoryServices.ActiveDirectory
             get
             {
                 CheckIfDisposed();
-                if (_cachedGlobalCatalogs == null)
-                {
-                    _cachedGlobalCatalogs = FindAllGlobalCatalogs();
-                }
-                return _cachedGlobalCatalogs;
+                return _cachedGlobalCatalogs ??= FindAllGlobalCatalogs();
             }
         }
 
@@ -688,11 +664,7 @@ namespace System.DirectoryServices.ActiveDirectory
             get
             {
                 CheckIfDisposed();
-                if (_cachedApplicationPartitions == null)
-                {
-                    _cachedApplicationPartitions = new ApplicationPartitionCollection(GetApplicationPartitions());
-                }
-                return _cachedApplicationPartitions;
+                return _cachedApplicationPartitions ??= new ApplicationPartitionCollection(GetApplicationPartitions());
             }
         }
 
@@ -765,11 +737,7 @@ namespace System.DirectoryServices.ActiveDirectory
             get
             {
                 CheckIfDisposed();
-                if (_cachedSchemaRoleOwner == null)
-                {
-                    _cachedSchemaRoleOwner = GetRoleOwner(ActiveDirectoryRole.SchemaRole);
-                }
-                return _cachedSchemaRoleOwner;
+                return _cachedSchemaRoleOwner ??= GetRoleOwner(ActiveDirectoryRole.SchemaRole);
             }
         }
 
@@ -778,11 +746,7 @@ namespace System.DirectoryServices.ActiveDirectory
             get
             {
                 CheckIfDisposed();
-                if (_cachedNamingRoleOwner == null)
-                {
-                    _cachedNamingRoleOwner = GetRoleOwner(ActiveDirectoryRole.NamingRole);
-                }
-                return _cachedNamingRoleOwner;
+                return _cachedNamingRoleOwner ??= GetRoleOwner(ActiveDirectoryRole.NamingRole);
             }
         }
 
@@ -857,10 +821,7 @@ namespace System.DirectoryServices.ActiveDirectory
             }
             finally
             {
-                if (entry != null)
-                {
-                    entry.Dispose();
-                }
+                entry?.Dispose();
             }
 
             // create a new context object for the domain controller passing on  the
@@ -869,7 +830,7 @@ namespace System.DirectoryServices.ActiveDirectory
             return new DomainController(dcContext, dcName);
         }
 
-        private ArrayList GetSites()
+        private unsafe ArrayList GetSites()
         {
             ArrayList sites = new ArrayList();
             int result = 0;
@@ -884,14 +845,17 @@ namespace System.DirectoryServices.ActiveDirectory
 
                 // Get the sites within the forest
                 // call DsListSites
-                IntPtr functionPtr = UnsafeNativeMethods.GetProcAddress(DirectoryContext.ADHandle, "DsListSitesW");
-                if (functionPtr == (IntPtr)0)
+                /*DWORD DsListSites(
+                    HANDLE hDs,
+                    PDS_NAME_RESULT* ppSites
+                    );*/
+                var dsListSites = (delegate* unmanaged<IntPtr, IntPtr*, int>)global::Interop.Kernel32.GetProcAddress(DirectoryContext.ADHandle, "DsListSitesW");
+                if (dsListSites == null)
                 {
-                    throw ExceptionHelper.GetExceptionFromErrorCode(Marshal.GetLastWin32Error());
+                    throw ExceptionHelper.GetExceptionFromErrorCode(Marshal.GetLastPInvokeError());
                 }
-                NativeMethods.DsListSites dsListSites = (NativeMethods.DsListSites)Marshal.GetDelegateForFunctionPointer(functionPtr, typeof(NativeMethods.DsListSites));
 
-                result = dsListSites(dsHandle, out sitesPtr);
+                result = dsListSites(dsHandle, &sitesPtr);
                 if (result == 0)
                 {
                     try
@@ -905,7 +869,7 @@ namespace System.DirectoryServices.ActiveDirectory
                             DsNameResultItem dsNameResultItem = new DsNameResultItem();
 
                             Marshal.PtrToStructure(currentItem, dsNameResultItem);
-                            if (dsNameResultItem.status == NativeMethods.DsNameNoError)
+                            if (dsNameResultItem.status == NativeMethods.DS_NAME_NO_ERROR)
                             {
                                 string siteName = Utils.GetDNComponents(dsNameResultItem.name!)[0].Value!;
                                 // an existing site
@@ -921,12 +885,11 @@ namespace System.DirectoryServices.ActiveDirectory
                         if (sitesPtr != IntPtr.Zero)
                         {
                             // call DsFreeNameResultW
-                            functionPtr = UnsafeNativeMethods.GetProcAddress(DirectoryContext.ADHandle, "DsFreeNameResultW");
-                            if (functionPtr == (IntPtr)0)
+                            var dsFreeNameResultW = (delegate* unmanaged<IntPtr, void>)global::Interop.Kernel32.GetProcAddress(DirectoryContext.ADHandle, "DsFreeNameResultW");
+                            if (dsFreeNameResultW == null)
                             {
-                                throw ExceptionHelper.GetExceptionFromErrorCode(Marshal.GetLastWin32Error());
+                                throw ExceptionHelper.GetExceptionFromErrorCode(Marshal.GetLastPInvokeError());
                             }
-                            UnsafeNativeMethods.DsFreeNameResultW dsFreeNameResultW = (UnsafeNativeMethods.DsFreeNameResultW)Marshal.GetDelegateForFunctionPointer(functionPtr, typeof(UnsafeNativeMethods.DsFreeNameResultW));
                             dsFreeNameResultW(sitesPtr);
                         }
                     }
@@ -1016,10 +979,7 @@ namespace System.DirectoryServices.ActiveDirectory
             }
             finally
             {
-                if (resCol != null)
-                {
-                    resCol.Dispose();
-                }
+                resCol?.Dispose();
                 partitionsEntry.Dispose();
             }
             return appNCs;
@@ -1073,10 +1033,7 @@ namespace System.DirectoryServices.ActiveDirectory
             }
             finally
             {
-                if (resCol != null)
-                {
-                    resCol.Dispose();
-                }
+                resCol?.Dispose();
                 partitionsEntry.Dispose();
             }
             return domains;
@@ -1105,7 +1062,7 @@ namespace System.DirectoryServices.ActiveDirectory
             }
         }
 
-        private TrustRelationshipInformationCollection GetTrustsHelper(string? targetForestName)
+        private unsafe TrustRelationshipInformationCollection GetTrustsHelper(string? targetForestName)
         {
             string? serverName = null;
             IntPtr domains = (IntPtr)0;
@@ -1125,7 +1082,7 @@ namespace System.DirectoryServices.ActiveDirectory
             {
                 try
                 {
-                    error = UnsafeNativeMethods.DsEnumerateDomainTrustsW(serverName, (int)DS_DOMAINTRUST_FLAG.DS_DOMAIN_PRIMARY | (int)DS_DOMAINTRUST_FLAG.DS_DOMAIN_DIRECT_OUTBOUND | (int)DS_DOMAINTRUST_FLAG.DS_DOMAIN_DIRECT_INBOUND, out domains, out count);
+                    error = Interop.Netapi32.DsEnumerateDomainTrustsW(serverName, Interop.Netapi32.DS_DOMAINTRUST_FLAG.DS_DOMAIN_PRIMARY | Interop.Netapi32.DS_DOMAINTRUST_FLAG.DS_DOMAIN_DIRECT_OUTBOUND | Interop.Netapi32.DS_DOMAINTRUST_FLAG.DS_DOMAIN_DIRECT_INBOUND, out domains, out count);
                 }
                 finally
                 {
@@ -1147,9 +1104,8 @@ namespace System.DirectoryServices.ActiveDirectory
                     IntPtr addr = (IntPtr)0;
                     for (int i = 0; i < count; i++)
                     {
-                        addr = IntPtr.Add(domains, i * Marshal.SizeOf(typeof(DS_DOMAIN_TRUSTS)));
-                        DS_DOMAIN_TRUSTS unmanagedTrust = new DS_DOMAIN_TRUSTS();
-                        Marshal.PtrToStructure(addr, unmanagedTrust);
+                        addr = IntPtr.Add(domains, i * sizeof(Interop.Netapi32.DS_DOMAIN_TRUSTS));
+                        Interop.Netapi32.DS_DOMAIN_TRUSTS unmanagedTrust = *(Interop.Netapi32.DS_DOMAIN_TRUSTS*)addr;
 
                         // whether this is the case that a paticular forest trust info is needed
                         if (targetForestName != null)
@@ -1174,10 +1130,10 @@ namespace System.DirectoryServices.ActiveDirectory
                         }
 
                         // if it is up level trust and forest attribute is set
-                        if (unmanagedTrust.TrustType == TrustHelper.TRUST_TYPE_UPLEVEL && ((unmanagedTrust.TrustAttributes & (int)TRUST_ATTRIBUTE.TRUST_ATTRIBUTE_FOREST_TRANSITIVE) != 0))
+                        if (unmanagedTrust.TrustType == TrustHelper.TRUST_TYPE_UPLEVEL && ((unmanagedTrust.TrustAttributes & (int)Interop.Advapi32.TRUST_ATTRIBUTE.TRUST_ATTRIBUTE_FOREST_TRANSITIVE) != 0))
                         {
                             // we don't want to include self
-                            if ((unmanagedTrust.Flags & (int)DS_DOMAINTRUST_FLAG.DS_DOMAIN_PRIMARY) != 0)
+                            if ((unmanagedTrust.Flags & Interop.Netapi32.DS_DOMAINTRUST_FLAG.DS_DOMAIN_PRIMARY) != 0)
                                 continue;
 
                             TrustRelationshipInformation trust = new ForestTrustRelationshipInformation(_context, Name, unmanagedTrust, TrustType.Forest);
@@ -1190,7 +1146,7 @@ namespace System.DirectoryServices.ActiveDirectory
             finally
             {
                 if (domains != (IntPtr)0)
-                    UnsafeNativeMethods.NetApiBufferFree(domains);
+                    Interop.Netapi32.NetApiBufferFree(domains);
             }
         }
 

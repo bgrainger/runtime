@@ -3,10 +3,10 @@
 
 /*============================================================
 **
-** Source: test1.c 
+** Source: test1.c
 **
 ** Purpose: Test for CreateThread.  Call CreateThread and ensure
-** that it succeeds.  Also check to ensure the paramater is passed
+** that it succeeds.  Also check to ensure the parameter is passed
 ** properly.
 **
 **
@@ -17,24 +17,24 @@
 #define LLFORMAT "%llu"
 
 ULONGLONG dwCreateThreadTestParameter = 0;
+LONG completedThreadCount_CreateThread_test1 = 0;
 
 DWORD PALAPI CreateThreadTestThread( LPVOID lpParameter)
 {
     DWORD dwRet = 0;
-    
+
     /* save parameter for test */
     dwCreateThreadTestParameter = (ULONGLONG)lpParameter;
-    
+    InterlockedIncrement(&completedThreadCount_CreateThread_test1);
+
     return dwRet;
 }
 
 BOOL CreateThreadTest()
 {
     BOOL bRet = FALSE;
-    DWORD dwRet = 0;
-
     LPSECURITY_ATTRIBUTES lpThreadAttributes = NULL;
-    DWORD dwStackSize = 0; 
+    DWORD dwStackSize = 0;
     LPTHREAD_START_ROUTINE lpStartAddress =  &CreateThreadTestThread;
     LPVOID lpParameter = (LPVOID)lpStartAddress;
     DWORD dwCreationFlags = 0;  /* run immediately */
@@ -44,45 +44,35 @@ BOOL CreateThreadTest()
 
     dwCreateThreadTestParameter = 0;
 
-    /* Create a thread, passing the appropriate paramaters as declared
+    /* Create a thread, passing the appropriate parameters as declared
        above.
     */
-    
-    hThread = CreateThread( lpThreadAttributes,   
-                            dwStackSize,          
-                            lpStartAddress,       
-                            lpParameter,          
-                            dwCreationFlags,      
-                            &dwThreadId );       
-    
-    /* Ensure that the HANDLE is not invalid! */
-    if (hThread != INVALID_HANDLE_VALUE)
-    {
-        dwRet = WaitForSingleObject(hThread,INFINITE);
 
-        if (dwRet != WAIT_OBJECT_0)
+    hThread = CreateThread( lpThreadAttributes,
+                            dwStackSize,
+                            lpStartAddress,
+                            lpParameter,
+                            dwCreationFlags,
+                            &dwThreadId );
+
+    /* Ensure that the HANDLE is not invalid! */
+    if (hThread != NULL)
+    {
+        WaitForThreadCompletion(&completedThreadCount_CreateThread_test1, 1);
+
+        /* Check to ensure that the parameter passed to the thread
+           function is the same in the function as what we passed.
+        */
+        if (dwCreateThreadTestParameter != (ULONGLONG)lpParameter)
         {
-            Trace("CreateThreadTest:WaitForSingleObject "
-                   "failed (%x)\n",GetLastError());
+            Trace("CreateThreadTest:parameter error.  The "
+                   "parameter passed should have been " LLFORMAT " but when "
+                   "passed to the Thread function it was " LLFORMAT " . GetLastError[%x]\n",
+                   dwCreateThreadTestParameter,lpParameter, GetLastError());
         }
         else
         {
-            /* Check to ensure that the parameter passed to the thread
-               function is the same in the function as what we passed.
-            */
-            
-            if (dwCreateThreadTestParameter != (ULONGLONG)lpParameter)
-            {
-                Trace("CreateThreadTest:parameter error.  The "
-                       "parameter passed should have been " LLFORMAT " but when "
-                       "passed to the Thread function it was " LLFORMAT " . GetLastError[%x]\n",
-                       dwCreateThreadTestParameter,lpParameter, GetLastError());
-            }
-            else
-            {
-                bRet = TRUE;
-            }
-
+            bRet = TRUE;
         }
 	CloseHandle(hThread);
     }
@@ -91,7 +81,7 @@ BOOL CreateThreadTest()
         Trace("CreateThreadTest:CreateThread failed (%x)\n",GetLastError());
     }
 
-    return bRet; 
+    return bRet;
 }
 
 
@@ -101,12 +91,12 @@ PALTEST(threading_CreateThread_test1_paltest_createthread_test1, "threading/Crea
     {
         return ( FAIL );
     }
-    
-    if(!CreateThreadTest()) 
+
+    if(!CreateThreadTest())
     {
         Fail ("Test failed\n");
     }
-      
+
     Trace("Test Passed\n");
     PAL_Terminate();
     return ( PASS );

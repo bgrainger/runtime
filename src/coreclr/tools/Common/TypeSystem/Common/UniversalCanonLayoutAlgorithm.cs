@@ -3,10 +3,6 @@
 
 using System;
 
-using Internal.NativeFormat;
-
-using Debug = System.Diagnostics.Debug;
-
 namespace Internal.TypeSystem
 {
     public class UniversalCanonLayoutAlgorithm : FieldLayoutAlgorithm
@@ -16,6 +12,12 @@ namespace Internal.TypeSystem
         private UniversalCanonLayoutAlgorithm() { }
 
         public override bool ComputeContainsGCPointers(DefType type)
+        {
+            // This should never be called
+            throw new NotSupportedException();
+        }
+
+        public override bool ComputeContainsByRefs(DefType type)
         {
             // This should never be called
             throw new NotSupportedException();

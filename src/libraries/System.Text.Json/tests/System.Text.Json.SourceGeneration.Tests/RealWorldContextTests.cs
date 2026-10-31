@@ -4,9 +4,9 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
-using System.Text.Json.Serialization.Tests;
 using Xunit;
 
 namespace System.Text.Json.SourceGeneration.Tests
@@ -111,6 +111,41 @@ namespace System.Text.Json.SourceGeneration.Tests
             VerifyRepeatedLocation(expected, obj);
         }
 
+        [Theory]
+        [InlineData("0")]
+        [InlineData("false")]
+        [InlineData("\"str\"")]
+        [InlineData("[1,2,3]")]
+        [InlineData("{ \"key\" : \"value\" }")]
+        public void RoundtripJsonDocument(string json)
+        {
+            using JsonDocument jsonDocument = JsonDocument.Parse(json);
+
+            string actualJson = JsonSerializer.Serialize(jsonDocument, DefaultContext.JsonDocument);
+            JsonTestHelper.AssertJsonEqual(json, actualJson);
+
+            using JsonDocument actualJsonDocument = JsonSerializer.Deserialize(actualJson, DefaultContext.JsonDocument);
+            JsonTestHelper.AssertJsonEqual(jsonDocument.RootElement, actualJsonDocument.RootElement);
+        }
+
+        [Theory]
+        [InlineData("0")]
+        [InlineData("false")]
+        [InlineData("\"str\"")]
+        [InlineData("[1,2,3]")]
+        [InlineData("{ \"key\" : \"value\" }")]
+        public void RoundtripJsonElement(string json)
+        {
+            using JsonDocument jsonDocument = JsonDocument.Parse(json);
+            JsonElement jsonElement = jsonDocument.RootElement;
+
+            string actualJson = JsonSerializer.Serialize(jsonElement, DefaultContext.JsonElement);
+            JsonTestHelper.AssertJsonEqual(json, actualJson);
+
+            JsonElement actualJsonElement = JsonSerializer.Deserialize(actualJson, DefaultContext.JsonElement);
+            JsonTestHelper.AssertJsonEqual(jsonElement, actualJsonElement);
+        }
+
         [Fact]
         public virtual void RoundTripValueTuple()
         {
@@ -127,7 +162,16 @@ namespace System.Text.Json.SourceGeneration.Tests
             if (DefaultContext.JsonSourceGenerationMode == JsonSourceGenerationMode.Serialization)
             {
                 // Deserialization not supported in fast path serialization only mode
-                Assert.Throws<InvalidOperationException>(() => JsonSerializer.Deserialize(json, DefaultContext.ValueTupleStringInt32Boolean));
+                // but if there are no fields we won't throw because we throw on the property lookup
+                if (isIncludeFieldsEnabled)
+                {
+                    Assert.Throws<InvalidOperationException>(() => JsonSerializer.Deserialize(json, DefaultContext.ValueTupleStringInt32Boolean));
+                }
+                else
+                {
+                    (string, int, bool) obj = JsonSerializer.Deserialize(json, DefaultContext.ValueTupleStringInt32Boolean);
+                    Assert.Equal(default((string, int, bool)), obj);
+                }
             }
             else
             {
@@ -208,10 +252,64 @@ namespace System.Text.Json.SourceGeneration.Tests
             {
                 string json = JsonSerializer.Serialize(obj, DefaultContext.ClassWithCustomConverterProperty);
                 Assert.Equal(ExpectedJson, json);
-            }
 
-            obj = JsonSerializer.Deserialize<ClassWithCustomConverterProperty>(ExpectedJson);
-            Assert.Equal(42, obj.Property.Value);
+                obj = JsonSerializer.Deserialize<ClassWithCustomConverterProperty>(ExpectedJson, DefaultContext.ClassWithCustomConverterProperty);
+                Assert.Equal(42, obj.Property.Value);
+            }
+        }
+
+        [Fact]
+        public virtual void RoundTripWithCustomConverterNullableProperty()
+        {
+            const string Json = "{\"TimeSpan\":42}";
+
+            var obj = new ClassWithCustomConverterNullableProperty
+            {
+                TimeSpan = TimeSpan.FromSeconds(42)
+            };
+
+            // Types with properties in custom converters do not support fast path serialization.
+            Assert.True(DefaultContext.ClassWithCustomConverterNullableProperty.SerializeHandler is null);
+
+            if (DefaultContext.JsonSourceGenerationMode == JsonSourceGenerationMode.Serialization)
+            {
+                Assert.Throws<InvalidOperationException>(() => JsonSerializer.Serialize(obj, DefaultContext.ClassWithCustomConverterNullableProperty));
+            }
+            else
+            {
+                string json = JsonSerializer.Serialize(obj, DefaultContext.ClassWithCustomConverterNullableProperty);
+                Assert.Equal(Json, json);
+
+                obj = JsonSerializer.Deserialize(Json, DefaultContext.ClassWithCustomConverterNullableProperty);
+                Assert.Equal(42, obj.TimeSpan.Value.TotalSeconds);
+            }
+        }
+
+        [Fact]
+        public virtual void RoundTripWithCustomConverterFactoryNullableProperty()
+        {
+            const string Json = "{\"MyEnum\":\"Two\"}";
+
+            var obj = new ClassWithCustomConverterFactoryNullableProperty
+            {
+                MyEnum = SourceGenSampleEnum.Two
+            };
+
+            // Types with properties in custom converters do not support fast path serialization.
+            Assert.True(DefaultContext.ClassWithCustomConverterFactoryNullableProperty.SerializeHandler is null);
+
+            if (DefaultContext.JsonSourceGenerationMode == JsonSourceGenerationMode.Serialization)
+            {
+                Assert.Throws<InvalidOperationException>(() => JsonSerializer.Serialize(obj, DefaultContext.ClassWithCustomConverterFactoryNullableProperty));
+            }
+            else
+            {
+                string json = JsonSerializer.Serialize(obj, DefaultContext.ClassWithCustomConverterFactoryNullableProperty);
+                Assert.Equal(Json, json);
+
+                obj = JsonSerializer.Deserialize(Json, DefaultContext.ClassWithCustomConverterFactoryNullableProperty);
+                Assert.Equal(SourceGenSampleEnum.Two, obj.MyEnum.Value);
+            }
         }
 
         [Fact]
@@ -235,10 +333,10 @@ namespace System.Text.Json.SourceGeneration.Tests
             {
                 string json = JsonSerializer.Serialize(obj, DefaultContext.StructWithCustomConverterProperty);
                 Assert.Equal(ExpectedJson, json);
-            }
 
-            obj = JsonSerializer.Deserialize<StructWithCustomConverterProperty>(ExpectedJson);
-            Assert.Equal(42, obj.Property.Value);
+                obj = JsonSerializer.Deserialize<StructWithCustomConverterProperty>(ExpectedJson, DefaultContext.StructWithCustomConverterProperty);
+                Assert.Equal(42, obj.Property.Value);
+            }
         }
 
         [Fact]
@@ -246,29 +344,29 @@ namespace System.Text.Json.SourceGeneration.Tests
         {
             const string Json = "{\"MyEnum\":\"One\"}";
 
-            ClassWithCustomConverterPropertyFactory obj = new()
+            ClassWithCustomConverterFactoryProperty obj = new()
             {
-                MyEnum = SampleEnum.One
+                MyEnum = SourceGenSampleEnum.One
             };
 
             if (DefaultContext.JsonSourceGenerationMode == JsonSourceGenerationMode.Serialization)
             {
-                Assert.Throws<InvalidOperationException>(() => JsonSerializer.Serialize(obj, DefaultContext.ClassWithCustomConverterPropertyFactory));
+                Assert.Throws<InvalidOperationException>(() => JsonSerializer.Serialize(obj, DefaultContext.ClassWithCustomConverterFactoryProperty));
             }
             else
             {
-                string json = JsonSerializer.Serialize(obj, DefaultContext.ClassWithCustomConverterPropertyFactory);
+                string json = JsonSerializer.Serialize(obj, DefaultContext.ClassWithCustomConverterFactoryProperty);
                 Assert.Equal(Json, json);
             }
 
             if (DefaultContext.JsonSourceGenerationMode == JsonSourceGenerationMode.Serialization)
             {
-                Assert.Throws<InvalidOperationException>(() => JsonSerializer.Serialize(obj, DefaultContext.ClassWithCustomConverterPropertyFactory));
+                Assert.Throws<InvalidOperationException>(() => JsonSerializer.Serialize(obj, DefaultContext.ClassWithCustomConverterFactoryProperty));
             }
             else
             {
-                obj = JsonSerializer.Deserialize(Json, DefaultContext.ClassWithCustomConverterPropertyFactory);
-                Assert.Equal(SampleEnum.One, obj.MyEnum);
+                obj = JsonSerializer.Deserialize(Json, DefaultContext.ClassWithCustomConverterFactoryProperty);
+                Assert.Equal(SourceGenSampleEnum.One, obj.MyEnum);
             }
         }
 
@@ -277,29 +375,29 @@ namespace System.Text.Json.SourceGeneration.Tests
         {
             const string Json = "{\"MyEnum\":\"One\"}";
 
-            StructWithCustomConverterPropertyFactory obj = new()
+            StructWithCustomConverterFactoryProperty obj = new()
             {
-                MyEnum = SampleEnum.One
+                MyEnum = SourceGenSampleEnum.One
             };
 
             if (DefaultContext.JsonSourceGenerationMode == JsonSourceGenerationMode.Serialization)
             {
-                Assert.Throws<InvalidOperationException>(() => JsonSerializer.Serialize(obj, DefaultContext.StructWithCustomConverterPropertyFactory));
+                Assert.Throws<InvalidOperationException>(() => JsonSerializer.Serialize(obj, DefaultContext.StructWithCustomConverterFactoryProperty));
             }
             else
             {
-                string json = JsonSerializer.Serialize(obj, DefaultContext.StructWithCustomConverterPropertyFactory);
+                string json = JsonSerializer.Serialize(obj, DefaultContext.StructWithCustomConverterFactoryProperty);
                 Assert.Equal(Json, json);
             }
 
             if (DefaultContext.JsonSourceGenerationMode == JsonSourceGenerationMode.Serialization)
             {
-                Assert.Throws<InvalidOperationException>(() => JsonSerializer.Serialize(obj, DefaultContext.StructWithCustomConverterPropertyFactory));
+                Assert.Throws<InvalidOperationException>(() => JsonSerializer.Serialize(obj, DefaultContext.StructWithCustomConverterFactoryProperty));
             }
             else
             {
-                obj = JsonSerializer.Deserialize(Json, DefaultContext.StructWithCustomConverterPropertyFactory);
-                Assert.Equal(SampleEnum.One, obj.MyEnum);
+                obj = JsonSerializer.Deserialize(Json, DefaultContext.StructWithCustomConverterFactoryProperty);
+                Assert.Equal(SourceGenSampleEnum.One, obj.MyEnum);
             }
         }
 
@@ -396,10 +494,11 @@ namespace System.Text.Json.SourceGeneration.Tests
                 CampaignManagedOrganizerName = "Name FamilyName",
                 CampaignName = "The very new campaign",
                 Description = "The .NET Foundation works with Microsoft and the broader industry to increase the exposure of open source projects in the .NET community and the .NET Foundation. The .NET Foundation provides access to these resources to projects and looks to promote the activities of our communities.",
-                EndDate = DateTime.UtcNow.AddYears(1),
+                EndDate = DateTimeTestHelpers.FixedDateTimeValue.AddYears(1),
                 Name = "Just a name",
                 ImageUrl = "https://www.dotnetfoundation.org/theme/img/carousel/foundation-diagram-content.png",
-                StartDate = DateTime.UtcNow
+                StartDate = DateTimeTestHelpers.FixedDateTimeValue,
+                Offset = TimeSpan.FromHours(2)
             };
         }
 
@@ -459,10 +558,10 @@ namespace System.Text.Json.SourceGeneration.Tests
                         CampaignManagedOrganizerName = "Name FamilyName",
                         CampaignName = "The very new campaign",
                         Description = "The .NET Foundation works with Microsoft and the broader industry to increase the exposure of open source projects in the .NET community and the .NET Foundation. The .NET Foundation provides access to these resources to projects and looks to promote the activities of our communities.",
-                        EndDate = DateTime.UtcNow.AddYears(1),
+                        EndDate = DateTimeTestHelpers.FixedDateTimeValue.AddYears(1),
                         Name = "Just a name",
                         ImageUrl = "https://www.dotnetfoundation.org/theme/img/carousel/foundation-diagram-content.png",
-                        StartDate = DateTime.UtcNow
+                        StartDate = DateTimeTestHelpers.FixedDateTimeValue
                     },
                     count: 20).ToList()
             };
@@ -655,7 +754,7 @@ namespace System.Text.Json.SourceGeneration.Tests
         [Fact]
         public virtual void HandlesNestedTypes()
         {
-            string json = @"{""MyInt"":5}";
+            string json = """{"MyInt":5}""";
             MyNestedClass obj = JsonSerializer.Deserialize<MyNestedClass>(json, DefaultContext.MyNestedClass);
             Assert.Equal(5, obj.MyInt);
             Assert.Equal(json, JsonSerializer.Serialize(obj, DefaultContext.MyNestedClass));
@@ -678,7 +777,7 @@ namespace System.Text.Json.SourceGeneration.Tests
         [Fact]
         public void ConstructingFromOptionsKeepsReference()
         {
-            JsonStringEnumConverter converter = new();
+            JsonConverter converter = new JsonStringEnumConverter<JsonIgnoreCondition>();
             JsonSerializerOptions options = new()
             {
                 PropertyNameCaseInsensitive = true,
@@ -718,10 +817,30 @@ namespace System.Text.Json.SourceGeneration.Tests
         public virtual void ParameterizedConstructor()
         {
             string json = JsonSerializer.Serialize(new HighLowTempsImmutable(1, 2), DefaultContext.HighLowTempsImmutable);
-            Assert.Contains(@"""High"":1", json);
-            Assert.Contains(@"""Low"":2", json);
+            Assert.Contains("""
+                "High":1
+                """, json);
+            Assert.Contains("""
+                "Low":2
+                """, json);
 
             HighLowTempsImmutable obj = JsonSerializer.Deserialize(json, DefaultContext.HighLowTempsImmutable);
+            Assert.Equal(1, obj.High);
+            Assert.Equal(2, obj.Low);
+        }
+
+        [Fact]
+        public virtual void PositionalRecord()
+        {
+            string json = JsonSerializer.Serialize(new HighLowTempsRecord(1, 2), DefaultContext.HighLowTempsRecord);
+            Assert.Contains("""
+                "High":1
+                """, json);
+            Assert.Contains("""
+                "Low":2
+                """, json);
+
+            HighLowTempsRecord obj = JsonSerializer.Deserialize(json, DefaultContext.HighLowTempsRecord);
             Assert.Equal(1, obj.High);
             Assert.Equal(2, obj.Low);
         }
@@ -754,6 +873,7 @@ namespace System.Text.Json.SourceGeneration.Tests
             {
                 Uri = new Uri("http://contoso.com"),
                 Array = new int[] { 42 },
+                ByteArray = new byte[] { 1, 2, 3 },
                 Poco = new ClassWithNullableProperties.MyPoco(),
 
                 NullableUri = new Uri("http://contoso.com"),
@@ -766,10 +886,17 @@ namespace System.Text.Json.SourceGeneration.Tests
             void RunTest(ClassWithNullableProperties expected)
             {
                 string json = JsonSerializer.Serialize(expected, DefaultContext.ClassWithNullableProperties);
+
+                if (expected.ByteArray is null)
+                {
+                    Assert.Contains("\"ByteArray\":null", json);
+                }
+
                 ClassWithNullableProperties actual = JsonSerializer.Deserialize(json, DefaultContext.ClassWithNullableProperties);
 
                 Assert.Equal(expected.Uri, actual.Uri);
                 Assert.Equal(expected.Array, actual.Array);
+                Assert.Equal(expected.ByteArray, actual.ByteArray);
                 Assert.Equal(expected.Poco, actual.Poco);
 
                 Assert.Equal(expected.NullableUri, actual.NullableUri);
@@ -782,11 +909,50 @@ namespace System.Text.Json.SourceGeneration.Tests
             }
         }
 
+#if NET
+        [Fact]
+        public virtual void ClassWithDateOnlyAndTimeOnlyValues_Roundtrip()
+        {
+            RunTest(new ClassWithDateOnlyAndTimeOnlyValues
+            {
+                DateOnly = DateOnly.Parse("2022-05-10"),
+                NullableDateOnly = DateOnly.Parse("2022-05-10"),
+
+                TimeOnly = TimeOnly.Parse("21:51:51"),
+                NullableTimeOnly = TimeOnly.Parse("21:51:51"),
+            });
+
+            RunTest(new ClassWithDateOnlyAndTimeOnlyValues());
+
+            void RunTest(ClassWithDateOnlyAndTimeOnlyValues expected)
+            {
+                string json = JsonSerializer.Serialize(expected, DefaultContext.ClassWithDateOnlyAndTimeOnlyValues);
+                ClassWithDateOnlyAndTimeOnlyValues actual = JsonSerializer.Deserialize(json, DefaultContext.ClassWithDateOnlyAndTimeOnlyValues);
+
+                Assert.Equal(expected.DateOnly, actual.DateOnly);
+                Assert.Equal(expected.NullableDateOnly, actual.NullableDateOnly);
+
+                Assert.Equal(expected.TimeOnly, actual.TimeOnly);
+                Assert.Equal(expected.NullableTimeOnly, actual.NullableTimeOnly);
+            }
+        }
+
+        public class ClassWithDateOnlyAndTimeOnlyValues
+        {
+            public DateOnly DateOnly { get; set; }
+            public DateOnly? NullableDateOnly { get; set; }
+
+            public TimeOnly TimeOnly { get; set; }
+            public TimeOnly? NullableTimeOnly { get; set; }
+        }
+#endif
+
         public class ClassWithNullableProperties
         {
-            public Uri Uri { get; set; }
-            public int[] Array { get; set; }
-            public MyPoco Poco { get; set; }
+            public Uri? Uri { get; set; }
+            public int[]? Array { get; set; }
+            public byte[]? ByteArray { get; set; }
+            public MyPoco? Poco { get; set; }
 
             public Uri? NullableUri { get; set; }
             public int[]? NullableArray { get; set; }
@@ -875,11 +1041,135 @@ namespace System.Text.Json.SourceGeneration.Tests
             };
 
             string json = JsonSerializer.Serialize(person, DefaultContext.NullablePersonStruct);
-            JsonTestHelper.AssertJsonEqual(@"{""FirstName"":""Jane"",""LastName"":""Doe""}", json);
+            JsonTestHelper.AssertJsonEqual("""{"FirstName":"Jane","LastName":"Doe"}""", json);
 
             person = JsonSerializer.Deserialize(json, DefaultContext.NullablePersonStruct);
             Assert.Equal("Jane", person.Value.FirstName);
             Assert.Equal("Doe", person.Value.LastName);
+        }
+
+        [Fact]
+        public void TypeWithValidationAttributes()
+        {
+            var instance = new TypeWithValidationAttributes { Name = "Test Name", Email = "email@test.com" };
+
+            string json = JsonSerializer.Serialize(instance, DefaultContext.TypeWithValidationAttributes);
+            JsonTestHelper.AssertJsonEqual("""{"Name":"Test Name","Email":"email@test.com"}""", json);
+            if (DefaultContext.JsonSourceGenerationMode == JsonSourceGenerationMode.Serialization)
+            {
+                // Deserialization not supported in fast path serialization only mode
+                Assert.Throws<InvalidOperationException>(() => JsonSerializer.Deserialize(json, DefaultContext.TypeWithValidationAttributes));
+            }
+            else
+            {
+                instance = JsonSerializer.Deserialize(json, DefaultContext.TypeWithValidationAttributes);
+                Assert.Equal("Test Name", instance.Name);
+                Assert.Equal("email@test.com", instance.Email);
+            }
+        }
+
+        [Fact]
+        public void TypeWithDerivedAttribute()
+        {
+            var instance = new TypeWithDerivedAttribute();
+
+            string json = JsonSerializer.Serialize(instance, DefaultContext.TypeWithDerivedAttribute);
+            JsonTestHelper.AssertJsonEqual("{}", json);
+
+            // Deserialization not supported in fast path serialization only mode
+            // but we can deserialize empty types as we throw only when looking up properties and there are no properties here.
+            instance = JsonSerializer.Deserialize(json, DefaultContext.TypeWithDerivedAttribute);
+            Assert.NotNull(instance);
+        }
+
+        [Fact]
+        public void PolymorphicClass_Serialization()
+        {
+            PolymorphicClass value = new PolymorphicClass.DerivedClass { Number = 42, Boolean = true };
+
+            if (DefaultContext.JsonSourceGenerationMode == JsonSourceGenerationMode.Serialization)
+            {
+                Assert.Throws<InvalidOperationException>(() => JsonSerializer.Serialize(value, DefaultContext.PolymorphicClass));
+            }
+            else
+            {
+                string expectedJson = """{"$type" : "derivedClass", "Number" : 42, "Boolean" : true }""";
+                string actualJson = JsonSerializer.Serialize(value, DefaultContext.PolymorphicClass);
+                JsonTestHelper.AssertJsonEqual(expectedJson, actualJson);
+            }
+        }
+
+        [Fact]
+        public void PolymorphicClass_Deserialization()
+        {
+            string json = """{"$type" : "derivedClass", "Number" : 42, "Boolean" : true }""";
+
+            if (DefaultContext.JsonSourceGenerationMode == JsonSourceGenerationMode.Serialization)
+            {
+                Assert.Throws<InvalidOperationException>(() => JsonSerializer.Deserialize<PolymorphicClass>(json, DefaultContext.PolymorphicClass));
+            }
+            else
+            {
+                PolymorphicClass result = JsonSerializer.Deserialize<PolymorphicClass>(json, DefaultContext.PolymorphicClass);
+                PolymorphicClass.DerivedClass derivedResult = Assert.IsType<PolymorphicClass.DerivedClass>(result);
+                Assert.Equal(42, derivedResult.Number);
+                Assert.True(derivedResult.Boolean);
+            }
+        }
+
+        [Fact]
+        public void NumberHandlingHonoredOnPoco()
+        {
+            if (DefaultContext.JsonSourceGenerationMode == JsonSourceGenerationMode.Serialization)
+            {
+                Assert.Throws<InvalidOperationException>(() => JsonSerializer.Serialize(new PocoWithNumberHandlingAttr(), DefaultContext.PocoWithNumberHandlingAttr));
+            }
+            else
+            {
+                JsonTestHelper.AssertJsonEqual("""{"Id":"0"}""", JsonSerializer.Serialize(new PocoWithNumberHandlingAttr(), DefaultContext.PocoWithNumberHandlingAttr));
+            }
+        }
+
+        [Theory]
+        [InlineData(MemberTypes.Property, nameof(PocoWithMixedVisibilityMembers.PublicProperty))]
+        [InlineData(MemberTypes.Field, nameof(PocoWithMixedVisibilityMembers.PublicField))]
+        [InlineData(MemberTypes.Property, nameof(PocoWithMixedVisibilityMembers.InternalProperty))]
+        [InlineData(MemberTypes.Field, nameof(PocoWithMixedVisibilityMembers.InternalField))]
+        [InlineData(MemberTypes.Property, nameof(PocoWithMixedVisibilityMembers.PropertyWithCustomName), "customProp")]
+        [InlineData(MemberTypes.Field, nameof(PocoWithMixedVisibilityMembers.FieldWithCustomName), "customField")]
+        [InlineData(MemberTypes.Property, nameof(PocoWithMixedVisibilityMembers.BaseProperty))]
+        [InlineData(MemberTypes.Property, nameof(PocoWithMixedVisibilityMembers.ShadowProperty))]
+        [InlineData(MemberTypes.Property, nameof(PocoWithMixedVisibilityMembers.ExperimentalProperty))]
+        public void JsonPropertyInfo_PopulatesAttributeProvider(MemberTypes memberType, string propertyName, string? jsonPropertyName = null)
+        {
+            if (DefaultContext.JsonSourceGenerationMode is JsonSourceGenerationMode.Serialization)
+            {
+                return; // No metadata generated
+            }
+
+            JsonTypeInfo typeInfo = DefaultContext.PocoWithMixedVisibilityMembers;
+            string name = jsonPropertyName ?? propertyName;
+            JsonPropertyInfo prop = typeInfo.Properties.FirstOrDefault(prop => prop.Name == name);
+            Assert.NotNull(prop);
+
+            MemberInfo memberInfo;
+            if (prop.AttributeProvider is null)
+            {
+                Assert.Equal(typeof(object), prop.PropertyType);
+                memberInfo = typeof(PocoWithMixedVisibilityMembers).GetMember(propertyName, memberType, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance).Single();
+                Type actualPropertyType = memberInfo is PropertyInfo pInfo ? pInfo.PropertyType : ((FieldInfo)memberInfo).FieldType;
+                Assert.False(typeInfo.Options.TryGetTypeInfo(actualPropertyType, out _));
+                return;
+            }
+
+            memberInfo = Assert.IsAssignableFrom<MemberInfo>(prop.AttributeProvider);
+            string? actualJsonPropertyName = memberInfo.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name;
+
+            Assert.True(memberInfo.DeclaringType.IsAssignableFrom(typeInfo.Type));
+            Assert.Equal(memberType, memberInfo.MemberType);
+            Assert.Equal(prop.PropertyType, memberInfo is PropertyInfo p ? p.PropertyType : ((FieldInfo)memberInfo).FieldType);
+            Assert.Equal(propertyName, memberInfo.Name);
+            Assert.Equal(jsonPropertyName, actualJsonPropertyName);
         }
     }
 }

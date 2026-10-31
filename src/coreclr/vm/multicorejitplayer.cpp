@@ -18,9 +18,10 @@
 #include "stubgen.h"
 #include "eventtrace.h"
 #include "array.h"
-#include "fstream.h"
 #include "hash.h"
 #include "clrex.h"
+#include "minipal/time.h"
+#include <dn-stdio.h>
 
 #include "appdomain.hpp"
 
@@ -45,7 +46,7 @@ void MulticoreJitCodeStorage::Init()
     CONTRACTL
     {
         THROWS;
-        MODE_ANY;   // called from BaseDomain::Init which is MODE_ANY
+        MODE_ANY;   // called from SystemDomain::Attach which is MODE_ANY
     }
     CONTRACTL_END;
 
@@ -86,7 +87,7 @@ void MulticoreJitCodeStorage::StoreMethodCode(MethodDesc * pMD, MulticoreJitCode
             MulticoreJitTrace((
                 "%p %p %d %d StoredMethodCode",
                 pMD,
-                codeInfo.GetEntryPoint(),
+                (void*)codeInfo.GetEntryPoint(),
                 (int)codeInfo.WasTier0(),
                 (int)codeInfo.JitSwitchedToOptimized()));
         }
@@ -100,6 +101,20 @@ void MulticoreJitCodeStorage::StoreMethodCode(MethodDesc * pMD, MulticoreJitCode
 
             m_nStored ++;
         }
+    }
+}
+
+
+// Check if method is already compiled and stored
+bool MulticoreJitCodeStorage::LookupMethodCode(MethodDesc * pMethod)
+{
+    STANDARD_VM_CONTRACT;
+
+    MulticoreJitCodeInfo codeInfo;
+
+    {
+        CrstHolder holder(& m_crstCodeMap);
+        return m_nativeCodeMap.Lookup(pMethod, &codeInfo);
     }
 }
 
@@ -130,7 +145,7 @@ MulticoreJitCodeInfo MulticoreJitCodeStorage::QueryAndRemoveMethodCode(MethodDes
                 MulticoreJitTrace((
                     "%p %p %d %d QueryAndRemoveMethodCode",
                     pMethod,
-                    codeInfo.GetEntryPoint(),
+                    (void*)codeInfo.GetEntryPoint(),
                     (int)codeInfo.WasTier0(),
                     (int)codeInfo.JitSwitchedToOptimized()));
             }
@@ -236,7 +251,7 @@ public:
     bool MatchWith(ModuleVersion & version, bool & gotVersion, Module * pModule);
 
 #ifdef MULTICOREJIT_LOGGING
-    void Dump(const WCHAR * prefix, int index);
+    void Dump(const CHAR * prefix, int index);
 #endif
 
 };
@@ -271,7 +286,7 @@ bool PlayerModuleInfo::MatchWith(ModuleVersion & version, bool & gotVersion, Mod
 
 #ifdef MULTICOREJIT_LOGGING
 
-void PlayerModuleInfo::Dump(const WCHAR * prefix, int index)
+void PlayerModuleInfo::Dump(const CHAR * prefix, int index)
 {
     WRAPPER_NO_CONTRACT;
 
@@ -282,31 +297,29 @@ void PlayerModuleInfo::Dump(const WCHAR * prefix, int index)
     DEBUG_ONLY_FUNCTION;
 #endif
 
-    StackSString ssBuff;
-
-    ssBuff.Append(prefix);
-    ssBuff.AppendPrintf(W("[%2d]: "), index);
+    StackSString ssBuff(SString::Utf8, prefix);
+    ssBuff.AppendPrintf("[%2d]: ", index);
 
     const ModuleVersion & ver = m_pRecord->version;
 
-    ssBuff.AppendPrintf(W(" %d.%d.%05d.%04d.%d level %2d, need %2d"), ver.major, ver.minor, ver.build, ver.revision, ver.versionFlags, m_curLevel, m_needLevel);
+    ssBuff.AppendPrintf(" %d.%d.%05d.%04d.%d level %2d, need %2d", ver.major, ver.minor, ver.build, ver.revision, ver.versionFlags, m_curLevel, m_needLevel);
 
-    ssBuff.AppendPrintf(W(" pModule: %p "), m_pModule);
+    ssBuff.AppendPrintf(" pModule: %p ", m_pModule);
 
     unsigned i;
 
     for (i = 0; i < m_pRecord->ModuleNameLen(); i ++)
     {
-        ssBuff.Append((WCHAR) m_pRecord->GetModuleName()[i]);
+        ssBuff.AppendUTF8(m_pRecord->GetModuleName()[i]);
     }
 
     while (i < 32)
     {
-        ssBuff.Append(' ');
+        ssBuff.AppendUTF8(' ');
         i ++;
     }
 
-    MulticoreJitTrace(("%S", ssBuff.GetUnicode()));
+    MulticoreJitTrace(("%s", ssBuff.GetUTF8()));
 }
 
 #endif
@@ -370,7 +383,7 @@ MulticoreJitProfilePlayer::MulticoreJitProfilePlayer(AssemblyBinder * pBinder, L
     m_pFileBuffer        = NULL;
     m_nFileSize          = 0;
 
-    m_nStartTime         = GetTickCount();
+    m_nStartTime         = (unsigned int)minipal_lowres_ticks();
 }
 
 
@@ -413,7 +426,7 @@ bool MulticoreJitManager::ModuleHasNoCode(Module * pModule)
 }
 
 
-// We only support default load context, non dynamic module, non domain neutral (needed for dependency)
+// We only support default load context, non dynamic module (needed for dependency)
 bool MulticoreJitManager::IsSupportedModule(Module * pModule, bool fMethodJit)
 {
     CONTRACTL
@@ -432,12 +445,12 @@ bool MulticoreJitManager::IsSupportedModule(Module * pModule, bool fMethodJit)
     PEAssembly * pPEAssembly = pModule->GetPEAssembly();
 
     // dynamic module.
-    if (pPEAssembly->IsDynamic()) // Ignore dynamic modules
+    if (pPEAssembly->IsReflectionEmit()) // Ignore dynamic modules
     {
         return false;
     }
 
-    if (pPEAssembly->GetPath().IsEmpty()) // Ignore in-memory modules
+    if (!pPEAssembly->GetPEImage()->IsInBundle() && pPEAssembly->GetPath().IsEmpty()) // Ignore in-memory modules
     {
         return false;
     }
@@ -487,7 +500,7 @@ HRESULT MulticoreJitProfilePlayer::HandleModuleRecord(const ModuleRecord * pMod)
     info.m_pRecord = pMod;
 
 #ifdef MULTICOREJIT_LOGGING
-    info.Dump(W("ModuleRecord"), m_moduleCount);
+    info.Dump("ModuleRecord", m_moduleCount);
 #endif
 
     m_moduleCount ++;
@@ -522,7 +535,7 @@ MulticoreJitCodeInfo::MulticoreJitCodeInfo(PCODE entryPoint, const MulticoreJitP
     WRAPPER_NO_CONTRACT;
 
     m_entryPointAndTierInfo = PCODEToPINSTR(entryPoint);
-    _ASSERTE(m_entryPointAndTierInfo != NULL);
+    _ASSERTE(m_entryPointAndTierInfo != (TADDR)NULL);
     _ASSERTE((m_entryPointAndTierInfo & (TADDR)TierInfo::Mask) == 0);
 
 #ifdef FEATURE_TIERED_COMPILATION
@@ -686,7 +699,7 @@ HRESULT MulticoreJitProfilePlayer::UpdateModuleInfo()
             if (info.IsLowerLevel())
             {
 #ifdef MULTICOREJIT_LOGGING
-                info.Dump(W("    BlockingModule"), i);
+                info.Dump("    BlockingModule", i);
 #endif
 
                 if (ETW_TRACING_CATEGORY_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PRIVATE_PROVIDER_DOTNET_Context, TRACE_LEVEL_VERBOSE, CLR_PRIVATEMULTICOREJIT_KEYWORD))
@@ -721,7 +734,7 @@ bool MulticoreJitProfilePlayer::ShouldAbort(bool fast) const
         return false;
     }
 
-    if (GetTickCount() - m_nStartTime > MULTICOREJITLIFE)
+    if ((unsigned int)minipal_lowres_ticks() - m_nStartTime > MULTICOREJITLIFE)
     {
         MulticoreJitTrace(("MulticoreJitProfilePlayer::ShouldAbort time over"));
 
@@ -768,13 +781,13 @@ HRESULT MulticoreJitProfilePlayer::HandleModuleInfoRecord(unsigned moduleTo, uns
                 assemblyName.SetASCII(mod.m_pRecord->GetAssemblyName(), mod.m_pRecord->AssemblyNameLen());
 
                 // Load the assembly.
-                DomainAssembly * pDomainAssembly = LoadAssembly(assemblyName);
+                Assembly * pAssembly = LoadAssembly(assemblyName);
 
-                if (pDomainAssembly)
+                if (pAssembly)
                 {
                     // If we successfully loaded the assembly, enumerate the modules in the assembly
                     // and update all modules status.
-                    moduleEnumerator.HandleAssembly(pDomainAssembly);
+                    moduleEnumerator.HandleAssembly(pAssembly);
 
                     if (mod.m_pModule == NULL)
                     {
@@ -807,18 +820,14 @@ HRESULT MulticoreJitProfilePlayer::HandleModuleInfoRecord(unsigned moduleTo, uns
     return hr;
 }
 
-DomainAssembly * MulticoreJitProfilePlayer::LoadAssembly(SString & assemblyName)
+Assembly * MulticoreJitProfilePlayer::LoadAssembly(SString & assemblyName)
 {
     STANDARD_VM_CONTRACT;
-
-    // Get the assembly name.
-    StackScratchBuffer scratch;
-    const ANSI* pAnsiAssemblyName = assemblyName.GetANSI(scratch);
 
     AssemblySpec spec;
 
     // Initialize the assembly spec.
-    HRESULT hr = spec.Init(pAnsiAssemblyName);
+    HRESULT hr = spec.InitNoThrow(assemblyName);
     if (FAILED(hr))
     {
         return NULL;
@@ -831,7 +840,7 @@ DomainAssembly * MulticoreJitProfilePlayer::LoadAssembly(SString & assemblyName)
     }
 
     // Bind and load the assembly.
-    return spec.LoadDomainAssembly(
+    return spec.LoadAssembly(
         FILE_LOADED,
         FALSE); // Don't throw on FileNotFound.
 }
@@ -913,7 +922,7 @@ HRESULT MulticoreJitProfilePlayer::HandleGenericMethodInfoRecord(unsigned module
             EX_CATCH
             {
             }
-            EX_END_CATCH(SwallowAllExceptions);
+            EX_END_CATCH
 
             CompileMethodInfoRecord(pModule, pMethod, true);
         }
@@ -954,11 +963,11 @@ void MulticoreJitProfilePlayer::CompileMethodInfoRecord(Module *pModule, MethodD
                     return;
                 }
 
-                pModule = pMethod->GetModule_NoLogging();
+                pModule = pMethod->GetModule();
             }
         }
 
-        if (pMethod->GetNativeCode() == NULL)
+        if (pMethod->GetNativeCode() == (PCODE)NULL && !GetAppDomain()->GetMulticoreJitManager().GetMulticoreJitCodeStorage().LookupMethodCode(pMethod))
         {
             if (CompileMethodDesc(pModule, pMethod))
             {
@@ -1010,32 +1019,22 @@ void MulticoreJitProfilePlayer::TraceSummary()
 
 HRESULT MulticoreJitProfilePlayer::ReadCheckFile(const WCHAR * pFileName)
 {
-    CONTRACTL
-    {
-        THROWS;
-        MODE_PREEMPTIVE;
-    }
-    CONTRACTL_END;
+    STANDARD_VM_CONTRACT;
 
     HRESULT hr = S_OK;
 
     {
-        HANDLE hFile = WszCreateFile(pFileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-
-        if (hFile == INVALID_HANDLE_VALUE)
+        FILE* fp;
+        if (fopen_lp(&fp, pFileName, W("rb")) != 0)
         {
             return COR_E_FILENOTFOUND;
         }
 
         HeaderRecord header;
 
-        DWORD cbRead = 0;
+        size_t cbRead = fread(&header, 1, sizeof(header), fp);
 
-        if (! ::ReadFile(hFile, & header, sizeof(header), &cbRead, NULL))
-        {
-            hr = COR_E_BADIMAGEFORMAT;
-        }
-        else if (cbRead != sizeof(header))
+        if (cbRead != sizeof(header))
         {
             hr = COR_E_BADIMAGEFORMAT;
         }
@@ -1063,7 +1062,8 @@ HRESULT MulticoreJitProfilePlayer::ReadCheckFile(const WCHAR * pFileName)
 
         if (SUCCEEDED(hr))
         {
-            m_nFileSize = SafeGetFileSize(hFile, 0);
+            uint64_t fSize = fgetsize(fp);
+            m_nFileSize = fSize > UINT32_MAX ? UINT32_MAX : (unsigned int)fSize;
 
             if (m_nFileSize > sizeof(header))
             {
@@ -1075,7 +1075,7 @@ HRESULT MulticoreJitProfilePlayer::ReadCheckFile(const WCHAR * pFileName)
                 {
                     hr = E_OUTOFMEMORY;
                 }
-                else if (::ReadFile(hFile, m_pFileBuffer, m_nFileSize, & cbRead, NULL))
+                else if ((cbRead = fread(m_pFileBuffer, 1, m_nFileSize, fp)) > 0)
                 {
                     if (cbRead != m_nFileSize)
                     {
@@ -1093,7 +1093,7 @@ HRESULT MulticoreJitProfilePlayer::ReadCheckFile(const WCHAR * pFileName)
             }
         }
 
-        CloseHandle(hFile);
+        fclose(fp);
 
         _FireEtwMulticoreJit(W("PLAYER"), W("Header"), hr, m_headerModuleCount, header.methodCount);
     }
@@ -1109,7 +1109,7 @@ HRESULT MulticoreJitProfilePlayer::PlayProfile()
 
     HRESULT hr = S_OK;
 
-    DWORD start = GetTickCount();
+    DWORD start = (DWORD)minipal_lowres_ticks();
 
     Thread * pThread = GetThread();
 
@@ -1122,9 +1122,12 @@ HRESULT MulticoreJitProfilePlayer::PlayProfile()
 
     unsigned nSize = m_nFileSize;
 
-    MulticoreJitTrace(("PlayProfile %d bytes in (%s)",
-        nSize,
-        GetAppDomain()->GetFriendlyNameForLogging()));
+    {
+        MAKE_UTF8PTR_FROMWIDE(pFriendlyName, GetAppDomain()->GetFriendlyName());
+        MulticoreJitTrace(("PlayProfile %d bytes in (%s)",
+            nSize,
+            pFriendlyName));
+    }
 
     while ((SUCCEEDED(hr)) && (nSize > sizeof(unsigned)))
     {
@@ -1303,7 +1306,7 @@ HRESULT MulticoreJitProfilePlayer::PlayProfile()
         }
     }
 
-    start = GetTickCount() - start;
+    start = (DWORD)minipal_lowres_ticks() - start;
 
     {
         FireEtwThreadTerminated((ULONGLONG) pThread, (ULONGLONG) GetAppDomain(), GetClrInstanceId());
@@ -1324,7 +1327,6 @@ HRESULT MulticoreJitProfilePlayer::JITThreadProc(Thread * pThread)
         NOTHROW;
         GC_TRIGGERS;
         MODE_COOPERATIVE;
-        INJECT_FAULT(COMPlusThrowOM(););
     }
     CONTRACTL_END;
 
@@ -1346,7 +1348,7 @@ HRESULT MulticoreJitProfilePlayer::JITThreadProc(Thread * pThread)
             m_stats.m_hr = COR_E_EXCEPTION;
         }
     }
-    EX_END_CATCH(SwallowAllExceptions);
+    EX_END_CATCH
 
     return (DWORD) m_stats.m_hr;
 }
@@ -1360,13 +1362,10 @@ DWORD WINAPI MulticoreJitProfilePlayer::StaticJITThreadProc(void *args)
         GC_TRIGGERS;
         MODE_ANY;
         ENTRY_POINT;
-        INJECT_FAULT(COMPlusThrowOM(););
     }
     CONTRACTL_END;
 
     HRESULT hr = S_OK;
-
-    BEGIN_ENTRYPOINT_NOTHROW;
 
     MulticoreJitTrace(("StaticJITThreadProc starting"));
 
@@ -1396,14 +1395,12 @@ DWORD WINAPI MulticoreJitProfilePlayer::StaticJITThreadProc(void *args)
             DestroyThread(pThread);
         }
 
-        // The background thread is reponsible for deleting the MulticoreJitProfilePlayer object once it's started
+        // The background thread is responsible for deleting the MulticoreJitProfilePlayer object once it's started
         // Actually after Thread::StartThread succeeds
         delete pPlayer;
     }
 
     MulticoreJitTrace(("StaticJITThreadProc endding(%x)", hr));
-
-    END_ENTRYPOINT_NOTHROW;
 
     return (DWORD) hr;
 }

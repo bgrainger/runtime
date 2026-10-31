@@ -2,11 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
-using System.Linq;
-using System.Net.NetworkInformation;
 using System.Net.Security;
-using System.Reflection;
-using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -18,7 +14,7 @@ namespace System.Net.Http.Functional.Tests
     public static class TestHelper
     {
         public static TimeSpan PassingTestTimeout => TimeSpan.FromMilliseconds(PassingTestTimeoutMilliseconds);
-        public static int PassingTestTimeoutMilliseconds => 60 * 1000;
+        public const int PassingTestTimeoutMilliseconds = 60 * 1000;
 
         public static bool JsonMessageContainsKeyValue(string message, string key, string value)
         {
@@ -100,22 +96,11 @@ namespace System.Net.Http.Functional.Tests
             return TaskTimeoutExtensions.WhenAllOrAnyFailed(tasks, timeoutInMilliseconds);
         }
 
-#if NETCOREAPP
+#if NET
         public static Func<HttpRequestMessage, X509Certificate2, X509Chain, SslPolicyErrors, bool> AllowAllCertificates = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
 #else
         public static Func<HttpRequestMessage, X509Certificate2, X509Chain, SslPolicyErrors, bool> AllowAllCertificates = (_, __, ___, ____) => true;
 #endif
-
-        public static IPAddress GetIPv6LinkLocalAddress() =>
-            NetworkInterface
-                .GetAllNetworkInterfaces()
-                .Where(i => !i.Description.StartsWith("PANGP Virtual Ethernet"))    // This is a VPN adapter, but is reported as a regular Ethernet interface with
-                                                                                    // a valid link-local address, but the link-local address doesn't actually work.
-                                                                                    // So just manually filter it out.
-                .SelectMany(i => i.GetIPProperties().UnicastAddresses)
-                .Select(a => a.Address)
-                .Where(a => a.IsIPv6LinkLocal)
-                .FirstOrDefault();
 
         public static byte[] GenerateRandomContent(int size)
         {
@@ -124,17 +109,20 @@ namespace System.Net.Http.Functional.Tests
             return data;
         }
 
-        public static X509Certificate2 CreateServerSelfSignedCertificate(string name = "localhost")
+        public static X509Certificate2 CreateServerSelfSignedCertificate(string name = "localhost", bool expired = false)
+            => CreateServerCertificate(null, name, expired);
+
+        public static X509Certificate2 CreateServerCertificate(X509Certificate2 issuerCertificate, string name = "localhost", bool expired = false)
         {
-            using (RSA root = RSA.Create())
+            using (RSA key = RSA.Create())
             {
                 CertificateRequest req = new CertificateRequest(
                     $"CN={name}",
-                    root,
+                    key,
                     HashAlgorithmName.SHA256,
                     RSASignaturePadding.Pkcs1);
 
-                req.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+                req.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
                 req.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(req.PublicKey, false));
                 req.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment | X509KeyUsageFlags.DataEncipherment, false));
                 req.CertificateExtensions.Add(
@@ -151,17 +139,44 @@ namespace System.Net.Http.Functional.Tests
                 builder.AddIpAddress(IPAddress.IPv6Loopback);
                 req.CertificateExtensions.Add(builder.Build());
 
-                DateTimeOffset start = DateTimeOffset.UtcNow.AddMinutes(-5);
+                DateTimeOffset start = expired ? DateTimeOffset.UtcNow.AddMonths(-2) : DateTimeOffset.UtcNow.AddMinutes(-5);
                 DateTimeOffset end = start.AddMonths(1);
 
-                X509Certificate2 cert = req.CreateSelfSigned(start, end);
+                X509Certificate2 cert;
+                if (issuerCertificate is null)
+                {
+                    cert = req.CreateSelfSigned(start, end);
+                }
+                else
+                {
+                    using X509Certificate2 publicCertificate = req.Create(issuerCertificate, start, end, Guid.NewGuid().ToByteArray());
+                    cert = publicCertificate.CopyWithPrivateKey(key);
+                }
+
                 if (PlatformDetection.IsWindows)
                 {
-                    cert = new X509Certificate2(cert.Export(X509ContentType.Pfx));
+                    using (cert)
+                    {
+                        return X509CertificateLoader.LoadPkcs12(cert.Export(X509ContentType.Pfx), (string?)null);
+                    }
                 }
 
                 return cert;
             }
         }
+
+#if NET
+        public static SocketsHttpHandler CreateSocketsHttpHandler(bool allowAllCertificates = false)
+        {
+            var handler = new SocketsHttpHandler();
+
+            if (allowAllCertificates && PlatformDetection.IsTlsSupported)
+            {
+                handler.SslOptions.RemoteCertificateValidationCallback = delegate { return true; };
+            }
+
+            return handler;
+        }
+#endif
     }
 }

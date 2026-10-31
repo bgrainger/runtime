@@ -7,6 +7,8 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Diagnostics;
+using Xunit;
+using TestLibrary;
 
 namespace Benchstone.BenchF
 {
@@ -100,12 +102,19 @@ public static class Adams
         }
     }
 
-    [MethodImpl(MethodImplOptions.NoOptimization)]
-    public static int Main(string[] argv)
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+    [Fact]
+    public static int TestEntryPoint()
     {
-        if (argv.Length > 0)
+        return Test(null);
+    }
+
+    [MethodImpl(MethodImplOptions.NoOptimization | MethodImplOptions.NoInlining)]
+    private static int Test(int? arg)
+    {
+        if (arg.HasValue)
         {
-            Iterations = Int32.Parse(argv[0]);
+            Iterations = (int)arg;
         }
 
         Stopwatch sw = Stopwatch.StartNew();

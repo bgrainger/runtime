@@ -14,7 +14,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 {
     public class EHInfoNode : ObjectNode, ISymbolDefinitionNode
     {
-        public override ObjectNodeSection Section => ObjectNodeSection.ReadOnlyDataSection;
+        public override ObjectNodeSection GetSection(NodeFactory factory) => ObjectNodeSection.ReadOnlyDataSection;
 
         public override bool IsShareable => false;
 
@@ -43,7 +43,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         public void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
         {
             // EH info node is a singleton in the R2R PE file
-            sb.Append("EHInfoNode");
+            sb.Append("EHInfoNode"u8);
         }
 
         public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)
@@ -69,7 +69,6 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         private readonly EHInfoNode _ehInfoNode;
 
         public ExceptionInfoLookupTableNode(NodeFactory nodeFactory)
-            : base(nodeFactory.Target)
         {
             _nodeFactory = nodeFactory;
             _ehInfoNode = new EHInfoNode();
@@ -78,7 +77,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         public override void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
         {
             sb.Append(nameMangler.CompilationUnitPrefix);
-            sb.Append("__ReadyToRunExceptionInfoLookupTable@");
+            sb.Append("__ReadyToRunExceptionInfoLookupTable@"u8);
             sb.Append(Offset.ToString());
         }
 
@@ -119,10 +118,20 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             // Add the symbol representing this object node
             exceptionInfoLookupBuilder.AddSymbol(this);
 
+            bool isWasm = factory.Target.Architecture == TargetArchitecture.Wasm32;
+
             // First, emit the actual EH records in sequence and store map from methods to the EH record symbols
             for (int index = 0; index < _methodNodes.Count; index++)
             {
-                exceptionInfoLookupBuilder.EmitReloc(_methodNodes[index], RelocType.IMAGE_REL_BASED_ADDR32NB);
+                if (isWasm)
+                {
+                    // For WASM, we use a virtual IP in the table here instead of a method pointer, so that the runtime can perform a binary search based on the virtual IP. The virtual IP is emitted as a plain u32 (not a reloc).
+                    exceptionInfoLookupBuilder.EmitUInt(factory.RuntimeFunctionsTable.GetWasmVirtualIP(_methodNodes[index], 0));
+                }
+                else
+                {
+                    exceptionInfoLookupBuilder.EmitReloc(_methodNodes[index], RelocType.IMAGE_REL_BASED_ADDR32NB, -factory.Target.CodeDelta);
+                }
                 exceptionInfoLookupBuilder.EmitReloc(_ehInfoNode, RelocType.IMAGE_REL_BASED_ADDR32NB, _ehInfoOffsets[index]);
             }
 
@@ -145,9 +154,9 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             return _methodNodes.Count == 0;
         }
 
-        protected override DependencyList ComputeNonRelocationBasedDependencies(NodeFactory factory)
+        protected override void ComputeNonRelocationBasedDependencies(DependencySink sink, NodeFactory factory)
         {
-            return new DependencyNodeCore<NodeFactory>.DependencyList(new DependencyListEntry[] { new DependencyListEntry(_ehInfoNode, "EH info array") });
+            sink.Add(_ehInfoNode, "EH info array");
         }
 
         public override int ClassCode => 582513248;

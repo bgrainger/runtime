@@ -11,7 +11,7 @@ namespace System.Globalization
     {
         private SortKey InvariantCreateSortKey(string source, CompareOptions options)
         {
-            if (source == null) { throw new ArgumentNullException(nameof(source)); }
+            ArgumentNullException.ThrowIfNull(source);
 
             if ((options & ValidCompareMaskOffFlags) != 0)
             {
@@ -21,7 +21,7 @@ namespace System.Globalization
             byte[] keyData;
             if (source.Length == 0)
             {
-                keyData = Array.Empty<byte>();
+                keyData = [];
             }
             else
             {
@@ -66,10 +66,11 @@ namespace System.Globalization
                     if (char.IsLowSurrogate(cl))
                     {
                         SurrogateCasing.ToUpper(c, cl, out char hr, out char lr);
-                        BinaryPrimitives.WriteUInt16BigEndian(sortKey, hr);
-                        BinaryPrimitives.WriteUInt16BigEndian(sortKey, lr);
-                        i++;
+                        Span<byte> tmp = sortKey.Slice(0, 2 * sizeof(ushort)); // help with bounds check elimination
+                        BinaryPrimitives.WriteUInt16BigEndian(tmp, hr);
+                        BinaryPrimitives.WriteUInt16BigEndian(tmp.Slice(sizeof(ushort)), lr);
                         sortKey = sortKey.Slice(2 * sizeof(ushort));
+                        i++;
                         continue;
                     }
                 }
@@ -125,6 +126,16 @@ namespace System.Globalization
             }
 
             return byteLength;
+        }
+
+        private static int InvariantGetHashCode(ReadOnlySpan<char> source, CompareOptions options)
+        {
+            if ((options & CompareOptions.IgnoreCase) == 0)
+            {
+                return string.GetHashCode(source);
+            }
+
+            return string.GetHashCodeOrdinalIgnoreCase(source);
         }
     }
 }

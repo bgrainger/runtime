@@ -71,7 +71,7 @@ namespace System.Net.Http.Headers
             (new HeaderDescriptor(KnownHeaders.Vary), "accept-encoding"), // 59
             (new HeaderDescriptor(KnownHeaders.Vary), "origin"), // 60
             (new HeaderDescriptor(KnownHeaders.XContentTypeOptions), "nosniff"), // 61
-            (new HeaderDescriptor("x-xss-protection"), "1; mode=block"), // 62
+            (new HeaderDescriptor(KnownHeaders.XXssProtection), "1; mode=block"), // 62
             (new HeaderDescriptor(KnownHeaders.PseudoStatus), "100"), // 63
             (new HeaderDescriptor(KnownHeaders.PseudoStatus), "204"), // 64
             (new HeaderDescriptor(KnownHeaders.PseudoStatus), "206"), // 65
@@ -96,13 +96,13 @@ namespace System.Net.Http.Headers
             (new HeaderDescriptor(KnownHeaders.Authorization), ""), // 84
             (new HeaderDescriptor(KnownHeaders.ContentSecurityPolicy), "script-src 'none'; object-src 'none'; base-uri 'none'"), // 85
             (new HeaderDescriptor("early-data"), "1"), // 86
-            (new HeaderDescriptor("expect-ct"), ""), // 87
+            (new HeaderDescriptor(KnownHeaders.ExpectCT), ""), // 87
             (new HeaderDescriptor("forwarded"), ""), // 88
             (new HeaderDescriptor(KnownHeaders.IfRange), ""), // 89
             (new HeaderDescriptor(KnownHeaders.Origin), ""), // 90
             (new HeaderDescriptor("purpose"), "prefetch"), // 91
             (new HeaderDescriptor(KnownHeaders.Server), ""), // 92
-            (new HeaderDescriptor("timing-allow-origin"), "*"), // 93
+            (new HeaderDescriptor(KnownHeaders.TimingAllowOrigin), "*"), // 93
             (new HeaderDescriptor(KnownHeaders.UpgradeInsecureRequests), "1"), // 94
             (new HeaderDescriptor(KnownHeaders.UserAgent), ""), // 95
             (new HeaderDescriptor("x-forwarded-for"), ""), // 96

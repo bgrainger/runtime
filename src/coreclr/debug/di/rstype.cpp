@@ -48,13 +48,12 @@ HRESULT CordbType::GetStaticFieldValue(mdFieldDef fieldDef,
             ThrowHR(E_INVALIDARG);
         }
 
-        pImport = m_pClass->GetModule()->GetMetaDataImporter(); // throws
-
         if (((m_elementType != ELEMENT_TYPE_CLASS) && (m_elementType != ELEMENT_TYPE_VALUETYPE)) || (m_pClass == NULL))
         {
             ThrowHR(E_INVALIDARG);
         }
 
+        pImport = m_pClass->GetModule()->GetMetaDataImporter(); // throws
 
 
         BOOL fSyncBlockField = FALSE;
@@ -79,7 +78,7 @@ HRESULT CordbType::GetStaticFieldValue(mdFieldDef fieldDef,
             IfFailThrow(hr);
 
             // Lookup the field given its metadata token.
-            FieldData * pFieldData;
+            const FieldData * pFieldData;
 
             hr = GetFieldInfo(fieldDef, &pFieldData);
 
@@ -124,7 +123,7 @@ CordbType::CordbType(CordbAppDomain *appdomain, CorElementType et, unsigned int 
   m_appdomain(appdomain),
   m_pClass(NULL),
   m_rank(rank),
-  m_spinetypes(2),
+  m_spinetypes(),
   m_objectSize(0),
   m_fieldInfoNeedsInit(TRUE)
 {
@@ -153,7 +152,7 @@ CordbType::CordbType(CordbAppDomain *appdomain, CorElementType et, CordbClass *c
   m_appdomain(appdomain),
   m_pClass(cls),
   m_rank(0),
-  m_spinetypes(2),
+  m_spinetypes(),
   m_objectSize(0),
   m_fieldInfoNeedsInit(TRUE)
 {
@@ -171,7 +170,7 @@ CordbType::CordbType(CordbAppDomain *appdomain, CorElementType et, CordbClass *c
 
 //-----------------------------------------------------------------------------
 // Constructor
-// Builds a Partial-Type, instantiation is tycon's instantation plus tyarg.
+// Builds a Partial-Type, instantiation is tycon's instantiation plus tyarg.
 // Eg, if tycon is "Dict<int>", and tyarg is "string", then this yields
 // "Dict<int, string>"
 //-----------------------------------------------------------------------------
@@ -181,7 +180,7 @@ CordbType::CordbType(CordbType *tycon, CordbType *tyarg)
   m_appdomain(tycon->m_appdomain),
   m_pClass(tycon->m_pClass),
   m_rank(tycon->m_rank),
-  m_spinetypes(2),
+  m_spinetypes(),
   m_objectSize(0),
   m_fieldInfoNeedsInit(TRUE)
     // tyarg is added as part of instantiation -see below...
@@ -553,7 +552,7 @@ HRESULT CordbType::MkTyAppType(CordbAppDomain * pAppDomain,
 }
 
 //-----------------------------------------------------------------------------
-// Creates a CordbType instantation around a cordbClass and TypeParameter list.
+// Creates a CordbType instantiation around a cordbClass and TypeParameter list.
 // In other words, this does:
 // CordbClass(List<T>) + Instantiation({T=int}) --> CordbType(List<int>)
 //
@@ -919,7 +918,7 @@ CordbType::SigToType(CordbModule * pModule,
             else
             {
                 //ELEMENT_TYPE_MVAR refers to an indexed type-parameter in the containing Method.
-                // Eg, we may be in Class::Func<T> and refering to T.
+                // Eg, we may be in Class::Func<T> and referring to T.
                 // The Instantiation array has Type type-parameters first, and then any Method Type-parameters.
                 // The m_cClassTyPars field indicats where the split is between Type and Method type-parameters. Type type-params
                 // come first.
@@ -1163,11 +1162,12 @@ HRESULT CordbType::TypeDataToType(CordbAppDomain *pAppDomain, DebuggerIPCE_Basic
 
                     {
                         RSLockHolder lockHolder(pProcess->GetProcessLock());
-                        pProcess->GetDAC()->TypeHandleToExpandedTypeInfo(NoValueTypeBoxing,  // could be generics
-                                                                                             // which are never boxed
-                                                                         pAppDomain->GetADToken(),
-                                                                         data->vmTypeHandle,
-                                                                         &typeInfo);
+                        CORDB_ADDRESS vmTypeHandleRaw = 0;
+                        static_assert(sizeof(data->vmTypeHandle) <= sizeof(vmTypeHandleRaw), "VMPTR_TypeHandle is larger than CORDB_ADDRESS");
+                        memcpy(&vmTypeHandleRaw, &data->vmTypeHandle, sizeof(data->vmTypeHandle));
+                        IfFailThrow(pProcess->GetDAC()->TypeHandleToExpandedTypeInfo(NoValueTypeBoxing,  // could be generics which are never boxed
+                                                                                    vmTypeHandleRaw,
+                                                                                    &typeInfo));
                     }
 
                     IfFailThrow(CordbType::TypeDataToType(pAppDomain,&typeInfo, pRes));
@@ -1191,8 +1191,7 @@ HRESULT CordbType::TypeDataToType(CordbAppDomain *pAppDomain, DebuggerIPCE_Basic
             DebuggerIPCE_ExpandedTypeData e;
             e.elementType = et;
             e.ClassTypeData.metadataToken = data->metadataToken;
-            e.ClassTypeData.vmDomainFile = data->vmDomainFile;
-            e.ClassTypeData.vmModule = data->vmModule;
+            e.ClassTypeData.vmAssembly = data->vmAssembly;
             e.ClassTypeData.typeHandle = data->vmTypeHandle;
             return CordbType::TypeDataToType(pAppDomain, &e, pRes);
     }
@@ -1254,7 +1253,7 @@ ETObject:
         CordbModule * pClassModule = NULL;
         EX_TRY
         {
-            pClassModule = pAppDomain->LookupOrCreateModule(data->ClassTypeData.vmModule, data->ClassTypeData.vmDomainFile);
+            pClassModule = pAppDomain->LookupOrCreateModule(data->ClassTypeData.vmAssembly);
         }
         EX_CATCH_HRESULT(hr);
         if( pClassModule == NULL )
@@ -1373,7 +1372,10 @@ HRESULT CordbType::InstantiateFromTypeHandle(CordbAppDomain * pAppDomain,
         TypeParamsList params;
         {
             RSLockHolder lockHolder(pProcess->GetProcessLock());
-            pProcess->GetDAC()->GetTypeHandleParams(pAppDomain->GetADToken(), vmTypeHandle, &params);
+            CallbackAccumulator<DebuggerIPCE_ExpandedTypeData> acc;
+            IfFailThrow(pProcess->GetDAC()->EnumerateTypeHandleParams(vmTypeHandle, &CallbackAccumulator<DebuggerIPCE_ExpandedTypeData>::PushCallback, &acc));
+            IfFailThrow(acc.hrError);
+            params.Init(acc.items.Ptr(), (int)acc.items.Size());
         }
 
         // convert the parameter type information to a list of CordbTypeInstances (one for each parameter)
@@ -1569,7 +1571,7 @@ HRESULT CordbType::InitInstantiationTypeHandle(BOOL fForceInit)
         {
             // Get the TypeHandle based on the type data
             RSLockHolder lockHolder(GetProcess()->GetProcessLock());
-            hr = pProcess->GetDAC()->GetExactTypeHandle(&typeData, &argInfo, m_typeHandleExact);
+            hr = pProcess->GetDAC()->GetExactTypeHandle(&typeData, &argInfo, &m_typeHandleExact);
         }
     }
     EX_CATCH_HRESULT(hr);
@@ -1611,22 +1613,19 @@ HRESULT CordbType::InitStringOrObjectClass(BOOL fForceInit)
         //
         CordbProcess *pProcess = GetProcess();
         mdTypeDef metadataToken;
-        VMPTR_DomainFile vmDomainFile = VMPTR_DomainFile::NullPtr();
         VMPTR_Module vmModule = VMPTR_Module::NullPtr();
 
         {
             RSLockHolder lockHolder(GetProcess()->GetProcessLock());
-            pProcess->GetDAC()->GetSimpleType(m_appdomain->GetADToken(),
-                                              m_elementType,
+            IfFailThrow(pProcess->GetDAC()->GetSimpleType(m_elementType,
                                               &metadataToken,
-                                              &vmModule,
-                                              &vmDomainFile);
+                                              &vmModule));
         }
 
         //
         // Step 2) Lookup CordbClass based off token + Module.
         //
-        CordbModule * pTypeModule = m_appdomain->LookupOrCreateModule(vmModule, vmDomainFile);
+        CordbModule * pTypeModule = m_appdomain->LookupOrCreateModule(VMPTR_Assembly::NullPtr(), vmModule);
 
         _ASSERTE(pTypeModule != NULL);
         IfFailThrow(pTypeModule->LookupOrCreateClass(metadataToken, &m_pClass));
@@ -1689,7 +1688,7 @@ HRESULT CordbType::InitInstantiationFieldInfo(BOOL fForceInit)
             CordbProcess *pProcess = GetProcess();
             {
                 RSLockHolder lockHolder(pProcess->GetProcessLock());
-                typeHandleApprox = pProcess->GetDAC()->GetApproxTypeHandle(&typeData);
+                IfFailThrow(pProcess->GetDAC()->GetApproxTypeHandle(&typeData, &typeHandleApprox));
             }
         }
         EX_CATCH_HRESULT(hr);
@@ -1704,11 +1703,22 @@ HRESULT CordbType::InitInstantiationFieldInfo(BOOL fForceInit)
             // this may be called multiple times. Each call will discard previous values in m_fieldList and reinitialize
             // the list with updated information
             RSLockHolder lockHolder(pProcess->GetProcessLock());
-            pProcess->GetDAC()->GetInstantiationFieldInfo(m_pClass->GetModule()->GetRuntimeDomainFile(),
+
+            CallbackAccumulator<FieldData> acc;
+
+            HRESULT hrEnum = pProcess->GetDAC()->EnumerateInstantiationFields(
+                                                          m_pClass->GetModule()->GetRuntimeAssembly(),
                                                           m_typeHandleExact,
                                                           typeHandleApprox,
-                                                          &m_fieldList,
-                                                          &m_objectSize);
+                                                          &m_objectSize,
+                                                          &CallbackAccumulator<FieldData>::PushCallback,
+                                                          &acc);
+            if (SUCCEEDED(hrEnum) && FAILED(acc.hrError))
+                hrEnum = acc.hrError;
+            IfFailThrow(hrEnum);
+
+            int fieldCount = (int)acc.items.Size();
+            m_fieldList.Init(fieldCount > 0 ? &acc.items[0] : NULL, fieldCount);
         }
     }
     EX_CATCH_HRESULT(hr);
@@ -1727,8 +1737,45 @@ HRESULT CordbType::ReturnedByValue()
     ULONG32 unboxedSize = 0;
     IfFailRet(GetUnboxedObjectSize(&unboxedSize));
 
+#ifdef TARGET_64BIT
+    // A value type is returned in registers (and is therefore representable by
+    // the managed-return-value debug info) only if it fits in at most two
+    // pointer-sized registers. Larger value types use the return buffer (stack)
+    // path, which the JIT does not currently emit MRV info for.
+    //
+    // On AMD64, the RegNum enum includes FP registers (XMM0-XMM15), so
+    // VLT_REG_REG can encode any combination of int and FP registers for
+    // two-register returns. Single-register returns use VLT_REG / VLT_REG_FP.
+    if (unboxedSize > 2 * sizeof(SIZE_T))
+        return S_FALSE;
+
+    // Whether the value occupies two registers (size in (8, 16] bytes on a
+    // 64-bit target). Single-register (<= pointer-sized) returns only support
+    // integer/pointer-sized non-FP fields.
+    // Floating-point and generic (unbound type-parameter) fields are only
+    // encodable for the two-register case (where VLT_REG_REG with unified
+    // RegNum handles all int/FP combinations). Enabling them for single-register
+    // value classes would reach unimplemented paths in the value-home code, so
+    // they remain unsupported there.
+    const bool twoRegister = (unboxedSize > sizeof(SIZE_T));
+
+    // 64-bit targets support multi-field value classes (e.g. ValueTuple<T1, T2>)
+    // returned across two registers.
+    const bool allowMultiField = true;
+#else
+    // 32-bit targets (x86 / arm32): the multi-register FP/mixed managed-return-
+    // value feature (dotnet/runtime#129344) is 64-bit only. Preserve the original
+    // behavior exactly: a value type is representable only if it fits in a single
+    // (pointer-sized) register and has a single non-floating-point field. The
+    // expanded two-register encodings above are inactive here, so broadening the
+    // size/field/FP rules would surface return values that the 32-bit read path
+    // does not support.
     if (unboxedSize > sizeof(SIZE_T))
         return S_FALSE;
+
+    const bool twoRegister = false;
+    const bool allowMultiField = false;
+#endif
 
     mdToken mdClass = m_pClass->GetToken();
 
@@ -1753,8 +1800,17 @@ HRESULT CordbType::ReturnedByValue()
             // !static
             if ((attr & 0x10) == 0)
             {
-                if (fieldCount++)
+                // On 32-bit targets, only single-field value classes are
+                // representable (matching the original behavior). More than one
+                // non-static field is unsupported there. Increment the counter
+                // unconditionally and apply the single-field restriction only
+                // when multi-field is not allowed.
+                fieldCount++;
+                if (!allowMultiField && fieldCount > 1)
+                {
+                    unsupported = true;
                     break;
+                }
 
                 CorElementType et;
                 SigParser parser(sigBlob, sigLen);
@@ -1767,13 +1823,34 @@ HRESULT CordbType::ReturnedByValue()
                     {
                     case ELEMENT_TYPE_R4:
                     case ELEMENT_TYPE_R8:
-                        unsupported = true;
+                        // Floating-point fields are returned in FP registers.
+                        // A single FP register holding a value class is not
+                        // encodable here (only primitive VLT_REG_FP is), so
+                        // restrict to the two-register multi-reg forms.
+                        if (!twoRegister)
+                            unsupported = true;
                         break;
 
                     case ELEMENT_TYPE_CLASS:
                     case ELEMENT_TYPE_STRING:
                     case ELEMENT_TYPE_PTR:
                         // OK
+                        break;
+
+                    case ELEMENT_TYPE_VAR:
+                    case ELEMENT_TYPE_MVAR:
+                        // The field's type is a generic type parameter (e.g. the
+                        // Item1/Item2 fields of ValueTuple<T1, T2>); the unbound field
+                        // signature does not carry the instantiated type, so we cannot
+                        // tell whether it resolves to an FP type. Only permit it for the
+                        // two-register multi-reg forms, where both the all-FP and mixed
+                        // int/FP paths are implemented (and the read path fails gracefully
+                        // when the value is not actually register-returned). This is
+                        // required to support mixed int/fp returns such as
+                        // ValueTuple<double, int>, while avoiding the
+                        // unimplemented single-FP-register value-class path.
+                        if (!twoRegister)
+                            unsupported = true;
                         break;
 
                     default:
@@ -1802,7 +1879,7 @@ HRESULT CordbType::ReturnedByValue()
     if (unsupported)
         return S_FALSE;
 
-    return fieldCount <= 1 ? S_OK : S_FALSE;
+    return S_OK;
 }
 
 
@@ -1876,23 +1953,23 @@ CordbType::GetUnboxedObjectSize(ULONG32 *pObjectSize)
     }
 }
 
-VMPTR_DomainFile CordbType::GetDomainFile()
+VMPTR_Assembly CordbType::GetAssembly()
 {
     if (m_pClass != NULL)
     {
         CordbModule * pModule = m_pClass->GetModule();
         if (pModule)
         {
-            return pModule->m_vmDomainFile;
+            return pModule->m_vmAssembly;
         }
         else
         {
-            return VMPTR_DomainFile::NullPtr();
+            return VMPTR_Assembly::NullPtr();
         }
     }
     else
     {
-        return VMPTR_DomainFile::NullPtr();
+        return VMPTR_Assembly::NullPtr();
     }
 }
 
@@ -1937,7 +2014,7 @@ HRESULT CordbType::TypeToBasicTypeData(DebuggerIPCE_BasicTypeData *data)
     case ELEMENT_TYPE_PTR:
         data->elementType = m_elementType;
         data->metadataToken = mdTokenNil;
-        data->vmDomainFile = VMPTR_DomainFile::NullPtr();
+        data->vmAssembly = VMPTR_Assembly::NullPtr();
         data->vmTypeHandle = m_typeHandleExact;
         if (data->vmTypeHandle.IsNull())
         {
@@ -1950,7 +2027,7 @@ HRESULT CordbType::TypeToBasicTypeData(DebuggerIPCE_BasicTypeData *data)
         _ASSERTE(m_pClass != NULL);
         data->elementType = m_pClass->IsValueClassNoInit() ? ELEMENT_TYPE_VALUETYPE : ELEMENT_TYPE_CLASS;
         data->metadataToken = m_pClass->MDToken();
-	    data->vmDomainFile = GetDomainFile();
+	    data->vmAssembly = GetAssembly();
         data->vmTypeHandle = m_typeHandleExact;
         if (m_pClass->HasTypeParams() && data->vmTypeHandle.IsNull())
         {
@@ -1961,7 +2038,7 @@ HRESULT CordbType::TypeToBasicTypeData(DebuggerIPCE_BasicTypeData *data)
         // This includes all the "primitive" types, in which CorElementType is a sufficient description.
         data->elementType = m_elementType;
         data->metadataToken = mdTokenNil;
-        data->vmDomainFile = VMPTR_DomainFile::NullPtr();
+        data->vmAssembly = VMPTR_Assembly::NullPtr();
         data->vmTypeHandle = VMPTR_TypeHandle::NullPtr();
         break;
     }
@@ -2001,8 +2078,7 @@ void CordbType::TypeToExpandedTypeData(DebuggerIPCE_ExpandedTypeData *data)
         {
             data->elementType = m_pClass->IsValueClassNoInit() ? ELEMENT_TYPE_VALUETYPE : ELEMENT_TYPE_CLASS;
             data->ClassTypeData.metadataToken = m_pClass->GetToken();
-            data->ClassTypeData.vmDomainFile = GetDomainFile();
-            data->ClassTypeData.vmModule = GetModule();
+            data->ClassTypeData.vmAssembly = GetAssembly();
             data->ClassTypeData.typeHandle = VMPTR_TypeHandle::NullPtr();
 
             break;
@@ -2138,7 +2214,7 @@ static inline bool _IsNonGCRootHelper(CordbType * pType)
 //-----------------------------------------------------------------------------
 bool CordbType::IsGCRoot()
 {
-    // If it's a E_T_PTR type, then look at what it's a a pointer of.
+    // If it's a E_T_PTR type, then check its pointer type.
     CordbType * pPtr = this->GetPointerElementType();
     if (pPtr == NULL)
     {
@@ -2313,7 +2389,7 @@ HRESULT CordbType::GetTypeID(COR_TYPEID *pId)
         hr = Init(FALSE);
         IfFailThrow(hr);
 
-        VMPTR_TypeHandle vmTypeHandle;
+        VMPTR_TypeHandle vmTypeHandle = VMPTR_TypeHandle::NullPtr();
 
         CorElementType et = GetElementType();
         switch (et)
@@ -2339,16 +2415,13 @@ HRESULT CordbType::GetTypeID(COR_TYPEID *pId)
             {
                 mdTypeDef mdToken;
                 VMPTR_Module vmModule = VMPTR_Module::NullPtr();
-                VMPTR_DomainFile vmDomainFile = VMPTR_DomainFile::NullPtr();
 
                 // get module and token of the simple type
-                GetProcess()->GetDAC()->GetSimpleType(GetAppDomain()->GetADToken(),
-                                                      et,
+                IfFailThrow(GetProcess()->GetDAC()->GetSimpleType(et,
                                                       &mdToken,
-                                                      &vmModule,
-                                                      &vmDomainFile);
+                                                      &vmModule));
 
-                vmTypeHandle = GetProcess()->GetDAC()->GetTypeHandle(vmModule, mdToken);
+                IfFailThrow(GetProcess()->GetDAC()->GetTypeHandle(vmModule, mdToken, &vmTypeHandle));
             }
             break;
         case ELEMENT_TYPE_ARRAY:
@@ -2382,7 +2455,7 @@ HRESULT CordbType::GetTypeID(COR_TYPEID *pId)
                     IfFailThrow(hr);
 
                     VMPTR_Module vmModule = GetModule();
-                    vmTypeHandle = GetProcess()->GetDAC()->GetTypeHandle(vmModule, mdToken);
+                    IfFailThrow(GetProcess()->GetDAC()->GetTypeHandle(vmModule, mdToken, &vmTypeHandle));
                 }
             }
             break;
@@ -2397,7 +2470,7 @@ HRESULT CordbType::GetTypeID(COR_TYPEID *pId)
             break;
         }
 
-        GetProcess()->GetDAC()->GetTypeIDForType(vmTypeHandle, pId);
+        IfFailThrow(GetProcess()->GetDAC()->GetTypeIDForType(vmTypeHandle, pId));
     }
     EX_CATCH_HRESULT(hr);
 
@@ -2415,7 +2488,7 @@ HRESULT CordbType::GetTypeID(COR_TYPEID *pId)
 //   S_OK on success. CORDBG_E_ENC_HANGING_FIELD for EnC fields (common case)
 //   Other errors on failure case.
 //-----------------------------------------------------------------------------
-HRESULT CordbType::GetFieldInfo(mdFieldDef fldToken, FieldData ** ppFieldData)
+HRESULT CordbType::GetFieldInfo(mdFieldDef fldToken, const FieldData ** ppFieldData)
 {
     INTERNAL_SYNC_API_ENTRY(GetProcess()); //
     HRESULT hr = S_OK;
@@ -2449,13 +2522,13 @@ HRESULT CordbType::GetFieldInfo(mdFieldDef fldToken, FieldData ** ppFieldData)
                                                  fldToken,
                                                  ppFieldData);
                 // fall through and return.
-                // Let possible CORDBG_E_ENC_HANGING_FIELD errors propogate
+                // Let possible CORDBG_E_ENC_HANGING_FIELD errors propagate
             }
         }
         else
         {
             hr = m_pClass->GetFieldInfo(fldToken, ppFieldData); // this is for non-generic types....
-            // Let possible CORDBG_E_ENC_HANGING_FIELD errors propogate
+            // Let possible CORDBG_E_ENC_HANGING_FIELD errors propagate
         }
     }
     EX_CATCH_HRESULT(hr);
@@ -2599,7 +2672,7 @@ void CordbType::CountTypeDataNodes(unsigned int *count)
 //    genericArgsCount - size of the genericArgs array in elements.
 //    genericArgs - array of type parameters.
 //    count - IN/OUT - will increment with total number of generic args.
-//        caller must intialize this (likely to 0).
+//        caller must initialize this (likely to 0).
 //-----------------------------------------------------------------------------
 void CordbType::CountTypeDataNodesForInstantiation(unsigned int genericArgsCount, ICorDebugType *genericArgs[], unsigned int *count)
 {
@@ -2652,7 +2725,6 @@ void CordbType::GatherTypeDataForInstantiation(unsigned int genericArgsCount, IC
     }
 }
 
-#ifdef FEATURE_64BIT_ALIGNMENT
 // checks if the type requires 8-byte alignment. the algorithm used here
 // was adapted from AdjustArgPtrForAlignment() in bcltype/VarArgsNative.cpp
 HRESULT CordbType::RequiresAlign8(BOOL* isRequired)
@@ -2681,7 +2753,9 @@ HRESULT CordbType::RequiresAlign8(BOOL* isRequired)
                     if (m_typeHandleExact.IsNull())
                         InitInstantiationTypeHandle(FALSE);
 
-                    *isRequired = GetProcess()->GetDAC()->RequiresAlign8(m_typeHandleExact);
+                    BOOL _alignResult;
+                    IfFailThrow(GetProcess()->GetDAC()->RequiresAlign8(m_typeHandleExact, &_alignResult));
+                    *isRequired = _alignResult;
                 }
                 else
                 {
@@ -2694,7 +2768,6 @@ HRESULT CordbType::RequiresAlign8(BOOL* isRequired)
 
     return hr;
 }
-#endif
 
 /* ------------------------------------------------------------------------- *
  * TypeParameter Enumerator class
@@ -2713,7 +2786,7 @@ CordbTypeEnum* CordbTypeEnum::Build(CordbAppDomain * pAppDomain, NeuterList * pN
 
 //-----------------------------------------------------------------------------
 // We need to support taking both an array of CordbType* and an array of RSSmartPtr<CordbType>,
-// but the code is identical in both cases.  Rather than duplicate any code explicity, it's better to
+// but the code is identical in both cases.  Rather than duplicate any code explicitly, it's better to
 // have the compiler do it for us using this template method.
 // Another option would be to create an IList<T> interface and implementations for both arrays
 // of T* and arrays of RSSmartPtr<T>.  This would be more generally useful, but much more code.
@@ -2898,7 +2971,7 @@ HRESULT CordbTypeEnum::Next(ULONG celt, ICorDebugType *values[], ULONG *pceltFet
 
     HRESULT hr = S_OK;
 
-    int iMax = min( m_iMax, m_iCurrent+celt);
+    int iMax = (int)min( (ULONG)m_iMax, m_iCurrent+celt);
     int i;
 
     for (i = m_iCurrent; i < iMax; i++)

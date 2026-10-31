@@ -12,43 +12,77 @@ namespace System.Text.Json.Serialization.Tests
 {
     public abstract partial class PropertyNameTests : SerializerTests
     {
-        public PropertyNameTests(JsonSerializerWrapperForString serializerWrapper) : base(serializerWrapper) { }
+        public PropertyNameTests(JsonSerializerWrapper serializerWrapper) : base(serializerWrapper) { }
 
         [Fact]
-        public async Task CamelCaseDeserializeNoMatch()
+        public async Task BuiltInPolicyDeserializeNoMatch()
         {
-            var options = new JsonSerializerOptions();
-            options.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
-
-            SimpleTestClass obj = await JsonSerializerWrapperForString.DeserializeWrapper<SimpleTestClass>(@"{""MyInt16"":1}", options);
-
-            // This is 0 (default value) because the data does not match the property "MyInt16" that is assuming camel-casing of "myInt16".
-            Assert.Equal(0, obj.MyInt16);
+            // This is 0 (default value) because the data does not match the property "MyInt16" using the specified policy.
+            await DeserializeAndAssert(JsonNamingPolicy.CamelCase, """{"MyInt16":1}""", 0);
+            await DeserializeAndAssert(JsonNamingPolicy.SnakeCaseLower, """{"MyInt16":1}""", 0);
+            await DeserializeAndAssert(JsonNamingPolicy.SnakeCaseUpper, """{"MyInt16":1}""", 0);
+            await DeserializeAndAssert(JsonNamingPolicy.KebabCaseLower, """{"MyInt16":1}""", 0);
+            await DeserializeAndAssert(JsonNamingPolicy.KebabCaseUpper, """{"MyInt16":1}""", 0);
         }
 
         [Fact]
-        public async Task CamelCaseDeserializeMatch()
+        public async Task BuiltInPolicyDeserializeMatch()
         {
-            var options = new JsonSerializerOptions();
-            options.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+            // This is 1 because the data matches the property "MyInt16" using the specified policy.
+            await DeserializeAndAssert(JsonNamingPolicy.CamelCase, """{"myInt16":1}""", 1);
+            await DeserializeAndAssert(JsonNamingPolicy.SnakeCaseLower, """{"my_int16":1}""", 1);
+            await DeserializeAndAssert(JsonNamingPolicy.SnakeCaseUpper, """{"MY_INT16":1}""", 1);
+            await DeserializeAndAssert(JsonNamingPolicy.KebabCaseLower, """{"my-int16":1}""", 1);
+            await DeserializeAndAssert(JsonNamingPolicy.KebabCaseUpper, """{"MY-INT16":1}""", 1);
+        }
 
-            SimpleTestClass obj = await JsonSerializerWrapperForString.DeserializeWrapper<SimpleTestClass>(@"{""myInt16"":1}", options);
+        private async Task DeserializeAndAssert(JsonNamingPolicy policy, string json, short expected)
+        {
+            var options = new JsonSerializerOptions { PropertyNamingPolicy = policy };
+            var obj = await Serializer.DeserializeWrapper<SimpleTestClass>(json, options);
 
-            // This is 1 because the data matches the property "MyInt16" that is assuming camel-casing of "myInt16".
-            Assert.Equal(1, obj.MyInt16);
+            Assert.Equal(expected, obj.MyInt16);
         }
 
         [Fact]
-        public async Task CamelCaseSerialize()
+        public async Task BuiltInPolicySerialize()
         {
-            var options = new JsonSerializerOptions();
-            options.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+            await SerializeAndAssert(JsonNamingPolicy.CamelCase, """
+                "myInt16":0
+                """, """
+                "myInt32":0
+                """);
+            await SerializeAndAssert(JsonNamingPolicy.SnakeCaseLower, """
+                "my_int16":0
+                """, """
+                "my_int32":0
+                """);
+            await SerializeAndAssert(JsonNamingPolicy.SnakeCaseUpper, """
+                "MY_INT16":0
+                """, """
+                "MY_INT32":0
+                """);
+            await SerializeAndAssert(JsonNamingPolicy.KebabCaseLower, """
+                "my-int16":0
+                """, """
+                "my-int32":0
+                """);
+            await SerializeAndAssert(JsonNamingPolicy.KebabCaseUpper, """
+                "MY-INT16":0
+                """, """
+                "MY-INT32":0
+                """);
 
-            SimpleTestClass obj = await JsonSerializerWrapperForString.DeserializeWrapper<SimpleTestClass>(@"{}", options);
+            async Task SerializeAndAssert(JsonNamingPolicy policy, string myInt16, string myInt32)
+            {
+                var options = new JsonSerializerOptions { PropertyNamingPolicy = policy };
+                var obj = await Serializer.DeserializeWrapper<SimpleTestClass>("{}", options);
 
-            string json = await JsonSerializerWrapperForString.SerializeWrapper(obj, options);
-            Assert.Contains(@"""myInt16"":0", json);
-            Assert.Contains(@"""myInt32"":0", json);
+                string json = await Serializer.SerializeWrapper(obj, options);
+
+                Assert.Contains(myInt16, json);
+                Assert.Contains(myInt32, json);
+            }
         }
 
         [Fact]
@@ -57,7 +91,7 @@ namespace System.Text.Json.Serialization.Tests
             var options = new JsonSerializerOptions();
             options.PropertyNamingPolicy = new UppercaseNamingPolicy();
 
-            SimpleTestClass obj = await JsonSerializerWrapperForString.DeserializeWrapper<SimpleTestClass>(@"{""MYINT16"":1}", options);
+            SimpleTestClass obj = await Serializer.DeserializeWrapper<SimpleTestClass>("""{"MYINT16":1}""", options);
 
             // This is 1 because the data matches the property "MYINT16" that is uppercase of "myInt16".
             Assert.Equal(1, obj.MyInt16);
@@ -70,8 +104,8 @@ namespace System.Text.Json.Serialization.Tests
             options.PropertyNamingPolicy = new NullNamingPolicy();
 
             // A policy that returns null is not allowed.
-            await Assert.ThrowsAsync<InvalidOperationException>(async () => await JsonSerializerWrapperForString.DeserializeWrapper<SimpleTestClass>(@"{}", options));
-            await Assert.ThrowsAsync<InvalidOperationException>(async () => await JsonSerializerWrapperForString.SerializeWrapper(new SimpleTestClass(), options));
+            await Assert.ThrowsAsync<InvalidOperationException>(async () => await Serializer.DeserializeWrapper<SimpleTestClass>("{}", options));
+            await Assert.ThrowsAsync<InvalidOperationException>(async () => await Serializer.SerializeWrapper(new SimpleTestClass(), options));
         }
 
         [Fact]
@@ -79,21 +113,21 @@ namespace System.Text.Json.Serialization.Tests
         {
             {
                 // A non-match scenario with no options (case-sensitive by default).
-                SimpleTestClass obj = await JsonSerializerWrapperForString.DeserializeWrapper<SimpleTestClass>(@"{""myint16"":1}");
+                SimpleTestClass obj = await Serializer.DeserializeWrapper<SimpleTestClass>("""{"myint16":1}""");
                 Assert.Equal(0, obj.MyInt16);
             }
 
             {
                 // A non-match scenario with default options (case-sensitive by default).
                 var options = new JsonSerializerOptions();
-                SimpleTestClass obj = await JsonSerializerWrapperForString.DeserializeWrapper<SimpleTestClass>(@"{""myint16"":1}", options);
+                SimpleTestClass obj = await Serializer.DeserializeWrapper<SimpleTestClass>("""{"myint16":1}""", options);
                 Assert.Equal(0, obj.MyInt16);
             }
 
             {
                 var options = new JsonSerializerOptions();
                 options.PropertyNameCaseInsensitive = true;
-                SimpleTestClass obj = await JsonSerializerWrapperForString.DeserializeWrapper<SimpleTestClass>(@"{""myint16"":1}", options);
+                SimpleTestClass obj = await Serializer.DeserializeWrapper<SimpleTestClass>("""{"myint16":1}""", options);
                 Assert.Equal(1, obj.MyInt16);
             }
         }
@@ -102,14 +136,18 @@ namespace System.Text.Json.Serialization.Tests
         public async Task JsonPropertyNameAttribute()
         {
             {
-                OverridePropertyNameDesignTime_TestClass obj = await JsonSerializerWrapperForString.DeserializeWrapper<OverridePropertyNameDesignTime_TestClass>(@"{""Blah"":1}");
+                OverridePropertyNameDesignTime_TestClass obj = await Serializer.DeserializeWrapper<OverridePropertyNameDesignTime_TestClass>("""{"Blah":1}""");
                 Assert.Equal(1, obj.myInt);
 
                 obj.myObject = 2;
 
-                string json = await JsonSerializerWrapperForString.SerializeWrapper(obj);
-                Assert.Contains(@"""Blah"":1", json);
-                Assert.Contains(@"""BlahObject"":2", json);
+                string json = await Serializer.SerializeWrapper(obj);
+                Assert.Contains("""
+                    "Blah":1
+                    """, json);
+                Assert.Contains("""
+                    "BlahObject":2
+                    """, json);
             }
 
             // The JsonPropertyNameAttribute should be unaffected by JsonNamingPolicy and PropertyNameCaseInsensitive.
@@ -118,11 +156,13 @@ namespace System.Text.Json.Serialization.Tests
                 options.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
                 options.PropertyNameCaseInsensitive = true;
 
-                OverridePropertyNameDesignTime_TestClass obj = await JsonSerializerWrapperForString.DeserializeWrapper<OverridePropertyNameDesignTime_TestClass>(@"{""Blah"":1}", options);
+                OverridePropertyNameDesignTime_TestClass obj = await Serializer.DeserializeWrapper<OverridePropertyNameDesignTime_TestClass>("""{"Blah":1}""", options);
                 Assert.Equal(1, obj.myInt);
 
-                string json = await JsonSerializerWrapperForString.SerializeWrapper(obj);
-                Assert.Contains(@"""Blah"":1", json);
+                string json = await Serializer.SerializeWrapper(obj);
+                Assert.Contains("""
+                    "Blah":1
+                    """, json);
             }
         }
 
@@ -131,12 +171,12 @@ namespace System.Text.Json.Serialization.Tests
         {
             {
                 var options = new JsonSerializerOptions();
-                await Assert.ThrowsAsync<InvalidOperationException>(async () => await JsonSerializerWrapperForString.DeserializeWrapper<DuplicatePropertyNameDesignTime_TestClass>("{}", options));
+                await Assert.ThrowsAsync<InvalidOperationException>(async () => await Serializer.DeserializeWrapper<DuplicatePropertyNameDesignTime_TestClass>("{}", options));
             }
 
             {
                 var options = new JsonSerializerOptions();
-                await Assert.ThrowsAsync<InvalidOperationException>(async () => await JsonSerializerWrapperForString.SerializeWrapper(new DuplicatePropertyNameDesignTime_TestClass(), options));
+                await Assert.ThrowsAsync<InvalidOperationException>(async () => await Serializer.SerializeWrapper(new DuplicatePropertyNameDesignTime_TestClass(), options));
             }
         }
 
@@ -145,30 +185,30 @@ namespace System.Text.Json.Serialization.Tests
         {
             {
                 // Baseline comparison - no options set.
-                IntPropertyNamesDifferentByCaseOnly_TestClass obj = await JsonSerializerWrapperForString.DeserializeWrapper<IntPropertyNamesDifferentByCaseOnly_TestClass>("{}");
-                await JsonSerializerWrapperForString.SerializeWrapper(obj);
+                IntPropertyNamesDifferentByCaseOnly_TestClass obj = await Serializer.DeserializeWrapper<IntPropertyNamesDifferentByCaseOnly_TestClass>("{}");
+                await Serializer.SerializeWrapper(obj);
             }
 
             {
                 var options = new JsonSerializerOptions();
                 options.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
 
-                await Assert.ThrowsAsync<InvalidOperationException>(async () => await JsonSerializerWrapperForString.DeserializeWrapper<IntPropertyNamesDifferentByCaseOnly_TestClass>("{}", options));
-                await Assert.ThrowsAsync<InvalidOperationException>(async () => await JsonSerializerWrapperForString.SerializeWrapper(new IntPropertyNamesDifferentByCaseOnly_TestClass(), options));
+                await Assert.ThrowsAsync<InvalidOperationException>(async () => await Serializer.DeserializeWrapper<IntPropertyNamesDifferentByCaseOnly_TestClass>("{}", options));
+                await Assert.ThrowsAsync<InvalidOperationException>(async () => await Serializer.SerializeWrapper(new IntPropertyNamesDifferentByCaseOnly_TestClass(), options));
             }
 
             {
                 // Baseline comparison - no options set.
-                ObjectPropertyNamesDifferentByCaseOnly_TestClass obj = await JsonSerializerWrapperForString.DeserializeWrapper<ObjectPropertyNamesDifferentByCaseOnly_TestClass>("{}");
-                await JsonSerializerWrapperForString.SerializeWrapper(obj);
+                ObjectPropertyNamesDifferentByCaseOnly_TestClass obj = await Serializer.DeserializeWrapper<ObjectPropertyNamesDifferentByCaseOnly_TestClass>("{}");
+                await Serializer.SerializeWrapper(obj);
             }
 
             {
                 var options = new JsonSerializerOptions();
                 options.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
 
-                await Assert.ThrowsAsync<InvalidOperationException>(async () => await JsonSerializerWrapperForString.DeserializeWrapper<ObjectPropertyNamesDifferentByCaseOnly_TestClass>("{}", options));
-                await Assert.ThrowsAsync<InvalidOperationException>(async () => await JsonSerializerWrapperForString.SerializeWrapper(new ObjectPropertyNamesDifferentByCaseOnly_TestClass(), options));
+                await Assert.ThrowsAsync<InvalidOperationException>(async () => await Serializer.DeserializeWrapper<ObjectPropertyNamesDifferentByCaseOnly_TestClass>("{}", options));
+                await Assert.ThrowsAsync<InvalidOperationException>(async () => await Serializer.SerializeWrapper(new ObjectPropertyNamesDifferentByCaseOnly_TestClass(), options));
             }
         }
 
@@ -177,8 +217,10 @@ namespace System.Text.Json.Serialization.Tests
         {
             {
                 // Baseline.
-                string json = await JsonSerializerWrapperForString.SerializeWrapper(new SimpleTestClass());
-                Assert.Contains(@"""MyInt16"":0", json);
+                string json = await Serializer.SerializeWrapper(new SimpleTestClass());
+                Assert.Contains("""
+                    "MyInt16":0
+                    """, json);
             }
 
             // The JSON output should be unaffected by PropertyNameCaseInsensitive.
@@ -186,26 +228,28 @@ namespace System.Text.Json.Serialization.Tests
                 var options = new JsonSerializerOptions();
                 options.PropertyNameCaseInsensitive = true;
 
-                string json = await JsonSerializerWrapperForString.SerializeWrapper(new SimpleTestClass(), options);
-                Assert.Contains(@"""MyInt16"":0", json);
+                string json = await Serializer.SerializeWrapper(new SimpleTestClass(), options);
+                Assert.Contains("""
+                    "MyInt16":0
+                    """, json);
             }
         }
 
         [Fact]
         public async Task EmptyPropertyName()
         {
-            string json = @"{"""":1}";
+            string json = """{"":1}""";
 
             {
                 var obj = new EmptyPropertyName_TestClass();
                 obj.MyInt1 = 1;
 
-                string jsonOut = await JsonSerializerWrapperForString.SerializeWrapper(obj);
+                string jsonOut = await Serializer.SerializeWrapper(obj);
                 Assert.Equal(json, jsonOut);
             }
 
             {
-                EmptyPropertyName_TestClass obj = await JsonSerializerWrapperForString.DeserializeWrapper<EmptyPropertyName_TestClass>(json);
+                EmptyPropertyName_TestClass obj = await Serializer.DeserializeWrapper<EmptyPropertyName_TestClass>(json);
                 Assert.Equal(1, obj.MyInt1);
             }
         }
@@ -213,32 +257,34 @@ namespace System.Text.Json.Serialization.Tests
         [Fact]
         public async Task UnicodePropertyNames()
         {
-            ClassWithUnicodeProperty obj = await JsonSerializerWrapperForString.DeserializeWrapper<ClassWithUnicodeProperty>("{\"A\u0467\":1}");
+            ClassWithUnicodeProperty obj = await Serializer.DeserializeWrapper<ClassWithUnicodeProperty>("{\"A\u0467\":1}");
             Assert.Equal(1, obj.A\u0467);
 
             // Specifying encoder on options does not impact deserialize.
             var options = new JsonSerializerOptions();
             options.Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
 
-            obj = await JsonSerializerWrapperForString.DeserializeWrapper<ClassWithUnicodeProperty>("{\"A\u0467\":1}", options);
+            obj = await Serializer.DeserializeWrapper<ClassWithUnicodeProperty>("{\"A\u0467\":1}", options);
             Assert.Equal(1, obj.A\u0467);
 
             string json;
 
             // Verify the name is escaped after serialize.
-            json = await JsonSerializerWrapperForString.SerializeWrapper(obj);
-            Assert.Contains(@"""A\u0467"":1", json);
+            json = await Serializer.SerializeWrapper(obj);
+            Assert.Contains("""
+                "A\u0467":1
+                """, json);
 
             // With custom escaper
-            json = await JsonSerializerWrapperForString.SerializeWrapper(obj, options);
+            json = await Serializer.SerializeWrapper(obj, options);
             Assert.Contains("\"A\u0467\":1", json);
 
             // Verify the name is unescaped after deserialize.
-            obj = await JsonSerializerWrapperForString.DeserializeWrapper<ClassWithUnicodeProperty>(json);
+            obj = await Serializer.DeserializeWrapper<ClassWithUnicodeProperty>(json);
             Assert.Equal(1, obj.A\u0467);
 
             // With custom escaper
-            obj = await JsonSerializerWrapperForString.DeserializeWrapper<ClassWithUnicodeProperty>(json, options);
+            obj = await Serializer.DeserializeWrapper<ClassWithUnicodeProperty>(json, options);
             Assert.Equal(1, obj.A\u0467);
         }
 
@@ -246,15 +292,17 @@ namespace System.Text.Json.Serialization.Tests
         public async Task UnicodePropertyNamesWithPooledAlloc()
         {
             // We want to go over StackallocByteThreshold=256 to force a pooled allocation, so this property is 400 chars and 401 bytes.
-            ClassWithUnicodeProperty obj = await JsonSerializerWrapperForString.DeserializeWrapper<ClassWithUnicodeProperty>("{\"A\u046734567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890\":1}");
+            ClassWithUnicodeProperty obj = await Serializer.DeserializeWrapper<ClassWithUnicodeProperty>("{\"A\u046734567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890\":1}");
             Assert.Equal(1, obj.A\u046734567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890);
 
             // Verify the name is escaped after serialize.
-            string json = await JsonSerializerWrapperForString.SerializeWrapper(obj);
-            Assert.Contains(@"""A\u046734567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890"":1", json);
+            string json = await Serializer.SerializeWrapper(obj);
+            Assert.Contains("""
+                "A\u046734567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890":1
+                """, json);
 
             // Verify the name is unescaped after deserialize.
-            obj = await JsonSerializerWrapperForString.DeserializeWrapper<ClassWithUnicodeProperty>(json);
+            obj = await Serializer.DeserializeWrapper<ClassWithUnicodeProperty>(json);
             Assert.Equal(1, obj.A\u046734567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890);
         }
 
@@ -352,12 +400,12 @@ namespace System.Text.Json.Serialization.Tests
             // Verify baseline.
             Verify();
 
-            string json = await JsonSerializerWrapperForString.SerializeWrapper(obj);
+            string json = await Serializer.SerializeWrapper(obj);
 
             // Verify the length is consistent with a verified value.
             Assert.Equal(354, json.Length);
 
-            obj = await JsonSerializerWrapperForString.DeserializeWrapper<ClassWithPropertyNamePermutations>(json);
+            obj = await Serializer.DeserializeWrapper<ClassWithPropertyNamePermutations>(json);
 
             // Verify round-tripped object.
             Verify();
@@ -373,14 +421,14 @@ namespace System.Text.Json.Serialization.Tests
                 { "validKey", 1 }
             };
 
-            await Assert.ThrowsAsync<InvalidOperationException>(async () => await JsonSerializerWrapperForString.SerializeWrapper(inputPrimitive, options));
+            await Assert.ThrowsAsync<InvalidOperationException>(async () => await Serializer.SerializeWrapper(inputPrimitive, options));
 
             var inputClass = new Dictionary<string, OverridePropertyNameDesignTime_TestClass>
             {
                 { "validKey", new OverridePropertyNameDesignTime_TestClass() }
             };
 
-            await Assert.ThrowsAsync<InvalidOperationException>(async () => await JsonSerializerWrapperForString.SerializeWrapper(inputClass, options));
+            await Assert.ThrowsAsync<InvalidOperationException>(async () => await Serializer.SerializeWrapper(inputClass, options));
         }
 
         public class OverridePropertyNameDesignTime_TestClass
@@ -389,7 +437,7 @@ namespace System.Text.Json.Serialization.Tests
             public int myInt { get; set; }
 
             [JsonPropertyName("BlahObject")]
-            public object myObject { get; set; }
+            public object? myObject { get; set; }
         }
 
         public class DuplicatePropertyNameDesignTime_TestClass
@@ -434,25 +482,27 @@ namespace System.Text.Json.Serialization.Tests
                 Schema = 2,
                 SmtpId = 3,
                 Emojies = 4,
-                ꀀ = 5,
-                YiIt_2 = 6
+                \uA000 = 5,
+                YiIt_2 = 6,
+                PropertyNameWithWhitespace = 7,
             };
 
-            string json = await JsonSerializerWrapperForString.SerializeWrapper(obj);
+            string json = await Serializer.SerializeWrapper(obj);
             Assert.Equal(
                 "{\"Baseline\":1," +
                 "\"$schema\":2," +
                 "\"smtp-id\":3," +
                 "\"\\uD83D\\uDE00\\uD83D\\uDE01\":4," +
                 "\"\\uA000\":5," +
-                "\"\\uA000_2\":6}", json);
+                "\"\\uA000_2\":6," +
+                "\"\\u0022ab \\n\\r\\t\\f\\bc\\u0022\":7}", json);
 
-            obj = await JsonSerializerWrapperForString.DeserializeWrapper<ClassWithSpecialCharacters>(json);
+            obj = await Serializer.DeserializeWrapper<ClassWithSpecialCharacters>(json);
             Assert.Equal(1, obj.Baseline);
             Assert.Equal(2, obj.Schema);
             Assert.Equal(3, obj.SmtpId);
             Assert.Equal(4, obj.Emojies);
-            Assert.Equal(5, obj.ꀀ);
+            Assert.Equal(5, obj.\uA000);
             Assert.Equal(6, obj.YiIt_2);
         }
 
@@ -470,15 +520,235 @@ namespace System.Text.Json.Serialization.Tests
             public int SmtpId { get; set; }
 
             [JsonPropertyOrder(4)]
-            [JsonPropertyName("😀😁")] // Invalid C# property name. Unicode:\uD83D\uDE00\uD83D\uDE01
+            [JsonPropertyName("\uD83D\uDE00\uD83D\uDE01")] // Invalid C# property name. Unicode:\uD83D\uDE00\uD83D\uDE01
             public int Emojies { get; set; }
 
             [JsonPropertyOrder(5)]
-            public int ꀀ { get; set; } // Valid C# property name. Unicode:\uA000
+            public int \uA000 { get; set; } // Valid C# property name. Unicode:\uA000
 
             [JsonPropertyOrder(6)]
-            [JsonPropertyName("\uA000_2")] // Valid C# property name: ꀀ_2
+            [JsonPropertyName("\uA000_2")] // Valid C# property name: \uA000_2
             public int YiIt_2 { get; set; }
+
+            [JsonPropertyOrder(7)]
+            [JsonPropertyName("\"ab \n\r\t\f\bc\"")] // Regression test for https://github.com/dotnet/runtime/issues/98638
+            public int PropertyNameWithWhitespace { get; set; }
         }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task ClassWithIgnoredCaseInsensitiveConflict_RespectsIgnoredMember(bool propertyNameCaseInsensitive)
+        {
+            // Regression test for https://github.com/dotnet/runtime/issues/93903
+            // specifically for propertyNameCaseInsensitive := true
+
+            JsonSerializerOptions options = Serializer.CreateOptions(makeReadOnly: false);
+            options.PropertyNameCaseInsensitive = propertyNameCaseInsensitive;
+
+            var value = new ClassWithIgnoredCaseInsensitiveConflict { name = "lowercase", Name = "uppercase" };
+            string json = await Serializer.SerializeWrapper(value, options);
+
+            Assert.Equal("""{"name":"lowercase"}""", json);
+
+            value = await Serializer.DeserializeWrapper<ClassWithIgnoredCaseInsensitiveConflict>(json, options);
+            Assert.Equal("lowercase", value.name);
+            Assert.Null(value.Name);
+        }
+
+        public class ClassWithIgnoredCaseInsensitiveConflict
+        {
+            public string name { get; set; }
+
+            [JsonIgnore]
+            public string Name { get; set; }
+        }
+
+        [Fact]
+        public async Task DuplicatesIgnoreCase()
+        {
+            string json = """{ "myint32":1, "MYINT32":2 }""";
+
+            JsonSerializerOptions options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            Assert.Equal(2, (await Serializer.DeserializeWrapper<SimpleTestClass>(json, options)).MyInt32);
+
+            options = JsonTestSerializerOptions.DisallowDuplicatePropertiesIgnoringCase;
+            Exception ex = await Assert.ThrowsAsync<JsonException>(() => Serializer.DeserializeWrapper<SimpleTestClass>(json, options));
+            Assert.Contains("Duplicate", ex.Message);
+        }
+
+        [Fact]
+        public async Task DuplicatesByKebabCaseNamingPolicy()
+        {
+            string json = """{ "my-int32":1, "my-int32":2 }""";
+
+            JsonSerializerOptions options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.KebabCaseLower };
+            Assert.Equal(2, (await Serializer.DeserializeWrapper<SimpleTestClass>(json, options)).MyInt32);
+
+            options = new JsonSerializerOptions { AllowDuplicateProperties = false, PropertyNamingPolicy = JsonNamingPolicy.KebabCaseLower };
+            Exception ex = await Assert.ThrowsAsync<JsonException>(() => Serializer.DeserializeWrapper<SimpleTestClass>(json, options));
+            Assert.Contains("Duplicate", ex.Message);
+        }
+
+        [Fact]
+        public async Task DuplicatesByKebabCaseNamingPolicyIgnoreCase()
+        {
+            string json = """{ "my-int32":1, "MY-int32":2 }""";
+
+            JsonSerializerOptions options = new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.KebabCaseLower,
+                PropertyNameCaseInsensitive = true,
+            };
+
+            Assert.Equal(2, (await Serializer.DeserializeWrapper<SimpleTestClass>(json, options)).MyInt32);
+
+            options = new JsonSerializerOptions {
+                AllowDuplicateProperties = false,
+                PropertyNamingPolicy = JsonNamingPolicy.KebabCaseLower,
+                PropertyNameCaseInsensitive = true,
+            };
+
+            Exception ex = await Assert.ThrowsAsync<JsonException>(() => Serializer.DeserializeWrapper<SimpleTestClass>(json, options));
+            Assert.Contains("Duplicate", ex.Message);
+        }
+
+        [Fact]
+        public async Task JsonNamingPolicyAttribute_TypeLevel_Serialize()
+        {
+            string json = await Serializer.SerializeWrapper(new ClassWithCamelCaseNamingPolicyAttribute { MyValue = "test" });
+            Assert.Equal("""{"myValue":"test"}""", json);
+        }
+
+        [Fact]
+        public async Task JsonNamingPolicyAttribute_TypeLevel_Deserialize()
+        {
+            var obj = await Serializer.DeserializeWrapper<ClassWithCamelCaseNamingPolicyAttribute>("""{"myValue":"test"}""");
+            Assert.Equal("test", obj.MyValue);
+        }
+
+        [Fact]
+        public async Task JsonNamingPolicyAttribute_TypeLevel_OverridesGlobalPolicy()
+        {
+            var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
+            string json = await Serializer.SerializeWrapper(new ClassWithCamelCaseNamingPolicyAttribute { MyValue = "test" }, options);
+            Assert.Equal("""{"myValue":"test"}""", json);
+        }
+
+        [Fact]
+        public async Task JsonNamingPolicyAttribute_MemberLevel_Serialize()
+        {
+            string json = await Serializer.SerializeWrapper(new ClassWithMemberNamingPolicyAttribute { MyFirstProperty = "first", MySecondProperty = "second" });
+            Assert.Equal("""{"MyFirstProperty":"first","my-second-property":"second"}""", json);
+        }
+
+        [Fact]
+        public async Task JsonNamingPolicyAttribute_MemberLevel_Deserialize()
+        {
+            var obj = await Serializer.DeserializeWrapper<ClassWithMemberNamingPolicyAttribute>("""{"MyFirstProperty":"first","my-second-property":"second"}""");
+            Assert.Equal("first", obj.MyFirstProperty);
+            Assert.Equal("second", obj.MySecondProperty);
+        }
+
+        [Fact]
+        public async Task JsonNamingPolicyAttribute_MemberLevel_OverridesTypeLevelAndGlobal()
+        {
+            var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
+            string json = await Serializer.SerializeWrapper(new ClassWithMixedNamingPolicies { MyFirstProperty = "first", MySecondProperty = "second" }, options);
+            Assert.Equal("""{"myFirstProperty":"first","my-second-property":"second"}""", json);
+        }
+
+        [Fact]
+        public async Task JsonNamingPolicyAttribute_MemberLevel_OverridesTypeLevel()
+        {
+            string json = await Serializer.SerializeWrapper(new ClassWithMixedNamingPolicies { MyFirstProperty = "first", MySecondProperty = "second" });
+            Assert.Equal("""{"myFirstProperty":"first","my-second-property":"second"}""", json);
+        }
+
+        [Fact]
+        public async Task JsonNamingPolicyAttribute_JsonPropertyNameTakesPrecedence()
+        {
+            string json = await Serializer.SerializeWrapper(new ClassWithNamingPolicyAndPropertyName { MyValue = "test" });
+            Assert.Equal("""{"custom_name":"test"}""", json);
+        }
+
+        [Theory]
+        [InlineData(JsonKnownNamingPolicy.CamelCase, @"""myTestProperty""")]
+        [InlineData(JsonKnownNamingPolicy.SnakeCaseLower, @"""my_test_property""")]
+        [InlineData(JsonKnownNamingPolicy.SnakeCaseUpper, @"""MY_TEST_PROPERTY""")]
+        [InlineData(JsonKnownNamingPolicy.KebabCaseLower, @"""my-test-property""")]
+        [InlineData(JsonKnownNamingPolicy.KebabCaseUpper, @"""MY-TEST-PROPERTY""")]
+        [InlineData(JsonKnownNamingPolicy.PascalCase, @"""MyTestProperty""")]
+        public void JsonNamingPolicyAttribute_AllKnownPolicies(JsonKnownNamingPolicy policy, string expectedPropertyName)
+        {
+            var attribute = new JsonNamingPolicyAttribute(policy);
+            string converted = attribute.NamingPolicy.ConvertName("MyTestProperty");
+            Assert.Equal(expectedPropertyName.Trim('"'), converted);
+        }
+
+        [Fact]
+        public void JsonNamingPolicyAttribute_InvalidPolicy_Throws()
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => new JsonNamingPolicyAttribute((JsonKnownNamingPolicy)999));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new JsonNamingPolicyAttribute(JsonKnownNamingPolicy.Unspecified));
+        }
+    }
+
+    [JsonNamingPolicyAttribute(JsonKnownNamingPolicy.CamelCase)]
+    public class ClassWithCamelCaseNamingPolicyAttribute
+    {
+        public string MyValue { get; set; }
+    }
+
+    public class ClassWithMemberNamingPolicyAttribute
+    {
+        public string MyFirstProperty { get; set; }
+
+        [JsonNamingPolicyAttribute(JsonKnownNamingPolicy.KebabCaseLower)]
+        public string MySecondProperty { get; set; }
+    }
+
+    [JsonNamingPolicyAttribute(JsonKnownNamingPolicy.CamelCase)]
+    public class ClassWithMixedNamingPolicies
+    {
+        public string MyFirstProperty { get; set; }
+
+        [JsonNamingPolicyAttribute(JsonKnownNamingPolicy.KebabCaseLower)]
+        public string MySecondProperty { get; set; }
+    }
+
+    public class ClassWithNamingPolicyAndPropertyName
+    {
+        [JsonNamingPolicyAttribute(JsonKnownNamingPolicy.CamelCase)]
+        [JsonPropertyName("custom_name")]
+        public string MyValue { get; set; }
+    }
+
+    /// <summary>
+    /// A custom naming policy that converts property names to all uppercase.
+    /// </summary>
+    public class UpperCaseNamingPolicy : JsonNamingPolicy
+    {
+        public override string ConvertName(string name) => name.ToUpperInvariant();
+    }
+
+    /// <summary>
+    /// A derived JsonNamingPolicyAttribute that uses a custom naming policy (not a known policy).
+    /// </summary>
+    public class JsonUpperCaseNamingPolicyAttribute : JsonNamingPolicyAttribute
+    {
+        public JsonUpperCaseNamingPolicyAttribute() : base(new UpperCaseNamingPolicy()) { }
+    }
+
+    [JsonUpperCaseNamingPolicy]
+    public class ClassWithCustomDerivedNamingPolicyAttribute
+    {
+        public string MyValue { get; set; }
+    }
+
+    public class ClassWithCustomDerivedMemberNamingPolicyAttribute
+    {
+        [JsonUpperCaseNamingPolicy]
+        public string MyValue { get; set; }
     }
 }

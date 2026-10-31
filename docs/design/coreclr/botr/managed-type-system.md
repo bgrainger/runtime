@@ -27,13 +27,15 @@ Low overhead is achieved by lazy loading - instead of eagerly populating the typ
 
 Where necessary, partial classes, extension methods, and pluggable algorithms are used to achieve goal 3 instead of polymorphism and object hierarchies. The reusability of the type system is at the source level (source-including different sets of files to get different features). This allows extensibility without making sacrifices that would take us away from goal 1.
 
-The type system in its purest form (i.e. without any partial class extensions) tries to avoid introducing concepts that are not defined in the [ECMA-335 specification](http://www.ecma-international.org/publications/standards/Ecma-335.htm). The specification is a suggested prerequisite reading to this document and provides definitions to various terms used in this document.
+The type system in its purest form (i.e. without any partial class extensions) tries to avoid introducing concepts that are not defined in the [ECMA-335 specification](https://www.ecma-international.org/publications-and-standards/standards/ecma-335). The specification is a suggested prerequisite reading to this document and provides definitions to various terms used in this document.
 
 ## Relationship with metadata
 
-While metadata (such as the file formats described in the ECMA-335 specification) has a close relationship with the type system, there is a clear distinction between these two: the metadata describes physical shape of the type (e.g. what is the base class of the type; or what fields does it have), but the type system builds higher level concepts on top of the shape (e.g. how many bytes are required to store an instance of the type at runtime; what interfaces does the type implement, including the inherited ones).
+While [metadata](https://learn.microsoft.com/dotnet/standard/metadata-and-self-describing-components) (such as the file formats described in the ECMA-335 specification) has a close relationship with the type system, there is a clear distinction between these two: the metadata describes physical shape of the type (e.g. what is the base class of the type; or what fields does it have), but the type system builds higher level concepts on top of the shape (e.g. how many bytes are required to store an instance of the type at runtime; what interfaces does the type implement, including the inherited ones).
 
-The type system provides access to most of the underlying metadata, but abstracts the way it was obtained. This allows types and members that are backed by metadata in other formats, or in no physical format at all (such as methods on array types), to be representable within the same type system context.
+The type system provides access to most of the underlying metadata, but abstracts the way it was obtained. This allows types and members that are backed by metadata in other formats, or not backed at all, to be representable within the same type system context.
+
+A notable example of members with no backing metadata are the methods on array types. For instance, an array of integers has methods such as `Get(int)`, `Set(int, int)`, `Address(int)`, and a constructor - none of which appear in any assembly's metadata tables. Instead, these methods are synthesized by the type system.
 
 ## Type system class hierarchy
 
@@ -43,7 +45,9 @@ The classes that represent types within the type system are:
 
 Most of the classes in this hierarchy are not supposed to be derived by the type system user and many of them are sealed to prevent that.
 
-The classes that are extensible (and are actually abstract classes) are shown with dark background above. The concrete class should provide implementation of the abstract and virtual methods based on some logic, such as reading metadata from an ECMA-335 module file (the type system already provides such implementation of `MetadataType` in its `EcmaType`, for example). Ideally, the type system consumers should operate on the abstract classes and use the concrete class only when creating a new instance. Casting to the concrete implementation type such as `EcmaType` is discouraged.
+The classes that are extensible (and are actually abstract classes) are shown with dark background above. The concrete class should provide implementation of the abstract and virtual methods based on some logic, such as reading metadata from an ECMA-335 module file (the type system already provides such implementation of `MetadataType` in its derived `EcmaType`, for example).
+
+The type system is designed so that consumers work through the abstract types, which provide all the information needed regardless of whether the type came from an ECMA-335 module, was synthesized by the compiler, represents a generic instantiation, etc. Therefore, the type system consumers should ideally operate on the abstract classes and use the concrete class only when creating a new instance. Casting to the concrete implementation type such as `EcmaType` is discouraged.
 
 ## Type system classes
 
@@ -77,11 +81,17 @@ Note for readers familiar with the .NET reflection type system: while the .NET r
 
 Signature variables represent variables that can be substituted by other types within the system. They differ from generic parameters (because e.g. they don't have constraints or variance). They are simply placeholders to be replaced by other types as part of a process called instantiation. Signature variables have an index that refers to a position within the instantiation context.
 
+Consider a class `Foo<T>` that has a method `Bar<U>(T x, U y)`. When IL references this method in a signature, `T` becomes `!0` (a SignatureTypeVariable meaning "the first type argument of the declaring type") and `U` becomes `!!0` (a SignatureMethodVariable meaning "the first type argument of the declaring method").
+
 ## Other type system classes
 
 Each use of a type system starts with creating a type system context. A type system context represents a type universe across which all types share reference identity (two `TypeDesc` objects represent identical types if and only if they are the same object instance). Type system context is used to resolve all modules and constructed types within the universe. It's not legal to create new instances of constructed types outside of the type system context.
 
-Other important classes within the type system are a `MethodDesc` (represents a method within the type system) and `FieldDesc` (represents a field within the type system). A `ModuleDesc` describes a single module which can optionally implement `IAssemblyDesc` interface if the module is an assembly. `ModuleDesc` is typically the owner of the type/method/field definitions within the module. It's the responsibility of the `ModuleDesc` to maintain the reference identity of those.
+The type system contexts all share the same base (`TypeSystemContext`), but each configures different pluggable algorithms, loads assemblies differently, and may support different synthetic types. For example, the NativeAOT compiler context and the ReadyToRun (crossgen2) compiler context use different field layout algorithms to compensate for small differences such as whether the `MethodTable` pointer in `System.Object` is a regular pointer field (native AOT) or just "vacated pointer-sized space" (CoreCLR type system).
+
+Similar to `TypeDesc` hierarchy mentioned in some sections above, `MethodDesc` follows the same extensible hierarchy pattern and represents all methods in the type system. Some of its subclasses include `EcmaMethod` (methods that read from ECMA-335 metadata), `ArrayMethod` (synthesized array methods), `InstantiatedMethod` (generic method instantiations like `Foo.Bar<int>`), and `ILStubMethod` (compiler-generated stubs for scenarios like P/Invoke marshalling).
+
+A `ModuleDesc` describes a single module which can optionally implement `IAssemblyDesc` interface if the module is an assembly. `ModuleDesc` is typically the owner of the type/method/field definitions within the module. It's the responsibility of the `ModuleDesc` to maintain the reference identity of those.
 
 ## Pluggable algorithms
 
@@ -101,7 +111,7 @@ Exception throwing within the type system is wrapped in a `ThrowHelper` class. T
 
 The type system provides a default implementation of the `ThrowHelper` class that throws exceptions deriving from a `TypeSystemException` exception base class. This default implementation is suitable for use in non-runtime scenarios.
 
-The exception messages are assigned string IDs and get consumed by the throw helper as well. We require this indirection to support the compiler scenarios: when a type loading exception occurs during an AOT compilation, the AOT compiler has two tasks - emit a warning to warn the user that this occured, and potentially generate a method body that will throw this exception at runtime when the problematic type is accessed. The localization of the compiler might not match the localization of the class library the compiler output is linking against. Indirecting the actual exception message through the string ID lets us wrap this. The consumer of the type system may reuse the throw helper in places outside the type system where this functionality is needed.
+The exception messages are assigned string IDs and get consumed by the throw helper as well. We require this indirection to support the compiler scenarios: when a type loading exception occurs during an AOT compilation, the AOT compiler has two tasks - emit a warning to warn the user that this occurred, and potentially generate a method body that will throw this exception at runtime when the problematic type is accessed. The localization of the compiler might not match the localization of the class library the compiler output is linking against. Indirecting the actual exception message through the string ID lets us wrap this. The consumer of the type system may reuse the throw helper in places outside the type system where this functionality is needed.
 
 ## Physical architecture
 
@@ -112,4 +122,4 @@ The type system implementation is found in:
 
 ## Notable differences from CoreCLR type system
 
-* `MethodDesc` has exact generic instantations where possible in managed type system. The code sharing policy in managed type system is one of the pluggable algorithms and it does not affect `MethodDesc` identity. The code sharing policy in the CoreCLR type system is coupled with `MethodDesc` identity. See https://github.com/dotnet/runtime/pull/45744 for an example how this difference manifests itself.
+* `MethodDesc` has exact generic instantiations where possible in managed type system. The code sharing policy in managed type system is one of the pluggable algorithms and it does not affect `MethodDesc` identity. The code sharing policy in the CoreCLR type system is coupled with `MethodDesc` identity. See https://github.com/dotnet/runtime/pull/45744 for an example how this difference manifests itself.

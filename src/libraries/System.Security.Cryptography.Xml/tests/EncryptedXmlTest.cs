@@ -14,6 +14,7 @@ using System.IO;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Xml;
+using Microsoft.DotNet.RemoteExecutor;
 using Xunit;
 
 namespace System.Security.Cryptography.Xml.Tests
@@ -611,7 +612,7 @@ namespace System.Security.Cryptography.Xml.Tests
         [Fact]
         public void EncryptKey_RSA_UseOAEP()
         {
-            byte[] data = Encoding.ASCII.GetBytes("12345678");
+            byte[] data = "12345678"u8.ToArray();
             using (RSA rsa = RSA.Create())
             {
                 byte[] encryptedData = EncryptedXml.EncryptKey(data, rsa, true);
@@ -662,8 +663,27 @@ namespace System.Security.Cryptography.Xml.Tests
             }
         }
 
+#if NET
         [Fact]
-        public void DecryptData_CipherReference_IdUri()
+        public void DecryptData_CipherReference_IdUri_Default()
+        {
+            DecryptData_CipherReference_IdUri(allowDangerousTransform: false);
+        }
+
+        [ConditionalTheory(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void DecryptData_CipherReference_IdUri_AppContext(bool allowDangerousTransform)
+        {
+            RemoteExecutor.Invoke(static (string allowDangerousTransformString) =>
+            {
+                bool allowDangerousTransform = bool.Parse(allowDangerousTransformString);
+                AppContext.SetSwitch("System.Security.Cryptography.Xml.AllowDangerousEncryptedXmlTransforms", allowDangerousTransform);
+                DecryptData_CipherReference_IdUri(allowDangerousTransform);
+            }, allowDangerousTransform.ToString()).Dispose();
+        }
+
+        private static void DecryptData_CipherReference_IdUri(bool allowDangerousTransform)
         {
             XmlDocument doc = new XmlDocument();
             doc.PreserveWhitespace = true;
@@ -700,11 +720,20 @@ namespace System.Security.Cryptography.Xml.Tests
 
                 if (PlatformDetection.IsXmlDsigXsltTransformSupported)
                 {
-                    string decryptedXmlString = Encoding.UTF8.GetString(exml.DecryptData(ed, aes));
-                    Assert.Equal(xml, decryptedXmlString);
+                    if (!allowDangerousTransform)
+                    {
+                        CryptographicException ex = Assert.Throws<CryptographicException>(() => exml.DecryptData(ed, aes));
+                        Assert.Equal("The specified cryptographic transform is not supported.", ex.Message);
+                    }
+                    else
+                    {
+                        string decryptedXmlString = Encoding.UTF8.GetString(exml.DecryptData(ed, aes));
+                        Assert.Equal(xml, decryptedXmlString);
+                    }
                 }
             }
         }
+#endif
 
         [Fact]
         public void EncryptData_DataNull()
@@ -852,7 +881,7 @@ namespace System.Security.Cryptography.Xml.Tests
         {
             using (TripleDES tripleDES = TripleDES.Create())
             {
-                byte[] key = Encoding.ASCII.GetBytes("123456781234567812345678");
+                byte[] key = "123456781234567812345678"u8.ToArray();
 
                 byte[] encryptedKey = EncryptedXml.EncryptKey(key, tripleDES);
 
@@ -866,7 +895,7 @@ namespace System.Security.Cryptography.Xml.Tests
         {
             using (Aes aes = Aes.Create())
             {
-                byte[] key = Encoding.ASCII.GetBytes("123456781234567812345678");
+                byte[] key = "123456781234567812345678"u8.ToArray();
 
                 byte[] encryptedKey = EncryptedXml.EncryptKey(key, aes);
 
@@ -880,7 +909,7 @@ namespace System.Security.Cryptography.Xml.Tests
         {
             using (Aes aes = Aes.Create())
             {
-                byte[] key = Encoding.ASCII.GetBytes("12345678");
+                byte[] key = "12345678"u8.ToArray();
 
                 byte[] encryptedKey = EncryptedXml.EncryptKey(key, aes);
 
@@ -894,7 +923,7 @@ namespace System.Security.Cryptography.Xml.Tests
         {
             using (Aes aes = Aes.Create())
             {
-                byte[] key = Encoding.ASCII.GetBytes("1234567");
+                byte[] key = "1234567"u8.ToArray();
 
                 Assert.Throws<CryptographicException>(() => EncryptedXml.EncryptKey(key, aes));
             }
@@ -905,7 +934,7 @@ namespace System.Security.Cryptography.Xml.Tests
         {
             using (TripleDES tripleDES = TripleDES.Create())
             {
-                byte[] key = Encoding.ASCII.GetBytes("123");
+                byte[] key = "123"u8.ToArray();
 
                 Assert.Throws<CryptographicException>(() => EncryptedXml.DecryptKey(key, tripleDES));
             }
@@ -916,7 +945,7 @@ namespace System.Security.Cryptography.Xml.Tests
         {
             using (TripleDES tripleDES = TripleDES.Create())
             {
-                byte[] key = Encoding.ASCII.GetBytes("123456781234567812345678");
+                byte[] key = "123456781234567812345678"u8.ToArray();
 
                 byte[] encryptedKey = EncryptedXml.EncryptKey(key, tripleDES);
                 encryptedKey[0] ^= 0xFF;
@@ -930,7 +959,7 @@ namespace System.Security.Cryptography.Xml.Tests
         {
             using (Aes aes = Aes.Create())
             {
-                byte[] key = Encoding.ASCII.GetBytes("123");
+                byte[] key = "123"u8.ToArray();
 
                 Assert.Throws<CryptographicException>(() => EncryptedXml.DecryptKey(key, aes));
             }
@@ -941,7 +970,7 @@ namespace System.Security.Cryptography.Xml.Tests
         {
             using (Aes aes = Aes.Create())
             {
-                byte[] key = Encoding.ASCII.GetBytes("123456781234567812345678");
+                byte[] key = "123456781234567812345678"u8.ToArray();
 
                 byte[] encryptedKey = EncryptedXml.EncryptKey(key, aes);
                 encryptedKey[0] ^= 0xFF;
@@ -955,7 +984,7 @@ namespace System.Security.Cryptography.Xml.Tests
         {
             using (Aes aes = Aes.Create())
             {
-                byte[] key = Encoding.ASCII.GetBytes("12345678");
+                byte[] key = "12345678"u8.ToArray();
 
                 byte[] encryptedKey = EncryptedXml.EncryptKey(key, aes);
                 encryptedKey[0] ^= 0xFF;

@@ -15,15 +15,13 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
     {
         string _instructionSetsSupport;
 
-        public static string ToInstructionSetSupportString(InstructionSetSupport instructionSetSupport)
+        public static string ToInstructionSetSupportString(InstructionSetSupport instructionSetSupport, bool emitExplicitlyUnsupported = true)
         {
             StringBuilder builder = new StringBuilder();
             InstructionSet[] supportedInstructionSets = instructionSetSupport.SupportedFlags.ToArray();
             Array.Sort(supportedInstructionSets);
-            InstructionSet[] explicitlyUnsupportedInstructionSets = instructionSetSupport.ExplicitlyUnsupportedFlags.ToArray();
-            Array.Sort(explicitlyUnsupportedInstructionSets);
 
-            bool addDelimeter = false;
+            bool addDelimiter = false;
             var r2rAlreadyEmitted = new HashSet<ReadyToRunInstructionSet>();
             foreach (var instructionSetSupported in supportedInstructionSets)
             {
@@ -33,9 +31,9 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
                 if (r2rAlreadyEmitted.Add(r2rInstructionSet.Value))
                 {
-                    if (addDelimeter)
+                    if (addDelimiter)
                         builder.Append('+');
-                    addDelimeter = true;
+                    addDelimiter = true;
                     builder.Append(r2rInstructionSet.Value.ToString());
                 }
             }
@@ -43,19 +41,25 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             builder.Append(',');
             r2rAlreadyEmitted.Clear();
 
-            addDelimeter = false;
-            foreach (var instructionSetUnsupported in explicitlyUnsupportedInstructionSets)
+            if (emitExplicitlyUnsupported)
             {
-                var r2rInstructionSet = instructionSetUnsupported.R2RInstructionSet(instructionSetSupport.Architecture);
-                if (r2rInstructionSet == null)
-                    continue;
-                    
-                if (r2rAlreadyEmitted.Add(r2rInstructionSet.Value))
+                InstructionSet[] explicitlyUnsupportedInstructionSets = instructionSetSupport.ExplicitlyUnsupportedFlags.ToArray();
+                Array.Sort(explicitlyUnsupportedInstructionSets);
+
+                addDelimiter = false;
+                foreach (var instructionSetUnsupported in explicitlyUnsupportedInstructionSets)
                 {
-                    if (addDelimeter)
-                        builder.Append('-');
-                    addDelimeter = true;
-                    builder.Append(r2rInstructionSet.Value.ToString());
+                    var r2rInstructionSet = instructionSetUnsupported.R2RInstructionSet(instructionSetSupport.Architecture);
+                    if (r2rInstructionSet == null)
+                        continue;
+
+                    if (r2rAlreadyEmitted.Add(r2rInstructionSet.Value))
+                    {
+                        if (addDelimiter)
+                            builder.Append('-');
+                        addDelimiter = true;
+                        builder.Append(r2rInstructionSet.Value.ToString());
+                    }
                 }
             }
 
@@ -67,14 +71,14 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             _instructionSetsSupport = instructionSetsSupport;
         }
 
-        private ReadyToRunInstructionSet? InstructionSetFromString(string instructionSetString)
+        private ReadyToRunInstructionSet InstructionSetFromString(string instructionSetString)
         {
-            return (ReadyToRunInstructionSet)Enum.Parse(typeof(ReadyToRunInstructionSet), instructionSetString);
+            return Enum.Parse<ReadyToRunInstructionSet>(instructionSetString);
         }
 
         public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)
         {
-            ObjectDataSignatureBuilder builder = new ObjectDataSignatureBuilder();
+            ObjectDataSignatureBuilder builder = new ObjectDataSignatureBuilder(factory, relocsOnly);
             builder.AddSymbol(this);
 
             string[] supportedAndUnsupportedSplit = _instructionSetsSupport.Split(',');
@@ -107,13 +111,13 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         public override void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
         {
             sb.Append(nameMangler.CompilationUnitPrefix);
-            sb.Append("ReadyToRunInstructionSets_");
+            sb.Append("ReadyToRunInstructionSets_"u8);
             sb.Append(_instructionSetsSupport);
         }
 
         public override int CompareToImpl(ISortableNode other, CompilerComparer comparer)
         {
-            return _instructionSetsSupport.CompareTo(((ReadyToRunInstructionSetSupportSignature)other)._instructionSetsSupport);
+            return string.CompareOrdinal(_instructionSetsSupport, ((ReadyToRunInstructionSetSupportSignature)other)._instructionSetsSupport);
         }
     }
 }

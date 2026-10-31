@@ -3,11 +3,11 @@
 
 /*============================================================
 **
-** Source: test1.c 
+** Source: test1.c
 **
 ** Purpose: Test for ExitThread.  Create a thread and then call
 ** exit thread within the threading function.  Ensure that it exits
-** immediatly.
+** immediately.
 **
 **
 **=========================================================*/
@@ -15,6 +15,7 @@
 #include <palsuite.h>
 
 DWORD dwExitThreadTestParameter = 0;
+LONG completedThreadCount_ExitThread_test1 = 0;
 
 DWORD PALAPI ExitThreadTestThread( LPVOID lpParameter)
 {
@@ -22,11 +23,12 @@ DWORD PALAPI ExitThreadTestThread( LPVOID lpParameter)
 
     /* Save parameter for test */
     dwExitThreadTestParameter = (DWORD)(SIZE_T)lpParameter;
+    InterlockedIncrement(&completedThreadCount_ExitThread_test1);
 
     /* Call the ExitThread function */
     ExitThread(dwRet);
 
-    /* If we didn't exit, get caught in this loop.  But, the 
+    /* If we didn't exit, get caught in this loop.  But, the
        program will exit.
     */
     while (!dwRet)
@@ -42,10 +44,8 @@ DWORD PALAPI ExitThreadTestThread( LPVOID lpParameter)
 BOOL ExitThreadTest()
 {
     BOOL bRet = FALSE;
-    DWORD dwRet = 0;
-
     LPSECURITY_ATTRIBUTES lpThreadAttributes = NULL;
-    DWORD dwStackSize = 0; 
+    DWORD dwStackSize = 0;
     LPTHREAD_START_ROUTINE lpStartAddress =  &ExitThreadTestThread;
     LPVOID lpParameter = (LPVOID)lpStartAddress;
     DWORD dwCreationFlags = 0;  //run immediately
@@ -56,44 +56,37 @@ BOOL ExitThreadTest()
     dwExitThreadTestParameter = 0;
 
     /* Create a Thread.  We'll need this to test that we're able
-       to exit the thread.  
+       to exit the thread.
     */
-    hThread = CreateThread( lpThreadAttributes, 
-                            dwStackSize, lpStartAddress, lpParameter, 
-                            dwCreationFlags, &dwThreadId ); 
-        
-    if (hThread != INVALID_HANDLE_VALUE)
+    hThread = CreateThread( lpThreadAttributes,
+                            dwStackSize, lpStartAddress, lpParameter,
+                            dwCreationFlags, &dwThreadId );
+
+    if (hThread != NULL)
     {
-        dwRet = WaitForSingleObject(hThread,INFINITE);
-            
-        if (dwRet != WAIT_OBJECT_0)
+        WaitForThreadCompletion(&completedThreadCount_ExitThread_test1, 1);
+
+        /* Check to ensure that the parameter set in the Thread
+           function is correct.
+        */
+        if (dwExitThreadTestParameter != (DWORD)(SIZE_T)lpParameter)
         {
-            Trace("ExitThreadTest:WaitForSingleObject failed "
-                   "(%x)\n",GetLastError());
+            Trace("ERROR: The parameter passed should have been "
+                   "%d but turned up as %d.",
+                   dwExitThreadTestParameter, lpParameter);
         }
         else
         {
-            /* Check to ensure that the parameter set in the Thread
-               function is correct.
-            */
-            if (dwExitThreadTestParameter != (DWORD)(SIZE_T)lpParameter)
-            {
-                Trace("ERROR: The paramater passed should have been "
-                       "%d but turned up as %d.",
-                       dwExitThreadTestParameter, lpParameter);
-            }
-            else
-            {
-                bRet = TRUE;
-            }
+            bRet = TRUE;
         }
+        CloseHandle(hThread);
     }
     else
     {
         Trace("ExitThreadTest:CreateThread failed (%x)\n",GetLastError());
     }
 
-    return bRet; 
+    return bRet;
 }
 
 PALTEST(threading_ExitThread_test1_paltest_exitthread_test1, "threading/ExitThread/test1/paltest_exitthread_test1")
@@ -107,7 +100,7 @@ PALTEST(threading_ExitThread_test1_paltest_exitthread_test1, "threading/ExitThre
     {
         Fail ("Test failed\n");
     }
-    
+
     PAL_Terminate();
     return ( PASS );
 }

@@ -3,9 +3,6 @@
 
 /*
  * Wraps handle table to implement various handle types (Strong, Weak, etc.)
- *
-
- *
  */
 
 #ifndef _OBJECTHANDLE_H
@@ -63,7 +60,6 @@ void SetDependentHandleSecondary(OBJECTHANDLE handle, OBJECTREF secondary);
 
 #ifndef DACCESS_COMPILE
 uint32_t     GetVariableHandleType(OBJECTHANDLE handle);
-void         UpdateVariableHandleType(OBJECTHANDLE handle, uint32_t type);
 uint32_t     CompareExchangeVariableHandleType(OBJECTHANDLE handle, uint32_t oldType, uint32_t newType);
 
 /*
@@ -71,13 +67,16 @@ uint32_t     CompareExchangeVariableHandleType(OBJECTHANDLE handle, uint32_t old
  */
 
 int GetCurrentThreadHomeHeapNumber();
+gc_alloc_context* GetCurrentThreadAllocContext();
+
+// helper for getting the total number of handle table slots we can allocate in
+int getNumberOfSlots();
 
 /*
  * Table maintenance routines
  */
 bool Ref_Initialize();
 void Ref_Shutdown();
-bool Ref_InitializeHandleTableBucket(HandleTableBucket* bucket);
 void Ref_RemoveHandleTableBucket(HandleTableBucket *pBucket);
 void Ref_DestroyHandleTableBucket(HandleTableBucket *pBucket);
 
@@ -86,8 +85,6 @@ void Ref_DestroyHandleTableBucket(HandleTableBucket *pBucket);
  */
 struct ScanContext;
 struct DhContext;
-void Ref_BeginSynchronousGC   (uint32_t uCondemnedGeneration, uint32_t uMaxGeneration);
-void Ref_EndSynchronousGC     (uint32_t uCondemnedGeneration, uint32_t uMaxGeneration);
 
 typedef void Ref_promote_func(class Object**, ScanContext*, uint32_t);
 
@@ -100,17 +97,19 @@ DhContext *Ref_GetDependentHandleContext(ScanContext* sc);
 bool Ref_ScanDependentHandlesForPromotion(DhContext *pDhContext);
 void Ref_ScanDependentHandlesForClearing(uint32_t condemned, uint32_t maxgen, ScanContext* sc);
 void Ref_ScanDependentHandlesForRelocation(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Ref_promote_func* fn);
+void Ref_ScanWeakInteriorPointersForRelocation(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Ref_promote_func* fn);
 void Ref_ScanSizedRefHandles(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Ref_promote_func* fn);
-#ifdef FEATURE_REDHAWK
-void Ref_ScanPointers(uint32_t condemned, uint32_t maxgen, ScanContext* sc, Ref_promote_func* fn);
-#endif
+#ifdef FEATURE_JAVAMARSHAL
+uint8_t** Ref_ScanBridgeObjects(uint32_t condemned, uint32_t maxgen, ScanContext* sc, size_t* numObjs);
+void Ref_NullBridgeObjectsWeakRefs(size_t length, void* unreachableObjectHandles);
+#endif //FEATURE_JAVAMARSHAL
 
-void Ref_CheckReachable       (uint32_t uCondemnedGeneration, uint32_t uMaxGeneration, uintptr_t lp1);
-void Ref_CheckAlive           (uint32_t uCondemnedGeneration, uint32_t uMaxGeneration, uintptr_t lp1);
+void Ref_CheckReachable       (uint32_t uCondemnedGeneration, uint32_t uMaxGeneration, ScanContext* sc);
+void Ref_CheckAlive           (uint32_t uCondemnedGeneration, uint32_t uMaxGeneration, ScanContext *sc);
 void Ref_ScanHandlesForProfilerAndETW(uint32_t uMaxGeneration, uintptr_t lp1, handle_scan_fn fn);
 void Ref_ScanDependentHandlesForProfilerAndETW(uint32_t uMaxGeneration, ScanContext * SC, handle_scan_fn fn);
-void Ref_AgeHandles           (uint32_t uCondemnedGeneration, uint32_t uMaxGeneration, uintptr_t lp1);
-void Ref_RejuvenateHandles(uint32_t uCondemnedGeneration, uint32_t uMaxGeneration, uintptr_t lp1);
+void Ref_AgeHandles           (uint32_t uCondemnedGeneration, uint32_t uMaxGeneration, ScanContext *sc);
+void Ref_RejuvenateHandles(uint32_t uCondemnedGeneration, uint32_t uMaxGeneration, ScanContext *sc);
 
 void Ref_VerifyHandleTable(uint32_t condemned, uint32_t maxgen, ScanContext* sc);
 

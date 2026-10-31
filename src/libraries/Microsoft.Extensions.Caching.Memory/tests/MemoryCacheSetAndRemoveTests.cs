@@ -185,7 +185,7 @@ namespace Microsoft.Extensions.Caching.Memory
             Assert.False(cache.TryGetValue(key, out int obj));
 
             // verify that throwing an exception doesn't leak CacheEntry objects
-            Assert.Null(CacheEntryHelper.Current);
+            Assert.Null(CacheEntry.Current);
         }
 
         [Theory]
@@ -209,7 +209,7 @@ namespace Microsoft.Extensions.Caching.Memory
             Assert.False(cache.TryGetValue(key, out int obj));
 
             // verify that throwing an exception doesn't leak CacheEntry objects
-            Assert.Null(CacheEntryHelper.Current);
+            Assert.Null(CacheEntry.Current);
         }
 
         [Theory]
@@ -219,7 +219,10 @@ namespace Microsoft.Extensions.Caching.Memory
         {
             object GetScope(ICacheEntry entry)
             {
-                return entry.GetType()
+                // Use Type.GetType so that trimming can know what type we operate on
+                Type cacheEntryType = Type.GetType("Microsoft.Extensions.Caching.Memory.CacheEntry, Microsoft.Extensions.Caching.Memory");
+                Assert.Equal(cacheEntryType, entry.GetType());
+                return cacheEntryType
                     .GetField("_previous", BindingFlags.NonPublic | BindingFlags.Instance)
                     .GetValue(entry);
             }
@@ -285,7 +288,7 @@ namespace Microsoft.Extensions.Caching.Memory
             Assert.Equal(default, obj);
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public void SetOverwritesAndInvokesCallbacks()
         {
             var cache = CreateCache();
@@ -334,7 +337,7 @@ namespace Microsoft.Extensions.Caching.Memory
             Assert.False(callback2Invoked.WaitOne(TimeSpan.FromSeconds(1)), "Callback2");
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public void SetOverwritesWithReplacedReason()
         {
             var cache = CreateCache();
@@ -404,6 +407,29 @@ namespace Microsoft.Extensions.Caching.Memory
         }
 
         [Fact]
+        public void SetNullCallback_NotAllowed_ArgumentException()
+        {
+            var cache = CreateCache();
+            const string someKey = "test";
+            var entry = cache.CreateEntry(someKey);
+
+            var options = new MemoryCacheEntryOptions();
+
+            var notNullCallback = new PostEvictionCallbackRegistration()
+            {
+                EvictionCallback = (_, _, _, _) => {}
+            };
+
+            options.PostEvictionCallbacks.Add(notNullCallback);
+
+            var nullCallback = new PostEvictionCallbackRegistration();
+
+            options.PostEvictionCallbacks.Add(nullCallback);
+
+            Assert.Throws<ArgumentException>(() => entry.SetOptions(options));
+        }
+
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public void RemoveRemovesAndInvokesCallback()
         {
             var cache = CreateCache();
@@ -434,7 +460,7 @@ namespace Microsoft.Extensions.Caching.Memory
             Assert.Null(result);
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public void ClearClearsAndInvokesCallback()
         {
             var cache = (MemoryCache)CreateCache();
@@ -466,7 +492,7 @@ namespace Microsoft.Extensions.Caching.Memory
             Assert.Null(result);
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public void RemoveAndReAddFromCallbackWorks()
         {
             var cache = CreateCache();
@@ -542,185 +568,157 @@ namespace Microsoft.Extensions.Caching.Memory
             Assert.Null(result);
         }
 
-        [Fact]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/33993")]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public void GetAndSet_AreThreadSafe_AndUpdatesNeverLeavesNullValues()
         {
             var cache = CreateCache();
             string key = "myKey";
-            var cts = new CancellationTokenSource();
-            var readValueIsNull = false;
+            bool readValueIsNull = false;
 
             cache.Set(key, new Guid());
 
-            var task0 = Task.Run(() =>
-            {
-                while (!cts.IsCancellationRequested)
-                {
-                    cache.Set(key, Guid.NewGuid());
-                }
-            });
+            const int WriterCount = 2;
+            const int WriterIterations = 20_000;
+            int activeWriters = WriterCount;
+            using var barrier = new Barrier(WriterCount + 1);
 
-            var task1 = Task.Run(() =>
+            var workers = new Task[WriterCount + 1];
+            for (int i = 0; i < WriterCount; i++)
             {
-                while (!cts.IsCancellationRequested)
+                workers[i] = StartWorker(() =>
                 {
-                    cache.Set(key, Guid.NewGuid());
-                }
-            });
-
-            var task2 = Task.Run(() =>
-            {
-                while (!cts.IsCancellationRequested)
-                {
-                    if (cache.Get(key) == null)
+                    try
                     {
-                        // Stop this task and update flag for assertion
+                        barrier.SignalAndWait();
+                        for (int j = 0; j < WriterIterations; j++)
+                        {
+                            cache.Set(key, Guid.NewGuid());
+                        }
+                    }
+                    finally
+                    {
+                        Interlocked.Decrement(ref activeWriters);
+                    }
+                });
+            }
+
+            // The reader keeps polling for as long as any writer is still replacing the entry, so it
+            // covers the whole write window rather than a fixed number of iterations of its own.
+            workers[WriterCount] = StartWorker(() =>
+            {
+                barrier.SignalAndWait();
+                while (Volatile.Read(ref activeWriters) > 0)
+                {
+                    if (cache.Get(key) is null)
+                    {
                         readValueIsNull = true;
-                        break;
+                        return;
                     }
                 }
             });
 
-            var task3 = Task.Delay(TimeSpan.FromSeconds(7));
-
-            Task.WaitAny(task0, task1, task2, task3);
+            WaitForWorkers(workers);
 
             Assert.False(readValueIsNull);
-            Assert.Equal(TaskStatus.Running, task0.Status);
-            Assert.Equal(TaskStatus.Running, task1.Status);
-            Assert.Equal(TaskStatus.Running, task2.Status);
-            Assert.Equal(TaskStatus.RanToCompletion, task3.Status);
-
-            cts.Cancel();
-            Task.WaitAll(task0, task1, task2, task3);
         }
 
-        [Fact]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/33993")]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public void OvercapacityPurge_AreThreadSafe()
         {
-            var cache = new MemoryCache(new MemoryCacheOptions
+            const long SizeLimit = 10;
+            using var cache = new MemoryCache(new MemoryCacheOptions
             {
                 ExpirationScanFrequency = TimeSpan.Zero,
-                SizeLimit = 10,
+                SizeLimit = SizeLimit,
                 CompactionPercentage = 0.5
             });
-            var cts = new CancellationTokenSource();
-            var limitExceeded = false;
 
-            var task0 = Task.Run(() =>
+            const int WorkerCount = 3;
+            const int IterationsPerWorker = 10_000;
+            using var barrier = new Barrier(WorkerCount);
+            long sizeOverLimit = 0;
+
+            var workers = new Task[WorkerCount];
+            for (int i = 0; i < WorkerCount; i++)
             {
-                while (!cts.IsCancellationRequested)
+                workers[i] = StartWorker(() =>
                 {
-                    if (cache.Size > 10)
+                    barrier.SignalAndWait();
+                    for (int j = 0; j < IterationsPerWorker; j++)
                     {
-                        limitExceeded = true;
-                        break;
-                    }
-                    cache.Set(Guid.NewGuid(), Guid.NewGuid(), new MemoryCacheEntryOptions { Size = 1 });
-                }
-            }, cts.Token);
+                        long size = cache.Size;
+                        if (size > SizeLimit)
+                        {
+                            Interlocked.CompareExchange(ref sizeOverLimit, size, 0);
+                            return;
+                        }
 
-            var task1 = Task.Run(() =>
+                        cache.Set(Guid.NewGuid(), Guid.NewGuid(), new MemoryCacheEntryOptions { Size = 1 });
+                    }
+                });
+            }
+
+            WaitForWorkers(workers);
+
+            Assert.True(sizeOverLimit == 0, $"Cache size reached {sizeOverLimit}, above the limit of {SizeLimit}.");
+
+            // Overcapacity compaction is queued to the thread pool, so entries can still be evicted for a
+            // short while after the writers stop. Re-read both values on every attempt: capturing one of
+            // them up front compares a stale snapshot against a value a late compaction is still moving.
+            CapacityTests.AssertEventually(() =>
             {
-                while (!cts.IsCancellationRequested)
-                {
-                    if (cache.Size > 10)
-                    {
-                        limitExceeded = true;
-                        break;
-                    }
-                    cache.Set(Guid.NewGuid(), Guid.NewGuid(), new MemoryCacheEntryOptions { Size = 1 });
-                }
-            }, cts.Token);
-
-            var task2 = Task.Run(() =>
-            {
-                while (!cts.IsCancellationRequested)
-                {
-                    if (cache.Size > 10)
-                    {
-                        limitExceeded = true;
-                        break;
-                    }
-                    cache.Set(Guid.NewGuid(), Guid.NewGuid(), new MemoryCacheEntryOptions { Size = 1 });
-                }
-            }, cts.Token);
-
-            cts.CancelAfter(TimeSpan.FromSeconds(5));
-            var task3 = Task.Delay(TimeSpan.FromSeconds(7));
-
-            Task.WaitAll(task0, task1, task2, task3);
-
-            Assert.Equal(TaskStatus.RanToCompletion, task0.Status);
-            Assert.Equal(TaskStatus.RanToCompletion, task1.Status);
-            Assert.Equal(TaskStatus.RanToCompletion, task2.Status);
-            Assert.Equal(TaskStatus.RanToCompletion, task3.Status);
-            Assert.Equal(cache.Count, cache.Size);
-            Assert.InRange(cache.Count, 0, 10);
-            Assert.False(limitExceeded);
+                long count = cache.Count;
+                Assert.Equal(count, cache.Size);
+                Assert.InRange(count, 0L, SizeLimit);
+            });
         }
 
-        [Fact]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/33993")]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         public void AddAndReplaceEntries_AreThreadSafe()
         {
-            var cache = new MemoryCache(new MemoryCacheOptions
+            const int KeyCount = 10;
+            using var cache = new MemoryCache(new MemoryCacheOptions
             {
                 ExpirationScanFrequency = TimeSpan.Zero,
                 SizeLimit = 20,
                 CompactionPercentage = 0.5
             });
-            var cts = new CancellationTokenSource();
 
-            var random = new Random();
+            const int WorkerCount = 3;
+            const int IterationsPerWorker = 10_000;
+            using var barrier = new Barrier(WorkerCount);
 
-            var task0 = Task.Run(() =>
+            var workers = new Task[WorkerCount];
+            for (int i = 0; i < WorkerCount; i++)
             {
-                while (!cts.IsCancellationRequested)
+                // Random is not thread safe, so every worker gets its own seeded instance.
+                var random = new Random(i);
+                workers[i] = StartWorker(() =>
                 {
-                    var entrySize = random.Next(0, 5);
-                    cache.Set(random.Next(0, 10), entrySize, new MemoryCacheEntryOptions { Size = entrySize });
-                }
-            });
-
-            var task1 = Task.Run(() =>
-            {
-                while (!cts.IsCancellationRequested)
-                {
-                    var entrySize = random.Next(0, 5);
-                    cache.Set(random.Next(0, 10), entrySize, new MemoryCacheEntryOptions { Size = entrySize });
-                }
-            });
-
-            var task2 = Task.Run(() =>
-            {
-                while (!cts.IsCancellationRequested)
-                {
-                    var entrySize = random.Next(0, 5);
-                    cache.Set(random.Next(0, 10), entrySize, new MemoryCacheEntryOptions { Size = entrySize });
-                }
-            });
-
-            cts.CancelAfter(TimeSpan.FromSeconds(5));
-            var task3 = Task.Delay(TimeSpan.FromSeconds(7));
-
-            Task.WaitAll(task0, task1, task2, task3);
-
-            Assert.Equal(TaskStatus.RanToCompletion, task0.Status);
-            Assert.Equal(TaskStatus.RanToCompletion, task1.Status);
-            Assert.Equal(TaskStatus.RanToCompletion, task2.Status);
-            Assert.Equal(TaskStatus.RanToCompletion, task3.Status);
-
-            var cacheSize = 0;
-            for (var i = 0; i < 10; i++)
-            {
-                cacheSize += cache.Get<int>(i);
+                    barrier.SignalAndWait();
+                    for (int j = 0; j < IterationsPerWorker; j++)
+                    {
+                        int entrySize = random.Next(0, 5);
+                        cache.Set(random.Next(0, KeyCount), entrySize, new MemoryCacheEntryOptions { Size = entrySize });
+                    }
+                });
             }
 
-            Assert.Equal(cacheSize, cache.Size);
-            Assert.InRange(cache.Count, 0, 20);
+            WaitForWorkers(workers);
+
+            // Each entry stores its own size as its value, so the sum over every possible key is the size
+            // the cache should be tracking. See OvercapacityPurge_AreThreadSafe for why this is retried.
+            CapacityTests.AssertEventually(() =>
+            {
+                long expectedSize = 0;
+                for (int i = 0; i < KeyCount; i++)
+                {
+                    expectedSize += cache.Get<int>(i);
+                }
+
+                Assert.Equal(expectedSize, cache.Size);
+                Assert.InRange(cache.Count, 0, KeyCount);
+            });
         }
 
         [Fact]
@@ -766,6 +764,95 @@ namespace Microsoft.Extensions.Caching.Memory
             var cache = CreateCache();
             await Assert.ThrowsAsync<ArgumentNullException>(async () => await cache.GetOrCreateAsync<object>(null, null));
         }
+
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
+        public void GetOrCreateWithCacheEntryOptions()
+        {
+            var cacheKey = "test";
+            var cache = CreateCache();
+            ManualResetEvent mre = new ManualResetEvent(false);
+
+            var options = new MemoryCacheEntryOptions();
+            options.PostEvictionCallbacks.Add(new PostEvictionCallbackRegistration()
+            {
+                EvictionCallback = (key, value, reason, state) =>
+                {
+                    Assert.Equal(cacheKey, key);
+                    Assert.Equal(cacheKey, value);
+                    Assert.Equal(EvictionReason.Removed, reason);
+                    mre.Set();
+                }
+            });
+
+            var value = cache.GetOrCreate<string>(cacheKey, _ => cacheKey, options);
+            Assert.Equal(cacheKey, value);
+            Assert.True(cache.TryGetValue(cacheKey, out _));
+
+            cache.Remove(cacheKey);
+            Assert.True(mre.WaitOne(TimeSpan.FromSeconds(30)));
+            Assert.False(cache.TryGetValue(cacheKey, out _));
+        }
+
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
+        public async Task GetOrCreateAsyncWithCacheEntryOptions()
+        {
+            var cacheKey = "test";
+            var cache = CreateCache();
+            ManualResetEvent mre = new ManualResetEvent(false);
+
+            var options = new MemoryCacheEntryOptions();
+            options.PostEvictionCallbacks.Add(new PostEvictionCallbackRegistration()
+            {
+                EvictionCallback = (key, value, reason, state) =>
+                {
+                    Assert.Equal(cacheKey, key);
+                    Assert.Equal(cacheKey, value);
+                    Assert.Equal(EvictionReason.Removed, reason);
+                    mre.Set();
+                }
+            });
+
+            var value = await cache.GetOrCreateAsync<string>(cacheKey, _ => Task.FromResult(cacheKey), options);
+            Assert.Equal(cacheKey, value);
+            Assert.True(cache.TryGetValue(cacheKey, out _));
+
+            cache.Remove(cacheKey);
+            Assert.True(mre.WaitOne(TimeSpan.FromSeconds(30)));
+            Assert.False(cache.TryGetValue(cacheKey, out _));
+        }
+
+        [Fact]
+        public void MixedKeysUsage()
+        {
+            // keys are split internally into 2 separate chunks
+            var cache = CreateCache();
+            var typed = Assert.IsType<MemoryCache>(cache);
+            object key0 = 123.45M, key1 = "123.45";
+            cache.Set(key0, "string value");
+            cache.Set(key1, "decimal value");
+
+            Assert.Equal(2, typed.Count);
+            Assert.Equal("string value", cache.Get(key0));
+            Assert.Equal("decimal value", cache.Get(key1));
+        }
+
+        /// <summary>
+        /// Runs <paramref name="work"/> on a dedicated thread rather than a thread pool thread. The
+        /// concurrency tests above hammer the cache for their whole run without ever yielding, so leaving
+        /// them on the pool would delay the cache's own background work (overcapacity compaction, expired
+        /// item scans) and the sibling test collections xunit runs in parallel. Note this frees pool
+        /// threads, not cores, so the workers still compete for CPU with whatever runs alongside them.
+        /// </summary>
+        private static Task StartWorker(Action work) =>
+            Task.Factory.StartNew(work, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+
+        /// <summary>
+        /// Waits for the workers, failing rather than hanging if they do not finish. Those tests exist to
+        /// catch deadlocks and livelocks in <see cref="MemoryCache"/>, so an unbounded wait would turn the
+        /// very bug they hunt into an unattributable CI job timeout instead of a test failure.
+        /// </summary>
+        private static void WaitForWorkers(Task[] workers) =>
+            Assert.True(Task.WaitAll(workers, TimeSpan.FromMinutes(2)), "Cache workers did not complete.");
 
         private class TestKey
         {

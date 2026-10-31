@@ -47,11 +47,11 @@ public:
 
     //------------------------------------------------------------------------
     inline BOOL IsNull()
-    { LIMITED_METHOD_CONTRACT; return (m_slot == NULL); }
+    { LIMITED_METHOD_CONTRACT; return (m_slot == 0); }
 
     //------------------------------------------------------------------------
     inline void SetNull()
-    { LIMITED_METHOD_CONTRACT; m_slot = NULL; }
+    { LIMITED_METHOD_CONTRACT; m_slot = 0; }
 
     //------------------------------------------------------------------------
     inline PCODE GetTarget()
@@ -120,7 +120,6 @@ public:
 struct DispatchTokenFat
 {
     friend struct DispatchToken;
-    friend class BaseDomain;
 
   private:
     UINT32 m_typeId;
@@ -155,35 +154,64 @@ private:
     // IMPORTANT: This is the ONLY member of this class.
     UINT_PTR     m_token;
 
-#ifndef HOST_64BIT
+#ifndef TARGET_64BIT
     // NOTE: On 32-bit, we use the uppermost bit to indicate that the
     // token is really a DispatchTokenFat*, and to recover the pointer
     // we just shift left by 1; correspondingly, when storing a
     // DispatchTokenFat* in a DispatchToken, we shift right by 1.
+#ifdef FEATURE_CACHED_INTERFACE_DISPATCH
+    static const UINT_PTR MASK_TYPE_ID       = 0x00003FFF;
+#else // FEATURE_CACHED_INTERFACE_DISPATCH
     static const UINT_PTR MASK_TYPE_ID       = 0x00007FFF;
+#endif // FEATURE_CACHED_INTERFACE_DISPATCH
     static const UINT_PTR MASK_SLOT_NUMBER   = 0x0000FFFF;
 
     static const UINT_PTR SHIFT_TYPE_ID      = 0x10;
     static const UINT_PTR SHIFT_SLOT_NUMBER  = 0x0;
 
 #ifdef FAT_DISPATCH_TOKENS
+#ifdef FEATURE_CACHED_INTERFACE_DISPATCH
+    static const UINT_PTR FAT_TOKEN_FLAG     = 0x40000000;
+#else
     static const UINT_PTR FAT_TOKEN_FLAG     = 0x80000000;
+#endif //FEATURE_CACHED_INTERFACE_DISPATCH
 #endif // FAT_DISPATCH_TOKENS
 
+#ifdef FEATURE_CACHED_INTERFACE_DISPATCH
+    static const UINT_PTR INVALID_TOKEN      = 0x3FFFFFFF;
+#else // FEATURE_CACHED_INTERFACE_DISPATCH
     static const UINT_PTR INVALID_TOKEN      = 0x7FFFFFFF;
-#else //HOST_64BIT
-    static const UINT_PTR MASK_TYPE_ID       = UI64(0x000000007FFFFFFF);
-    static const UINT_PTR MASK_SLOT_NUMBER   = UI64(0x000000000000FFFF);
+#endif // FEATURE_CACHED_INTERFACE_DISPATCH
+#else //TARGET_64BIT
+    static const UINT_PTR MASK_SLOT_NUMBER   = 0x000000000000FFFFULL;
 
     static const UINT_PTR SHIFT_TYPE_ID      = 0x20;
     static const UINT_PTR SHIFT_SLOT_NUMBER  = 0x0;
 
+#ifdef FEATURE_CACHED_INTERFACE_DISPATCH
 #ifdef FAT_DISPATCH_TOKENS
-    static const UINT_PTR FAT_TOKEN_FLAG     = UI64(0x8000000000000000);
+    static const UINT_PTR MASK_TYPE_ID       = 0x000000003FFFFFFFULL;
+    static const UINT_PTR FAT_TOKEN_FLAG     = 0x4000000000000000ULL;
+    static const UINT_PTR DISPATCH_TOKEN_FLAG= 0x8000000000000000ULL;
+#else
+    static const UINT_PTR MASK_TYPE_ID       = 0x000000007FFFFFFFULL;
+    static const UINT_PTR DISPATCH_TOKEN_FLAG= 0x8000000000000000ULL;
 #endif // FAT_DISPATCH_TOKENS
+#else // FEATURE_CACHED_INTERFACE_DISPATCH
+#ifdef FAT_DISPATCH_TOKENS
+    static const UINT_PTR MASK_TYPE_ID       = 0x000000007FFFFFFFULL;
+    static const UINT_PTR FAT_TOKEN_FLAG     = 0x8000000000000000ULL;
+#else
+    static const UINT_PTR MASK_TYPE_ID       = 0x00000000FFFFFFFFULL;
+#endif // FAT_DISPATCH_TOKENS
+#endif // FEATURE_CACHED_INTERFACE_DISPATCH
 
+#ifdef FEATURE_CACHED_INTERFACE_DISPATCH
+    static const UINT_PTR INVALID_TOKEN      = 0x3FFFFFFFFFFFFFFF;
+#else // FEATURE_CACHED_INTERFACE_DISPATCH
     static const UINT_PTR INVALID_TOKEN      = 0x7FFFFFFFFFFFFFFF;
-#endif //HOST_64BIT
+#endif // FEATURE_CACHED_INTERFACE_DISPATCH
+#endif //TARGET_64BIT
 
 #ifdef FAT_DISPATCH_TOKENS
     //------------------------------------------------------------------------
@@ -241,12 +269,26 @@ private:
 public:
 
 #ifdef FAT_DISPATCH_TOKENS
-#if !defined(HOST_64BIT)
-    static const UINT32   MAX_TYPE_ID_SMALL  = 0x00007FFF;
-#else
-    static const UINT32   MAX_TYPE_ID_SMALL  = 0x7FFFFFFF;
-#endif
+    static const UINT32   MAX_TYPE_ID_SMALL  = MASK_TYPE_ID;
 #endif // FAT_DISPATCH_TOKENS
+
+#ifdef FEATURE_CACHED_INTERFACE_DISPATCH
+    //------------------------------------------------------------------------
+    // A Cached Interface DispatchToken uses the low bit to indicate that it is a dispatch token, and not a cache entry
+    static inline BOOL IsCachedInterfaceDispatchToken(UINT_PTR maybeToken)
+    {
+        return maybeToken & 0x1;
+    }
+    static inline DispatchToken FromCachedInterfaceDispatchToken(UINT_PTR token)
+    {
+        return DispatchToken(token >> 1);
+    }
+    static inline UINT_PTR ToCachedInterfaceDispatchToken(DispatchToken token)
+    {
+        return (token.m_token << 1) | 0x1;
+    }
+#endif
+
 
     //------------------------------------------------------------------------
     DispatchToken()
@@ -275,7 +317,8 @@ public:
     {
         LIMITED_METHOD_CONTRACT;
         return typeID > MAX_TYPE_ID_SMALL
-#ifdef _DEBUG
+// WASM-TODO: fix fat tokens
+#if defined(_DEBUG) && !defined(TARGET_WASM)
             // Stress the overflow mechanism in debug builds.
             || ((typeID != TYPE_ID_THIS_CLASS) && ((typeID % 7) < 4))
 #endif
@@ -350,7 +393,7 @@ public:
     SIZE_T To_SIZE_T() const
     {
         WRAPPER_NO_CONTRACT;
-        static_assert_no_msg(sizeof(SIZE_T) == sizeof(UINT_PTR));
+        static_assert(sizeof(SIZE_T) == sizeof(UINT_PTR));
         return (SIZE_T) m_token;
     }
 
@@ -360,18 +403,23 @@ public:
         LIMITED_METHOD_CONTRACT;
         return !(m_token == INVALID_TOKEN);
     }
+
+    //------------------------------------------------------------------------
+    // Returns a hash of the token suitable for use in dispatch caches.
+    UINT16 GetHash() const;
 };  // struct DispatchToken
 
 // DispatchToken.m_token should be the only field of DispatchToken.
-static_assert_no_msg(sizeof(DispatchToken) == sizeof(UINT_PTR));
+static_assert(sizeof(DispatchToken) == sizeof(UINT_PTR));
 
 // ===========================================================================
 class TypeIDProvider
 {
 protected:
     UINT32 m_nextID;
-    UINT32 m_incSize;
+#ifdef FAT_DISPATCH_TOKENS
     UINT32 m_nextFatID;
+#endif
 
 public:
     // This is used for an invalid type ID.
@@ -383,46 +431,32 @@ public:
     //------------------------------------------------------------------------
     // Ctor
     TypeIDProvider()
-        : m_nextID(0), m_incSize(0), m_nextFatID(0)
+        : m_nextID(2)
+#ifdef FAT_DISPATCH_TOKENS
+        , m_nextFatID(DispatchToken::MAX_TYPE_ID_SMALL + 1)
+#endif
     { LIMITED_METHOD_CONTRACT; }
-
-
-    //------------------------------------------------------------------------
-    void Init(UINT32 idStartValue, UINT32 idIncrementValue)
-    {
-        LIMITED_METHOD_CONTRACT;
-        m_nextID = idStartValue;
-        m_incSize = idIncrementValue;
-        m_nextFatID = DispatchToken::MAX_TYPE_ID_SMALL + 1;
-        if (m_incSize != 0)
-        {
-            while (!OwnsID(m_nextFatID))
-            {
-                m_nextFatID++;
-            }
-        }
-    }
 
     //------------------------------------------------------------------------
     // Returns the next available ID
-    inline UINT32 GetNextID()
+    inline UINT32 GetNextID(bool useFatPointerDispatch)
     {
         CONTRACTL {
             THROWS;
             GC_NOTRIGGER;
             MODE_ANY;
-            INJECT_FAULT(COMPlusThrowOM());
             PRECONDITION(m_nextID != 0);
-            PRECONDITION(m_incSize != 0);
         } CONTRACTL_END;
         UINT32 id = m_nextID;
 
-        if (id > DispatchToken::MAX_TYPE_ID_SMALL)
+#ifdef FAT_DISPATCH_TOKENS
+        if (useFatPointerDispatch && (id > DispatchToken::MAX_TYPE_ID_SMALL))
         {
             return GetNextFatID();
         }
+#endif // FAT_DISPATCH_TOKENS
 
-        if (!ClrSafeInt<UINT32>::addition(m_nextID, m_incSize, m_nextID) ||
+        if (!ClrSafeInt<UINT32>::addition(m_nextID, 1, m_nextID) ||
             m_nextID == INVALID_TYPE_ID)
         {
             ThrowOutOfMemory();
@@ -430,6 +464,7 @@ public:
         return id;
     }
 
+#ifdef FAT_DISPATCH_TOKENS
     //------------------------------------------------------------------------
     // Returns the next available ID
     inline UINT32 GetNextFatID()
@@ -438,25 +473,17 @@ public:
             THROWS;
             GC_NOTRIGGER;
             MODE_ANY;
-            INJECT_FAULT(COMPlusThrowOM());
             PRECONDITION(m_nextFatID != 0);
-            PRECONDITION(m_incSize != 0);
         } CONTRACTL_END;
         UINT32 id = m_nextFatID;
-        if (!ClrSafeInt<UINT32>::addition(m_nextFatID, m_incSize, m_nextFatID) ||
+        if (!ClrSafeInt<UINT32>::addition(m_nextFatID, 1, m_nextFatID) ||
             m_nextID == INVALID_TYPE_ID)
         {
             ThrowOutOfMemory();
         }
         return id;
     }
-
-    //------------------------------------------------------------------------
-    inline BOOL OwnsID(UINT32 id)
-    {
-        LIMITED_METHOD_CONTRACT;
-        return ((id % m_incSize) == (m_nextID % m_incSize));
-    }
+#endif // FAT_DISPATCH_TOKENS
 };  // class TypeIDProvider
 
 // ===========================================================================
@@ -471,36 +498,18 @@ protected:
 
     //------------------------------------------------------------------------
     // Returns the next available ID
-    inline UINT32 GetNextID()
+    inline UINT32 GetNextID(bool useFatPointerDispatch)
     {
         WRAPPER_NO_CONTRACT;
         CONSISTENCY_CHECK(m_lock.OwnedByCurrentThread());
-        UINT32 id = m_idProvider.GetNextID();
-        CONSISTENCY_CHECK(id != TYPE_ID_THIS_CLASS);
-        return id;
-    }
-
-    //------------------------------------------------------------------------
-    // Returns the next available FAT ID
-    inline UINT32 GetNextFatID()
-    {
-        WRAPPER_NO_CONTRACT;
-        CONSISTENCY_CHECK(m_lock.OwnedByCurrentThread());
-        UINT32 id = m_idProvider.GetNextFatID();
+        UINT32 id = m_idProvider.GetNextID(useFatPointerDispatch);
         CONSISTENCY_CHECK(id != TYPE_ID_THIS_CLASS);
         return id;
     }
 
 public:
-    // Starting values for shared and unshared domains
-    enum
-    {
-        STARTING_SHARED_DOMAIN_ID = 0x2,
-        STARTING_UNSHARED_DOMAIN_ID = 0x3,
-    };
-
     //------------------------------------------------------------------------
-    void Init(UINT32 idStartValue, UINT32 idIncrementValue);
+    void Init();
 
     //------------------------------------------------------------------------
     // Ctor
@@ -508,7 +517,7 @@ public:
         : m_lock(CrstTypeIDMap, CrstFlags(CRST_REENTRANCY))
     {
         WRAPPER_NO_CONTRACT;
-        static_assert_no_msg(TypeIDProvider::INVALID_TYPE_ID == static_cast<UINT32>(INVALIDENTRY));
+        static_assert(TypeIDProvider::INVALID_TYPE_ID == static_cast<UINT32>(INVALIDENTRY));
     }
 
     //------------------------------------------------------------------------
@@ -527,7 +536,7 @@ public:
     //------------------------------------------------------------------------
     // Returns the ID of the type if found. If not found, assigns the ID and
     // returns the new ID.
-    UINT32 GetTypeID(PTR_MethodTable pMT);
+    UINT32 GetTypeID(PTR_MethodTable pMT, bool useFatPointerDispatch);
 
 #ifndef DACCESS_COMPILE
     //------------------------------------------------------------------------
@@ -538,18 +547,6 @@ public:
     //------------------------------------------------------------------------
     inline UINT32 GetCount()
         { LIMITED_METHOD_CONTRACT; return m_entryCount; }
-
-    //------------------------------------------------------------------------
-    void Clear()
-    {
-        CONTRACTL {
-            NOTHROW;
-            GC_NOTRIGGER;
-        } CONTRACTL_END;
-        m_idMap.Clear();
-        m_mtMap.Clear();
-        m_idProvider.Init(0, 0);
-    }
 
     //------------------------------------------------------------------------
     class Iterator
@@ -883,6 +880,38 @@ protected:
     static const INT32 ENCODING_TARGET_SLOT_DELTA = 1;
 
 public:
+    // Class MethodImpl aliases precede the ordinary interface-dispatch encoding.
+    // Keeping slots rather than MethodDesc pointers makes this reusable across instantiations.
+    class ClassSlotIterator
+    {
+        Decoder m_decoder;
+        UINT32 m_remaining;
+
+    public:
+        ClassSlotIterator(DispatchMap* pMap)
+            : m_remaining(0)
+        {
+            LIMITED_METHOD_DAC_CONTRACT;
+            if (pMap != nullptr)
+            {
+                m_decoder.Init(pMap->GetEncodedMapData());
+                if ((m_decoder.Next() & 1) != 0)
+                    m_remaining = m_decoder.Next();
+            }
+        }
+
+        bool Next(UINT32* pSource, UINT32* pTarget)
+        {
+            LIMITED_METHOD_DAC_CONTRACT;
+            if (m_remaining == 0)
+                return false;
+            *pSource = m_decoder.Next();
+            *pTarget = m_decoder.Next();
+            m_remaining--;
+            return true;
+        }
+    };
+
     //------------------------------------------------------------------------
     // Need to make sure that you allocate GetObjectSize(pMap) bytes for any
     // instance of DispatchMap, as this constructor assumes that m_rgMap is
@@ -893,7 +922,6 @@ public:
 
     //------------------------------------------------------------------------
     static void CreateEncodedMapping(
-        MethodTable *        pMT,
         DispatchMapBuilder * pMapBuilder,
         StackingAllocator *  pAllocator,
         BYTE **              ppbMap,
@@ -908,6 +936,16 @@ public:
 
     //------------------------------------------------------------------------
     UINT32 GetMapSize();
+
+    //------------------------------------------------------------------------
+    // Returns a pointer to the raw encoded mapping bytes. Used when reusing the
+    // encoded dispatch map of a generic type's typical instantiation for its
+    // non-typical instantiations (the encoding is instantiation-independent).
+    PTR_BYTE GetEncodedMapData()
+    {
+        LIMITED_METHOD_DAC_CONTRACT;
+        return dac_cast<PTR_BYTE>(PTR_HOST_MEMBER_TADDR(DispatchMap, this, m_rgMap));
+    }
 
 #ifdef DACCESS_COMPILE
     void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);

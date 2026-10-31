@@ -15,22 +15,9 @@
 #ifndef _COMSYNCHRONIZABLE_H
 #define _COMSYNCHRONIZABLE_H
 
-#include "field.h"          // For FieldDesc definition.
-
-//
-// Each function that we call through native only gets one argument,
-// which is actually a pointer to its stack of arguments.  Our structs
-// for accessing these are defined below.
-//
-
-struct SharedState;
-
 class ThreadNative
 {
-friend class ThreadBaseObject;
-
 public:
-
     enum
     {
         PRIORITY_LOWEST = 0,
@@ -52,66 +39,47 @@ public:
         ThreadAbortRequested = 128,
     };
 
-    enum
-    {
-        ApartmentSTA = 0,
-        ApartmentMTA = 1,
-        ApartmentUnknown = 2
-    };
-
-    static FCDECL1(INT32,   GetPriority,       ThreadBaseObject* pThisUNSAFE);
-    static FCDECL2(void,    SetPriority,       ThreadBaseObject* pThisUNSAFE, INT32 iPriority);
-    static FCDECL1(void,    Interrupt,         ThreadBaseObject* pThisUNSAFE);
-    static FCDECL1(FC_BOOL_RET, IsAlive,       ThreadBaseObject* pThisUNSAFE);
-    static FCDECL2(FC_BOOL_RET, Join,          ThreadBaseObject* pThisUNSAFE, INT32 Timeout);
-#undef Sleep
-    static FCDECL1(void,    Sleep,             INT32 iTime);
-#define Sleep(a) Dont_Use_Sleep(a)
-    static FCDECL1(void,    Initialize,        ThreadBaseObject* pThisUNSAFE);
-    static FCDECL2(void,    SetBackground,     ThreadBaseObject* pThisUNSAFE, CLR_BOOL isBackground);
-    static FCDECL1(FC_BOOL_RET, IsBackground,  ThreadBaseObject* pThisUNSAFE);
-    static FCDECL1(INT32,   GetThreadState,    ThreadBaseObject* pThisUNSAFE);
-    static FCDECL1(INT32,   GetThreadContext,  ThreadBaseObject* pThisUNSAFE);
-#ifdef FEATURE_COMINTEROP_APARTMENT_SUPPORT
-    static FCDECL1(INT32,   GetApartmentState, ThreadBaseObject* pThis);
-    static FCDECL2(INT32,   SetApartmentState, ThreadBaseObject* pThisUNSAFE, INT32 iState);
-#endif // FEATURE_COMINTEROP_APARTMENT_SUPPORT
-
-
-    static FCDECL1(INT32,   GetManagedThreadId, ThreadBaseObject* th);
-    static FCDECL0(INT32,   GetOptimalMaxSpinWaitsPerSpinIteration);
-    static FCDECL1(void,    SpinWait,                       int iterations);
-    static FCDECL0(Object*, GetCurrentThread);
-    static FCDECL1(void,    Finalize,                       ThreadBaseObject* pThis);
-#ifdef FEATURE_COMINTEROP
-    static FCDECL1(void,    DisableComObjectEagerCleanup,   ThreadBaseObject* pThis);
-#endif //FEATURE_COMINTEROP
-    static FCDECL1(FC_BOOL_RET,IsThreadpoolThread,          ThreadBaseObject* thread);
-    static FCDECL1(void,    SetIsThreadpoolThread,          ThreadBaseObject* thread);
-
-    static FCDECL0(INT32,   GetCurrentProcessorNumber);
-
-    static void Start(Thread* pNewThread, int threadStackSize, int priority, PCWSTR pThreadName);
-    static void InformThreadNameChange(Thread* pThread, LPCWSTR name, INT32 len);
-private:
-
-    struct KickOffThread_Args {
-        Thread *pThread;
-        SharedState *share;
-        ULONG retVal;
-    };
-
-    static void KickOffThread_Worker(LPVOID /* KickOffThread_Args* */);
-    static ULONG WINAPI KickOffThread(void *pass);
-    static BOOL DoJoin(THREADBASEREF DyingThread, INT32 timeout);
+#ifdef FEATURE_MULTITHREADING
+    FCDECL1(static void,        Finalize, ThreadBaseObject* pThis);
+    FCDECL0(static FC_BOOL_RET, CatchAtSafePoint);
+    FCDECL0(static FC_BOOL_RET, CurrentThreadIsFinalizerThread);
+#endif // FEATURE_MULTITHREADING
 };
 
-extern "C" void QCALLTYPE ThreadNative_Start(QCall::ThreadHandle thread, int threadStackSize, int priority, PCWSTR pThreadName);
-extern "C" void QCALLTYPE ThreadNative_UninterruptibleSleep0();
-extern "C" void QCALLTYPE ThreadNative_InformThreadNameChange(QCall::ThreadHandle thread, LPCWSTR name, INT32 len);
-extern "C" UINT64 QCALLTYPE ThreadNative_GetProcessDefaultStackSize();
-extern "C" BOOL QCALLTYPE ThreadNative_YieldThread();
-extern "C" UINT64 QCALLTYPE ThreadNative_GetCurrentOSThreadId();
+extern "C" void QCALLTYPE ThreadNative_GetQCallSpecialException(INT_PTR status, QCall::ObjectHandleOnStack exception, QCallExceptionStatus* qcallError);
+#ifdef FEATURE_MULTITHREADING
+extern "C" BOOL QCALLTYPE ThreadNative_Start(QCall::ThreadHandle thread, int threadStackSize, int priority, BOOL isThreadPool, PCWSTR pThreadName, QCall::ObjectHandleOnStack exception, QCallExceptionStatus* qcallError);
+extern "C" void QCALLTYPE ThreadNative_SetPriority(QCall::ObjectHandleOnStack thread, INT32 iPriority, QCallExceptionStatus* qcallError);
+extern "C" void QCALLTYPE ThreadNative_GetCurrentThread(QCall::ObjectHandleOnStack thread, QCallExceptionStatus* qcallError);
+extern "C" BOOL QCALLTYPE ThreadNative_GetIsBackground(QCall::ThreadHandle thread);
+extern "C" void QCALLTYPE ThreadNative_SetIsBackground(QCall::ThreadHandle thread, BOOL value, QCallExceptionStatus* qcallError);
+extern "C" void QCALLTYPE ThreadNative_InformThreadNameChange(QCall::ThreadHandle thread, LPCWSTR name, INT32 len, QCallExceptionStatus* qcallError);
+extern "C" void QCALLTYPE ThreadNative_PollGC();
+extern "C" void QCALLTYPE ThreadNative_Initialize(QCall::ObjectHandleOnStack t, QCallExceptionStatus* qcallError);
+#endif // FEATURE_MULTITHREADING
+extern "C" INT32 QCALLTYPE ThreadNative_GetThreadState(QCall::ThreadHandle thread);
+extern "C" INT32 QCALLTYPE ThreadNative_ReentrantWaitAny(BOOL alertable, INT32 timeout, INT32 count, HANDLE *handles, QCallExceptionStatus* qcallError);
+#ifdef TARGET_WINDOWS
+extern "C" void QCALLTYPE ThreadNative_Interrupt(QCall::ThreadHandle thread, QCallExceptionStatus* qcallError);
+extern "C" void QCALLTYPE ThreadNative_CheckForPendingInterrupt(QCallExceptionStatus* qcallError);
+#endif // TARGET_WINDOWS
 
+#ifdef FEATURE_COMINTEROP_APARTMENT_SUPPORT
+extern "C" INT32 QCALLTYPE ThreadNative_GetApartmentState(QCall::ObjectHandleOnStack t, QCallExceptionStatus* qcallError);
+extern "C" INT32 QCALLTYPE ThreadNative_SetApartmentState(QCall::ObjectHandleOnStack t, INT32 iState, QCallExceptionStatus* qcallError);
+#endif // FEATURE_COMINTEROP_APARTMENT_SUPPORT
+
+#ifdef TARGET_WINDOWS
+extern "C" HANDLE QCALLTYPE ThreadNative_GetOSHandle(QCall::ThreadHandle t, QCallExceptionStatus* qcallError);
+#endif // TARGET_WINDOWS
+
+extern "C" void QCALLTYPE ThreadNative_Abort(QCall::ThreadHandle thread, QCallExceptionStatus* qcallError);
+extern "C" void QCALLTYPE ThreadNative_ResetAbort();
+#ifdef FEATURE_COMINTEROP
+extern "C" void QCALLTYPE ThreadNative_DisableComObjectEagerCleanup(QCall::ThreadHandle thread);
+#endif // FEATURE_COMINTEROP
+
+extern "C" void QCALLTYPE ObjectHeader_GetOrCreateLockObject(QCall::ObjectHandleOnStack obj, QCall::ObjectHandleOnStack lockObj, QCallExceptionStatus* qcallError);
+
+FCDECL1(OBJECTHANDLE, ObjectHeader_GetLockHandleIfExists, Object* obj);
 #endif // _COMSYNCHRONIZABLE_H
-

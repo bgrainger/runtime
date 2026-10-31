@@ -20,15 +20,12 @@ namespace System.ComponentModel.Composition
         private static readonly MethodInfo _createStronglyTypedLazyOfT = typeof(ExportServices).GetMethod("CreateStronglyTypedLazyOfT", BindingFlags.NonPublic | BindingFlags.Static)!;
         private static readonly MethodInfo _createSemiStronglyTypedLazy = typeof(ExportServices).GetMethod("CreateSemiStronglyTypedLazy", BindingFlags.NonPublic | BindingFlags.Static)!;
 
-        internal static readonly Type DefaultMetadataViewType = typeof(IDictionary<string, object>);
-        internal static readonly Type DefaultExportedValueType = typeof(object);
+        internal static Type DefaultMetadataViewType => typeof(IDictionary<string, object>);
+        internal static Type DefaultExportedValueType => typeof(object);
 
         internal static bool IsDefaultMetadataViewType(Type metadataViewType)
         {
-            if (metadataViewType == null)
-            {
-                throw new ArgumentNullException(nameof(metadataViewType));
-            }
+            ArgumentNullException.ThrowIfNull(metadataViewType);
 
             // Consider all types that IDictionary<string, object> derives from, such
             // as ICollection<KeyValuePair<TKey, TValue>>, IEnumerable<KeyValuePair<TKey, TValue>>
@@ -38,10 +35,7 @@ namespace System.ComponentModel.Composition
 
         internal static bool IsDictionaryConstructorViewType(Type metadataViewType)
         {
-            if (metadataViewType == null)
-            {
-                throw new ArgumentNullException(nameof(metadataViewType));
-            }
+            ArgumentNullException.ThrowIfNull(metadataViewType);
 
             // Does the view type have a constructor that is a Dictionary<string, object>
             return metadataViewType.GetConstructor(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
@@ -55,17 +49,14 @@ namespace System.ComponentModel.Composition
             MethodInfo genericMethod;
             if (metadataViewType != null)
             {
-                genericMethod = _createStronglyTypedLazyOfTM.MakeGenericMethod(exportType ?? ExportServices.DefaultExportedValueType, metadataViewType);
+                genericMethod = _createStronglyTypedLazyOfTM.MakeGenericMethod(exportType ?? DefaultExportedValueType, metadataViewType);
             }
             else
             {
-                genericMethod = _createStronglyTypedLazyOfT.MakeGenericMethod(exportType ?? ExportServices.DefaultExportedValueType);
+                genericMethod = _createStronglyTypedLazyOfT.MakeGenericMethod(exportType ?? DefaultExportedValueType);
             }
 
-            if (genericMethod == null)
-            {
-                throw new ArgumentNullException(nameof(genericMethod));
-            }
+            ArgumentNullException.ThrowIfNull(genericMethod);
 
             return (Func<Export, object>)Delegate.CreateDelegate(typeof(Func<Export, object>), genericMethod);
         }
@@ -73,12 +64,9 @@ namespace System.ComponentModel.Composition
         internal static Func<Export, Lazy<object, object>> CreateSemiStronglyTypedLazyFactory(Type? exportType, Type? metadataViewType)
         {
             MethodInfo genericMethod = _createSemiStronglyTypedLazy.MakeGenericMethod(
-                exportType ?? ExportServices.DefaultExportedValueType,
-                metadataViewType ?? ExportServices.DefaultMetadataViewType);
-            if (genericMethod == null)
-            {
-                throw new ArgumentNullException(nameof(genericMethod));
-            }
+                exportType ?? DefaultExportedValueType,
+                metadataViewType ?? DefaultMetadataViewType);
+            ArgumentNullException.ThrowIfNull(genericMethod);
             return (Func<Export, Lazy<object, object>>)Delegate.CreateDelegate(typeof(Func<Export, Lazy<object, object>>), genericMethod);
         }
 

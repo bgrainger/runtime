@@ -7,7 +7,7 @@ using System.Reflection.Metadata;
 
 using ILCompiler.DependencyAnalysis;
 using ILCompiler.DependencyAnalysisFramework;
-
+using ILCompiler.ReadyToRun.TypeSystem;
 using Internal.TypeSystem;
 using Internal.TypeSystem.Ecma;
 
@@ -53,6 +53,7 @@ namespace ILCompiler
         private Dictionary<EcmaModule, PerModuleMethodsGenerated> _methodsGenerated = new Dictionary<EcmaModule, PerModuleMethodsGenerated>();
         private List<IMethodNode> _completeSortedMethods = new List<IMethodNode>();
         private List<IMethodNode> _completeSortedGenericMethods = new List<IMethodNode>();
+        private NodeFactory _factory;
 
         private bool _sortedMethods = false;
 
@@ -61,9 +62,10 @@ namespace ILCompiler
             _typeSystemContext = context;
         }
 
-        public void AttachToDependencyGraph(DependencyAnalyzerBase<NodeFactory> graph)
+        public void AttachToDependencyGraph(DependencyAnalyzerBase<NodeFactory> graph, NodeFactory factory)
         {
             graph.NewMarkedNode += Graph_NewMarkedNode;
+            _factory = factory;
         }
 
         protected virtual void Graph_NewMarkedNode(DependencyNodeCore<NodeFactory> obj)
@@ -77,13 +79,14 @@ namespace ILCompiler
                 {
                     Debug.Assert(!_sortedMethods);
                     MethodDesc method = methodNode.Method;
-                    EcmaModule module = (EcmaModule)((EcmaMethod)method.GetTypicalMethodDefinition()).Module;
+                    EcmaModule module = (EcmaModule)((EcmaMethod)method.GetPrimaryMethodDesc().GetTypicalMethodDefinition()).Module;
                     if (!_methodsGenerated.TryGetValue(module, out var perModuleData))
                     {
                         perModuleData = new PerModuleMethodsGenerated(module);
                         _methodsGenerated[module] = perModuleData;
                     }
-                    if (method.HasInstantiation || method.OwningType.HasInstantiation)
+                    if (method.HasInstantiation || method.OwningType.HasInstantiation || method.IsAsyncVariant() || method is AsyncResumptionStub ||
+                        ((CompilerTypeSystemContext)method.Context).IsUnboxingThunk(method))
                     {
                         perModuleData.GenericMethodsGenerated.Add(methodNode);
                     }
@@ -101,7 +104,7 @@ namespace ILCompiler
             {
                 if (!_sortedMethods)
                 {
-                    CompilerComparer comparer = new CompilerComparer();
+                    CompilerComparer comparer = CompilerComparer.Instance;
                     SortableDependencyNode.ObjectNodeComparer objectNodeComparer = new SortableDependencyNode.ObjectNodeComparer(comparer);
                     Comparison<IMethodNode> sortHelper = (x, y) =>
                     {
@@ -110,7 +113,10 @@ namespace ILCompiler
                         int methodOnlyResult = comparer.Compare(x.Method, y.Method);
 
                         // Assert the two sorting techniques produce the same result unless there is a CustomSort applied
-                        Debug.Assert((nodeComparerResult == methodOnlyResult) || 
+                        // or MethodWithGCInfo ordering is keeping async resumption stubs next to their target methods.
+                        Debug.Assert((nodeComparerResult == methodOnlyResult) ||
+                            x.Method is AsyncResumptionStub ||
+                            y.Method is AsyncResumptionStub ||
                             ((x is SortableDependencyNode sortableX && sortableX.CustomSort != Int32.MaxValue) ||
                              (y is SortableDependencyNode sortableY && sortableY.CustomSort != Int32.MaxValue)));
 #endif
@@ -131,6 +137,7 @@ namespace ILCompiler
                     }
                     _completeSortedMethods.MergeSort(sortHelper);
                     _completeSortedGenericMethods.MergeSort(sortHelper);
+
                     _sortedMethods = true;
                 }
             }

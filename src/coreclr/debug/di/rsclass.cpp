@@ -34,8 +34,7 @@ CordbClass::CordbClass(CordbModule *m, mdTypeDef classMetadataToken)
     m_fIsValueClassKnown(false),
     m_fIsValueClass(false),
     m_fHasTypeParams(false),
-    m_continueCounterLastSync(0),
-    m_fCustomNotificationsEnabled(false)
+    m_continueCounterLastSync(0)
 {
     m_classInfo.Clear();
 }
@@ -47,7 +46,7 @@ CordbClass::CordbClass(CordbModule *m, mdTypeDef classMetadataToken)
     HANDLED:
         CordbModule*            m_module; // Assigned w/o AddRef()
         FieldData *m_fields;              // Deleted in ~CordbClass
-        CordbHangingFieldTable  m_hangingFieldsStatic; // by value, ~CHashTableAndData frees
+        CordbHangingFieldTable  m_hangingFieldsStatic; // by value, owns its storage
 */
 
 
@@ -132,6 +131,7 @@ HRESULT CordbClass::GetStaticFieldValue(mdFieldDef fieldDef,
     IMetaDataImport * pImport = NULL;
     EX_TRY
     {
+        RSLockHolder lockHolder(GetProcess()->GetProcessLock());
         pImport = GetModule()->GetMetaDataImporter(); // throws
 
         // Validate the token.
@@ -154,7 +154,7 @@ HRESULT CordbClass::GetStaticFieldValue(mdFieldDef fieldDef,
 
 
         // Lookup the field given its metadata token.
-        FieldData *pFieldData;
+        const FieldData *pFieldData;
 
         hr = GetFieldInfo(fieldDef, &pFieldData);
 
@@ -220,7 +220,7 @@ HRESULT CordbClass::GetStaticFieldValue(mdFieldDef fieldDef,
 //   Else some other failure.
 /* static */
 HRESULT CordbClass::GetStaticFieldValue2(CordbModule * pModule,
-                                         FieldData * pFieldData,
+                                         const FieldData * pFieldData,
                                          BOOL fEnCHangingField,
                                          const Instantiation * pInst,
                                          ICorDebugFrame * pFrame,
@@ -236,7 +236,7 @@ HRESULT CordbClass::GetStaticFieldValue2(CordbModule * pModule,
         return CORDBG_E_FIELD_NOT_STATIC;
     }
 
-    CORDB_ADDRESS pRmtStaticValue = NULL;
+    CORDB_ADDRESS pRmtStaticValue = (CORDB_ADDRESS)NULL;
     CordbProcess * pProcess = pModule->GetProcess();
 
     if (!pFieldData->m_fFldIsTLS)
@@ -245,8 +245,7 @@ HRESULT CordbClass::GetStaticFieldValue2(CordbModule * pModule,
         {
             EX_TRY
             {
-                pRmtStaticValue = pProcess->GetDAC()->GetCollectibleTypeStaticAddress(pFieldData->m_vmFieldDesc,
-                                                                                      pModule->GetAppDomain()->GetADToken());
+                IfFailThrow(pProcess->GetDAC()->GetCollectibleTypeStaticAddress(pFieldData->m_vmFieldDesc, &pRmtStaticValue));
             }
             EX_CATCH_HRESULT(hr);
             if(FAILED(hr))
@@ -287,8 +286,9 @@ HRESULT CordbClass::GetStaticFieldValue2(CordbModule * pModule,
 
             EX_TRY
             {
-                pRmtStaticValue = pProcess->GetDAC()->GetThreadStaticAddress(pFieldData->m_vmFieldDesc,
-                                                                             pThread->m_vmThreadToken);
+                IfFailThrow(pProcess->GetDAC()->GetThreadStaticAddress(pFieldData->m_vmFieldDesc,
+                                                                             pThread->m_vmThreadToken,
+                                                                             &pRmtStaticValue));
             }
             EX_CATCH_HRESULT(hr);
             if(FAILED(hr))
@@ -299,7 +299,7 @@ HRESULT CordbClass::GetStaticFieldValue2(CordbModule * pModule,
         }
     }
 
-    if (pRmtStaticValue == NULL)
+    if (pRmtStaticValue == (CORDB_ADDRESS)NULL)
     {
         // type probably wasn't loaded yet.
         // The debugger may chose to func-eval the creation of an instance of this type and try again.
@@ -328,14 +328,14 @@ HRESULT CordbClass::GetStaticFieldValue2(CordbModule * pModule,
 
     // Static value classes are stored as handles so that GC can deal with them properly.  Thus, we need to follow the
     // handle like an objectref.  Do this by forcing CreateValueByType to think this is an objectref. Note: we don't do
-    // this for value classes that have an RVA, since they're layed out at the RVA with no handle.
+    // this for value classes that have an RVA, since they're laid out at the RVA with no handle.
     bool fIsBoxed = (fIsValueClass &&
                      !pFieldData->m_fFldIsRVA &&
                      !pFieldData->m_fFldIsPrimitive &&
                      !pFieldData->m_fFldIsTLS);
 
     TargetBuffer remoteValue(pRmtStaticValue, CordbValue::GetSizeForType(pType, fIsBoxed ? kBoxed : kUnboxed));
-    ICorDebugValue * pValue;
+    ICorDebugValue * pValue = NULL;
 
     EX_TRY
     {
@@ -345,6 +345,7 @@ HRESULT CordbClass::GetStaticFieldValue2(CordbModule * pModule,
                                       remoteValue,
                                       MemoryRange(NULL, 0),
                                       NULL,
+                                      VMPTR_DebuggerExternalMemoryOwner::NullPtr(),
                                       &pValue);  // throws
     }
     EX_CATCH_HRESULT(hr);
@@ -618,10 +619,10 @@ HRESULT CordbClass::SetJMCStatus(BOOL fIsUserCode)
 }
 
 //-----------------------------------------------------------------------------
-// We have to go the the EE to find out if a class is a value
+// We have to go the EE to find out if a class is a value
 // class or not.  This is because there is no flag for this, but rather
 // it depends on whether the class subclasses System.ValueType (apart
-// from System.Enum...).  Replicating all that resoultion logic
+// from System.Enum...).  Replicating all that resolution logic
 // does not seem like a good plan.
 //
 // We also accept other "evidence" that the class is or isn't a VC, in
@@ -771,24 +772,31 @@ void CordbClass::Init(ClassLoadLevel desiredLoadLevel)
         // basic info load level
         if(desiredLoadLevel >= BasicInfo)
         {
-            vmTypeHandle = pDac->GetTypeHandle(m_pModule->GetRuntimeModule(), GetToken());
-            SetIsValueClass(pDac->IsValueType(vmTypeHandle));
-            m_fHasTypeParams = !!pDac->HasTypeParams(vmTypeHandle);
+            IfFailThrow(pDac->GetTypeHandle(m_pModule->GetRuntimeModule(), GetToken(), &vmTypeHandle));
+            BOOL isValueType;
+            IfFailThrow(pDac->IsValueType(vmTypeHandle, &isValueType));
+            SetIsValueClass(isValueType);
+            BOOL hasTypeParams;
+            IfFailThrow(pDac->HasTypeParams(vmTypeHandle, &hasTypeParams));
+            m_fHasTypeParams = !!hasTypeParams;
             m_loadLevel = BasicInfo;
         }
 
         // full info load level
         if(desiredLoadLevel == FullInfo)
         {
-            VMPTR_AppDomain vmAppDomain = VMPTR_AppDomain::NullPtr();
-            VMPTR_DomainFile vmDomainFile = m_pModule->GetRuntimeDomainFile();
-            if (!vmDomainFile.IsNull())
-            {
-                DomainFileInfo info;
-                pDac->GetDomainFileData(vmDomainFile, &info);
-                vmAppDomain = info.vmAppDomain;
-            }
-            pDac->GetClassInfo(vmAppDomain, vmTypeHandle, &m_classInfo);
+            CallbackAccumulator<FieldData> acc;
+
+            HRESULT hrEnum = pDac->EnumerateClassFields(vmTypeHandle,
+                                                        &m_classInfo.m_objectSize,
+                                                        &CallbackAccumulator<FieldData>::PushCallback,
+                                                        &acc);
+            if (SUCCEEDED(hrEnum) && FAILED(acc.hrError))
+                hrEnum = acc.hrError;
+            IfFailThrow(hrEnum);
+
+            int fieldCount = (int)acc.items.Size();
+            m_classInfo.m_fieldList.Init(fieldCount > 0 ? &acc.items[0] : NULL, fieldCount);
 
             BOOL fGotUnallocatedStatic = GotUnallocatedStatic(&m_classInfo.m_fieldList);
 
@@ -811,7 +819,7 @@ BOOL CordbClass::GotUnallocatedStatic(DacDbiArrayList<FieldData> * pFieldList)
     while ((count < pFieldList->Count()) && !fGotUnallocatedStatic )
     {
         if ((*pFieldList)[count].OkToGetOrSetStaticAddress() &&
-            (*pFieldList)[count].GetStaticAddress() == NULL )
+            (*pFieldList)[count].GetStaticAddress() == (CORDB_ADDRESS)NULL )
         {
             // The address for a regular static field isn't available yet
             // How can this happen?  Statics appear to get allocated during domain load.
@@ -839,7 +847,7 @@ BOOL CordbClass::GotUnallocatedStatic(DacDbiArrayList<FieldData> * pFieldList)
  *
  */
 HRESULT FieldData::GetFieldSignature(CordbModule *pModule,
-                                                  SigParser *pSigParser)
+                                                  SigParser *pSigParser) const
 {
     CONTRACTL
     {
@@ -920,7 +928,7 @@ HRESULT FieldData::GetFieldSignature(CordbModule *pModule,
 // Initializes an instance of EnCHangingFieldInfo.
 // Arguments:
 //     input:  fStatic       - flag to indicate whether the EnC field is static
-//             pObject       - For instance fields, the Object instance containing the the sync-block.
+//             pObject       - For instance fields, the Object instance containing the sync-block.
 //                             For static fields (if this is being called from GetStaticFieldValue) object is NULL.
 //             fieldToken    - token for the EnC field
 //             metadataToken - metadata token for this instance of CordbClass
@@ -937,18 +945,20 @@ void CordbClass::InitEnCFieldInfo(EnCHangingFieldInfo * pEncField,
     {
         // the field is static, we don't need any additional data
         pEncField->Init(VMPTR_Object::NullPtr(),      /* vmObject */
-                        NULL,                         /* offsetToVars */
+                        0,                            /* offsetToVars */
                         fieldToken,
                         ELEMENT_TYPE_MAX,
                         classToken,
-                        m_pModule->GetRuntimeDomainFile());
+                        m_pModule->GetRuntimeAssembly());
     }
     else
     {
         // This is an instance field, we need to pass a bunch of type information back
         _ASSERTE(pObject != NULL);
 
-        pEncField->Init(pInterface->GetObject(pObject->m_id),      // VMPTR to the object instance of interest.
+        VMPTR_Object vmObj;
+        IfFailThrow(pInterface->GetObject(pObject->m_id, &vmObj));
+        pEncField->Init(vmObj,                                          // VMPTR to the object instance of interest.
                         pObject->GetInfo().objOffsetToVars,         // The offset from the beginning of the object
                                                                     // to the beginning of the fields. Fields added
                                                                     // with EnC don't actually reside in the object
@@ -966,7 +976,7 @@ void CordbClass::InitEnCFieldInfo(EnCHangingFieldInfo * pEncField,
                                                                     // This is used only for log messages, and could
                                                                     // be removed.
                         classToken,                                 // metadata token for the class
-                        m_pModule->GetRuntimeDomainFile());         // Domain file for the class
+                        m_pModule->GetRuntimeAssembly());           // assembly for the class
     }
 } // CordbClass::InitFieldData
 
@@ -974,20 +984,19 @@ void CordbClass::InitEnCFieldInfo(EnCHangingFieldInfo * pEncField,
 // Get information via the DAC about a field added with Edit and Continue.
 // Arguments:
 //     input: fStatic       - flag to indicate whether the EnC field is static
-//            pObject       - For instance fields, the Object instance containing the the sync-block.
+//            pObject       - For instance fields, the Object instance containing the sync-block.
 //                            For static fields (if this is being called from GetStaticFieldValue) object is NULL.
 //            fieldToken    - token for the EnC field
 //     output: pointer to an initialized instance of FieldData that has been added to the appropriate table
 //     in our cache
-FieldData * CordbClass::GetEnCFieldFromDac(BOOL               fStatic,
+const FieldData * CordbClass::GetEnCFieldFromDac(BOOL               fStatic,
                                            CordbObjectValue * pObject,
                                            mdFieldDef         fieldToken)
 {
     EnCHangingFieldInfo encField;
     mdTypeDef           metadataToken;
-    FieldData           fieldData,
-                      * pInfo = NULL;
-    BOOL                fDacStatic;
+    FieldData           fieldData;
+    const FieldData *   pInfo = NULL;
     CordbProcess *      pProcess = GetModule()->GetProcess();
 
     _ASSERTE(pProcess != NULL);
@@ -995,10 +1004,10 @@ FieldData * CordbClass::GetEnCFieldFromDac(BOOL               fStatic,
     InitEnCFieldInfo(&encField, fStatic, pObject, fieldToken, metadataToken);
 
     // Go get this particular field.
-    pProcess->GetDAC()->GetEnCHangingFieldInfo(&encField, &fieldData, &fDacStatic);
-    _ASSERTE(fStatic == fDacStatic);
+    IfFailThrow(pProcess->GetDAC()->GetEnCHangingFieldInfo(&encField, &fieldData));
+    _ASSERTE((fStatic != 0) == fieldData.m_fFldIsStatic);
 
-    // Save the field results in our cache and get a stable pointer to the data
+    // Cache the field data and return a borrowed pointer that may be invalidated by subsequent cache mutations.
     if (fStatic)
     {
         pInfo = m_hangingFieldsStatic.AddFieldInfo(&fieldData);
@@ -1029,7 +1038,7 @@ FieldData * CordbClass::GetEnCFieldFromDac(BOOL               fStatic,
 //
 // Arguments:
 //     input:  fldToken - field of interest to get.
-//             pObject  - For instance fields, the Object instance containing the the sync-block.
+//             pObject  - For instance fields, the Object instance containing the sync-block.
 //                        For static fields (if this is being called from GetStaticFieldValue) object is NULL.
 //     output: ppFieldData - the FieldData matching the fldToken.
 //
@@ -1037,7 +1046,7 @@ FieldData * CordbClass::GetEnCFieldFromDac(BOOL               fStatic,
 //   S_OK on success, failure code otherwise.
 //-----------------------------------------------------------------------------
 HRESULT CordbClass::GetEnCHangingField(mdFieldDef fldToken,
-                                      FieldData **ppFieldData,
+                                       const FieldData **ppFieldData,
                                        CordbObjectValue * pObject)
 {
     FAIL_IF_NEUTERED(this);
@@ -1056,7 +1065,7 @@ HRESULT CordbClass::GetEnCHangingField(mdFieldDef fldToken,
     BOOL fStatic = (pObject == NULL);
 
     // Look for cached field information
-    FieldData *pInfo = NULL;
+    const FieldData *pInfo = NULL;
     if (fStatic)
     {
         // Static fields should _NOT_ be cleared, since they stick around.  Thus
@@ -1105,7 +1114,7 @@ HRESULT CordbClass::GetEnCHangingField(mdFieldDef fldToken,
 // Returns:
 //   S_OK on success. else failure.
 //-----------------------------------------------------------------------------
-HRESULT CordbClass::GetFieldInfo(mdFieldDef fldToken, FieldData **ppFieldData)
+HRESULT CordbClass::GetFieldInfo(mdFieldDef fldToken, const FieldData **ppFieldData)
 {
     INTERNAL_SYNC_API_ENTRY(GetProcess());
 
@@ -1141,7 +1150,7 @@ HRESULT CordbClass::SearchFieldInfo(
     DacDbiArrayList<FieldData> * pFieldList,
     mdTypeDef classToken,
     mdFieldDef fldToken,
-    FieldData **ppFieldData
+    const FieldData **ppFieldData
 )
 {
     unsigned int i;
@@ -1191,4 +1200,3 @@ HRESULT CordbClass::SearchFieldInfo(
     // Well, the field doesn't even belong to this class...
     ThrowHR(E_INVALIDARG);
 }
-

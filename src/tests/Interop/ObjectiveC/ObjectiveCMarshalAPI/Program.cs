@@ -1,13 +1,17 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using Xunit;
 namespace ObjectiveCMarshalAPI
 {
     using System;
     using System.Collections.Generic;
+    using System.Diagnostics;
     using System.Reflection;
+    using System.Runtime.CompilerServices;
     using System.Runtime.InteropServices;
     using System.Runtime.InteropServices.ObjectiveC;
+    using System.Threading;
 
     using Xunit;
 
@@ -20,6 +24,10 @@ namespace ObjectiveCMarshalAPI
             out delegate* unmanaged<IntPtr, void> trackedObjectEnteredFinalization);
 
         [DllImport(nameof(NativeObjCMarshalTests))]
+        public static extern unsafe void SetImports(
+            delegate* unmanaged<void> beforeThrowNativeExceptionCallback);
+
+        [DllImport(nameof(NativeObjCMarshalTests))]
         public static extern int CallAndCatch(IntPtr fptr, int a);
 
         [DllImport(nameof(NativeObjCMarshalTests))]
@@ -29,11 +37,11 @@ namespace ObjectiveCMarshalAPI
         public static extern IntPtr GetThrowException();
     }
 
-    unsafe class Program
+    public unsafe class Program
     {
-        static void Validate_ReferenceTrackingAPIs_InvalidArgs()
+        static void Validate_InvalidArgs()
         {
-            Console.WriteLine($"Running {nameof(Validate_ReferenceTrackingAPIs_InvalidArgs)}...");
+            Console.WriteLine($"Running {nameof(Validate_InvalidArgs)}...");
 
             delegate* unmanaged<void> beginEndCallback;
             delegate* unmanaged<IntPtr, int> isReferencedCallback;
@@ -65,14 +73,20 @@ namespace ObjectiveCMarshalAPI
                 {
                     ObjectiveCMarshal.CreateReferenceTrackingHandle(null , out _);
                 });
+            Assert.Throws<ArgumentNullException>(
+                () =>
+                {
+                    ObjectiveCMarshal.GetOrCreateReferenceTrackingMemory(null);
+                });
         }
 
         // The expectation here is during reference tracking handle creation
         // the RefCountDown will be set to some non-negative number and RefCountUp
         // will remain zero. The values will be incremented and decremented respectively
         // during the "is referenced" callback. When the object enters the finalizer queue
-        // the RefCountDown will then be set to nuint.MaxValue. In the object's finalizer
-        // the RefCountUp can be checked to ensure the count down value was respected.
+        // the RefCountDown will then be set to nuint.MaxValue, see the EnteredFinalizerCb
+        // callback. In the object's finalizer the RefCountUp can be checked to ensure
+        // the count down value was respected.
         struct Contract
         {
             public nuint RefCountDown;
@@ -129,6 +143,39 @@ namespace ObjectiveCMarshalAPI
         [ObjectiveCTrackedTypeAttribute]
         class AttributedNoFinalizer { }
 
+        class HasNoHashCode : Base
+        {
+        }
+
+        class HasHashCode : Base
+        {
+            public HasHashCode()
+            {
+                // this will write a hash code into the object header.
+                RuntimeHelpers.GetHashCode(this);
+            }
+        }
+
+        class HasThinLockHeld : Base
+        {
+            public HasThinLockHeld()
+            {
+                // This will write lock information into the object header.
+                // An attempt to generate a hash code for this object will cause the lock to be
+                // upgrade to a thick lock.
+                Monitor.Enter(this);
+            }
+        }
+
+        class HasSyncBlock : Base
+        {
+            public HasSyncBlock()
+            {
+                RuntimeHelpers.GetHashCode(this);
+                Monitor.Enter(this);
+            }
+        }
+
         static void InitializeObjectiveCMarshal()
         {
             delegate* unmanaged<void> beginEndCallback;
@@ -136,9 +183,32 @@ namespace ObjectiveCMarshalAPI
             delegate* unmanaged<IntPtr, void> trackedObjectEnteredFinalization;
             NativeObjCMarshalTests.GetExports(out beginEndCallback, out isReferencedCallback, out trackedObjectEnteredFinalization);
 
+            delegate* unmanaged<void> beforeThrow = &BeforeThrowNativeException;
+            NativeObjCMarshalTests.SetImports(beforeThrow);
+
             ObjectiveCMarshal.Initialize(beginEndCallback, isReferencedCallback, trackedObjectEnteredFinalization, OnUnhandledExceptionPropagationHandler);
         }
 
+        static void Validate_PreInitialize_Scenario()
+        {
+            Console.WriteLine($"Running {nameof(Validate_PreInitialize_Scenario)}...");
+
+            // Attempting to create handle prior to initialization.
+            Assert.Throws<InvalidOperationException>(
+                () =>
+                {
+                    ObjectiveCMarshal.CreateReferenceTrackingHandle(new Base(), out _);
+                });
+
+            // Not initialized yet - should throw.
+            Assert.Throws<InvalidOperationException>(
+                () =>
+                {
+                    ObjectiveCMarshal.GetOrCreateReferenceTrackingMemory(new Base());
+                });
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
         static GCHandle AllocAndTrackObject<T>(uint count) where T : Base, new()
         {
             var obj = new T();
@@ -153,6 +223,7 @@ namespace ObjectiveCMarshalAPI
             return h;
         }
 
+        [MethodImpl(MethodImplOptions.NoInlining)]
         static void Validate_AllocAndFreeAnotherHandle<T>(GCHandle handle) where T : Base, new()
         {
             var obj = (T)handle.Target;
@@ -166,20 +237,15 @@ namespace ObjectiveCMarshalAPI
             h.Free();
         }
 
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static void AllocUntrackedObject<T>() where T : Base, new()
+        {
+            new T();
+        }
+
         static unsafe void Validate_ReferenceTracking_Scenario()
         {
             Console.WriteLine($"Running {nameof(Validate_ReferenceTracking_Scenario)}...");
-
-            var handles = new List<GCHandle>();
-
-            // Attempting to create handle prior to initialization.
-            Assert.Throws<InvalidOperationException>(
-                () =>
-                {
-                    ObjectiveCMarshal.CreateReferenceTrackingHandle(new Base(), out _);
-                });
-
-            InitializeObjectiveCMarshal();
 
             // Type attributed but no finalizer.
             Assert.Throws<InvalidOperationException>(
@@ -187,6 +253,16 @@ namespace ObjectiveCMarshalAPI
                 {
                     ObjectiveCMarshal.CreateReferenceTrackingHandle(new AttributedNoFinalizer(), out _);
                 });
+
+            // Ensure objects who have no tagged memory allocated are handled when they enter the
+            // finalization queue. The NativeAOT implementation looks up objects in a hash table,
+            // so we exercise the various ways a hash code can be stored.
+            AllocUntrackedObject<HasNoHashCode>();
+            AllocUntrackedObject<HasHashCode>();
+            AllocUntrackedObject<HasThinLockHeld>();
+            AllocUntrackedObject<HasSyncBlock>();
+
+            var handles = new List<GCHandle>();
 
             // Provide the minimum number of times the reference callback should run.
             // See IsRefCb() in NativeObjCMarshalTests.cpp for usage logic.
@@ -229,6 +305,14 @@ namespace ObjectiveCMarshalAPI
             _Validate_ExceptionPropagation();
         }
 
+        [UnmanagedCallersOnly]
+        private static void BeforeThrowNativeException()
+        {
+            // This function is called from the exception propagation callback.
+            // It ensures that the thread was transitioned to preemptive mode.
+            GC.Collect();
+        }
+
         private class IntException : Exception
         {
             public int Value { get; }
@@ -240,22 +324,72 @@ namespace ObjectiveCMarshalAPI
             public ExceptionException() {}
         }
 
+        static bool s_finallyExecuted;
+
         [UnmanagedCallersOnly]
-        static void UCO_ThrowIntException(int a) => throw new IntException(a);
+        static void UCO_ThrowIntException(int a)
+        {
+            try
+            {
+                throw new IntException(a);
+            }
+            finally
+            {
+                s_finallyExecuted = true;
+            }
+        }
+
         [UnmanagedCallersOnly]
-        static void UCO_ThrowExceptionException(int _) => throw new ExceptionException();
+        static void UCO_ThrowExceptionException(int _)
+        {
+            try
+            {
+                throw new ExceptionException();
+            }
+            finally
+            {
+                s_finallyExecuted = true;
+            }
+        }
 
         delegate void ThrowExceptionDelegate(int a);
-        static void DEL_ThrowIntException(int a) => throw new IntException(a);
-        static void DEL_ThrowExceptionException(int _) => throw new ExceptionException();
+
+        static void DEL_ThrowIntException(int a)
+        {
+            try
+            {
+                throw new IntException(a);
+            }
+            finally
+            {
+                s_finallyExecuted = true;
+            }
+        }
+
+        static void DEL_ThrowExceptionException(int _)
+        {
+            try
+            {
+                throw new ExceptionException();
+            }
+            finally
+            {
+                s_finallyExecuted = true;
+            }
+        }
 
         static unsafe delegate* unmanaged<IntPtr, void> OnUnhandledExceptionPropagationHandler(
             Exception e,
             RuntimeMethodHandle lastMethodHandle,
             out IntPtr context)
         {
-            var lastMethod = (MethodInfo)MethodBase.GetMethodFromHandle(lastMethodHandle);
-            Assert.True(lastMethod != null);
+            // Not yet implemented For NativeAOT.
+            // https://github.com/dotnet/runtime/issues/80985
+            if (!TestLibrary.Utilities.IsNativeAot)
+            {
+                var lastMethod = (MethodInfo)MethodBase.GetMethodFromHandle(lastMethodHandle);
+                Assert.True(lastMethod != null);
+            }
 
             context = IntPtr.Zero;
             if (e is IntException ie)
@@ -268,8 +402,8 @@ namespace ObjectiveCMarshalAPI
                 return (delegate* unmanaged<IntPtr, void>)NativeObjCMarshalTests.GetThrowException();
             }
 
-            Assert.True(false, "Unknown exception type");
-            throw new Exception("Unreachable");
+            Assert.Fail("Unknown exception type");
+            throw new UnreachableException();
         }
 
         class Scenario
@@ -282,6 +416,8 @@ namespace ObjectiveCMarshalAPI
         // Do not call this method from Main as it depends on a previous test for set up.
         static void _Validate_ExceptionPropagation()
         {
+            Console.WriteLine($"Running {nameof(_Validate_ExceptionPropagation)}");
+
             var delThrowInt = new ThrowExceptionDelegate(DEL_ThrowIntException);
             var delThrowException = new ThrowExceptionDelegate(DEL_ThrowExceptionException);
             var scenarios = new[]
@@ -294,13 +430,62 @@ namespace ObjectiveCMarshalAPI
 
             foreach (var scen in scenarios)
             {
+                s_finallyExecuted = false;
                 delegate* unmanaged<int, void> testNativeMethod = scen.Fptr;
                 int ret = NativeObjCMarshalTests.CallAndCatch((IntPtr)testNativeMethod, scen.Expected);
                 Assert.Equal(scen.Expected, ret);
+                Assert.True(s_finallyExecuted, "Finally block not executed.");
             }
 
             GC.KeepAlive(delThrowInt);
             GC.KeepAlive(delThrowException);
+        }
+
+        static unsafe void Validate_ReferenceTrackingMemory_Scenario()
+        {
+            Console.WriteLine($"Running {nameof(Validate_ReferenceTrackingMemory_Scenario)}...");
+
+            // Type attributed but no finalizer.
+            Assert.Throws<InvalidOperationException>(
+                () =>
+                {
+                    ObjectiveCMarshal.GetOrCreateReferenceTrackingMemory(new AttributedNoFinalizer());
+                });
+
+            var obj = new Base();
+
+            // Validate length matches CreateReferenceTrackingHandle contract.
+            Span<IntPtr> memFromGet = ObjectiveCMarshal.GetOrCreateReferenceTrackingMemory(obj);
+            Assert.Equal(2, memFromGet.Length);
+
+            // Memory should be zero-initialized on first call.
+            Assert.Equal(IntPtr.Zero, memFromGet[0]);
+            Assert.Equal(IntPtr.Zero, memFromGet[1]);
+
+            // Multiple calls return the same memory.
+            Span<IntPtr> memFromGet2 = ObjectiveCMarshal.GetOrCreateReferenceTrackingMemory(obj);
+            fixed (void* p1 = memFromGet)
+            fixed (void* p2 = memFromGet2)
+                Assert.Equal((IntPtr)p1, (IntPtr)p2);
+
+            // CreateReferenceTrackingHandle on the same object returns the same memory.
+            GCHandle h = ObjectiveCMarshal.CreateReferenceTrackingHandle(obj, out Span<IntPtr> memFromCreate);
+            fixed (void* p1 = memFromGet)
+            fixed (void* p2 = memFromCreate)
+                Assert.Equal((IntPtr)p1, (IntPtr)p2);
+            h.Free();
+
+            // GetOrCreateReferenceTrackingMemory after CreateReferenceTrackingHandle also returns the same memory.
+            var obj2 = new Base();
+            GCHandle h2 = ObjectiveCMarshal.CreateReferenceTrackingHandle(obj2, out Span<IntPtr> memFromCreate2);
+            Span<IntPtr> memFromGetAfter = ObjectiveCMarshal.GetOrCreateReferenceTrackingMemory(obj2);
+            fixed (void* p1 = memFromCreate2)
+            fixed (void* p2 = memFromGetAfter)
+                Assert.Equal((IntPtr)p1, (IntPtr)p2);
+            h2.Free();
+
+            GC.KeepAlive(obj);
+            GC.KeepAlive(obj2);
         }
 
         static void Validate_Initialize_FailsOnSecondAttempt()
@@ -314,12 +499,20 @@ namespace ObjectiveCMarshalAPI
                 });
         }
 
-        static int Main(string[] doNotUse)
+        [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/91388", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+        [SkipOnMono("Mono does not support the new Objective-C marshalling APIs. Objective-C interop is done via Mono's own runtime embedding APIs.")]
+        public static int TestEntryPoint()
         {
             try
             {
-                Validate_ReferenceTrackingAPIs_InvalidArgs();
+                Validate_InvalidArgs();
+                Validate_PreInitialize_Scenario();
+
+                InitializeObjectiveCMarshal();
                 Validate_ReferenceTracking_Scenario();
+                Validate_ReferenceTrackingMemory_Scenario();
+
                 Validate_Initialize_FailsOnSecondAttempt();
             }
             catch (Exception e)

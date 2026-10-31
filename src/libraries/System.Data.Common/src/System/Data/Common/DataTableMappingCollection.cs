@@ -54,8 +54,6 @@ namespace System.Data.Common
         [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public int Count => (null != _items) ? _items.Count : 0;
 
-        private Type ItemType => typeof(DataTableMapping);
-
         [Browsable(false)]
         [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public DataTableMapping this[int index]
@@ -105,7 +103,7 @@ namespace System.Data.Common
 
         public void AddRange(System.Array values) => AddEnumerableRange(values, false);
 
-        private void AddEnumerableRange(IEnumerable values, bool doClone)
+        private void AddEnumerableRange(Array values, bool doClone)
         {
             if (null == values)
             {
@@ -145,7 +143,7 @@ namespace System.Data.Common
 
         // implemented as a method, not as a property because the VS7 debugger
         // object browser calls properties to display their value, and we want this delayed
-        private List<DataTableMapping> ArrayList() => _items ?? (_items = new List<DataTableMapping>());
+        private List<DataTableMapping> ArrayList() => _items ??= new List<DataTableMapping>();
 
         public void Clear()
         {
@@ -309,7 +307,7 @@ namespace System.Data.Common
             }
             else
             {
-                throw ADP.CollectionRemoveInvalidObject(ItemType, this);
+                throw ADP.CollectionRemoveInvalidObject(typeof(DataTableMapping), this);
             }
         }
 
@@ -321,13 +319,13 @@ namespace System.Data.Common
             _items[index] = newValue;
         }
 
-        private void ValidateType([NotNull] object? value)
+        private static void ValidateType([NotNull] object? value)
         {
             if (null == value)
             {
                 throw ADP.TablesAddNullAttempt(nameof(value));
             }
-            else if (!ItemType.IsInstanceOfType(value))
+            else if (!typeof(DataTableMapping).IsInstanceOfType(value))
             {
                 throw ADP.NotADataTableMapping(value);
             }

@@ -1,10 +1,13 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
 using System.Runtime.InteropServices;
+using Internal.Text;
 
 namespace Internal.TypeSystem.Ecma
 {
@@ -21,7 +24,7 @@ namespace Internal.TypeSystem.Ecma
             if (attributeHandle.IsNil)
                 return null;
 
-            return metadataReader.GetCustomAttribute(attributeHandle).DecodeValue(new CustomAttributeTypeProvider(This.EcmaModule));
+            return metadataReader.GetCustomAttribute(attributeHandle).DecodeValue(new CustomAttributeTypeProvider(This.Module));
         }
 
         public static IEnumerable<CustomAttributeValue<TypeDesc>> GetDecodedCustomAttributes(this EcmaType This,
@@ -33,7 +36,7 @@ namespace Internal.TypeSystem.Ecma
             {
                 if (IsEqualCustomAttributeName(attributeHandle, metadataReader, attributeNamespace, attributeName))
                 {
-                    yield return metadataReader.GetCustomAttribute(attributeHandle).DecodeValue(new CustomAttributeTypeProvider(This.EcmaModule));
+                    yield return metadataReader.GetCustomAttribute(attributeHandle).DecodeValue(new CustomAttributeTypeProvider(This.Module));
                 }
             }
         }
@@ -122,7 +125,7 @@ namespace Internal.TypeSystem.Ecma
             return default(CustomAttributeHandle);
         }
 
-        private static bool IsEqualCustomAttributeName(CustomAttributeHandle attributeHandle, MetadataReader metadataReader, 
+        public static bool IsEqualCustomAttributeName(CustomAttributeHandle attributeHandle, MetadataReader metadataReader,
             string attributeNamespace, string attributeName)
         {
             StringHandle namespaceHandle, nameHandle;
@@ -136,8 +139,8 @@ namespace Internal.TypeSystem.Ecma
         public static bool GetAttributeNamespaceAndName(this MetadataReader metadataReader, CustomAttributeHandle attributeHandle,
             out StringHandle namespaceHandle, out StringHandle nameHandle)
         {
-            EntityHandle attributeType, attributeCtor;
-            if (!GetAttributeTypeAndConstructor(metadataReader, attributeHandle, out attributeType, out attributeCtor))
+            EntityHandle attributeType;
+            if (!GetAttributeTypeAndConstructor(metadataReader, attributeHandle, out attributeType, out _))
             {
                 namespaceHandle = default(StringHandle);
                 nameHandle = default(StringHandle);
@@ -211,7 +214,7 @@ namespace Internal.TypeSystem.Ecma
         public static PInvokeFlags GetDelegatePInvokeFlags(this EcmaType type)
         {
             PInvokeFlags flags = new PInvokeFlags(PInvokeAttributes.PreserveSig);
-            
+
             if (!type.IsDelegate)
             {
                 return flags;
@@ -294,6 +297,51 @@ namespace Internal.TypeSystem.Ecma
         public static bool IsPublic(this MethodAttributes flags)
         {
             return (flags & MethodAttributes.MemberAccessMask) == MethodAttributes.Public;
+        }
+
+        public static unsafe byte* GetTypeNamePointer(this MetadataReader reader, TypeDefinitionHandle handle)
+        {
+            return reader.GetBlobReader(reader.GetTypeDefinition(handle).Name).CurrentPointer;
+        }
+
+        public static unsafe byte* GetTypeNamespacePointer(this MetadataReader reader, TypeDefinitionHandle handle)
+        {
+            return reader.GetBlobReader(reader.GetTypeDefinition(handle).Namespace).CurrentPointer;
+        }
+
+        public static unsafe byte* GetMethodNamePointer(this MetadataReader reader, MethodDefinitionHandle handle)
+        {
+            return reader.GetBlobReader(reader.GetMethodDefinition(handle).Name).CurrentPointer;
+        }
+
+        public static unsafe ReadOnlySpan<byte> GetStringBytes(this MetadataReader reader, StringHandle handle)
+        {
+            BlobReader blobReader = reader.GetBlobReader(handle);
+            return new ReadOnlySpan<byte>(blobReader.CurrentPointer, blobReader.Length);
+        }
+
+        public static unsafe bool StringEquals(this MetadataReader reader, StringHandle handle, Utf8Span otherString)
+        {
+            int stringOffset = reader.GetHeapOffset(handle);
+
+            // Could the heap hold a string this big?
+            if (stringOffset + otherString.Length >= reader.GetHeapSize(HeapIndex.String))
+                return false;
+
+            // Check for null terminator at the expected location
+            byte* currentChar = reader.MetadataPointer + reader.GetHeapMetadataOffset(HeapIndex.String) + stringOffset;
+            if (*(currentChar + otherString.Length) != 0)
+                return false;
+
+            // Compare characters
+            ReadOnlySpan<byte> otherSpan = otherString.AsSpan();
+            for (int i = 0; i < otherString.Length; i++)
+            {
+                if (otherSpan[i] != *(currentChar++))
+                    return false;
+            }
+
+            return true;
         }
     }
 }

@@ -34,16 +34,19 @@ public:
     virtual void Run();
 
 protected:
-    Phase(Compiler* _compiler, Phases _phase) : comp(_compiler), m_name(nullptr), m_phase(_phase)
+    Phase(Compiler* _compiler, Phases _phase)
+        : m_compiler(_compiler)
+        , m_name(nullptr)
+        , m_phase(_phase)
     {
         m_name = PhaseNames[_phase];
     }
 
     virtual void        PrePhase();
     virtual PhaseStatus DoPhase() = 0;
-    virtual void PostPhase(PhaseStatus status);
+    virtual void        PostPhase(PhaseStatus status);
 
-    Compiler*   comp;
+    Compiler*   m_compiler;
     const char* m_name;
     Phases      m_phase;
 };
@@ -54,7 +57,9 @@ template <typename A>
 class ActionPhase final : public Phase
 {
 public:
-    ActionPhase(Compiler* _compiler, Phases _phase, A _action) : Phase(_compiler, _phase), action(_action)
+    ActionPhase(Compiler* _compiler, Phases _phase, A _action)
+        : Phase(_compiler, _phase)
+        , action(_action)
     {
     }
 
@@ -84,14 +89,15 @@ class CompilerPhase final : public Phase
 {
 public:
     CompilerPhase(Compiler* _compiler, Phases _phase, void (Compiler::*_action)())
-        : Phase(_compiler, _phase), action(_action)
+        : Phase(_compiler, _phase)
+        , action(_action)
     {
     }
 
 protected:
     virtual PhaseStatus DoPhase() override
     {
-        (comp->*action)();
+        (m_compiler->*action)();
         return PhaseStatus::MODIFIED_EVERYTHING;
     }
 
@@ -114,14 +120,15 @@ class CompilerPhaseWithStatus final : public Phase
 {
 public:
     CompilerPhaseWithStatus(Compiler* _compiler, Phases _phase, PhaseStatus (Compiler::*_action)())
-        : Phase(_compiler, _phase), action(_action)
+        : Phase(_compiler, _phase)
+        , action(_action)
     {
     }
 
 protected:
     virtual PhaseStatus DoPhase() override
     {
-        return (comp->*action)();
+        return (m_compiler->*action)();
     }
 
 private:

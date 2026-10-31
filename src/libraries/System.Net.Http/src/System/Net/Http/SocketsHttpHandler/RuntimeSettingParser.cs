@@ -15,6 +15,7 @@ namespace System.Net.Http
             bool value;
 
             // First check for the AppContext switch, giving it priority over the environment variable.
+            // This being first is important for correctness of all callers marked [FeatureSwitchDefinition].
             if (AppContext.TryGetSwitch(appCtxSettingName, out value))
             {
                 return value;
@@ -49,6 +50,26 @@ namespace System.Net.Http
             }
 
             return defaultValue;
+        }
+
+        /// <summary>
+        /// Parse a <see cref="int"/> value from an AppContext data or an environment variable.
+        /// </summary>
+        public static int QueryRuntimeSettingInt32(string appCtxSettingName, string environmentVariableSettingName, int defaultValue)
+        {
+            // First check for the AppContext data, giving it priority over the environment variable.
+            switch (AppContext.GetData(appCtxSettingName))
+            {
+                case uint value:
+                    return (int)value;
+                case string str:
+                    return int.Parse(str, NumberStyles.Any, NumberFormatInfo.InvariantInfo);
+                case IConvertible convertible:
+                    return convertible.ToInt32(NumberFormatInfo.InvariantInfo);
+            }
+
+            // AppContext data wasn't used (or cannot coerce value). Check the environment variable.
+            return ParseInt32EnvironmentVariableValue(environmentVariableSettingName, defaultValue);
         }
 
         /// <summary>

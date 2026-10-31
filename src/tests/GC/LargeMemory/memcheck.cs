@@ -75,7 +75,7 @@ public static class MemCheck {
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
 
-    // https://docs.microsoft.com/en-us/windows/win32/api/sysinfoapi/ns-sysinfoapi-memorystatusex
+    // https://learn.microsoft.com/windows/win32/api/sysinfoapi/ns-sysinfoapi-memorystatusex
     [StructLayout(LayoutKind.Sequential)]
     public struct MEMORYSTATUSEX
     {
@@ -92,15 +92,13 @@ public static class MemCheck {
 
     private static string RunCommand(string name) {
         ProcessStartInfo startInfo = new ProcessStartInfo(name) {
-            RedirectStandardInput = true,
             RedirectStandardOutput = true,
+            RedirectStandardError = true,
             CreateNoWindow = true,
-            UseShellExecute = false,
+            InheritedHandles = [],
         };
-        using (Process cmd = new Process() { StartInfo = startInfo }) {
-            cmd.Start();
-            cmd.WaitForExit();
-            return cmd.StandardOutput.ReadToEnd();
-        }
+        using Microsoft.Win32.SafeHandles.SafeFileHandle nullHandle = File.OpenNullHandle();
+        startInfo.StandardInputHandle = nullHandle;
+        return Process.RunAndCaptureText(startInfo).StandardOutput;
     }
 }

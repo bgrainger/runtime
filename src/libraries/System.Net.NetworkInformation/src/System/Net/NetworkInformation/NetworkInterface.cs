@@ -13,6 +13,7 @@ namespace System.Net.NetworkInformation
         /// <returns>An array of all network interfaces on the local computer.</returns>
         [UnsupportedOSPlatform("illumos")]
         [UnsupportedOSPlatform("solaris")]
+        [UnsupportedOSPlatform("haiku")]
         public static NetworkInterface[] GetAllNetworkInterfaces()
         {
             return NetworkInterfacePal.GetAllNetworkInterfaces();
@@ -20,6 +21,7 @@ namespace System.Net.NetworkInformation
 
         [UnsupportedOSPlatform("illumos")]
         [UnsupportedOSPlatform("solaris")]
+        [UnsupportedOSPlatform("haiku")]
         public static bool GetIsNetworkAvailable()
         {
             return NetworkInterfacePal.GetIsNetworkAvailable();
@@ -27,6 +29,7 @@ namespace System.Net.NetworkInformation
 
         [UnsupportedOSPlatform("illumos")]
         [UnsupportedOSPlatform("solaris")]
+        [UnsupportedOSPlatform("haiku")]
         public static int IPv6LoopbackInterfaceIndex
         {
             get
@@ -37,6 +40,7 @@ namespace System.Net.NetworkInformation
 
         [UnsupportedOSPlatform("illumos")]
         [UnsupportedOSPlatform("solaris")]
+        [UnsupportedOSPlatform("haiku")]
         public static int LoopbackInterfaceIndex
         {
             get
@@ -70,6 +74,7 @@ namespace System.Net.NetworkInformation
         /// Provides Internet Protocol (IP) statistical data for this network interface.
         /// </summary>
         /// <returns>The interface's IP statistics.</returns>
+        [UnsupportedOSPlatform("android")]
         public virtual IPInterfaceStatistics GetIPStatistics()
         {
             throw NotImplemented.ByDesignWithMessage(SR.net_MethodNotImplementedException);
@@ -81,6 +86,7 @@ namespace System.Net.NetworkInformation
         /// Do not use this method, use GetIPStatistics instead.
         /// </summary>
         /// <returns>The interface's IP statistics.</returns>
+        [UnsupportedOSPlatform("android")]
         public virtual IPv4InterfaceStatistics GetIPv4Statistics()
         {
             throw NotImplemented.ByDesignWithMessage(SR.net_MethodNotImplementedException);

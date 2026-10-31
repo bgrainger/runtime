@@ -1,45 +1,28 @@
 <Project Sdk="Microsoft.Build.Traversal">
-  <ItemGroup>
-    <ProjectReference Include="$(MSBuildThisFileDirectory)**\*.csproj" />
 
-    <!-- These projects do not need to be built during source-build. -->
-    <!-- For example, they may take dependencies on pre-built packages that aren't build-from-source. e.g. 'Microsoft.DotNet.CilStrip.Sources' -->
-    <ProjectReference Remove="MonoTargetsTasks\MonoTargetsTasks.csproj"
-                      Condition="'$(DotNetBuildFromSource)' == 'true'" />
+  <ItemGroup>
+    <ProjectReference Include="**\*.csproj" />
   </ItemGroup>
 
-  <!--
-    Use synthetic inputs/outputs to avoid building it all the time. This should let devs build with
-    MSBuild node reuse enabled (the Arcade default). If it were built every time, it would hit file
-    locking issues vs. the persistent nodes that loaded the task DLL for the previous build. It
-    isn't particularly accurate, but better than nothing.
-  -->
-  <Target Name="BuildIncrementally"
-          DependsOnTargets="GetTasksSrc"
-          Inputs="@(TasksSrc)"
-          Outputs="$(TasksIntermediateFile)">
-    <ItemGroup>
-      <TaskProject Include="$(MSBuildProjectFullPath)" />
-    </ItemGroup>
+  <ItemGroup Condition="'$(TargetsMobile)' != 'true'">
+    <ProjectReference Remove="AndroidAppBuilder\AndroidAppBuilder.csproj" />
+    <ProjectReference Remove="AotCompilerTask\MonoAOTCompiler.csproj" />
+    <ProjectReference Remove="AppleAppBuilder\AppleAppBuilder.csproj" />
+    <ProjectReference Remove="LibraryBuilder\LibraryBuilder.csproj" />
+    <ProjectReference Remove="Microsoft.NET.Sdk.WebAssembly.Pack.Tasks\Microsoft.NET.Sdk.WebAssembly.Pack.Tasks.csproj" />
+    <ProjectReference Remove="Microsoft.NET.WebAssembly.Webcil\Microsoft.NET.WebAssembly.Webcil.csproj" />
+    <ProjectReference Remove="MobileBuildTasks\MobileBuildTasks.csproj" />
+    <ProjectReference Remove="WasmAppBuilder\WasmAppBuilder.csproj" />
+    <ProjectReference Remove="WasmBuildTasks\WasmBuildTasks.csproj" />
 
-    <MSBuild Projects="@(TaskProject)"
-             Properties="Configuration=Debug;Platform=AnyCPU"
-             Targets="Build" />
+    <!-- For WasmBuildTests or any other configuration that tests against workloads -->
+    <ProjectReference Remove="WorkloadBuildTasks\WorkloadBuildTasks.csproj" />
+  </ItemGroup>
 
-    <WriteLinesToFile File="$(TasksIntermediateFile)"
-                      Lines="$(TasksIntermediateFile)"
-                      Overwrite="true" />
-  </Target>
+  <ItemGroup Condition="'$(TargetsMobile)' != 'true' or '$(DotNetBuildSourceOnly)' == 'true'">
+    <ProjectReference Remove="MonoTargetsTasks\MonoTargetsTasks.csproj" />
+    <ProjectReference Remove="AssemblyStripper\AssemblyStripper.csproj" />
+  </ItemGroup>
 
-  <Target Name="GetTasksSrc"
-          DependsOnTargets="PrepareProjectReferences">
-    <PropertyGroup>
-      <TasksIntermediateFile>$([MSBuild]::NormalizePath('$(ArtifactsObjDir)', '$(MSBuildProjectName)', 'Debug', 'build-semaphore.txt'))</TasksIntermediateFile>
-    </PropertyGroup>
-
-    <!-- Include both the project file and its sources as an input. -->
-    <ItemGroup>
-      <TasksSrc Include="%(ProjectReferenceWithConfiguration.RelativeDir)%(ProjectReferenceWithConfiguration.RecursiveDir)**\*" />
-    </ItemGroup>
-  </Target>
 </Project>
+

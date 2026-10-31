@@ -9,7 +9,7 @@
 
 SigFormat::SigFormat()
 {
-    WRAPPER_NO_CONTRACT; // THROWS;GC_TRIGGERS;INJECT_FAULT(ThrowOM)
+    WRAPPER_NO_CONTRACT; // THROWS;GC_TRIGGERS;
     _size = SIG_INC;
     _pos = 0;
     _fmtSig = new char[_size];
@@ -31,11 +31,10 @@ SigFormat::SigFormat(MethodDesc* pMeth, TypeHandle owner, BOOL fIgnoreMethodName
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END
 
-    // Explicitly use MethodDesc::LoadMethodInstantiation so that we can succesfully format
+    // Explicitly use MethodDesc::LoadMethodInstantiation so that we can successfully format
     // non-typical generic method definitions.
     MetaSig sig(pMeth, pMeth->GetExactClassInstantiation(owner), pMeth->LoadMethodInstantiation());
 
@@ -81,7 +80,6 @@ void SigFormat::AddString(LPCUTF8 s)
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END
 
@@ -120,7 +118,6 @@ void SigFormat::AddTypeString(Module* pModule, SigPointer sig, const SigTypeCont
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END
 
@@ -235,7 +232,7 @@ void SigFormat::AddTypeString(Module* pModule, SigPointer sig, const SigTypeCont
             else
             {
                 char smallbuf[20];
-                sprintf_s(smallbuf, COUNTOF(smallbuf), "!!%d", ix);
+                sprintf_s(smallbuf, ARRAY_SIZE(smallbuf), "!!%d", ix);
                 AddString(smallbuf);
             }
         }
@@ -253,7 +250,7 @@ void SigFormat::AddTypeString(Module* pModule, SigPointer sig, const SigTypeCont
             else
             {
                 char smallbuf[20];
-                sprintf_s(smallbuf, COUNTOF(smallbuf), "!%d", ix);
+                sprintf_s(smallbuf, ARRAY_SIZE(smallbuf), "!%d", ix);
                 AddString(smallbuf);
             }
         }
@@ -351,7 +348,6 @@ void SigFormat::FormatSig(MetaSig &sig, LPCUTF8 szMemberName, LPCUTF8 szClassNam
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END
 
@@ -409,7 +405,6 @@ void SigFormat::AddType(TypeHandle th)
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END
 
@@ -561,11 +556,10 @@ void SigFormat::AddType(TypeHandle th)
     case ELEMENT_TYPE_VAR:
     case ELEMENT_TYPE_MVAR:
         {
-            StackScratchBuffer scratch;
             StackSString name;
             th.GetName(name);
 
-            AddString(name.GetANSI(scratch));
+            AddString(name.GetUTF8());
 
             break;
         }
@@ -613,10 +607,7 @@ const char* FormatSigHelper(MethodDesc* pMD, CQuickBytes *out, LoaderHeap *pHeap
             ret = mem;
         }
     }
-    EX_CATCH
-    {
-    }
-    EX_END_CATCH(RethrowTerminalExceptions);
+    EX_SWALLOW_NONTERMINAL
 
     return ret;
 }

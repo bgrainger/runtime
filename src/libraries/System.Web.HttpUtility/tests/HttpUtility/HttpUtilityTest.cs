@@ -57,7 +57,7 @@ namespace System.Web.Tests
         [Theory]
         [InlineData(null, null)]
         [MemberData(nameof(HtmlAttributeEncodeData))]
-        public void HtmlAttributeEncode(string expected, string input)
+        public void HtmlAttributeEncode(string? expected, string? input)
         {
             Assert.Equal(expected, HttpUtility.HtmlAttributeEncode(input));
         }
@@ -74,7 +74,7 @@ namespace System.Web.Tests
         [Theory]
         [InlineData("", null)]
         [MemberData(nameof(HtmlAttributeEncodeData))]
-        public void HtmlAttributeEncode_TextWriter(string expected, string input)
+        public void HtmlAttributeEncode_TextWriter(string expected, string? input)
         {
             var sw = new StringWriter();
             HttpUtility.HtmlAttributeEncode(input, sw);
@@ -261,7 +261,7 @@ namespace System.Web.Tests
         [InlineData(2, "2")]
         [InlineData("", "")]
         [InlineData(null, null)]
-        public void HtmlEncode(object decoded, string encoded)
+        public void HtmlEncode(object? decoded, string? encoded)
         {
             if (decoded is string s)
             {
@@ -284,6 +284,20 @@ namespace System.Web.Tests
             });
         }
 
+        [Fact]
+        public void HtmlEncode_IHtmlString_UseToHtmlString()
+        {
+            Assert.Equal(string.Empty, HttpUtility.HtmlEncode(new ActionHtmlString(() => null)));
+            Assert.Equal(string.Empty, HttpUtility.HtmlEncode(new ActionHtmlString(() => string.Empty)));
+            Assert.Equal("<", HttpUtility.HtmlEncode(new ActionHtmlString(() => "<")));
+            Assert.Throws<FormatException>(() => HttpUtility.HtmlEncode(new ActionHtmlString(() => throw new FormatException())));
+        }
+
+        private sealed class ActionHtmlString(Func<string> toHtmlString) : IHtmlString
+        {
+            public string ToHtmlString() => toHtmlString();
+        }
+
         #endregion HtmlEncode
 
         #region JavaScriptStringEncode
@@ -296,6 +310,7 @@ namespace System.Web.Tests
                 yield return new object[] { "", "" };
                 yield return new object[] {"No escaping needed.", "No escaping needed."};
                 yield return new object[] {"The \t and \n will need to be escaped.", "The \\t and \\n will need to be escaped."};
+                yield return new object[] {"The \t and \n will need to be escaped.>", "The \\t and \\n will need to be escaped.\\u003e" };
                 for (char c = char.MinValue; c < TestMaxChar; c++)
                 {
                     if (c >= 0 && c <= 7 || c == 11 || c >= 14 && c <= 31 || c == 38 || c == 39 || c == 60 || c == 62 || c == 133 || c == 8232 || c == 8233)
@@ -378,6 +393,19 @@ namespace System.Web.Tests
                 new object[] {"", new string[] {}, new string[][] {}},
                 new object[] {"=", new[] {""}, new[] {new[] {""}}},
                 new object[] {"&", new string[] {null}, new[] {new[] {"", ""}}},
+                new object[] {"==", new[] {""}, new[] {new[] {"="}}},
+                new object[] {"&&", new string[] {null}, new[] {new[] {"", "", ""}}},
+                new object[] {"name=", new[] {"name"}, new[] {new[] {""}}},
+                new object[] {"=value", new[] {""}, new[] {new[] {"value"}}},
+                new object[] {"name=value&", new[] {"name", null}, new[] {new[] {"value"}, new[] {""}}},
+                new object[] {"&name=value&&", new[] {null, "name"}, new[] {new[] {"", "", ""}, new[] {"value"}}},
+                new object[] {"Name=first&name=second", new[] {"Name"}, new[] {new[] {"first", "second"}}},
+                new object[] {"keyless&name=value=more&&name=last&", new[] {null, "name"}, new[] {new[] {"keyless", "", ""}, new[] {"value=more", "last"}}},
+                new object[] {"name%3D%26=value%26%3D&name=a+b", new[] {"name=&", "name"}, new[] {new[] {"value&="}, new[] {"a b"}}},
+                new object[] {"name=%&other=%ZZ", new[] {"name", "other"}, new[] {new[] {"%"}, new[] {"%ZZ"}}},
+                new object[] {new string('n', 1024) + "=value&other=last", new[] {new string('n', 1024), "other"}, new[] {new[] {"value"}, new[] {"last"}}},
+                new object[] {"name=" + new string('v', 1024) + "=more&other=last", new[] {"name", "other"}, new[] {new[] {new string('v', 1024) + "=more"}, new[] {"last"}}},
+                new object[] {new string('v', 1024) + "&name=value", new[] {null, "name"}, new[] {new[] {new string('v', 1024)}, new[] {"value"}}},
                 new object[]
                 {
                     HttpUtility.UrlEncode(UnicodeStr) + "=" + HttpUtility.UrlEncode(UnicodeStr),
@@ -413,6 +441,25 @@ namespace System.Web.Tests
             }
         }
 
+        [Theory]
+        [InlineData("utf-8")]
+        [InlineData("utf-16")]
+        [InlineData("iso-8859-1")]
+        public void ParseQueryString_WithEncoding(string encodingName)
+        {
+            Encoding encoding = Encoding.GetEncoding(encodingName);
+            const string Name = "cl\u00e9&=";
+            const string Value = "valeur+\u00e9&=";
+            const string KeylessValue = "sans+cl\u00e9";
+            string query = HttpUtility.UrlEncode(Name, encoding) + "=" + HttpUtility.UrlEncode(Value, encoding) +
+                "&" + HttpUtility.UrlEncode(KeylessValue, encoding) + "&";
+
+            var parsed = HttpUtility.ParseQueryString(query, encoding);
+            Assert.Equal(new[] { Name, null }, parsed.AllKeys);
+            Assert.Equal(new[] { Value }, parsed.GetValues(0));
+            Assert.Equal(new[] { KeylessValue, "" }, parsed.GetValues(1));
+        }
+
         [Fact]
         public void ParseQueryString_null()
         {
@@ -441,6 +488,16 @@ namespace System.Web.Tests
             var expected = "ReturnUrl=http%3a%2f%2flocalhost%2flogin%2fauthenticate%3fReturnUrl%3dhttp%3a%2f%2flocalhost%2fsecured_area%26__provider__%3dgoogle";
             Assert.Equal(expected, parsed.ToString());
             Assert.Equal(expected, HttpUtility.ParseQueryString(expected).ToString());
+        }
+
+
+        [Fact]
+        public void ParseQueryString_nullValue_ToString()
+        {
+            var nameValueCollection = System.Web.HttpUtility.ParseQueryString(string.Empty);
+            nameValueCollection.Add("baz", null);
+            var s = nameValueCollection.ToString();
+            Assert.Equal(string.Empty, s);
         }
 
         #endregion ParseQueryString
@@ -563,7 +620,7 @@ namespace System.Web.Tests
 
         static bool IsUrlSafeChar(char c)
         {
-            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+            if (char.IsAsciiLetterOrDigit(c))
             {
                 return true;
             }
@@ -610,7 +667,7 @@ namespace System.Web.Tests
         [Theory]
         [InlineData(null, null)]
         [MemberData(nameof(UrlEncodeData))]
-        public void UrlEncode(string decoded, string encoded)
+        public void UrlEncode(string? decoded, string? encoded)
         {
             Assert.Equal(encoded, HttpUtility.UrlEncode(decoded));
         }
@@ -751,10 +808,12 @@ namespace System.Web.Tests
         [InlineData("http://eXample.net:80/default.xxx?sdsd=sds", "http://eXample.net:80/default.xxx?sdsd=sds")]
         [InlineData("http://EXAMPLE.NET/default.xxx?sdsd=sds", "http://EXAMPLE.NET/default.xxx?sdsd=sds")]
         [InlineData("http://EXAMPLE.NET/d\u00E9fault.xxx?sdsd=sds", "http://EXAMPLE.NET/d%c3%a9fault.xxx?sdsd=sds")]
+        [InlineData("http://EXAMPLE.NET/d fault.xxx?sdsd=sds", "http://EXAMPLE.NET/d%20fault.xxx?sdsd=sds")]
         [InlineData("file:///C/Users", "file:///C/Users")]
         [InlineData("mailto:user@example.net", "mailto:user@example.net")]
         [InlineData("http://example\u200E.net/", "http://example%e2%80%8e.net/")]
-        public void UrlPathEncode(string decoded, string encoded)
+        [InlineData("http://ex ample\u200E.net/", "http://ex%20ample%e2%80%8e.net/")]
+        public void UrlPathEncode(string? decoded, string? encoded)
         {
             Assert.Equal(encoded, HttpUtility.UrlPathEncode(decoded));
         }
@@ -768,6 +827,7 @@ namespace System.Web.Tests
         [InlineData("foo&bar")]
         [InlineData("foo&name=bar")]
         [InlineData("name=bar&foo&foo")]
+        [InlineData("_return_fields%2b=extattrs&name%3a=somename.somedomain.local")]
         public void ParseAndToStringMaintainAllKeyValuePairs(string input)
         {
             var values = HttpUtility.ParseQueryString(input);

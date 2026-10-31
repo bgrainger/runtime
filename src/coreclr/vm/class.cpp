@@ -30,20 +30,6 @@
 #ifndef DACCESS_COMPILE
 
 
-//*******************************************************************************
-EEClass::EEClass(DWORD cbFixedEEClassFields)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    // Cache size of fixed fields (this instance also contains a set of packed fields whose final size isn't
-    // determined until the end of class loading). We store the size into a spare byte made available by
-    // compiler field alignment, so we need to ensure we never allocate a flavor of EEClass more than 255
-    // bytes long.
-    _ASSERTE(cbFixedEEClassFields <= 0xff);
-    m_cbFixedEEClassFields = (BYTE)cbFixedEEClassFields;
-
-    // All other members are initialized to zero
-}
 
 //*******************************************************************************
 void *EEClass::operator new(
@@ -55,16 +41,10 @@ void *EEClass::operator new(
     {
         THROWS;
         GC_NOTRIGGER;
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END;
 
-    // EEClass (or sub-type) is always followed immediately by an EEClassPackedFields structure. This is
-    // maximally sized at runtime but in the ngen scenario will be optimized into a smaller structure (which
-    // is why it must go after all the fixed sized fields).
-    S_SIZE_T safeSize = S_SIZE_T(size) + S_SIZE_T(sizeof(EEClassPackedFields));
-
-    void *p = pamTracker->Track(pHeap->AllocMem(safeSize));
+    void *p = pamTracker->Track(pHeap->AllocMem(S_SIZE_T(size)));
 
     // No need to memset since this memory came from VirtualAlloc'ed memory
     // memset (p, 0, size);
@@ -73,60 +53,14 @@ void *EEClass::operator new(
 }
 
 //*******************************************************************************
-void EEClass::Destruct(MethodTable * pOwningMT)
+void EEClass::Destruct()
 {
     CONTRACTL
     {
         NOTHROW;
         GC_TRIGGERS;
-        FORBID_FAULT;
-        PRECONDITION(pOwningMT != NULL);
     }
     CONTRACTL_END
-
-
-#ifdef _DEBUG
-    _ASSERTE(!IsDestroyed());
-    SetDestroyed();
-#endif
-
-#ifdef PROFILING_SUPPORTED
-    // If profiling, then notify the class is getting unloaded.
-    {
-        BEGIN_PROFILER_CALLBACK(CORProfilerTrackClasses());
-        {
-            // Calls to the profiler callback may throw, or otherwise fail, if
-            // the profiler AVs/throws an unhandled exception/etc. We don't want
-            // those failures to affect the runtime, so we'll ignore them.
-            //
-            // Note that the profiler callback may turn around and make calls into
-            // the profiling runtime that may throw. This try/catch block doesn't
-            // protect the profiler against such failures. To protect the profiler
-            // against that, we will need try/catch blocks around all calls into the
-            // profiling API.
-            //
-            // (Bug #26467)
-            //
-
-            FAULT_NOT_FATAL();
-
-            EX_TRY
-            {
-                GCX_PREEMP();
-
-                (&g_profControlBlock)->ClassUnloadStarted((ClassID) pOwningMT);
-            }
-            EX_CATCH
-            {
-                // The exception here came from the profiler itself. We'll just
-                // swallow the exception, since we don't want the profiler to bring
-                // down the runtime.
-            }
-            EX_END_CATCH(RethrowTerminalExceptions);
-        }
-        END_PROFILER_CALLBACK();
-    }
-#endif // PROFILING_SUPPORTED
 
 #ifdef FEATURE_COMINTEROP
     // clean up any COM Data
@@ -145,58 +79,10 @@ void EEClass::Destruct(MethodTable * pOwningMT)
 #endif // FEATURE_COMINTEROP_UNMANAGED_ACTIVATION
 #endif // FEATURE_COMINTEROP
 
-
-    if (IsDelegate())
-    {
-        DelegateEEClass* pDelegateEEClass = (DelegateEEClass*)this;
-
-        if (pDelegateEEClass->m_pStaticCallStub)
-        {
-            ExecutableWriterHolder<Stub> stubWriterHolder(pDelegateEEClass->m_pStaticCallStub, sizeof(Stub));
-            BOOL fStubDeleted = stubWriterHolder.GetRW()->DecRef();
-
-            if (fStubDeleted)
-            {
-                DelegateInvokeStubManager::g_pManager->RemoveStub(pDelegateEEClass->m_pStaticCallStub);
-            }
-        }
-        if (pDelegateEEClass->m_pInstRetBuffCallStub)
-        {
-            pDelegateEEClass->m_pInstRetBuffCallStub->DecRef();
-        }
-        // While m_pMultiCastInvokeStub is also a member,
-        // it is owned by the m_pMulticastStubCache, not by the class
-        // - it is shared across classes. So we don't decrement
-        // its ref count here
-    }
-
 #ifdef FEATURE_COMINTEROP
     if (GetSparseCOMInteropVTableMap() != NULL)
         delete GetSparseCOMInteropVTableMap();
 #endif // FEATURE_COMINTEROP
-
-#ifdef PROFILING_SUPPORTED
-    // If profiling, then notify the class is getting unloaded.
-    {
-        BEGIN_PROFILER_CALLBACK(CORProfilerTrackClasses());
-        {
-            // See comments in the call to ClassUnloadStarted for details on this
-            // FAULT_NOT_FATAL marker and exception swallowing.
-            FAULT_NOT_FATAL();
-            EX_TRY
-            {
-                GCX_PREEMP();
-                (&g_profControlBlock)->ClassUnloadFinished((ClassID) pOwningMT, S_OK);
-            }
-            EX_CATCH
-            {
-            }
-            EX_END_CATCH(RethrowTerminalExceptions);
-        }
-        END_PROFILER_CALLBACK();
-    }
-#endif // PROFILING_SUPPORTED
-
 }
 
 //*******************************************************************************
@@ -210,7 +96,7 @@ EEClass::CreateMinimalClass(LoaderHeap *pHeap, AllocMemTracker *pamTracker)
     }
     CONTRACTL_END;
 
-    return new (pHeap, pamTracker) EEClass(sizeof(EEClass));
+    return new (pHeap, pamTracker) EEClass();
 }
 
 
@@ -226,7 +112,6 @@ MethodTable *MethodTable::LoadEnclosingMethodTable(ClassLoadLevel targetLevel)
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM(););
         MODE_ANY;
     }
     CONTRACTL_END
@@ -248,7 +133,7 @@ MethodTable *MethodTable::LoadEnclosingMethodTable(ClassLoadLevel targetLevel)
 
 }
 
-#ifdef EnC_SUPPORTED
+#ifdef FEATURE_METADATA_UPDATER
 
 //*******************************************************************************
 VOID EEClass::FixupFieldDescForEnC(MethodTable * pMT, EnCFieldDesc *pFD, mdFieldDef fieldDef)
@@ -256,9 +141,7 @@ VOID EEClass::FixupFieldDescForEnC(MethodTable * pMT, EnCFieldDesc *pFD, mdField
     CONTRACTL
     {
         THROWS;
-        MODE_COOPERATIVE;
-        WRAPPER(GC_TRIGGERS);
-        INJECT_FAULT(COMPlusThrowOM(););
+        GC_TRIGGERS;
     }
     CONTRACTL_END
 
@@ -273,7 +156,7 @@ VOID EEClass::FixupFieldDescForEnC(MethodTable * pMT, EnCFieldDesc *pFD, mdField
         {
             szFieldName = "Invalid FieldDef record";
         }
-        LOG((LF_ENC, LL_INFO100, "EEClass::FixupFieldDescForEnC %08x %s\n", fieldDef, szFieldName));
+        LOG((LF_ENC, LL_INFO100, "EEClass::FixupFieldDescForEnC '%s' (0x%08x)\n", szFieldName, fieldDef));
     }
 #endif //LOGGING
 
@@ -290,137 +173,76 @@ VOID EEClass::FixupFieldDescForEnC(MethodTable * pMT, EnCFieldDesc *pFD, mdField
     // once this function is out of scope.
     ACQUIRE_STACKING_ALLOCATOR(pStackingAllocator);
 
-    MethodTableBuilder::bmtMetaDataInfo bmtMetaData;
-    bmtMetaData.cFields = 1;
-    bmtMetaData.pFields = (mdToken*)_alloca(sizeof(mdToken));
-    bmtMetaData.pFields[0] = fieldDef;
-    bmtMetaData.pFieldAttrs = (DWORD*)_alloca(sizeof(DWORD));
-    IfFailThrow(pImport->GetFieldDefProps(fieldDef, &bmtMetaData.pFieldAttrs[0]));
+    // Collect the attributes for the field
+    mdToken fieldDefs[1] = { fieldDef };
+    DWORD fieldAttrs[1];
+    IfFailThrow(pImport->GetFieldDefProps(fieldDefs[0], &fieldAttrs[0]));
 
-    MethodTableBuilder::bmtMethAndFieldDescs bmtMFDescs;
+    AllocMemTracker dummyAmTracker;
+    EEClass* pClass = pMT->GetClass();
+    MethodTableBuilder builder(pMT, pClass,
+                               pStackingAllocator,
+                               &dummyAmTracker);
+    builder.bmtAllocator = pMT->GetLoaderAllocator();
+
+    builder.bmtMetaData.cFields = ARRAY_SIZE(fieldDefs);
+    builder.bmtMetaData.pFields = fieldDefs;
+    builder.bmtMetaData.pFieldAttrs = fieldAttrs;
+
     // We need to alloc the memory, but don't have to fill it in.  InitializeFieldDescs
     // will copy pFD (1st arg) into here.
-    bmtMFDescs.ppFieldDescList = (FieldDesc**)_alloca(sizeof(FieldDesc*));
-
-    MethodTableBuilder::bmtFieldPlacement bmtFP;
+    FieldDesc* fieldDescs[1];
+    builder.bmtMFDescs.ppFieldDescList = fieldDescs;
 
     // This simulates the environment that BuildMethodTableThrowing creates
     // just enough to run InitializeFieldDescs
-    MethodTableBuilder::bmtErrorInfo bmtError;
-    bmtError.pModule = pModule;
-    bmtError.cl = pMT->GetCl();
-    bmtError.dMethodDefInError = mdTokenNil;
-    bmtError.szMethodNameForError = NULL;
+    builder.bmtError.pModule = pModule;
+    builder.bmtError.cl = pMT->GetCl();
+    builder.bmtError.dMethodDefInError = mdTokenNil;
+    builder.bmtError.szMethodNameForError = NULL;
 
-    MethodTableBuilder::bmtInternalInfo bmtInternal;
-    bmtInternal.pModule = pModule;
-    bmtInternal.pInternalImport = pImport;
-    bmtInternal.pParentMT = pMT->GetParentMethodTable();
+    builder.bmtInternal.pModule = pModule;
+    builder.bmtInternal.pInternalImport = pImport;
+    builder.bmtInternal.pParentMT = pMT->GetParentMethodTable();
 
-    MethodTableBuilder::bmtProperties bmtProp;
-    bmtProp.fIsValueClass = !!pMT->IsValueType();
-
-    MethodTableBuilder::bmtEnumFieldInfo bmtEnumFields(bmtInternal.pInternalImport);
+    builder.bmtProp.fIsValueClass = !!pMT->IsValueType();
+    builder.bmtEnumFields.m_pInternalImport = pImport;
 
     if (pFD->IsStatic())
     {
-        bmtEnumFields.dwNumStaticFields = 1;
+        builder.bmtEnumFields.dwNumStaticFields = 1;
     }
     else
     {
-        bmtEnumFields.dwNumInstanceFields = 1;
+        _ASSERTE(!pMT->IsValueType());
+        builder.bmtEnumFields.dwNumInstanceFields = 1;
     }
-
-    // We shouldn't have to fill this in b/c we're not allowed to EnC value classes, or
-    // anything else with layout info associated with it.
-    LayoutRawFieldInfo *pLayoutRawFieldInfos = (LayoutRawFieldInfo*)_alloca((2) * sizeof(LayoutRawFieldInfo));
 
     // If not NULL, it means there are some by-value fields, and this contains an entry for each instance or static field,
     // which is NULL if not a by value field, and points to the EEClass of the field if a by value field.  Instance fields
     // come first, statics come second.
-    MethodTable **pByValueClassCache = NULL;
+    MethodTable** pByValueClassCache = NULL;
 
-    EEClass * pClass = pMT->GetClass();
-
-    // InitializeFieldDescs are going to change these numbers to something wrong,
-    // even though we already have the right numbers.  Save & restore after.
-    WORD   wNumInstanceFields = pMT->GetNumInstanceFields();
-    WORD   wNumStaticFields = pMT->GetNumStaticFields();
-    unsigned totalDeclaredFieldSize = 0;
-
-    AllocMemTracker dummyAmTracker;
-
-    BaseDomain * pDomain = pMT->GetDomain();
-    MethodTableBuilder builder(pMT, pClass,
-                               pStackingAllocator,
-                               &dummyAmTracker);
-
+    TypeHandle thisTH(pMT);
+    SigTypeContext typeContext(thisTH);
     MethodTableBuilder::bmtGenericsInfo genericsInfo;
+    genericsInfo.typeContext = typeContext;
 
-    OBJECTREF pThrowable = NULL;
-    GCPROTECT_BEGIN(pThrowable);
+    builder.bmtGenerics = &genericsInfo;
 
-    builder.SetBMTData(pMT->GetLoaderAllocator(),
-                       &bmtError,
-                       &bmtProp,
-                       NULL,
-                       NULL,
-                       NULL,
-                       &bmtMetaData,
-                       NULL,
-                       &bmtMFDescs,
-                       &bmtFP,
-                       &bmtInternal,
-                       NULL,
-                       NULL,
-                       &genericsInfo,
-                       &bmtEnumFields);
-
-    EX_TRY
     {
         GCX_PREEMP();
-        builder.InitializeFieldDescs(pFD,
-                                 pLayoutRawFieldInfos,
-                                 &bmtInternal,
-                                 &genericsInfo,
-                                 &bmtMetaData,
-                                 &bmtEnumFields,
-                                 &bmtError,
-                                 &pByValueClassCache,
-                                 &bmtMFDescs,
-                                 &bmtFP,
-                                 &totalDeclaredFieldSize);
+        unsigned totalDeclaredFieldSize = 0;
+        builder.InitializeFieldDescs(pFD, &pByValueClassCache, &totalDeclaredFieldSize);
     }
-    EX_CATCH_THROWABLE(&pThrowable);
 
     dummyAmTracker.SuppressRelease();
-
-    // Restore now
-    pClass->SetNumInstanceFields(wNumInstanceFields);
-    pClass->SetNumStaticFields(wNumStaticFields);
-
-    // PERF: For now, we turn off the fast equality check for valuetypes when a
-    // a field is modified by EnC. Consider doing a check and setting the bit only when
-    // necessary.
-    if (pMT->IsValueType())
-    {
-        pClass->SetIsNotTightlyPacked();
-    }
-
-    if (pThrowable != NULL)
-    {
-        COMPlusThrow(pThrowable);
-    }
-
-    GCPROTECT_END();
 
     pFD->SetMethodTable(pMT);
 
     // We set this when we first created the FieldDesc, but initializing the FieldDesc
     // may have overwritten it so we need to set it again.
     pFD->SetEnCNew();
-
-    return;
 }
 
 //---------------------------------------------------------------------------------------
@@ -428,22 +250,25 @@ VOID EEClass::FixupFieldDescForEnC(MethodTable * pMT, EnCFieldDesc *pFD, mdField
 // AddField - called when a new field is added by EnC
 //
 // Since instances of this class may already exist on the heap, we can't change the
-// runtime layout of the object to accomodate the new field.  Instead we hang the field
+// runtime layout of the object to accommodate the new field.  Instead we hang the field
 // off the syncblock (for instance fields) or in the FieldDesc for static fields.
 //
 // Here we just create the FieldDesc and link it to the class.  The actual storage will
 // be created lazily on demand.
 //
-HRESULT EEClass::AddField(MethodTable * pMT, mdFieldDef fieldDef, EnCFieldDesc **ppNewFD)
+HRESULT EEClass::AddField(MethodTable* pMT, mdFieldDef fieldDef, FieldDesc** ppNewFD)
 {
     CONTRACTL
     {
         THROWS;
         GC_NOTRIGGER;
-        MODE_COOPERATIVE;
+        MODE_PREEMPTIVE;
+        PRECONDITION(pMT != NULL);
+        PRECONDITION(ppNewFD != NULL);
     }
     CONTRACTL_END;
 
+    HRESULT hr;
     Module * pModule = pMT->GetModule();
     IMDInternalImport *pImport = pModule->GetMDImport();
 
@@ -455,7 +280,7 @@ HRESULT EEClass::AddField(MethodTable * pMT, mdFieldDef fieldDef, EnCFieldDesc *
         {
             szFieldName = "Invalid FieldDef record";
         }
-        LOG((LF_ENC, LL_INFO100, "EEClass::AddField %s\n", szFieldName));
+        LOG((LF_ENC, LL_INFO100, "EEClass::AddField '%s' tok:0x%08x\n", szFieldName, fieldDef));
     }
 #endif //LOGGING
 
@@ -471,6 +296,103 @@ HRESULT EEClass::AddField(MethodTable * pMT, mdFieldDef fieldDef, EnCFieldDesc *
     DWORD dwFieldAttrs;
     IfFailThrow(pImport->GetFieldDefProps(fieldDef, &dwFieldAttrs));
 
+    FieldDesc* pNewFD;
+    if (FAILED(hr = AddFieldDesc(pMT, fieldDef, dwFieldAttrs, &pNewFD)))
+    {
+        LOG((LF_ENC, LL_INFO100, "EEClass::AddField failed: 0x%08x\n", hr));
+        return hr;
+    }
+
+    // Store the FieldDesc into the module's field list
+    // This should not be done for instantiated types. Only fields on the
+    // open type are added to the module directly. This check is a
+    // consequence of calling AddField() for EnC static fields on generics.
+    if (!pMT->HasInstantiation())
+    {
+        pModule->EnsureFieldDefCanBeStored(fieldDef);
+        pModule->EnsuredStoreFieldDef(fieldDef, pNewFD);
+    }
+    LOG((LF_ENC, LL_INFO100, "EEClass::AddField Added pFD:%p for token 0x%08x\n",
+        pNewFD, fieldDef));
+
+    // If the type is generic, then we need to update all existing instantiated types
+    if (pMT->IsGenericTypeDefinition())
+    {
+        LOG((LF_ENC, LL_INFO100, "EEClass::AddField Looking for existing instantiations in all assemblies\n"));
+
+        PTR_AppDomain pDomain = AppDomain::GetCurrentDomain();
+        AppDomain::AssemblyIterator appIt = pDomain->IterateAssembliesEx((AssemblyIterationFlags)(kIncludeLoaded | kIncludeExecution));
+
+        bool isStaticField = !!pNewFD->IsStatic();
+        CollectibleAssemblyHolder<Assembly*> pAssembly;
+        while (appIt.Next(pAssembly.This()) && SUCCEEDED(hr))
+        {
+            Module* pMod = pAssembly->GetModule();
+            LOG((LF_ENC, LL_INFO100, "EEClass::AddField Checking: %s mod:%p\n", pMod->GetDebugName(), pMod));
+
+            EETypeHashTable* paramTypes = pMod->GetAvailableParamTypes();
+            CrstHolder ch(pMod->GetClassLoader()->GetAvailableTypesLock());
+
+            EETypeHashTable::Iterator it(paramTypes);
+            EETypeHashEntry* pEntry;
+            while (paramTypes->FindNext(&it, &pEntry))
+            {
+                TypeHandle th = pEntry->GetTypeHandle();
+                if (th.IsTypeDesc())
+                    continue;
+
+                // For instance fields we only update instantiations of the generic MethodTable we updated above.
+                // For static fields we update the the canonical version and instantiations.
+                MethodTable* pMTMaybe = th.AsMethodTable();
+                if ((!isStaticField && !pMTMaybe->IsCanonicalMethodTable())
+                    || !pMT->HasSameTypeDefAs(pMTMaybe))
+                {
+                    continue;
+                }
+
+                FieldDesc* pNewFDUnused;
+                if (FAILED(AddFieldDesc(pMTMaybe, fieldDef, dwFieldAttrs, &pNewFDUnused)))
+                {
+                    LOG((LF_ENC, LL_INFO100, "EEClass::AddField failed: 0x%08x\n", hr));
+                    EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_FAILFAST,
+                        W("Failed to add field to existing instantiated type instance"));
+                    return E_FAIL;
+                }
+            }
+        }
+    }
+
+    // Success, return the new FieldDesc
+    *ppNewFD = pNewFD;
+
+    return S_OK;
+}
+
+//---------------------------------------------------------------------------------------
+//
+// AddFieldDesc - called when a new FieldDesc needs to be created and added for EnC
+//
+HRESULT EEClass::AddFieldDesc(
+    MethodTable* pMT,
+    mdMethodDef fieldDef,
+    DWORD dwFieldAttrs,
+    FieldDesc** ppNewFD)
+{
+    CONTRACTL
+    {
+        THROWS;
+        GC_NOTRIGGER;
+        MODE_PREEMPTIVE;
+        PRECONDITION(pMT != NULL);
+        PRECONDITION(ppNewFD != NULL);
+    }
+    CONTRACTL_END;
+
+    LOG((LF_ENC, LL_INFO100, "EEClass::AddFieldDesc pMT:%p, %s <- tok:0x%08x attrs:%u\n",
+        pMT, pMT->debug_m_szClassName, fieldDef, dwFieldAttrs));
+
+    Module* pModule = pMT->GetModule();
+    IMDInternalImport* pImport = pModule->GetMDImport();
     LoaderAllocator* pAllocator = pMT->GetLoaderAllocator();
 
     // Here we allocate a FieldDesc and set just enough info to be able to fix it up later
@@ -488,26 +410,26 @@ HRESULT EEClass::AddField(MethodTable * pMT, mdFieldDef fieldDef, EnCFieldDesc *
     // Get the EnCEEClassData for this class
     // Don't adjust EEClass stats b/c EnC fields shouldn't touch EE data structures.
     // We'll just update our private EnC structures instead.
-    EnCEEClassData *pEnCClass = ((EditAndContinueModule*)pModule)->GetEnCEEClassData(pMT);
-    if (! pEnCClass)
+    _ASSERTE(pModule->IsEditAndContinueEnabled());
+    EnCEEClassData* pEnCClass = ((EditAndContinueModule*)pModule)->GetEnCEEClassData(pMT);
+    if (!pEnCClass)
         return E_FAIL;
 
     // Add the field element to the list of added fields for this class
     pEnCClass->AddField(pAddedField);
-
-    // Store the FieldDesc into the module's field list
-    {
-        CONTRACT_VIOLATION(ThrowsViolation); // B#25680 (Fix Enc violations): Must handle OOM's from Ensure
-        pModule->EnsureFieldDefCanBeStored(fieldDef);
-    }
-    pModule->EnsuredStoreFieldDef(fieldDef, pNewFD);
     pNewFD->SetMethodTable(pMT);
 
+    // Record that we are adding a new static field. Static generic fields
+    // are added for currently non-instantiated types during type construction.
+    // We want to limit the cost of making the check at that time so we use
+    // a bit on the EEClass to indicate we've added a static field and it should
+    // be checked.
+    if (IsFdStatic(dwFieldAttrs))
+        pMT->GetClass()->SetHasEnCStaticFields();
+
     // Success, return the new FieldDesc
-    if (ppNewFD)
-    {
-        *ppNewFD = pNewFD;
-    }
+    *ppNewFD = pNewFD;
+
     return S_OK;
 }
 
@@ -516,20 +438,25 @@ HRESULT EEClass::AddField(MethodTable * pMT, mdFieldDef fieldDef, EnCFieldDesc *
 // AddMethod - called when a new method is added by EnC
 //
 // The method has already been added to the metadata with token methodDef.
-// Create a new MethodDesc for the method.
+// Create a new MethodDesc for the method, add to the associated EEClass and
+// update any existing Generic instantiations if the MethodTable represents a
+// generic type.
 //
-HRESULT EEClass::AddMethod(MethodTable * pMT, mdMethodDef methodDef, RVA newRVA, MethodDesc **ppMethod)
+HRESULT EEClass::AddMethod(MethodTable* pMT, mdMethodDef methodDef, MethodDesc** ppMethod)
 {
     CONTRACTL
     {
         THROWS;
         GC_NOTRIGGER;
-        MODE_COOPERATIVE;
+        MODE_PREEMPTIVE;
+        PRECONDITION(pMT != NULL);
+        PRECONDITION(methodDef != mdTokenNil);
     }
     CONTRACTL_END;
 
-    Module * pModule = pMT->GetModule();
-    IMDInternalImport *pImport = pModule->GetMDImport();
+    HRESULT hr;
+    Module* pModule = pMT->GetModule();
+    IMDInternalImport* pImport = pModule->GetMDImport();
 
 #ifdef LOGGING
     if (LoggingEnabled())
@@ -539,26 +466,23 @@ HRESULT EEClass::AddMethod(MethodTable * pMT, mdMethodDef methodDef, RVA newRVA,
         {
             szMethodName = "Invalid MethodDef record";
         }
-        LOG((LF_ENC, LL_INFO100, "EEClass::AddMethod %s\n", szMethodName));
+        LOG((LF_ENC, LL_INFO100, "EEClass::AddMethod '%s' tok:0x%08x\n", szMethodName, methodDef));
     }
 #endif //LOGGING
 
     DWORD dwDescrOffset;
     DWORD dwImplFlags;
-    HRESULT hr = S_OK;
-
     if (FAILED(pImport->GetMethodImplProps(methodDef, &dwDescrOffset, &dwImplFlags)))
-    {
         return COR_E_BADIMAGEFORMAT;
-    }
 
     DWORD dwMemberAttrs;
-    IfFailThrow(pImport->GetMethodDefProps(methodDef, &dwMemberAttrs));
+    if (FAILED(pImport->GetMethodDefProps(methodDef, &dwMemberAttrs)))
+        return COR_E_BADIMAGEFORMAT;
 
     // Refuse to add other special cases
-    if (IsReallyMdPinvokeImpl(dwMemberAttrs)  ||
-         (pMT->IsInterface() && !IsMdStatic(dwMemberAttrs)) ||
-         IsMiRuntime(dwImplFlags))
+    if (IsReallyMdPinvokeImpl(dwMemberAttrs)
+        || (pMT->IsInterface() && !IsMdStatic(dwMemberAttrs))
+        || IsMiRuntime(dwImplFlags))
     {
         _ASSERTE(! "**Error** EEClass::AddMethod only IL private non-virtual methods are supported");
         LOG((LF_ENC, LL_INFO100, "**Error** EEClass::AddMethod only IL private non-virtual methods are supported\n"));
@@ -568,7 +492,7 @@ HRESULT EEClass::AddMethod(MethodTable * pMT, mdMethodDef methodDef, RVA newRVA,
 #ifdef _DEBUG
     // Validate that this methodDef correctly has a parent typeDef
     mdTypeDef   parentTypeDef;
-    if (FAILED(hr = pImport->GetParentToken(methodDef, &parentTypeDef)))
+    if (FAILED(pImport->GetParentToken(methodDef, &parentTypeDef)))
     {
         _ASSERTE(! "**Error** EEClass::AddMethod parent token not found");
         LOG((LF_ENC, LL_INFO100, "**Error** EEClass::AddMethod parent token not found\n"));
@@ -576,58 +500,309 @@ HRESULT EEClass::AddMethod(MethodTable * pMT, mdMethodDef methodDef, RVA newRVA,
     }
 #endif // _DEBUG
 
-    EEClass * pClass = pMT->GetClass();
+    // All task-returning methods need two MethodDescs: the task-returning variant and
+    // an async variant with Task/ValueTask stripped from the return type. This matches
+    // the normal type loading path in MethodTableBuilder::EnumerateClassMethods.
+    // For IsMiAsync methods the primary is a thunk and the async variant owns the IL;
+    // for non-IsMiAsync methods the primary owns the IL and the async variant is a thunk.
+    //
+    // The normal type loading path also creates a void-returning ReturnDroppingThunk
+    // for covariant virtual overrides (base returns Task, derived returns Task<T>).
+    // EnC-added methods cannot be METHOD_IMPL overrides, so that case does not apply here.
+    // Note: There are multiple corner-case bugs here we are choosing not to address:
+    // 1. The types might not be the well-known Task/ValueTask types from 
+    //    System.Private.CoreLib. We won't know the answer until after 
+    //    ClassifyMethodReturnKind returns.
+    // 2. Even if the types are the well-known types that alone doesn't guarantee this 
+    //    call won't trigger a GC.
+    // Accepted as Won't Fix given this requires an unlikely combination events during 
+    // an EnC operation while debugging.
+    AsyncMethodFlags primaryAsyncFlags = AsyncMethodFlags::None;
+    AsyncMethodFlags variantAsyncFlags = AsyncMethodFlags::None;
+    BYTE* pAsyncVariantSig = NULL;
+    ULONG cAsyncVariantSig = 0;
 
-    // @todo: OOM: InitMethodDesc will allocate loaderheap memory but leak it
-    //   on failure. This AllocMemTracker should be replaced with a real one.
-    AllocMemTracker dummyAmTracker;
+    {
+        ULONG sigLen;
+        PCCOR_SIGNATURE pMemberSignature;
+        if (FAILED(pImport->GetSigOfMethodDef(methodDef, &sigLen, &pMemberSignature)))
+            return COR_E_BADIMAGEFORMAT;
+
+        ULONG offsetOfAsyncDetails = 0;
+        bool returnsValueTask = false;
+        MethodReturnKind returnKind;
+        {
+            // ClassifyMethodReturnKind calls IsTypeDefOrRefImplementedInSystemModule which
+            // does type resolution that may trigger GC. We suppress GC_NOTRIGGER here because
+            // we're only resolving well-known system types (Task/ValueTask) in practice.
+            CONTRACT_VIOLATION(GCViolation);
+            ULONG elementTypeLength = 0;
+            returnKind = ClassifyMethodReturnKind(
+                SigPointer(pMemberSignature, sigLen), pModule, &offsetOfAsyncDetails, &elementTypeLength, &returnsValueTask);
+        }
+
+        if (IsTaskReturning(returnKind))
+        {
+            primaryAsyncFlags = AsyncMethodFlags::ReturnsTaskOrValueTask;
+            if (IsMiAsync(dwImplFlags))
+                primaryAsyncFlags |= AsyncMethodFlags::Thunk;
+
+            variantAsyncFlags = AsyncMethodFlags::AsyncCall | AsyncMethodFlags::IsAsyncVariant;
+            if (returnsValueTask)
+                variantAsyncFlags |= AsyncMethodFlags::IsAsyncVariantForValueTask;
+            if (!IsMiAsync(dwImplFlags))
+                variantAsyncFlags |= AsyncMethodFlags::Thunk;
+
+            // Build the async variant signature by stripping Task/ValueTask from the return type.
+            // NonGenericTask: "Task Method(args)" -> "void Method(args)"
+            // GenericTask:    "Task<T> Method(args)" -> "T Method(args)"
+            ULONG tokenLen = CorSigUncompressedDataSize(
+                &pMemberSignature[offsetOfAsyncDetails +
+                    (returnKind == MethodReturnKind::NonGenericTaskReturningMethod ? 1 : 2)]);
+
+            ULONG taskTypePrefixSize;
+            ULONG taskTypePrefixReplacementSize;
+            if (returnKind == MethodReturnKind::NonGenericTaskReturningMethod)
+            {
+                taskTypePrefixSize = 1 + tokenLen;     // E_T_CLASS/E_T_VALUETYPE <TokenOfTask>
+                taskTypePrefixReplacementSize = 1;     // ELEMENT_TYPE_VOID
+            }
+            else
+            {
+                taskTypePrefixSize = 2 + tokenLen + 1; // E_T_GENERICINST E_T_CLASS/E_T_VALUETYPE <TokenOfTask> 1
+                taskTypePrefixReplacementSize = 0;
+            }
+
+            cAsyncVariantSig = sigLen - taskTypePrefixSize + taskTypePrefixReplacementSize;
+            LoaderAllocator* pAllocator = pMT->GetLoaderAllocator();
+            pAsyncVariantSig = (BYTE*)(void*)pAllocator->GetHighFrequencyHeap()->AllocMem(S_SIZE_T(cAsyncVariantSig));
+
+            ULONG originalRemainingSigOffset = offsetOfAsyncDetails + taskTypePrefixSize;
+            ULONG newRemainingSigOffset = offsetOfAsyncDetails + taskTypePrefixReplacementSize;
+
+            memcpy(pAsyncVariantSig, pMemberSignature, offsetOfAsyncDetails);
+            memcpy(pAsyncVariantSig + newRemainingSigOffset,
+                   pMemberSignature + originalRemainingSigOffset,
+                   sigLen - originalRemainingSigOffset);
+
+            if (returnKind == MethodReturnKind::NonGenericTaskReturningMethod)
+                pAsyncVariantSig[newRemainingSigOffset - 1] = ELEMENT_TYPE_VOID;
+        }
+        else if (IsMiAsync(dwImplFlags))
+        {
+            // IsMiAsync but not task-returning (e.g. infrastructure Await helpers).
+            // Not supported for EnC.
+            LOG((LF_ENC, LL_INFO100,
+                "EEClass::AddMethod rejecting non-task-returning async method (methodDef: 0x%08x)\n",
+                methodDef));
+            return CORDBG_E_ENC_EDIT_NOT_SUPPORTED;
+        }
+    }
+
+    // Create the primary MethodDesc (task-returning for async methods, or the only MethodDesc for non-async).
+    MethodDesc* pNewMD;
+    if (FAILED(hr = AddMethodDesc(pMT, methodDef, dwImplFlags, dwMemberAttrs,
+                                  primaryAsyncFlags, NULL, 0, &pNewMD)))
+    {
+        LOG((LF_ENC, LL_INFO100, "EEClass::AddMethod failed: 0x%08x\n", hr));
+        return hr;
+    }
+
+    // Store the task-returning (or only) variant in the module's method lookup.
+    // The async variant is found via IntroducedMethodIterator, not stored here.
+    pModule->EnsureMethodDefCanBeStored(methodDef);
+    pModule->EnsuredStoreMethodDef(methodDef, pNewMD);
+
+    LOG((LF_ENC, LL_INFO100, "EEClass::AddMethod Added pMD:%p for token 0x%08x\n",
+        pNewMD, methodDef));
+
+    // Create the async variant eagerly alongside the primary.
+    if (pAsyncVariantSig != NULL)
+    {
+        MethodDesc* pAsyncVariant = NULL;
+        if (FAILED(hr = AddMethodDesc(pMT, methodDef, dwImplFlags, dwMemberAttrs,
+                                      variantAsyncFlags, pAsyncVariantSig, cAsyncVariantSig, &pAsyncVariant)))
+        {
+            LOG((LF_ENC, LL_INFO100, "EEClass::AddMethod async variant failed: 0x%08x\n", hr));
+            return hr;
+        }
+
+        LOG((LF_ENC, LL_INFO100, "EEClass::AddMethod Added async variant pMD:%p for token 0x%08x\n",
+            pAsyncVariant, methodDef));
+    }
+
+    // If the type is generic, then we need to update all existing instantiated types
+    if (pMT->IsGenericTypeDefinition())
+    {
+        LOG((LF_ENC, LL_INFO100, "EEClass::AddMethod Looking for existing instantiations in all assemblies\n"));
+
+        PTR_AppDomain pDomain = AppDomain::GetCurrentDomain();
+        AppDomain::AssemblyIterator appIt = pDomain->IterateAssembliesEx((AssemblyIterationFlags)(kIncludeLoaded | kIncludeExecution));
+
+        CollectibleAssemblyHolder<Assembly*> pAssembly;
+        while (appIt.Next(pAssembly.This()) && SUCCEEDED(hr))
+        {
+            Module* pMod = pAssembly->GetModule();
+            LOG((LF_ENC, LL_INFO100, "EEClass::AddMethod Checking: %s mod:%p\n", pMod->GetDebugName(), pMod));
+
+            EETypeHashTable* paramTypes = pMod->GetAvailableParamTypes();
+            CrstHolder ch(pMod->GetClassLoader()->GetAvailableTypesLock());
+
+            EETypeHashTable::Iterator it(paramTypes);
+            EETypeHashEntry* pEntry;
+            while (paramTypes->FindNext(&it, &pEntry))
+            {
+                TypeHandle th = pEntry->GetTypeHandle();
+                if (th.IsTypeDesc())
+                    continue;
+
+                // Only update instantiations of the generic MethodTable we updated above.
+                MethodTable* pMTMaybe = th.AsMethodTable();
+                if (!pMTMaybe->IsCanonicalMethodTable() || !pMT->HasSameTypeDefAs(pMTMaybe))
+                {
+                    continue;
+                }
+
+                // Create a primary MethodDesc on this instantiation.
+                MethodDesc* pNewMDUnused;
+                if (FAILED(AddMethodDesc(pMTMaybe, methodDef, dwImplFlags, dwMemberAttrs,
+                                         primaryAsyncFlags, NULL, 0, &pNewMDUnused)))
+                {
+                    LOG((LF_ENC, LL_INFO100, "EEClass::AddMethod failed: 0x%08x\n", hr));
+                    EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_FAILFAST,
+                        W("Failed to add method to existing instantiated type instance"));
+                    return E_FAIL;
+                }
+
+                // Also create the async variant eagerly on this instantiation.
+                if (pAsyncVariantSig != NULL)
+                {
+                    MethodDesc* pInstVariant = NULL;
+                    if (FAILED(AddMethodDesc(pMTMaybe, methodDef, dwImplFlags, dwMemberAttrs,
+                                             variantAsyncFlags, pAsyncVariantSig, cAsyncVariantSig, &pInstVariant)))
+                    {
+                        LOG((LF_ENC, LL_INFO100, "EEClass::AddMethod async variant failed on instantiation: 0x%08x\n", hr));
+                        EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_FAILFAST,
+                            W("Failed to add async variant to existing instantiated type instance"));
+                        return E_FAIL;
+                    }
+                }
+            }
+        }
+    }
+
+    // Success - return the new MethodDesc
+    if (ppMethod)
+        *ppMethod = pNewMD;
+
+    return S_OK;
+}
+
+//---------------------------------------------------------------------------------------
+//
+// AddMethodDesc - called when a new MethodDesc needs to be created and added for EnC
+//
+HRESULT EEClass::AddMethodDesc(
+    MethodTable* pMT,
+    mdMethodDef methodDef,
+    DWORD dwImplFlags,
+    DWORD dwMemberAttrs,
+    AsyncMethodFlags asyncFlags,
+    PCCOR_SIGNATURE pAsyncSig,
+    DWORD cbAsyncSig,
+    MethodDesc** ppNewMD)
+{
+    CONTRACTL
+    {
+        THROWS;
+        GC_NOTRIGGER;
+        MODE_PREEMPTIVE;
+        PRECONDITION(pMT != NULL);
+        PRECONDITION(methodDef != mdTokenNil);
+        PRECONDITION(ppNewMD != NULL);
+    }
+    CONTRACTL_END;
+
+    LOG((LF_ENC, LL_INFO100, "EEClass::AddMethodDesc pMT:%p, %s <- tok:0x%08x flags:%u attrs:%u\n",
+        pMT, pMT->debug_m_szClassName, methodDef, dwImplFlags, dwMemberAttrs));
+
+    HRESULT hr;
+    Module* pModule = pMT->GetModule();
+    IMDInternalImport* pImport = pModule->GetMDImport();
+
+    // Check if signature is generic.
+    ULONG sigLen;
+    PCCOR_SIGNATURE sig;
+    if (FAILED(hr = pImport->GetSigOfMethodDef(methodDef, &sigLen, &sig)))
+        return hr;
+
+    uint32_t callConv = CorSigUncompressData(sig);
+    DWORD classification = (callConv & IMAGE_CEE_CS_CALLCONV_GENERIC)
+        ? mcInstantiated
+        : mcIL;
+
+    bool hasAsyncData = (asyncFlags != AsyncMethodFlags::None);
 
     LoaderAllocator* pAllocator = pMT->GetLoaderAllocator();
 
-    // Create a new MethodDescChunk to hold the new MethodDesc
-    // Create the chunk somewhere we'll know is within range of the VTable
+    // [TODO] OOM: InitMethodDesc will allocate loaderheap memory but leak it
+    //   on failure. This AllocMemTracker should be replaced with a real one.
+    AllocMemTracker dummyAmTracker;
+
+    // Create a new MethodDescChunk to hold the new MethodDesc.
+    // Create the chunk somewhere we'll know is within range of the VTable.
     MethodDescChunk *pChunk = MethodDescChunk::CreateChunk(pAllocator->GetHighFrequencyHeap(),
-                                                           1,               // methodDescCount
-                                                           mcInstantiated,
-                                                           TRUE /* fNonVtableSlot */,
-                                                           TRUE /* fNativeCodeSlot */,
-                                                           FALSE /* fComPlusCallInfo */,
-                                                           pMT,
-                                                           &dummyAmTracker);
+                                                            1,   // methodDescCount
+                                                            classification,
+                                                            TRUE, // fNonVtableSlot
+                                                            TRUE, // fNativeCodeSlot
+                                                            hasAsyncData, /* HasAsyncMethodData */
+                                                            pMT,
+                                                            &dummyAmTracker);
 
     // Get the new MethodDesc (Note: The method desc memory is zero initialized)
-    MethodDesc *pNewMD = pChunk->GetFirstMethodDesc();
+    MethodDesc* pNewMD = pChunk->GetFirstMethodDesc();
 
+    EEClass* pClass = pMT->GetClass();
 
-    // Initialize the new MethodDesc
-
-     // This method runs on a debugger thread. Debugger threads do not have Thread object that caches StackingAllocator.
-     // Use a local StackingAllocator instead.
+        // This method runs on a debugger thread. Debugger threads do not have Thread object
+        // that caches StackingAllocator, use a local StackingAllocator instead.
     StackingAllocator stackingAllocator;
 
     MethodTableBuilder builder(pMT,
-                               pClass,
-                               &stackingAllocator,
-                               &dummyAmTracker);
+                                pClass,
+                                &stackingAllocator,
+                                &dummyAmTracker);
+
+    builder.bmtAllocator = pAllocator;
+    builder.bmtInternal.pModule = pModule;
+
+    // Initialize the new MethodDesc
     EX_TRY
     {
-        INDEBUG(LPCSTR debug_szFieldName);
-        INDEBUG(if (FAILED(pImport->GetNameOfMethodDef(methodDef, &debug_szFieldName))) { debug_szFieldName = "Invalid MethodDef record"; });
+        INDEBUG(LPCSTR debug_szMethodName);
+        INDEBUG(if (FAILED(pImport->GetNameOfMethodDef(methodDef, &debug_szMethodName))) { debug_szMethodName = "Invalid MethodDef record"; });
         builder.InitMethodDesc(pNewMD,
-                               mcInstantiated,  // Use instantiated methoddesc for EnC added methods to get space for slot
-                               methodDef,
-                               dwImplFlags,
-                               dwMemberAttrs,
-                               TRUE,            // fEnC
-                               newRVA,
-                               pImport,
-                               NULL
-                               COMMA_INDEBUG(debug_szFieldName)
-                               COMMA_INDEBUG(pMT->GetDebugClassName())
-                               COMMA_INDEBUG(NULL)
-                              );
+                                classification,
+                                methodDef,
+                                dwImplFlags,
+                                dwMemberAttrs,
+                                TRUE,   // fEnC
+                                0,      // RVA - non-zero only for PInvoke
+                                pImport,
+                                NULL,
+                                Signature(pAsyncSig, cbAsyncSig),
+                                asyncFlags
+                                COMMA_INDEBUG(debug_szMethodName)
+                                COMMA_INDEBUG(pMT->GetDebugClassName())
+                                COMMA_INDEBUG(NULL)
+                                );
 
-        pNewMD->SetTemporaryEntryPoint(pAllocator, &dummyAmTracker);
+        pNewMD->SetTemporaryEntryPoint(&dummyAmTracker);
+
+        // [TODO] if an exception is thrown, asserts will fire in EX_CATCH_HRESULT()
+        // during an EnC operation due to the debugger thread not being able to
+        // transition to COOP mode.
     }
     EX_CATCH_HRESULT(hr);
     if (S_OK != hr)
@@ -641,22 +816,12 @@ HRESULT EEClass::AddMethod(MethodTable * pMT, mdMethodDef methodDef, RVA newRVA,
 
     pClass->AddChunk(pChunk);
 
-    // Store the new MethodDesc into the collection for this class
-    pModule->EnsureMethodDefCanBeStored(methodDef);
-    pModule->EnsuredStoreMethodDef(methodDef, pNewMD);
+    *ppNewMD = pNewMD;
 
-    LOG((LF_ENC, LL_INFO100, "EEClass::AddMethod new methoddesc %p for token %p\n", pNewMD, methodDef));
-
-    // Success - return the new MethodDesc
-    _ASSERTE( SUCCEEDED(hr) );
-    if (ppMethod)
-    {
-        *ppMethod = pNewMD;
-    }
     return S_OK;
 }
 
-#endif // EnC_SUPPORTED
+#endif // FEATURE_METADATA_UPDATER
 
 //---------------------------------------------------------------------------------------
 //
@@ -725,7 +890,7 @@ EEClass::CheckVarianceInSig(
                 return TRUE;
 
             // Covariant and contravariant parameters can *only* appear in resp. covariant and contravariant positions
-            return ((CorGenericParamAttr) (pVarianceInfo[index]) == position);
+            return (CorGenericParamAttr) (pVarianceInfo[index]) == position;
         }
 
         case ELEMENT_TYPE_GENERICINST:
@@ -759,35 +924,52 @@ EEClass::CheckVarianceInSig(
                 if (!ClassLoader::ResolveTokenToTypeDefThrowing(pModule, typeref, &pDefModule, &typeDef))
                     return TRUE;
 
-                HENUMInternal   hEnumGenericPars;
-                if (FAILED(pDefModule->GetMDImport()->EnumInit(mdtGenericParam, typeDef, &hEnumGenericPars)))
-                {
-                    pDefModule->GetAssembly()->ThrowTypeLoadException(pDefModule->GetMDImport(), typeDef, IDS_CLASSLOAD_BADFORMAT);
-                }
+                bool foundHasVarianceResult;
 
-                for (unsigned i = 0; i < ntypars; i++)
+                if (!pDefModule->m_pTypeGenericInfoMap->HasVariance(typeDef, &foundHasVarianceResult) && foundHasVarianceResult)
                 {
-                    mdGenericParam tkTyPar;
-                    pDefModule->GetMDImport()->EnumNext(&hEnumGenericPars, &tkTyPar);
-                    DWORD flags;
-                    if (FAILED(pDefModule->GetMDImport()->GetGenericParamProps(tkTyPar, NULL, &flags, NULL, NULL, NULL)))
+                    // Fast path, now that we know there isn't variance
+                    uint32_t genericArgCount = pDefModule->m_pTypeGenericInfoMap->GetGenericArgumentCount(typeDef, pDefModule->GetMDImport());
+                    for (uint32_t iGenericArgCount = 0; iGenericArgCount < genericArgCount; iGenericArgCount++)
+                    {
+                        if (!CheckVarianceInSig(numGenericArgs, pVarianceInfo, pModule, psig, gpNonVariant))
+                            return FALSE;
+
+                        IfFailThrow(psig.SkipExactlyOne());
+                    }
+                }
+                else
+                {
+                    HENUMInternal   hEnumGenericPars;
+                    if (FAILED(pDefModule->GetMDImport()->EnumInit(mdtGenericParam, typeDef, &hEnumGenericPars)))
                     {
                         pDefModule->GetAssembly()->ThrowTypeLoadException(pDefModule->GetMDImport(), typeDef, IDS_CLASSLOAD_BADFORMAT);
                     }
-                    CorGenericParamAttr genPosition = (CorGenericParamAttr) (flags & gpVarianceMask);
-                    // If the surrounding context is contravariant then we need to flip the variance of this parameter
-                    if (position == gpContravariant)
-                    {
-                        genPosition = genPosition == gpCovariant ? gpContravariant
-                                    : genPosition == gpContravariant ? gpCovariant
-                                    : gpNonVariant;
-                    }
-                    if (!CheckVarianceInSig(numGenericArgs, pVarianceInfo, pModule, psig, genPosition))
-                        return FALSE;
 
-                    IfFailThrow(psig.SkipExactlyOne());
+                    for (unsigned i = 0; i < ntypars; i++)
+                    {
+                        mdGenericParam tkTyPar;
+                        pDefModule->GetMDImport()->EnumNext(&hEnumGenericPars, &tkTyPar);
+                        DWORD flags;
+                        if (FAILED(pDefModule->GetMDImport()->GetGenericParamProps(tkTyPar, NULL, &flags, NULL, NULL, NULL)))
+                        {
+                            pDefModule->GetAssembly()->ThrowTypeLoadException(pDefModule->GetMDImport(), typeDef, IDS_CLASSLOAD_BADFORMAT);
+                        }
+                        CorGenericParamAttr genPosition = (CorGenericParamAttr) (flags & gpVarianceMask);
+                        // If the surrounding context is contravariant then we need to flip the variance of this parameter
+                        if (position == gpContravariant)
+                        {
+                            genPosition = genPosition == gpCovariant ? gpContravariant
+                                        : genPosition == gpContravariant ? gpCovariant
+                                        : gpNonVariant;
+                        }
+                        if (!CheckVarianceInSig(numGenericArgs, pVarianceInfo, pModule, psig, genPosition))
+                            return FALSE;
+
+                        IfFailThrow(psig.SkipExactlyOne());
+                    }
+                    pDefModule->GetMDImport()->EnumClose(&hEnumGenericPars);
                 }
-                pDefModule->GetMDImport()->EnumClose(&hEnumGenericPars);
             }
 
             return TRUE;
@@ -812,7 +994,7 @@ EEClass::CheckVarianceInSig(
                 uint32_t cArgs;
                 IfFailThrow(psig.GetData(&cArgs));
 
-                // Conservatively, assume non-variance of function pointer types
+                // Conservatively, assume non-variance of function pointer types, if we ever change this, update the TypeValidationChecker in crossgen2 also
                 if (!CheckVarianceInSig(numGenericArgs, pVarianceInfo, pModule, psig, gpNonVariant))
                     return FALSE;
 
@@ -912,6 +1094,81 @@ ClassLoader::LoadExactParentAndInterfacesTransitively(MethodTable *pMT)
 #endif //_DEBUG
 } // ClassLoader::LoadExactParentAndInterfacesTransitively
 
+namespace
+{
+#ifdef FEATURE_METADATA_UPDATER
+    void CreateAllEnCStaticFields(MethodTable* pMT, MethodTable* pMTCanon, EditAndContinueModule* pModule)
+    {
+        CONTRACTL
+        {
+            STANDARD_VM_CHECK;
+            PRECONDITION(CheckPointer(pMT));
+            PRECONDITION(pMT->HasInstantiation());
+            PRECONDITION(CheckPointer(pMTCanon));
+            PRECONDITION(pMTCanon->IsCanonicalMethodTable());
+            PRECONDITION(CheckPointer(pModule));
+        }
+        CONTRACTL_END;
+
+        LOG((LF_ENC, LL_INFO100, "CreateAllEnCStaticFields: pMT:%p pMTCanon:%p\n", pMT, pMTCanon));
+
+#ifdef _DEBUG
+        // Sanity check there is relevant EnC data.
+        EnCEEClassData* pEnCClass = pModule->GetEnCEEClassData(pMTCanon);
+        _ASSERTE(pEnCClass != NULL && pEnCClass->GetAddedStaticFields() > 0);
+#endif // _DEBUG
+
+        // Iterate over the Canonical MethodTable and see if there are any EnC static fields
+        // we need to add to the current MethodTable.
+        EncApproxFieldDescIterator canonFieldIter(
+            pMTCanon,
+            ApproxFieldDescIterator::STATIC_FIELDS,
+            (EncApproxFieldDescIterator::FixUpEncFields | EncApproxFieldDescIterator::OnlyEncFields));
+        PTR_FieldDesc pCanonFD;
+        while ((pCanonFD = canonFieldIter.Next()) != NULL)
+        {
+            mdFieldDef canonTok = pCanonFD->GetMemberDef();
+
+            // Check if the current MethodTable already has an entry for
+            // this FieldDesc.
+            bool shouldAdd = true;
+            EncApproxFieldDescIterator mtFieldIter(
+                pMT,
+                ApproxFieldDescIterator::STATIC_FIELDS,
+                (EncApproxFieldDescIterator::FixUpEncFields | EncApproxFieldDescIterator::OnlyEncFields));
+            PTR_FieldDesc pFD;
+            while ((pFD = mtFieldIter.Next()) != NULL)
+            {
+                mdFieldDef tok = pFD->GetMemberDef();
+                if (tok == canonTok)
+                {
+                    shouldAdd = false;
+                    break;
+                }
+            }
+
+            // The FieldDesc already exists, no need to add.
+            if (!shouldAdd)
+                continue;
+
+            LOG((LF_ENC, LL_INFO100, "CreateAllEnCStaticFields: Must add pCanonFD:%p\n", pCanonFD));
+
+            {
+                GCX_COOP();
+                PTR_FieldDesc pNewFD;
+                HRESULT hr = EEClass::AddField(pMT, canonTok, &pNewFD);
+                if (FAILED(hr))
+                {
+                    LOG((LF_ENC, LL_INFO100, "CreateAllEnCStaticFields failed: 0x%08x\n", hr));
+                    EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_FAILFAST,
+                        W("Failed to add static field to instantiated type instance"));
+                }
+            }
+        }
+    }
+#endif // FEATURE_METADATA_UPDATER
+}
+
 // CLASS_LOAD_EXACTPARENTS phase of loading:
 // * Load the base class at exact instantiation
 // * Recurse LoadExactParents up parent hierarchy
@@ -919,33 +1176,65 @@ ClassLoader::LoadExactParentAndInterfacesTransitively(MethodTable *pMT)
 // * Fixup vtable
 //
 /*static*/
-void ClassLoader::LoadExactParents(MethodTable *pMT)
+void ClassLoader::LoadExactParents(MethodTable* pMT)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         STANDARD_VM_CHECK;
         PRECONDITION(CheckPointer(pMT));
-        POSTCONDITION(pMT->CheckLoadLevel(CLASS_LOAD_EXACTPARENTS));
     }
-    CONTRACT_END;
-
-    MethodTable *pApproxParentMT = pMT->GetParentMethodTable();
+    CONTRACTL_END;
 
     if (!pMT->IsCanonicalMethodTable())
     {
         EnsureLoaded(TypeHandle(pMT->GetCanonicalMethodTable()), CLASS_LOAD_EXACTPARENTS);
     }
 
+    if (pMT->GetClass()->HasRVAStaticFields())
+    {
+        ApproxFieldDescIterator fdIterator(pMT, ApproxFieldDescIterator::STATIC_FIELDS);
+        FieldDesc* pFD = NULL;
+        while ((pFD = fdIterator.Next()) != NULL)
+        {
+            if (pFD->IsByValue() && pFD->IsRVA())
+            {
+                if (pFD->GetApproxFieldTypeHandleThrowing().GetMethodTable()->GetClass()->HasFieldsWhichMustBeInited())
+                {
+                    ThrowHR(COR_E_BADIMAGEFORMAT);
+                }
+            }
+        }
+    }
+
     LoadExactParentAndInterfacesTransitively(pMT);
 
-    MethodTableBuilder::CopyExactParentSlots(pMT, pApproxParentMT);
+    if (pMT->GetClass()->HasVTableMethodImpl())
+    {
+        MethodTableBuilder::CopyExactParentSlots(pMT);
+        PropagateCovariantReturnMethodImplSlots(pMT);
+    }
 
-    PropagateCovariantReturnMethodImplSlots(pMT);
+#ifdef FEATURE_METADATA_UPDATER
+    // Generics for EnC - create static FieldDescs.
+    // Instance FieldDescs don't need to be created here because they
+    // are added during type load by reading the updated metadata tables.
+    if (pMT->HasInstantiation())
+    {
+        // Check if the MethodTable has any EnC static fields
+        PTR_MethodTable pMTCanon = pMT->GetCanonicalMethodTable();
+        if (pMTCanon->GetClass()->HasEnCStaticFields())
+        {
+            Module* pModule = pMT->GetModule();
+            if (pModule->IsEditAndContinueEnabled())
+                CreateAllEnCStaticFields(pMT, pMTCanon, (EditAndContinueModule*)pModule);
+        }
+    }
+#endif // FEATURE_METADATA_UPDATER
 
     // We can now mark this type as having exact parents
     pMT->SetHasExactParent();
 
-    RETURN;
+    _ASSERTE(pMT->CheckLoadLevel(CLASS_LOAD_EXACTPARENTS));
 }
 
 // Get CorElementType of the reduced type of a type.
@@ -954,7 +1243,7 @@ void ClassLoader::LoadExactParents(MethodTable *pMT)
 /*static*/
 CorElementType ClassLoader::GetReducedTypeElementType(TypeHandle hType)
 {
-    CorElementType elemType = hType.GetVerifierCorElementType();
+    CorElementType elemType = hType.GetInternalCorElementType();
     switch (elemType)
     {
         case ELEMENT_TYPE_U1:
@@ -1122,7 +1411,7 @@ void ClassLoader::ValidateMethodsWithCovariantReturnTypes(MethodTable* pMT)
         return;
 
     // Step 1: Validate compatibility of return types on overriding methods
-    if (pMT->GetClass()->HasCovariantOverride() && (!pMT->GetModule()->IsReadyToRun() || !pMT->GetModule()->GetReadyToRunInfo()->SkipTypeValidation()))
+    if (pMT->GetClass()->HasCovariantOverride() && !pMT->GetModule()->SkipTypeValidation())
     {
         for (WORD i = 0; i < pParentMT->GetNumVirtuals(); i++)
         {
@@ -1130,7 +1419,7 @@ void ClassLoader::ValidateMethodsWithCovariantReturnTypes(MethodTable* pMT)
             {
                 // The real check is that the MethodDesc's must not match, but a simple VTable check will
                 // work most of the time, and is far faster than the GetMethodDescForSlot method.
-                _ASSERTE(pMT->GetMethodDescForSlot(i) == pParentMT->GetMethodDescForSlot(i));
+                _ASSERTE(pMT->GetMethodDescForSlot_NoThrow(i) == pParentMT->GetMethodDescForSlot_NoThrow(i));
                 continue;
             }
             MethodDesc* pMD = pMT->GetMethodDescForSlot(i);
@@ -1206,7 +1495,7 @@ void ClassLoader::PropagateCovariantReturnMethodImplSlots(MethodTable* pMT)
     //      }
     //      class B : A {
     //          [PreserveBaseOverrides]
-    //          DerivedRetType VirtualFunction() { .override A.VirtualFuncion }
+    //          DerivedRetType VirtualFunction() { .override A.VirtualFunction }
     //      }
     //      class C : B {
     //          MoreDerivedRetType VirtualFunction() { .override A.VirtualFunction }
@@ -1240,7 +1529,7 @@ void ClassLoader::PropagateCovariantReturnMethodImplSlots(MethodTable* pMT)
 
     if (pMT->GetClass()->HasVTableMethodImpl())
     {
-        MethodTable::MethodDataWrapper hMTData(MethodTable::GetMethodData(pMT, FALSE));
+        MethodTable::MethodDataWrapper hMTData(MethodTable::GetMethodData(pMT, MethodDataComputeOptions::CacheOnly));
 
         for (WORD i = 0; i < pParentMT->GetNumVirtuals(); i++)
         {
@@ -1248,7 +1537,7 @@ void ClassLoader::PropagateCovariantReturnMethodImplSlots(MethodTable* pMT)
             {
                 // The real check is that the MethodDesc's must not match, but a simple VTable check will
                 // work most of the time, and is far faster than the GetMethodDescForSlot method.
-                _ASSERTE(pMT->GetMethodDescForSlot(i) == pParentMT->GetMethodDescForSlot(i));
+                _ASSERTE(pMT->GetMethodDescForSlot_NoThrow(i) == pParentMT->GetMethodDescForSlot_NoThrow(i));
                 continue;
             }
 
@@ -1298,9 +1587,10 @@ void ClassLoader::PropagateCovariantReturnMethodImplSlots(MethodTable* pMT)
                     // This is a vtable slot that needs to be updated to the new overriding method because of the
                     // presence of the attribute.
                     pMT->SetSlot(j, pMT->GetSlot(i));
-                    _ASSERT(pMT->GetMethodDescForSlot(j) == pMD);
+                    _ASSERT(pMT->GetMethodDescForSlot_NoThrow(j) == pMD);
 
-                    hMTData->UpdateImplMethodDesc(pMD, j);
+                    if (!hMTData.IsNull())
+                        hMTData->UpdateImplMethodDesc(pMD, j);
                 }
             }
         }
@@ -1312,7 +1602,7 @@ void ClassLoader::PropagateCovariantReturnMethodImplSlots(MethodTable* pMT)
 //
 // Debugger notification
 //
-BOOL TypeHandle::NotifyDebuggerLoad(AppDomain *pDomain, BOOL attaching) const
+BOOL TypeHandle::NotifyDebuggerLoad(BOOL attaching) const
 {
     LIMITED_METHOD_CONTRACT;
 
@@ -1321,27 +1611,19 @@ BOOL TypeHandle::NotifyDebuggerLoad(AppDomain *pDomain, BOOL attaching) const
         return FALSE;
     }
 
-    if (!GetModule()->IsVisibleToDebugger())
-    {
-        return FALSE;
-    }
-
     return g_pDebugInterface->LoadClass(
-        *this, GetCl(), GetModule(), pDomain);
+        *this, GetCl(), GetModule());
 }
 
 //*******************************************************************************
-void TypeHandle::NotifyDebuggerUnload(AppDomain *pDomain) const
+void TypeHandle::NotifyDebuggerUnload() const
 {
     LIMITED_METHOD_CONTRACT;
 
-    if (!GetModule()->IsVisibleToDebugger())
+    if (!AppDomain::GetCurrentDomain()->IsDebuggerAttached())
         return;
 
-    if (!pDomain->IsDebuggerAttached())
-        return;
-
-    g_pDebugInterface->UnloadClass(GetCl(), GetModule(), pDomain);
+    g_pDebugInterface->UnloadClass(GetCl(), GetModule());
 }
 
 //*******************************************************************************
@@ -1351,17 +1633,14 @@ void TypeHandle::NotifyDebuggerUnload(AppDomain *pDomain) const
 // This is needed when creating a delegate to an instance method in a value type
 MethodDesc* MethodTable::GetBoxedEntryPointMD(MethodDesc *pMD)
 {
-    CONTRACT (MethodDesc *) {
-        THROWS;
-        GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM(););
+    CONTRACTL {
+        STANDARD_VM_CHECK;
         PRECONDITION(IsValueType());
         PRECONDITION(!pMD->ContainsGenericVariables());
         PRECONDITION(!pMD->IsUnboxingStub());
-        POSTCONDITION(RETVAL->IsUnboxingStub());
-    } CONTRACT_END;
+    } CONTRACTL_END;
 
-    RETURN MethodDesc::FindOrCreateAssociatedMethodDesc(pMD,
+    return MethodDesc::FindOrCreateAssociatedMethodDesc(pMD,
                                                         pMD->GetMethodTable(),
                                                         TRUE /* get unboxing entry point */,
                                                         pMD->GetMethodInstantiation(),
@@ -1374,20 +1653,17 @@ MethodDesc* MethodTable::GetBoxedEntryPointMD(MethodDesc *pMD)
 // This is used when generating the code for an BoxedEntryPointStub.
 MethodDesc* MethodTable::GetUnboxedEntryPointMD(MethodDesc *pMD)
 {
-    CONTRACT (MethodDesc *) {
-        THROWS;
-        GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM(););
+    CONTRACTL {
+        STANDARD_VM_CHECK;
         PRECONDITION(IsValueType());
         // reflection needs to call this for methods in non instantiated classes,
         // so move the assert to the caller when needed
         //PRECONDITION(!pMD->ContainsGenericVariables());
         PRECONDITION(pMD->IsUnboxingStub());
-        POSTCONDITION(!RETVAL->IsUnboxingStub());
-    } CONTRACT_END;
+    } CONTRACTL_END;
 
     BOOL allowInstParam = (pMD->GetNumGenericMethodArgs() == 0);
-    RETURN MethodDesc::FindOrCreateAssociatedMethodDesc(pMD,
+    return MethodDesc::FindOrCreateAssociatedMethodDesc(pMD,
                                                         this,
                                                         FALSE /* don't get unboxing entry point */,
                                                         pMD->GetMethodInstantiation(),
@@ -1400,20 +1676,18 @@ MethodDesc* MethodTable::GetUnboxedEntryPointMD(MethodDesc *pMD)
 // This is used when generating the code for an BoxedEntryPointStub.
 MethodDesc* MethodTable::GetExistingUnboxedEntryPointMD(MethodDesc *pMD)
 {
-    CONTRACT (MethodDesc *) {
+    CONTRACTL {
         THROWS;
         GC_NOTRIGGER;
-        INJECT_FAULT(COMPlusThrowOM(););
         PRECONDITION(IsValueType());
         // reflection needs to call this for methods in non instantiated classes,
         // so move the assert to the caller when needed
         //PRECONDITION(!pMD->ContainsGenericVariables());
         PRECONDITION(pMD->IsUnboxingStub());
-        POSTCONDITION(!RETVAL->IsUnboxingStub());
-    } CONTRACT_END;
+    } CONTRACTL_END;
 
     BOOL allowInstParam = (pMD->GetNumGenericMethodArgs() == 0);
-    RETURN MethodDesc::FindOrCreateAssociatedMethodDesc(pMD,
+    return MethodDesc::FindOrCreateAssociatedMethodDesc(pMD,
                                                         this,
                                                         FALSE /* don't get unboxing entry point */,
                                                         pMD->GetMethodInstantiation(),
@@ -1446,45 +1720,64 @@ bool MethodTable::IsHFA()
 #endif // !FEATURE_HFA
 
 //*******************************************************************************
-int MethodTable::GetVectorSize()
+CorInfoHFAElemType MethodTable::GetVectorHFA()
 {
     // This is supported for finding HVA types for Arm64. In order to support the altjit,
     // we support this on 64-bit platforms (i.e. Arm64 and X64).
+    CorInfoHFAElemType hfaType = CORINFO_HFA_ELEM_NONE;
 #ifdef TARGET_64BIT
     if (IsIntrinsicType())
     {
         LPCUTF8 namespaceName;
         LPCUTF8 className = GetFullyQualifiedNameInfo(&namespaceName);
-        int vectorSize = 0;
 
         if (strcmp(className, "Vector`1") == 0)
         {
             _ASSERTE(strcmp(namespaceName, "System.Numerics") == 0);
-            vectorSize = GetNumInstanceFieldBytes();
+#ifdef TARGET_ARM64
+            if (ExecutionManager::GetEEJitManager()->UseScalableVectorT())
+            {
+                // TODO-SVE: This forces Vector<T> to be passed by reference. Implement
+                // CORINFO_HFA_ELEM_VECTORT so we can pass Vector<T> in SVE registers.
+                return CORINFO_HFA_ELEM_NONE;
+            }
+#endif
+            switch (GetNumInstanceFieldBytes())
+            {
+                case 8:
+                    hfaType = CORINFO_HFA_ELEM_VECTOR64;
+                    break;
+                case 16:
+                    hfaType = CORINFO_HFA_ELEM_VECTOR128;
+                    break;
+                default:
+                    _ASSERTE(!"Invalid Vector<T> size");
+                    break;
+            }
         }
         else if (strcmp(className, "Vector128`1") == 0)
         {
             _ASSERTE(strcmp(namespaceName, "System.Runtime.Intrinsics") == 0);
-            vectorSize = 16;
+            hfaType = CORINFO_HFA_ELEM_VECTOR128;
         }
         else if (strcmp(className, "Vector64`1") == 0)
         {
             _ASSERTE(strcmp(namespaceName, "System.Runtime.Intrinsics") == 0);
-            vectorSize = 8;
+            hfaType = CORINFO_HFA_ELEM_VECTOR64;
         }
-        if (vectorSize != 0)
+
+        if (hfaType != CORINFO_HFA_ELEM_NONE)
         {
-            // We need to verify that T (the element or "base" type) is a primitive type.
+            // We need to verify that T (the element or "base" type) is a numerical type.
             TypeHandle typeArg = GetInstantiation()[0];
-            CorElementType corType = typeArg.GetSignatureCorElementType();
-            if (((corType >= ELEMENT_TYPE_I1) && (corType <= ELEMENT_TYPE_R8)) || (corType == ELEMENT_TYPE_I) || (corType == ELEMENT_TYPE_U))
+            if (!CorIsNumericalType(typeArg.GetSignatureCorElementType()))
             {
-                return vectorSize;
+                return CORINFO_HFA_ELEM_NONE;
             }
         }
     }
 #endif // TARGET_64BIT
-    return 0;
+    return hfaType;
 }
 
 //*******************************************************************************
@@ -1506,10 +1799,11 @@ CorInfoHFAElemType MethodTable::GetHFAType()
         _ASSERTE(pMT->IsValueType());
         _ASSERTE(pMT->GetNumInstanceFields() > 0);
 
-        int vectorSize = pMT->GetVectorSize();
-        if (vectorSize != 0)
+        CorInfoHFAElemType hfaType = pMT->GetVectorHFA();
+
+        if (hfaType != CORINFO_HFA_ELEM_NONE)
         {
-            return (vectorSize == 8) ? CORINFO_HFA_ELEM_VECTOR64 : CORINFO_HFA_ELEM_VECTOR128;
+            return hfaType;
         }
 
         PTR_FieldDesc pFirstField = pMT->GetApproxFieldDescListRaw();
@@ -1578,7 +1872,7 @@ EEClass::CheckForHFA()
 
     // The opaque Vector types appear to have multiple fields, but need to be treated
     // as an opaque type of a single vector.
-    if (GetMethodTable()->GetVectorSize() != 0)
+    if (GetMethodTable()->GetVectorHFA() != CORINFO_HFA_ELEM_NONE)
     {
 #if defined(FEATURE_HFA)
         GetMethodTable()->SetIsHFA();
@@ -1604,26 +1898,35 @@ EEClass::CheckForHFA()
         {
         case ELEMENT_TYPE_VALUETYPE:
             {
-#ifdef TARGET_ARM64
                 MethodTable* pMT;
 #if defined(FEATURE_HFA)
                 pMT = pByValueClassCache[i];
 #else
                 pMT = pFD->LookupApproxFieldTypeHandle().AsMethodTable();
 #endif
-                int thisElemSize = pMT->GetVectorSize();
-                if (thisElemSize != 0)
+                fieldHFAType = pMT->GetHFAType();
+
+                int requiredAlignment;
+                switch (fieldHFAType)
                 {
-                    fieldHFAType = (thisElemSize == 8) ? CORINFO_HFA_ELEM_VECTOR64 : CORINFO_HFA_ELEM_VECTOR128;
+                case CORINFO_HFA_ELEM_FLOAT:
+                    requiredAlignment = 4;
+                    break;
+                case CORINFO_HFA_ELEM_VECTOR64:
+                case CORINFO_HFA_ELEM_DOUBLE:
+                    requiredAlignment = 8;
+                    break;
+                case CORINFO_HFA_ELEM_VECTOR128:
+                    requiredAlignment = 16;
+                    break;
+                default:
+                    // VT without a valid HFA type inside of this struct means this struct is not an HFA
+                    return false;
                 }
-                else
-#endif // TARGET_ARM64
+
+                if (requiredAlignment && (pFD->GetOffset() % requiredAlignment != 0)) // HFAs don't have unaligned fields.
                 {
-#if defined(FEATURE_HFA)
-                    fieldHFAType = pByValueClassCache[i]->GetHFAType();
-#else
-                    fieldHFAType = pFD->LookupApproxFieldTypeHandle().AsMethodTable()->GetHFAType();
-#endif
+                    return false;
                 }
             }
             break;
@@ -1723,7 +2026,7 @@ bool MethodTable::NativeRequiresAlign8()
 
     if (HasLayout() && !IsBlittable())
     {
-        return (GetNativeLayoutInfo()->GetLargestAlignmentRequirement() >= 8);
+        return GetNativeLayoutInfo()->GetLargestAlignmentRequirement() >= 8;
     }
     return RequiresAlign8();
 }
@@ -1739,7 +2042,6 @@ TypeHandle MethodTable::GetCoClassForInterface()
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM(););
     }
     CONTRACTL_END
 
@@ -1764,7 +2066,6 @@ TypeHandle MethodTable::SetupCoClassForInterface()
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM(););
         PRECONDITION(IsComClassInterface());
 
     }
@@ -1791,11 +2092,10 @@ TypeHandle MethodTable::SetupCoClassForInterface()
 
         // Try to load the class using its name as a fully qualified name. If that fails,
         // then we try to load it in the assembly of the current class.
-        CoClassType = TypeName::GetTypeUsingCASearchRules(ss.GetUnicode(), GetAssembly());
+        CoClassType = TypeName::GetTypeReferencedByCustomAttribute(ss.GetUnicode(), GetAssembly());
 
         // Cache the coclass type
-        g_IBCLogger.LogEEClassCOWTableAccess(this);
-        GetClass_NoLogging()->SetCoClassForInterface(CoClassType);
+        GetClass()->SetCoClassForInterface(CoClassType);
     }
     return CoClassType;
 }
@@ -1807,7 +2107,6 @@ void MethodTable::GetEventInterfaceInfo(MethodTable **ppSrcItfClass, MethodTable
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM(););
     }
     CONTRACTL_END
 
@@ -1839,7 +2138,7 @@ void MethodTable::GetEventInterfaceInfo(MethodTable **ppSrcItfClass, MethodTable
 
     // Try to load the class using its name as a fully qualified name. If that fails,
     // then we try to load it in the assembly of the current class.
-    SrcItfType = TypeName::GetTypeUsingCASearchRules(ss.GetUnicode(), GetAssembly());
+    SrcItfType = TypeName::GetTypeReferencedByCustomAttribute(ss.GetUnicode(), GetAssembly());
 
     // Retrieve the COM event provider class name.
     IfFailThrow(cap.GetNonNullString(&szName, &cbName));
@@ -1849,7 +2148,7 @@ void MethodTable::GetEventInterfaceInfo(MethodTable **ppSrcItfClass, MethodTable
 
     // Try to load the class using its name as a fully qualified name. If that fails,
     // then we try to load it in the assembly of the current class.
-    EventProvType = TypeName::GetTypeUsingCASearchRules(ss.GetUnicode(), GetAssembly());
+    EventProvType = TypeName::GetTypeReferencedByCustomAttribute(ss.GetUnicode(), GetAssembly());
 
     // Set the source interface and event provider classes.
     *ppSrcItfClass = SrcItfType.GetMethodTable();
@@ -1863,7 +2162,6 @@ TypeHandle MethodTable::GetDefItfForComClassItf()
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM(););
     }
     CONTRACTL_END
 
@@ -1970,13 +2268,11 @@ CorNativeLinkType MethodTable::GetCharSet()
 // Helper routines for the macros defined at the top of this class.
 // You probably should not use these functions directly.
 //
-template<typename RedirectFunctor>
-SString &MethodTable::_GetFullyQualifiedNameForClassNestedAwareInternal(SString &ssBuf)
+SString &MethodTable::_GetFullyQualifiedNameForClassNestedAware(SString &ssBuf)
 {
     CONTRACTL {
         THROWS;
         GC_NOTRIGGER;
-        INJECT_FAULT(COMPlusThrowOM(););
     } CONTRACTL_END;
 
     ssBuf.Clear();
@@ -1998,10 +2294,8 @@ SString &MethodTable::_GetFullyQualifiedNameForClassNestedAwareInternal(SString 
     DWORD dwAttr;
     IfFailThrow(pImport->GetTypeDefProps(GetCl(), &dwAttr, NULL));
 
-    RedirectFunctor redirectFunctor;
     if (IsTdNested(dwAttr))
     {
-        StackSString ssFullyQualifiedName;
         StackSString ssPath;
 
         // Build the nesting chain.
@@ -2015,37 +2309,21 @@ SString &MethodTable::_GetFullyQualifiedNameForClassNestedAwareInternal(SString 
                 &szEnclNameSpace));
 
             ns::MakePath(ssPath,
-                StackSString(SString::Utf8, redirectFunctor(szEnclNameSpace)),
+                StackSString(SString::Utf8, szEnclNameSpace),
                 StackSString(SString::Utf8, szEnclName));
-            ns::MakeNestedTypeName(ssFullyQualifiedName, ssPath, ssName);
 
-            ssName = ssFullyQualifiedName;
+            ssPath.Append('+');
+            ssPath.Append(ssName);
+
+            ssName = ssPath;
         }
     }
 
     ns::MakePath(
         ssBuf,
-        StackSString(SString::Utf8, redirectFunctor(pszNamespace)), ssName);
+        StackSString(SString::Utf8, pszNamespace), ssName);
 
     return ssBuf;
-}
-
-class PassThrough
-{
-public :
-    LPCUTF8 operator() (LPCUTF8 szEnclNamespace)
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        return szEnclNamespace;
-    }
-};
-
-SString &MethodTable::_GetFullyQualifiedNameForClassNestedAware(SString &ssBuf)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    return _GetFullyQualifiedNameForClassNestedAwareInternal<PassThrough>(ssBuf);
 }
 
 //*******************************************************************************
@@ -2055,7 +2333,6 @@ SString &MethodTable::_GetFullyQualifiedNameForClass(SString &ssBuf)
     {
         THROWS;
         GC_NOTRIGGER;
-        INJECT_FAULT(COMPlusThrowOM(););
     }
     CONTRACTL_END
 
@@ -2099,7 +2376,6 @@ LPCUTF8 MethodTable::GetFullyQualifiedNameInfo(LPCUTF8 *ppszNamespace)
     {
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
     }
     CONTRACTL_END
 
@@ -2131,7 +2407,6 @@ CorIfaceAttr MethodTable::GetComInterfaceType()
     {
         THROWS;
         GC_NOTRIGGER;
-        FORBID_FAULT;
     }
     CONTRACTL_END
 
@@ -2161,8 +2436,7 @@ CorIfaceAttr MethodTable::GetComInterfaceType()
     }
 
     // Cache the interface type
-    g_IBCLogger.LogEEClassCOWTableAccess(this);
-    GetClass_NoLogging()->SetComInterfaceType(ItfType);
+    GetClass()->SetComInterfaceType(ItfType);
 
     return ItfType;
 }
@@ -2194,7 +2468,7 @@ void EEClass::GetBestFitMapping(MethodTable * pMT, BOOL *pfBestFitMapping, BOOL 
         if (*pfBestFitMapping) flags |= VMFLAG_BESTFITMAPPING;
         if (*pfThrowOnUnmappableChar) flags |= VMFLAG_THROWONUNMAPPABLECHAR;
 
-        FastInterlockOr(&pClass->m_VMFlags, flags);
+        InterlockedOr((LONG*)&pClass->m_VMFlags, flags);
     }
     else
     {
@@ -2237,8 +2511,8 @@ void MethodTable::DebugRecursivelyDumpInstanceFields(LPCUTF8 pszClassName, BOOL 
         {
             // Display them
             if(debug) {
-                ssBuff.Printf(W("%S:\n"), pszClassName);
-                WszOutputDebugString(ssBuff.GetUnicode());
+                ssBuff.Printf("%s:\n", pszClassName);
+                OutputDebugStringUtf8(ssBuff.GetUTF8());
             }
             else {
                  LOG((LF_CLASSLOADER, LL_ALWAYS, "%s:\n", pszClassName));
@@ -2248,14 +2522,14 @@ void MethodTable::DebugRecursivelyDumpInstanceFields(LPCUTF8 pszClassName, BOOL 
             {
                 FieldDesc *pFD = &GetClass()->GetFieldDescList()[i];
 #ifdef DEBUG_LAYOUT
-                printf("offset %s%3d %s\n", pFD->IsByValue() ? "byvalue " : "", pFD->GetOffset_NoLogging(), pFD->GetName());
+                minipal_log_print_info("offset %s%3d %s\n", pFD->IsByValue() ? "byvalue " : "", pFD->GetOffset(), pFD->GetName());
 #endif
                 if(debug) {
-                    ssBuff.Printf(W("offset %3d %S\n"), pFD->GetOffset_NoLogging(), pFD->GetName());
-                    WszOutputDebugString(ssBuff.GetUnicode());
+                    ssBuff.Printf("offset %3d %s\n", pFD->GetOffset(), pFD->GetName());
+                    OutputDebugStringUtf8(ssBuff.GetUTF8());
                 }
                 else {
-                    LOG((LF_CLASSLOADER, LL_ALWAYS, "offset %3d %s\n", pFD->GetOffset_NoLogging(), pFD->GetName()));
+                    LOG((LF_CLASSLOADER, LL_ALWAYS, "offset %3d %s\n", pFD->GetOffset(), pFD->GetName()));
                 }
             }
         }
@@ -2264,14 +2538,14 @@ void MethodTable::DebugRecursivelyDumpInstanceFields(LPCUTF8 pszClassName, BOOL 
     {
         if(debug)
         {
-            WszOutputDebugString(W("<Exception Thrown>\n"));
+            OutputDebugStringUtf8("<Exception Thrown>\n");
         }
         else
         {
              LOG((LF_CLASSLOADER, LL_ALWAYS, "<Exception Thrown>\n"));
         }
     }
-    EX_END_CATCH(SwallowAllExceptions);
+    EX_END_CATCH
 }
 
 //*******************************************************************************
@@ -2300,8 +2574,8 @@ void MethodTable::DebugDumpFieldLayout(LPCUTF8 pszClassName, BOOL debug)
 
         if (debug)
         {
-            ssBuff.Printf(W("Field layout for '%S':\n\n"), pszClassName);
-            WszOutputDebugString(ssBuff.GetUnicode());
+            ssBuff.Printf("Field layout for '%s':\n\n", pszClassName);
+            OutputDebugStringUtf8(ssBuff.GetUTF8());
         }
         else
         {
@@ -2313,8 +2587,8 @@ void MethodTable::DebugDumpFieldLayout(LPCUTF8 pszClassName, BOOL debug)
         {
             if (debug)
             {
-                WszOutputDebugString(W("Static fields (stored at vtable offsets)\n"));
-                WszOutputDebugString(W("----------------------------------------\n"));
+                OutputDebugStringUtf8("Static fields (stored at vtable offsets)\n");
+                OutputDebugStringUtf8("----------------------------------------\n");
             }
             else
             {
@@ -2327,13 +2601,13 @@ void MethodTable::DebugDumpFieldLayout(LPCUTF8 pszClassName, BOOL debug)
             {
                 FieldDesc *pFD = GetClass()->GetFieldDescList() + ((GetNumInstanceFields()-cParentInstanceFields) + i);
                 if(debug) {
-                    ssBuff.Printf(W("offset %3d %S\n"), pFD->GetOffset_NoLogging(), pFD->GetName());
-                    WszOutputDebugString(ssBuff.GetUnicode());
+                    ssBuff.Printf("offset %3d %s\n", pFD->GetOffset(), pFD->GetName());
+                    OutputDebugStringUtf8(ssBuff.GetUTF8());
                 }
                 else
                 {
                     //LF_ALWAYS allowed here because this is controlled by special env var ShouldDumpOnClassLoad
-                    LOG((LF_ALWAYS, LL_ALWAYS, "offset %3d %s\n", pFD->GetOffset_NoLogging(), pFD->GetName()));
+                    LOG((LF_ALWAYS, LL_ALWAYS, "offset %3d %s\n", pFD->GetOffset(), pFD->GetName()));
                 }
             }
         }
@@ -2342,7 +2616,7 @@ void MethodTable::DebugDumpFieldLayout(LPCUTF8 pszClassName, BOOL debug)
         {
             if (GetNumStaticFields()) {
                 if(debug) {
-                    WszOutputDebugString(W("\n"));
+                    OutputDebugStringUtf8("\n");
                 }
                 else
                 {
@@ -2353,8 +2627,8 @@ void MethodTable::DebugDumpFieldLayout(LPCUTF8 pszClassName, BOOL debug)
 
             if (debug)
             {
-                WszOutputDebugString(W("Instance fields\n"));
-                WszOutputDebugString(W("---------------\n"));
+                OutputDebugStringUtf8("Instance fields\n");
+                OutputDebugStringUtf8("---------------\n");
             }
             else
             {
@@ -2368,7 +2642,7 @@ void MethodTable::DebugDumpFieldLayout(LPCUTF8 pszClassName, BOOL debug)
 
         if (debug)
         {
-            WszOutputDebugString(W("\n"));
+            OutputDebugStringUtf8("\n");
         }
         else
         {
@@ -2380,7 +2654,7 @@ void MethodTable::DebugDumpFieldLayout(LPCUTF8 pszClassName, BOOL debug)
     {
         if (debug)
         {
-            WszOutputDebugString(W("<Exception Thrown>\n"));
+            OutputDebugStringUtf8("<Exception Thrown>\n");
         }
         else
         {
@@ -2388,7 +2662,7 @@ void MethodTable::DebugDumpFieldLayout(LPCUTF8 pszClassName, BOOL debug)
              LOG((LF_ALWAYS, LL_ALWAYS, "<Exception Thrown>\n"));
         }
     }
-    EX_END_CATCH(SwallowAllExceptions);
+    EX_END_CATCH
 } // MethodTable::DebugDumpFieldLayout
 
 //*******************************************************************************
@@ -2405,8 +2679,8 @@ MethodTable::DebugDumpGCDesc(
 
         if (fDebug)
         {
-            ssBuff.Printf(W("GC description for '%S':\n\n"), pszClassName);
-            WszOutputDebugString(ssBuff.GetUnicode());
+            ssBuff.Printf("GC description for '%s':\n\n", pszClassName);
+            OutputDebugStringUtf8(ssBuff.GetUTF8());
         }
         else
         {
@@ -2414,14 +2688,14 @@ MethodTable::DebugDumpGCDesc(
             LOG((LF_ALWAYS, LL_ALWAYS, "GC description for '%s':\n\n", pszClassName));
         }
 
-        if (ContainsPointers())
+        if (ContainsGCPointers())
         {
             CGCDescSeries *pSeries;
             CGCDescSeries *pHighest;
 
             if (fDebug)
             {
-                WszOutputDebugString(W("GCDesc:\n"));
+                OutputDebugStringUtf8("GCDesc:\n");
             } else
             {
                 //LF_ALWAYS allowed here because this is controlled by special env var ShouldDumpOnClassLoad
@@ -2435,17 +2709,17 @@ MethodTable::DebugDumpGCDesc(
             {
                 if (fDebug)
                 {
-                    ssBuff.Printf(W("   offset %5d (%d w/o Object), size %5d (%5d w/o BaseSize subtr)\n"),
+                    ssBuff.Printf("   offset %5zu (%zu w/o Object), size %5zu (%5zu w/o BaseSize subtr)\n",
                         pSeries->GetSeriesOffset(),
                         pSeries->GetSeriesOffset() - OBJECT_SIZE,
                         pSeries->GetSeriesSize(),
                         pSeries->GetSeriesSize() + GetBaseSize() );
-                    WszOutputDebugString(ssBuff.GetUnicode());
+                    OutputDebugStringUtf8(ssBuff.GetUTF8());
                 }
                 else
                 {
                     //LF_ALWAYS allowed here because this is controlled by special env var ShouldDumpOnClassLoad
-                    LOG((LF_ALWAYS, LL_ALWAYS, "   offset %5d (%d w/o Object), size %5d (%5d w/o BaseSize subtr)\n",
+                    LOG((LF_ALWAYS, LL_ALWAYS, "   offset %5zu (%zu w/o Object), size %5zu (%5zu w/o BaseSize subtr)\n",
                          pSeries->GetSeriesOffset(),
                          pSeries->GetSeriesOffset() - OBJECT_SIZE,
                          pSeries->GetSeriesSize(),
@@ -2457,7 +2731,7 @@ MethodTable::DebugDumpGCDesc(
 
             if (fDebug)
             {
-                WszOutputDebugString(W("\n"));
+                OutputDebugStringUtf8("\n");
             } else
             {
                 //LF_ALWAYS allowed here because this is controlled by special env var ShouldDumpOnClassLoad
@@ -2469,7 +2743,7 @@ MethodTable::DebugDumpGCDesc(
     {
         if (fDebug)
         {
-            WszOutputDebugString(W("<Exception Thrown>\n"));
+            OutputDebugStringUtf8("<Exception Thrown>\n");
         }
         else
         {
@@ -2477,7 +2751,7 @@ MethodTable::DebugDumpGCDesc(
             LOG((LF_ALWAYS, LL_ALWAYS, "<Exception Thrown>\n"));
         }
     }
-    EX_END_CATCH(SwallowAllExceptions);
+    EX_END_CATCH
 } // MethodTable::DebugDumpGCDesc
 
 #endif // _DEBUG
@@ -2504,11 +2778,6 @@ CorClassIfaceAttr MethodTable::GetComClassInterfaceType()
     if (HasGenericClassInstantiationInHierarchy())
         return clsIfNone;
 
-    // If the class does not support IClassX,
-    // then it is considered ClassInterfaceType.None unless explicitly overriden by the CA
-    if (!ClassSupportsIClassX(this))
-        return clsIfNone;
-
     return ReadClassInterfaceTypeCustomAttribute(TypeHandle(this));
 }
 #endif // FEATURE_COMINTEROP
@@ -2523,7 +2792,6 @@ MethodTable::GetSubstitutionForParent(
     {
         THROWS;
         GC_NOTRIGGER;
-        FORBID_FAULT;
     }
     CONTRACTL_END
 
@@ -2593,13 +2861,15 @@ void SparseVTableMap::AllocOrExpand()
 }
 
 //*******************************************************************************
-// While building mapping list, record a gap in VTable slot numbers.
+// While building mapping list, record a gap in VTable slot numbers or MT slots.
+// A positive number indicates a gap in the VTable slot numbers.
+// A negative number indicates a gap in the MT slots.
 void SparseVTableMap::RecordGap(WORD StartMTSlot, WORD NumSkipSlots)
 {
     STANDARD_VM_CONTRACT;
 
     _ASSERTE((StartMTSlot == 0) || (StartMTSlot > m_MTSlot));
-    _ASSERTE(NumSkipSlots > 0);
+    _ASSERTE(NumSkipSlots != 0);
 
     // We use the information about the current gap to complete a map entry for
     // the last non-gap. There is a special case where the vtable begins with a
@@ -2623,6 +2893,14 @@ void SparseVTableMap::RecordGap(WORD StartMTSlot, WORD NumSkipSlots)
     m_MTSlot = StartMTSlot;
 
     m_MapEntries++;
+}
+
+//*******************************************************************************
+// While building mapping list, record an excluded MT slot.
+void SparseVTableMap::RecordExcludedMethod(WORD MTSlot)
+{
+    WRAPPER_NO_CONTRACT;
+    return RecordGap(MTSlot, -1);
 }
 
 //*******************************************************************************
@@ -2661,7 +2939,6 @@ WORD SparseVTableMap::LookupVTSlot(WORD MTSlot)
     {
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
     }
     CONTRACTL_END
 
@@ -2697,21 +2974,44 @@ WORD SparseVTableMap::GetNumVTableSlots()
 //*******************************************************************************
 void EEClass::AddChunk (MethodDescChunk* pNewChunk)
 {
-    STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        PRECONDITION(pNewChunk != NULL);
+        PRECONDITION(pNewChunk->GetNextChunk() == NULL);
+    }
+    CONTRACTL_END;
 
-    _ASSERTE(pNewChunk->GetNextChunk() == NULL);
-    pNewChunk->SetNextChunk(GetChunks());
-    SetChunks(pNewChunk);
+    MethodDescChunk* head = GetChunks();
+
+    if (head == NULL)
+    {
+        // Use VolatileStore to ensure the chunk's internal data (MethodDescs, flags, etc.)
+        // is fully visible to concurrent readers before the chunk becomes reachable.
+        VolatileStore(&m_pChunks, pNewChunk);
+    }
+    else
+    {
+        // Current chunk needs to be added to the end of the list so that
+        // when reflection is iterating all methods, they would come in declared order
+        while (head->GetNextChunk() != NULL)
+            head = head->GetNextChunk();
+
+        head->SetNextChunkVolatile(pNewChunk);
+    }
 }
 
 //*******************************************************************************
 void EEClass::AddChunkIfItHasNotBeenAdded (MethodDescChunk* pNewChunk)
 {
-    STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        PRECONDITION(pNewChunk != NULL);
+    }
+    CONTRACTL_END;
 
     // return if the chunk has been added
     if (pNewChunk->GetNextChunk() != NULL)
@@ -2748,7 +3048,6 @@ ApproxFieldDescIterator::ApproxFieldDescIterator()
     {
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
     }
     CONTRACTL_END
 
@@ -2765,7 +3064,6 @@ void ApproxFieldDescIterator::Init(MethodTable *pMT, int iteratorType)
     {
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
         SUPPORTS_DAC;
     }
     CONTRACTL_END
@@ -2796,7 +3094,6 @@ PTR_FieldDesc ApproxFieldDescIterator::Next()
     {
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
         SUPPORTS_DAC;
     }
     CONTRACTL_END
@@ -2974,28 +3271,8 @@ EEClass::EnumMemoryRegions(CLRDataEnumMemoryFlags flags, MethodTable * pMT)
     DAC_ENUM_DTHIS();
     EMEM_OUT(("MEM: %p EEClass\n", dac_cast<TADDR>(this)));
 
-    // The DAC_ENUM_DTHIS above won't have reported the packed fields tacked on the end of this instance (they
-    // aren't part of the static class definition because the fields are variably sized and thus have to come
-    // right at the end of the structure, even for sub-types such as LayoutEEClass or DelegateEEClass).
-    DacEnumMemoryRegion(dac_cast<TADDR>(GetPackedFields()), sizeof(EEClassPackedFields));
-
     if (HasOptionalFields())
         DacEnumMemoryRegion(dac_cast<TADDR>(GetOptionalFields()), sizeof(EEClassOptionalFields));
-
-    if (flags != CLRDATA_ENUM_MEM_MINI && flags != CLRDATA_ENUM_MEM_TRIAGE)
-    {
-        PTR_Module pModule = pMT->GetModule();
-        if (pModule.IsValid())
-        {
-            pModule->EnumMemoryRegions(flags, true);
-        }
-        PTR_MethodDescChunk chunk = GetChunks();
-        while (chunk.IsValid())
-        {
-            chunk->EnumMemoryRegions(flags);
-            chunk = chunk->GetNextChunk();
-        }
-    }
 
     PTR_FieldDesc pFieldDescList = GetFieldDescList();
     if (pFieldDescList.IsValid())
@@ -3010,46 +3287,3 @@ EEClass::EnumMemoryRegions(CLRDataEnumMemoryFlags flags, MethodTable * pMT)
 }
 
 #endif // DACCESS_COMPILE
-
-// Get pointer to the packed fields structure attached to this instance.
-PTR_EEClassPackedFields EEClass::GetPackedFields()
-{
-    LIMITED_METHOD_DAC_CONTRACT;
-
-    return dac_cast<PTR_EEClassPackedFields>(PTR_HOST_TO_TADDR(this) + m_cbFixedEEClassFields);
-}
-
-// Get the value of the given field. Works regardless of whether the field is currently in its packed or
-// unpacked state.
-DWORD EEClass::GetPackableField(EEClassFieldId eField)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-        SUPPORTS_DAC;
-    }
-    CONTRACTL_END;
-
-    return m_fFieldsArePacked ?
-        GetPackedFields()->GetPackedField(eField) :
-        GetPackedFields()->GetUnpackedField(eField);
-}
-
-// Set the value of the given field. The field *must* be in the unpacked state for this to be legal (in
-// practice all packable fields must be initialized during class construction and from then on remain
-// immutable).
-void EEClass::SetPackableField(EEClassFieldId eField, DWORD dwValue)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    _ASSERTE(!m_fFieldsArePacked);
-    GetPackedFields()->SetUnpackedField(eField, dwValue);
-}

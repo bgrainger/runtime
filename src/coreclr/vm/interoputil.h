@@ -1,14 +1,11 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-
 #ifndef _H_INTEROP_UTIL
 #define _H_INTEROP_UTIL
 
 #include "debugmacros.h"
 #include "interopconverter.h"
-
-struct VariantData;
 
 // Out of memory helper.
 #define IfNullThrow(EXPR) \
@@ -35,31 +32,16 @@ enum DefaultInterfaceType
     DefaultInterfaceType_BaseComClass   = 4
 };
 
-// System.Drawing.Color struct definition.
-
-struct SYSTEMCOLOR
-{
-#ifdef HOST_64BIT
-    STRINGREF name;
-    INT64     value;
-#else
-    INT64     value;
-    STRINGREF name;
-#endif
-    short     knownColor;
-    short     state;
-};
-
 struct ComMethodTable;
 struct IUnkEntry;
 interface IStream;
 class ComCallWrapper;
 class InteropSyncBlockInfo;
+struct ExceptionData;
 
 #endif //FEATURE_COMINTEROP
 
 class FieldDesc;
-struct ExceptionData;
 
 //------------------------------------------------------------------
  // setup error info for exception object
@@ -72,12 +54,12 @@ HRESULT SetupErrorInfo(OBJECTREF pThrownObject);
 
 //--------------------------------------------------------------------------------
  // Release helper, enables and disables GC during call-outs
-ULONG SafeRelease(IUnknown* pUnk, RCW* pRCW = NULL);
+ULONG SafeRelease(IUnknown* pUnk) noexcept;
 
 //--------------------------------------------------------------------------------
 // Release helper, must be called in preemptive mode.  Only use this variant if
 // you already know you're in preemptive mode for other reasons.
-ULONG SafeReleasePreemp(IUnknown* pUnk, RCW* pRCW = NULL);
+ULONG SafeReleasePreemp(IUnknown* pUnk);
 
 //--------------------------------------------------------------------------------
 // Determines if a COM object can be cast to the specified type.
@@ -92,7 +74,6 @@ BOOL IsComObjectClass(TypeHandle type);
 //---------------------------------------------------------
 VOID ReadBestFitCustomAttribute(MethodDesc* pMD, BOOL* BestFit, BOOL* ThrowOnUnmappableChar);
 VOID ReadBestFitCustomAttribute(Module* pModule, mdTypeDef cl, BOOL* BestFit, BOOL* ThrowOnUnmappableChar);
-int  InternalWideToAnsi(__in_ecount(iNumWideChars) LPCWSTR szWideString, int iNumWideChars, __out_ecount_opt(cbAnsiBufferSize) LPSTR szAnsiString, int cbAnsiBufferSize, BOOL fBestFit, BOOL fThrowOnUnmappableChar);
 
 //---------------------------------------------------------
 // Read the ClassInterfaceType custom attribute info from
@@ -100,12 +81,14 @@ int  InternalWideToAnsi(__in_ecount(iNumWideChars) LPCWSTR szWideString, int iNu
 //---------------------------------------------------------
 CorClassIfaceAttr ReadClassInterfaceTypeCustomAttribute(TypeHandle type);
 
+#ifdef FEATURE_COMINTEROP
 //-------------------------------------------------------------------
  // Used to populate ExceptionData with COM data
 //-------------------------------------------------------------------
 void FillExceptionData(
     _Inout_ ExceptionData* pedata,
     _In_ IErrorInfo* pErrInfo);
+#endif // FEATURE_COMINTEROP
 
 //---------------------------------------------------------------------------
 // If pImport has the DefaultDllImportSearchPathsAttribute,
@@ -116,9 +99,21 @@ BOOL GetDefaultDllImportSearchPathsAttributeValue(Module *pModule, mdToken token
 // Returns the index of the LCID parameter if one exists and -1 otherwise.
 int GetLCIDParameterIndex(MethodDesc *pMD);
 
+#ifdef FEATURE_COMINTEROP
+
 //---------------------------------------------------------------------------
 // Transforms an LCID into a CultureInfo.
 void GetCultureInfoForLCID(LCID lcid, OBJECTREF *pCultureObj);
+
+//---------------------------------------------------------------------------
+// Gets the current culture or UI culture for the current thread.
+OBJECTREF GetCurrentCulture(BOOL bUICulture);
+
+//---------------------------------------------------------------------------
+// Sets the current culture or UI culture for the current thread.
+void SetCurrentCulture(OBJECTREF *CultureObj, BOOL bUICulture);
+
+#endif // FEATURE_COMINTEROP
 
 //---------------------------------------------------------------------------
 // This method determines if a member is visible from COM.
@@ -134,10 +129,6 @@ SIZE_T GetStringizedItfDef(TypeHandle InterfaceType, CQuickArray<BYTE> &rDef);
 HRESULT GetStringizedTypeLibGuidForAssembly(Assembly *pAssembly, CQuickArray<BYTE> &rDef, ULONG cbCur, ULONG *pcbFetched);
 
 //--------------------------------------------------------------------------------
-// GetErrorInfo helper, enables and disables GC during call-outs
-HRESULT SafeGetErrorInfo(_Outptr_ IErrorInfo **ppIErrInfo);
-
-//--------------------------------------------------------------------------------
 // QI helper, enables and disables GC during call-outs
 HRESULT SafeQueryInterface(IUnknown* pUnk, REFIID riid, IUnknown** pResUnk);
 
@@ -148,6 +139,10 @@ HRESULT SafeQueryInterface(IUnknown* pUnk, REFIID riid, IUnknown** pResUnk);
 HRESULT SafeQueryInterfacePreemp(IUnknown* pUnk, REFIID riid, IUnknown** pResUnk);
 
 #ifdef FEATURE_COMINTEROP
+
+//--------------------------------------------------------------------------------
+// GetErrorInfo helper, enables and disables GC during call-outs
+HRESULT SafeGetErrorInfo(_Outptr_ IErrorInfo **ppIErrInfo);
 
 // Convert an IUnknown to CCW, does not handle aggregation and ICustomQI.
 ComCallWrapper* MapIUnknownToWrapper(IUnknown* pUnk);
@@ -168,23 +163,15 @@ HRESULT LoadRegTypeLib(_In_ REFGUID guid,
 // Called from EEStartup, to initialize com Interop specific data structures.
 void InitializeComInterop();
 
-#endif // FEATURE_COMINTEROP
-
 //--------------------------------------------------------------------------------
 // Clean up Helpers
 //--------------------------------------------------------------------------------
-
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS)
 
 // called by syncblock, on the finalizer thread to do major cleanup
 void CleanupSyncBlockComData(InteropSyncBlockInfo* pInteropInfo);
 
 // called by syncblock, during GC, do only minimal work
 void MinorCleanupSyncBlockComData(InteropSyncBlockInfo* pInteropInfo);
-
-#endif // FEATURE_COMINTEROP || FEATURE_COMWRAPPERS)
-
-#ifdef FEATURE_COMINTEROP
 
 // A wrapper that catches all exceptions - used in the OnThreadTerminate case.
 void ReleaseRCWsInCachesNoThrow(LPVOID pCtxCookie);
@@ -202,11 +189,6 @@ ULONG SafeAddRefPreemp(IUnknown* pUnk);
 // Release helper, enables and disables GC during call-outs
 HRESULT SafeVariantChangeType(_Inout_ VARIANT* pVarRes, _In_ VARIANT* pVarSrc,
                               unsigned short wFlags, VARTYPE vt);
-
-//--------------------------------------------------------------------------------
-// Release helper, enables and disables GC during call-outs
-HRESULT SafeVariantChangeTypeEx(_Inout_ VARIANT* pVarRes, _In_ VARIANT* pVarSrc,
-                          LCID lcid, unsigned short wFlags, VARTYPE vt);
 
 //--------------------------------------------------------------------------------
 // Init helper, enables and disables GC during call-outs
@@ -253,9 +235,6 @@ BOOL IsStandardTearOff(IUnknown* pUnk);
  //  is the iid represent an IClassX for this class
 BOOL IsIClassX(MethodTable *pMT, REFIID riid, ComMethodTable **ppComMT);
 
-// Returns TRUE if we support IClassX for the given class.
-BOOL ClassSupportsIClassX(MethodTable *pMT);
-
 #ifdef FEATURE_COMINTEROP_UNMANAGED_ACTIVATION
 //---------------------------------------------------------------------------
  //  Calls COM class factory and instantiates a new RCW.
@@ -274,13 +253,8 @@ MethodTable *GetDefaultInterfaceMTForClass(MethodTable *pMT, BOOL *pbDispatch);
 void GetComSourceInterfacesForClass(MethodTable *pClassMT, CQuickArray<MethodTable *> &rItfList);
 
 //--------------------------------------------------------------------------------
-// This methods converts an IEnumVARIANT to a managed IEnumerator.
-OBJECTREF ConvertEnumVariantToMngEnum(IEnumVARIANT *pNativeEnum);
-
-//--------------------------------------------------------------------------------
-// These methods convert an OLE_COLOR to a System.Color and vice versa.
-void ConvertOleColorToSystemColor(OLE_COLOR SrcOleColor, SYSTEMCOLOR *pDestSysColor);
-OLE_COLOR ConvertSystemColorToOleColor(SYSTEMCOLOR *pSrcSysColor);
+// These methods convert an OLE_COLOR to a boxed Color object and vice versa.
+void ConvertOleColorToSystemColor(OLE_COLOR SrcOleColor, OBJECTREF *pDestSysColor);
 OLE_COLOR ConvertSystemColorToOleColor(OBJECTREF *pSrcObj);
 
 //--------------------------------------------------------------------------------
@@ -290,7 +264,7 @@ ULONG GetStringizedClassItfDef(TypeHandle InterfaceType, CQuickArray<BYTE> &rDef
 
 //--------------------------------------------------------------------------------
 // Helper to get the GUID of a class interface.
-void GenerateClassItfGuid(TypeHandle InterfaceType, GUID *pGuid);
+GUID GenerateClassItfGuid(TypeHandle InterfaceType);
 
 // Try/Catch wrapped version of the method.
 HRESULT TryGenerateClassItfGuid(TypeHandle InterfaceType, GUID *pGuid);
@@ -325,7 +299,7 @@ BOOL MethodNeedsReverseComStub(MethodDesc *pMD);
 
 //--------------------------------------------------------------------------------
 // InvokeDispMethod will convert a set of managed objects and call IDispatch.  The
-// result will be returned as a COM+ Variant pointed to by pRetVal.
+// result will be returned as a CLR object pointed to by pRetVal.
 void IUInvokeDispMethod(
     REFLECTCLASSBASEREF* pRefClassObj,
     OBJECTREF* pTarget,
@@ -358,14 +332,13 @@ ClassFactoryBase *GetComClassFactory(MethodTable* pClassMT);
 
 #ifdef _DEBUG
 
-VOID LogInterop(__in_z LPCSTR szMsg);
-VOID LogInterop(__in_z LPCWSTR szMsg);
+VOID LogInterop(_In_z_ LPCSTR szMsg);
 
 VOID LogInteropLeak(IUnkEntry * pEntry);
 VOID LogInteropLeak(IUnknown* pItf);
-VOID LogInteropQI(IUnknown* pItf, REFIID riid, HRESULT hr, __in_z LPCSTR szMsg);
-VOID LogInteropAddRef(IUnknown* pItf, ULONG cbRef, __in_z LPCSTR szMsg);
-VOID LogInteropRelease(IUnknown* pItf, ULONG cbRef, __in_z LPCSTR szMsg);
+VOID LogInteropQI(IUnknown* pItf, REFIID riid, HRESULT hr, _In_z_ LPCSTR szMsg);
+VOID LogInteropAddRef(IUnknown* pItf, ULONG cbRef, _In_z_ LPCSTR szMsg);
+VOID LogInteropRelease(IUnknown* pItf, ULONG cbRef, _In_z_ LPCSTR szMsg);
 
 VOID LogRCWCreate(RCW* pWrap, IUnknown* pUnk);
 VOID LogRCWMinorCleanup(RCW* pWrap);
@@ -386,14 +359,11 @@ VOID LogRCWDestroy(RCW* pWrap);
 
 //--------------------------------------------------------------------------------
 // Ensure COM is started up.
-HRESULT EnsureComStartedNoThrow(BOOL fCoInitCurrentThread = TRUE);
-VOID EnsureComStarted(BOOL fCoInitCurrentThread = TRUE);
+HRESULT EnsureComStartedNoThrow();
+VOID EnsureComStarted();
 
 IUnknown* MarshalObjectToInterface(OBJECTREF* ppObject, MethodTable* pItfMT, MethodTable* pClassMT, DWORD dwFlags);
 void UnmarshalObjectFromInterface(OBJECTREF *ppObjectDest, IUnknown **ppUnkSrc, MethodTable *pItfMT, MethodTable *pClassMT, DWORD dwFlags);
-
-#define DEFINE_ASM_QUAL_TYPE_NAME(varname, typename, asmname)          static const char varname##[] = { typename##", "##asmname## };
-
 #else // FEATURE_COMINTEROP
 inline HRESULT EnsureComStartedNoThrow()
 {

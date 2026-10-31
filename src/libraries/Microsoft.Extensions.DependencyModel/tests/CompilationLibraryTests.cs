@@ -15,6 +15,7 @@ namespace Microsoft.Extensions.DependencyModel.Tests
     {
         // Moq heavily utilizes RefEmit, which does not work on most aot workloads
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsReflectionEmitSupported))]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/124344", typeof(PlatformDetection), nameof(PlatformDetection.IsAppleMobile), nameof(PlatformDetection.IsCoreCLR))]
         public void ResolveReferencePathsAcceptsCustomResolvers()
         {
             var fail = new Mock<ICompilationAssemblyResolver>();
@@ -39,7 +40,7 @@ namespace Microsoft.Extensions.DependencyModel.Tests
 
             var result = library.ResolveReferencePaths(resolvers);
 
-            result.ShouldBeEquivalentTo(new[] { "Assembly" });
+            result.Should().BeEquivalentTo(new[] { "Assembly" });
 
             fail.Verify(r => r.TryResolveAssemblyPaths(It.IsAny<CompilationLibrary>(), It.IsAny<List<string>>()),
                 Times.Once());
@@ -61,7 +62,7 @@ namespace Microsoft.Extensions.DependencyModel.Tests
             try
             {
                 var result = library.ResolveReferencePaths(null);
-                result.ShouldBeEquivalentTo(new[] { assemblyPath });
+                result.Should().BeEquivalentTo(new[] { assemblyPath });
             }
             finally
             {

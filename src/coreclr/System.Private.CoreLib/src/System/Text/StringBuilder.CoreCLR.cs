@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 
 namespace System.Text
@@ -12,7 +13,7 @@ namespace System.Text
         {
             // This function assumes that required capacity will be less
             // than the max capacity of the StringBuilder
-            Diagnostics.Debug.Assert(requiredCapacity <= m_MaxCapacity);
+            Debug.Assert(requiredCapacity <= m_MaxCapacity);
 
             int newCapacity = Capacity;
             // Round the current capacity to the nearest multiple of 2
@@ -26,8 +27,7 @@ namespace System.Text
 
         internal unsafe void ReplaceBufferInternal(char* newBuffer, int newLength)
         {
-            if (newLength > m_MaxCapacity)
-                throw new ArgumentOutOfRangeException("capacity", SR.ArgumentOutOfRange_Capacity);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(newLength, m_MaxCapacity, "capacity");
 
             if (newLength > m_ChunkChars.Length)
             {
@@ -42,8 +42,7 @@ namespace System.Text
 
         internal void ReplaceBufferUtf8Internal(ReadOnlySpan<byte> source)
         {
-            if (source.Length > m_MaxCapacity)
-                throw new ArgumentOutOfRangeException("capacity", SR.ArgumentOutOfRange_Capacity);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(source.Length, m_MaxCapacity, "capacity");
 
             int numChars = Encoding.UTF8.GetCharCount(source);
             if (numChars > m_ChunkChars.Length)
@@ -58,8 +57,7 @@ namespace System.Text
 
         internal unsafe void ReplaceBufferAnsiInternal(sbyte* newBuffer, int newLength)
         {
-            if (newLength > m_MaxCapacity)
-                throw new ArgumentOutOfRangeException("capacity", SR.ArgumentOutOfRange_Capacity);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(newLength, m_MaxCapacity, "capacity");
 
             if (newLength > m_ChunkChars.Length)
             {

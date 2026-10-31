@@ -2,12 +2,53 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Linq;
+using System.Security.Cryptography.Tests;
+using Microsoft.DotNet.XUnitExtensions;
 using Xunit;
 
 namespace System.Security.Cryptography.Rsa.Tests
 {
     [SkipOnPlatform(TestPlatforms.Browser, "Not supported on Browser")]
-    public sealed class EncryptDecrypt_Span : EncryptDecrypt
+    public abstract class EncryptDecrypt_Span : EncryptDecrypt
+    {
+        protected override byte[] Encrypt(RSA rsa, byte[] data, RSAEncryptionPadding padding) =>
+            WithOutputArray(dest => rsa.Encrypt(data, dest, padding));
+
+        protected override byte[] Decrypt(RSA rsa, byte[] data, RSAEncryptionPadding padding) =>
+            WithOutputArray(dest => rsa.Decrypt(data, dest, padding));
+
+        private static byte[] WithOutputArray(Func<byte[], int> func)
+        {
+            for (int length = 1; ; length = checked(length * 2))
+            {
+                byte[] result = new byte[length];
+
+                try
+                {
+                    int written = func(result);
+                    Array.Resize(ref result, written);
+                    return result;
+                }
+                catch (ArgumentException ae) when (ae.ParamName == "destination")
+                {
+                    continue;
+                }
+            }
+        }
+    }
+
+    [SkipOnPlatform(TestPlatforms.Browser, "Not supported on Browser")]
+    public abstract class EncryptDecrypt_AllocatingSpan : EncryptDecrypt
+    {
+        protected override byte[] Encrypt(RSA rsa, byte[] data, RSAEncryptionPadding padding) =>
+            rsa.Encrypt(new ReadOnlySpan<byte>(data), padding);
+
+        protected override byte[] Decrypt(RSA rsa, byte[] data, RSAEncryptionPadding padding) =>
+            rsa.Decrypt(new ReadOnlySpan<byte>(data), padding);
+    }
+
+    [SkipOnPlatform(TestPlatforms.Browser, "Not supported on Browser")]
+    public abstract class EncryptDecrypt_TrySpan : EncryptDecrypt
     {
         protected override byte[] Encrypt(RSA rsa, byte[] data, RSAEncryptionPadding padding) =>
             TryWithOutputArray(dest => rsa.TryEncrypt(data, dest, padding, out int bytesWritten) ? (true, bytesWritten) : (false, 0));
@@ -100,14 +141,16 @@ namespace System.Security.Cryptography.Rsa.Tests
             Decrypt_WrongKey(RSAEncryptionPadding.OaepSHA1);
         }
 
-        [ConditionalFact(nameof(SupportsSha2Oaep))]
+        [ConditionalFact]
         public void Decrypt_WrongKey_OAEP_SHA256()
         {
+            SkipTestException.ThrowUnless(RSAFactory.SupportsSha2Oaep);
+
             Decrypt_WrongKey(RSAEncryptionPadding.OaepSHA256);
         }
 
         [Fact]
-        public static void EncryptDefaultSpan()
+        public void EncryptDefaultSpan()
         {
             using (RSA rsa = RSAFactory.Create())
             {
@@ -125,7 +168,7 @@ namespace System.Security.Cryptography.Rsa.Tests
             }
         }
 
-        private static void Decrypt_WrongKey(RSAEncryptionPadding padding)
+        private void Decrypt_WrongKey(RSAEncryptionPadding padding)
         {
             using (RSA rsa1 = RSAFactory.Create())
             using (RSA rsa2 = RSAFactory.Create())

@@ -3,6 +3,8 @@
 
 using System;
 
+using Xunit;
+using TestLibrary;
 
 //====================  Cases of nested classes  ====================//
 class Outer1
@@ -148,7 +150,9 @@ public class Test_dev10_724989
     }
 
 
-    static int Main()
+    [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+    [Fact]
+    public static void TestEntryPoint()
     {
         NestedClassesTest();
         Console.WriteLine();
@@ -156,12 +160,6 @@ public class Test_dev10_724989
         DerivedClassesTest();
         Console.WriteLine();
 
-        if (Success)
-        {
-            Console.WriteLine("Pass");
-            return 100;
-        }
-        Console.WriteLine("Fail");
-        return -1;
+        Assert.True(Success);
     }
 }

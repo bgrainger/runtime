@@ -1,10 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.ComponentModel.Design;
-using System.Collections;
+using System.Collections.Generic;
 using System.Reflection;
-using System.Runtime.InteropServices;
 
 namespace System.ComponentModel
 {
@@ -64,9 +62,9 @@ namespace System.ComponentModel
         // Used from IClassFactory2 when retrieving LicInfo
         private sealed class LicInfoHelperLicenseContext : LicenseContext
         {
-            private readonly Hashtable _savedLicenseKeys = new Hashtable();
+            private readonly Dictionary<string, string> _savedLicenseKeys = new Dictionary<string, string>();
 
-            public bool Contains(string assemblyName) => _savedLicenseKeys.Contains(assemblyName);
+            public bool Contains(string assemblyName) => _savedLicenseKeys.ContainsKey(assemblyName);
 
             public override LicenseUsageMode UsageMode => LicenseUsageMode.Designtime;
 
@@ -85,15 +83,12 @@ namespace System.ComponentModel
             // Used to validate a type and retrieve license details
             // when activating a managed COM server from an IClassFactory2 instance.
             public static bool ValidateAndRetrieveLicenseDetails(
-                LicenseContext context,
+                LicenseContext? context,
                 Type type,
                 out License? license,
                 out string? licenseKey)
             {
-                if (context == null)
-                {
-                    context = LicenseManager.CurrentContext;
-                }
+                context ??= LicenseManager.CurrentContext;
 
                 return LicenseManager.ValidateInternalRecursive(
                     context,

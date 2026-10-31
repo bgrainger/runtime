@@ -14,7 +14,9 @@ namespace System.ComponentModel.DataAnnotations
         [RequiresUnreferencedCode("The property referenced by 'otherProperty' may be trimmed. Ensure it is preserved.")]
         public CompareAttribute(string otherProperty) : base(SR.CompareAttribute_MustMatch)
         {
-            OtherProperty = otherProperty ?? throw new ArgumentNullException(nameof(otherProperty));
+            ArgumentNullException.ThrowIfNull(otherProperty);
+
+            OtherProperty = otherProperty;
         }
 
         public string OtherProperty { get; }
@@ -24,13 +26,25 @@ namespace System.ComponentModel.DataAnnotations
         public override bool RequiresValidationContext => true;
 
         public override string FormatErrorMessage(string name) =>
-            string.Format(
-                CultureInfo.CurrentCulture, ErrorMessageString, name, OtherPropertyDisplayName ?? OtherProperty);
+            FormatMessage(ErrorMessageString, name);
+
+        /// <inheritdoc />
+        /// <remarks>
+        /// <c>{0}</c> is replaced with <paramref name="name" /> and <c>{1}</c> is replaced with
+        /// <see cref="OtherPropertyDisplayName" />, or <see cref="OtherProperty" /> when no display name is available.
+        /// </remarks>
+        public override string FormatMessage([StringSyntax(StringSyntaxAttribute.CompositeFormat)] string format, string name)
+        {
+            return string.Format(
+                CultureInfo.CurrentCulture, format, name, OtherPropertyDisplayName ?? OtherProperty);
+        }
 
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2072:UnrecognizedReflectionPattern",
             Justification = "The ctor is marked with RequiresUnreferencedCode informing the caller to preserve the other property.")]
         protected override ValidationResult? IsValid(object? value, ValidationContext validationContext)
         {
+            ArgumentNullException.ThrowIfNull(validationContext);
+
             var otherPropertyInfo = validationContext.ObjectType.GetRuntimeProperty(OtherProperty);
             if (otherPropertyInfo == null)
             {
@@ -44,10 +58,7 @@ namespace System.ComponentModel.DataAnnotations
             object? otherPropertyValue = otherPropertyInfo.GetValue(validationContext.ObjectInstance, null);
             if (!Equals(value, otherPropertyValue))
             {
-                if (OtherPropertyDisplayName == null)
-                {
-                    OtherPropertyDisplayName = GetDisplayNameForProperty(otherPropertyInfo);
-                }
+                OtherPropertyDisplayName ??= GetDisplayNameForProperty(otherPropertyInfo);
 
                 string[]? memberNames = validationContext.MemberName != null
                    ? new[] { validationContext.MemberName }
@@ -65,7 +76,7 @@ namespace System.ComponentModel.DataAnnotations
             {
                 if (attribute is DisplayAttribute display)
                 {
-                   return display.GetName();
+                    return display.GetName();
                 }
             }
 

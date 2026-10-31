@@ -37,12 +37,13 @@ using System.Diagnostics;
 using System.Runtime.Caching;
 using System.Threading;
 using System.Threading.Tasks;
-using Xunit;
 using MonoTests.Common;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Runtime.Versioning;
+using Xunit;
+using Xunit.Abstractions;
 
 namespace MonoTests.System.Runtime.Caching
 {
@@ -71,7 +72,7 @@ namespace MonoTests.System.Runtime.Caching
 
         private bool IsFullFramework = RuntimeInformation.FrameworkDescription.StartsWith(".NET Framework", StringComparison.OrdinalIgnoreCase);
 
-        private PokerMemoryCache CreatePokerMemoryCache(string name, string throwOnDisposed)
+        private PokerMemoryCache CreatePokerMemoryCache(string name, string? throwOnDisposed)
         {
             if (throwOnDisposed == null)
             {
@@ -184,7 +185,7 @@ namespace MonoTests.System.Runtime.Caching
         }
 
         // Negative case for "physicalMemoryLimitPercentage" on non-supporting OS's
-        [ConditionalFact(nameof(DoesNotSupportPhysicalMemoryMonitor))]
+        [ConditionalFact(typeof(MemoryCacheTest), nameof(DoesNotSupportPhysicalMemoryMonitor))]
         public void PhysicalMemoryLimitNotSupported()
         {
             var config = new NameValueCollection();
@@ -235,7 +236,7 @@ namespace MonoTests.System.Runtime.Caching
             mc.Trim(0);
         }
 
-        [ConditionalFact(nameof(SupportsPhysicalMemoryMonitor))]
+        [Fact]
         public void ConstructorValues()
         {
             var config = new NameValueCollection();
@@ -258,7 +259,7 @@ namespace MonoTests.System.Runtime.Caching
         }
 
         [Theory, InlineData("true"), InlineData("false"), InlineData(null)]
-        public void Indexer(string throwOnDisposed)
+        public void Indexer(string? throwOnDisposed)
         {
             var mc = CreatePokerMemoryCache("MyCache", throwOnDisposed);
 
@@ -303,8 +304,7 @@ namespace MonoTests.System.Runtime.Caching
         }
 
         [Theory, InlineData("true"), InlineData("false"), InlineData(null)]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/1429")]
-        public void Contains(string throwOnDisposed)
+        public void Contains(string? throwOnDisposed)
         {
             var mc = CreatePokerMemoryCache("MyCache", throwOnDisposed);
 
@@ -323,9 +323,14 @@ namespace MonoTests.System.Runtime.Caching
 
             var cip = new CacheItemPolicy();
             cip.Priority = CacheItemPriority.NotRemovable;
-            cip.AbsoluteExpiration = DateTimeOffset.Now.AddMilliseconds(50);
+            cip.AbsoluteExpiration = DateTimeOffset.Now.AddMilliseconds(100);
             mc.Set("key", "value", cip);
-            Assert.True(mc.Contains("key"));
+            // 100ms should be plenty of time, but just in case, let's watch for getting scheduled off the clock for a bit here,
+            // and if it seems to be a problem, we can disable again and re-investigate.
+            if (DateTimeOffset.Now < cip.AbsoluteExpiration)
+                Assert.True(mc.Contains("key"));
+            else
+                Assert.True(mc.Contains("key"), "Warning: Thread was somehow delayed beyond cache item expiration time.");
 
             // wait past cip.AbsoluteExpiration
             Thread.Sleep(500);
@@ -396,7 +401,7 @@ namespace MonoTests.System.Runtime.Caching
         }
 
         [Theory, InlineData("true"), InlineData("false"), InlineData(null)]
-        public void AddOrGetExisting_String_Object_DateTimeOffset_String(string throwOnDisposed)
+        public void AddOrGetExisting_String_Object_DateTimeOffset_String(string? throwOnDisposed)
         {
             var mc = CreatePokerMemoryCache("MyCache", throwOnDisposed);
 
@@ -670,7 +675,7 @@ namespace MonoTests.System.Runtime.Caching
         }
 
         [Theory, InlineData("true"), InlineData("false"), InlineData(null)]
-        public void Set_String_Object_CacheItemPolicy_String(string throwOnDisposed)
+        public void Set_String_Object_CacheItemPolicy_String(string? throwOnDisposed)
         {
             var mc = CreatePokerMemoryCache("MyCache", throwOnDisposed);
 
@@ -896,7 +901,7 @@ namespace MonoTests.System.Runtime.Caching
         }
 
         [Theory, InlineData("true"), InlineData("false"), InlineData(null)]
-        public void Remove(string throwOnDisposed)
+        public void Remove(string? throwOnDisposed)
         {
             var mc = CreatePokerMemoryCache("MyCache", throwOnDisposed);
 
@@ -1005,7 +1010,7 @@ namespace MonoTests.System.Runtime.Caching
         }
 
         [Theory, InlineData("true"), InlineData("false"), InlineData(null)]
-        public void GetValues(string throwOnDisposed)
+        public void GetValues(string? throwOnDisposed)
         {
             var mc = CreatePokerMemoryCache("MyCache", throwOnDisposed);
 
@@ -1103,11 +1108,9 @@ namespace MonoTests.System.Runtime.Caching
             Assert.False(onChangedCalled);
         }
 
-        // Due to internal implementation details Trim has very few easily verifiable scenarios
-        // ActiveIssue: https://github.com/dotnet/runtime/issues/36488
-        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsNotArm64Process))]
+        [Theory]
         [InlineData("true"), InlineData("false"), InlineData(null)]
-        public void Trim(string throwOnDisposed)
+        public void Trim(string? throwOnDisposed)
         {
             var config = new NameValueCollection();
             config["__MonoEmulateOneCPU"] = "true";
@@ -1156,7 +1159,7 @@ namespace MonoTests.System.Runtime.Caching
             }
         }
 
-        [ConditionalFact(nameof(SupportsPhysicalMemoryMonitor))]
+        [ConditionalFact(typeof(MemoryCacheTest), nameof(SupportsPhysicalMemoryMonitor))]
         public void TestExpiredGetValues()
         {
             var config = new NameValueCollection();
@@ -1191,11 +1194,6 @@ namespace MonoTests.System.Runtime.Caching
 
         [OuterLoop] // makes long wait
         [Fact]
-        // This little dance is needed to prevent this test from running against the OS-specific
-        // runtime binary on the wrong OS. Without it, this test will run for each 'TargetFramework'
-        // in the test csproj, and the non-windows framework will run against the non-windows library
-        // because 'netstandard' is still valid for windows execution.
-        [PlatformSpecific(TestPlatforms.Windows)]
         public void TestCacheSliding()
         {
             var config = new NameValueCollection();
@@ -1333,7 +1331,7 @@ namespace MonoTests.System.Runtime.Caching
 
             cip = new CacheItemPolicy();
             cip.RemovedCallback = removedCb;
-            cip.AbsoluteExpiration = DateTimeOffset.Now.AddMilliseconds(20);
+            cip.AbsoluteExpiration = DateTimeOffset.Now.AddMilliseconds(70);
             mc.Set("key1", "value1", cip);
 
             cip = new CacheItemPolicy();
@@ -1503,7 +1501,7 @@ namespace MonoTests.System.Runtime.Caching
     {
         public static bool SupportsPhysicalMemoryMonitor => MemoryCacheTest.SupportsPhysicalMemoryMonitor;
 
-        [ConditionalFact(nameof(SupportsPhysicalMemoryMonitor))]
+        [ConditionalFact(typeof(MemoryCacheTestExpires4), nameof(SupportsPhysicalMemoryMonitor))]
         public async Task TestCacheShrink()
         {
             const int HEAP_RESIZE_THRESHOLD = 8192 + 2;
@@ -1513,7 +1511,7 @@ namespace MonoTests.System.Runtime.Caching
             var config = new NameValueCollection();
             config["cacheMemoryLimitMegabytes"] = 0.ToString();
             config["physicalMemoryLimitPercentage"] = 100.ToString();
-            config["pollingInterval"] = new TimeSpan(0, 0, 1).ToString();
+            config["pollingInterval"] = new TimeSpan(0, 0, 1 * PlatformDetection.SlowRuntimeTimeoutModifier).ToString();
 
             using (var mc = new MemoryCache("TestCacheShrink", config))
             {
@@ -1522,7 +1520,7 @@ namespace MonoTests.System.Runtime.Caching
                 // add some short duration entries
                 for (int i = 0; i < HEAP_RESIZE_SHORT_ENTRIES; i++)
                 {
-                    var expireAt = DateTimeOffset.Now.AddSeconds(3);
+                    var expireAt = DateTimeOffset.Now.AddSeconds(3 * PlatformDetection.SlowRuntimeTimeoutModifier);
                     mc.Add("short-" + i, i.ToString(), expireAt);
                 }
 
@@ -1531,14 +1529,14 @@ namespace MonoTests.System.Runtime.Caching
                 // add some long duration entries
                 for (int i = 0; i < HEAP_RESIZE_LONG_ENTRIES; i++)
                 {
-                    var expireAt = DateTimeOffset.Now.AddSeconds(42);
+                    var expireAt = DateTimeOffset.Now.AddSeconds(42 * PlatformDetection.SlowRuntimeTimeoutModifier);
                     mc.Add("long-" + i, i.ToString(), expireAt);
                 }
 
                 Assert.Equal(HEAP_RESIZE_LONG_ENTRIES + HEAP_RESIZE_SHORT_ENTRIES, mc.GetCount());
 
                 // wait past the short duration items expiration time
-                await Task.Delay(4000);
+                await Task.Delay(4000 * PlatformDetection.SlowRuntimeTimeoutModifier);
 
                 /// the following will also shrink the size of the cache
                 for (int i = 0; i < HEAP_RESIZE_SHORT_ENTRIES; i++)
@@ -1550,7 +1548,7 @@ namespace MonoTests.System.Runtime.Caching
                 // add some new items into the cache, this will grow the cache again
                 for (int i = 0; i < HEAP_RESIZE_LONG_ENTRIES; i++)
                 {
-                    mc.Add("final-" + i, i.ToString(), DateTimeOffset.Now.AddSeconds(4));
+                    mc.Add("final-" + i, i.ToString(), DateTimeOffset.Now.AddSeconds(4 * PlatformDetection.SlowRuntimeTimeoutModifier));
                 }
 
                 Assert.Equal(HEAP_RESIZE_LONG_ENTRIES + HEAP_RESIZE_LONG_ENTRIES, mc.GetCount());
@@ -1562,13 +1560,13 @@ namespace MonoTests.System.Runtime.Caching
     {
         public static bool SupportsPhysicalMemoryMonitor => MemoryCacheTest.SupportsPhysicalMemoryMonitor;
 
-        [ConditionalFact(nameof(SupportsPhysicalMemoryMonitor))]
+        [ConditionalFact(typeof(MemoryCacheTestExpires5), nameof(SupportsPhysicalMemoryMonitor))]
         public async Task TestCacheExpiryOrdering()
         {
             var config = new NameValueCollection();
             config["cacheMemoryLimitMegabytes"] = 0.ToString();
             config["physicalMemoryLimitPercentage"] = 100.ToString();
-            config["pollingInterval"] = new TimeSpan(0, 0, 1).ToString();
+            config["pollingInterval"] = new TimeSpan(0, 0, 1 * PlatformDetection.SlowRuntimeTimeoutModifier).ToString();
 
             using (var mc = new MemoryCache("TestCacheExpiryOrdering", config))
             {
@@ -1578,7 +1576,7 @@ namespace MonoTests.System.Runtime.Caching
                 for (int i = 0; i < 100; i++)
                 {
                     var cip = new CacheItemPolicy();
-                    cip.SlidingExpiration = new TimeSpan(0, 0, 4);
+                    cip.SlidingExpiration = new TimeSpan(0, 0, 4 * PlatformDetection.SlowRuntimeTimeoutModifier);
                     mc.Add("long-" + i, i, cip);
                 }
 
@@ -1588,13 +1586,13 @@ namespace MonoTests.System.Runtime.Caching
                 for (int i = 0; i < 100; i++)
                 {
                     var cip = new CacheItemPolicy();
-                    cip.SlidingExpiration = new TimeSpan(0, 0, 1);
+                    cip.SlidingExpiration = new TimeSpan(0, 0, 1 * PlatformDetection.SlowRuntimeTimeoutModifier);
                     mc.Add("short-" + i, i, cip);
                 }
 
                 Assert.Equal(200, mc.GetCount());
 
-                await Task.Delay(2000);
+                await Task.Delay(2000 * PlatformDetection.SlowRuntimeTimeoutModifier);
 
                 for (int i = 0; i < 100; i++)
                 {

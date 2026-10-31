@@ -2,7 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections;
-using System.DirectoryServices.Interop;
 
 namespace System.DirectoryServices
 {
@@ -69,10 +68,7 @@ namespace System.DirectoryServices
         /// </devdoc>
         public void AddRange(string?[] value)
         {
-            if (value == null)
-            {
-                throw new ArgumentNullException(nameof(value));
-            }
+            ArgumentNullException.ThrowIfNull(value);
             object?[] oldValues = GetValue();
             object?[] newValues = new object[oldValues.Length + value.Length];
             for (int i = 0; i < oldValues.Length; i++)
@@ -84,10 +80,7 @@ namespace System.DirectoryServices
 
         public void AddRange(SchemaNameCollection value)
         {
-            if (value == null)
-            {
-                throw new ArgumentNullException(nameof(value));
-            }
+            ArgumentNullException.ThrowIfNull(value);
             object?[] oldValues = GetValue();
             object?[] newValues = new object?[oldValues.Length + value.Count];
             for (int i = 0; i < oldValues.Length; i++)

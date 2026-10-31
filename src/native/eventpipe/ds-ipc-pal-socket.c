@@ -123,6 +123,27 @@ ep_rt_object_array_free (void *ptr)
 	if (ptr)
 		free (ptr);
 }
+
+static
+inline
+ep_char8_t *
+ep_rt_utf8_string_dup (const ep_char8_t *str)
+{
+	if (!str)
+		return NULL;
+
+	return strdup (str);
+}
+
+static
+inline
+void
+ep_rt_utf8_string_free (ep_char8_t *str)
+{
+	if (str)
+		free (str);
+}
+
 #endif
 
 static bool _ipc_pal_socket_init = false;
@@ -289,7 +310,7 @@ inline
 ds_ipc_mode_t
 ipc_socket_set_default_umask (void)
 {
-#if defined(DS_IPC_PAL_AF_UNIX) && (defined(__APPLE__) || defined(__FreeBSD__))
+#if defined(DS_IPC_PAL_AF_UNIX) && (defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__))
 	// This will set the default permission bit to 600
 	return umask (~(S_IRUSR | S_IWUSR));
 #else
@@ -302,7 +323,7 @@ inline
 void
 ipc_socket_reset_umask (ds_ipc_mode_t mode)
 {
-#if defined(DS_IPC_PAL_AF_UNIX) && (defined(__APPLE__) || defined(__FreeBSD__))
+#if defined(DS_IPC_PAL_AF_UNIX) && (defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__))
 	umask (mode);
 #endif
 }
@@ -399,9 +420,7 @@ ipc_socket_close (ds_ipc_socket_t s)
 #ifdef HOST_WIN32
 	result_close = closesocket (s);
 #else
-	do {
-		result_close = close (s);
-	} while (ipc_retry_syscall (result_close));
+	result_close = close (s);
 #endif
 	DS_EXIT_BLOCKING_PAL_SECTION;
 	return result_close;
@@ -412,7 +431,7 @@ inline
 int
 ipc_socket_set_permission (ds_ipc_socket_t s)
 {
-#if defined(DS_IPC_PAL_AF_UNIX) && !(defined(__APPLE__) || defined(__FreeBSD__))
+#if defined(DS_IPC_PAL_AF_UNIX) && !(defined(__APPLE__) || defined(__FreeBSD__) || defined(__HAIKU__) || defined(__OpenBSD__))
 	int result_fchmod;
 	DS_ENTER_BLOCKING_PAL_SECTION;
 	do {
@@ -530,8 +549,24 @@ ipc_socket_accept (
 	ds_ipc_socket_t client_socket;
 	DS_ENTER_BLOCKING_PAL_SECTION;
 	do {
+#if HAVE_ACCEPT4 && defined(SOCK_CLOEXEC)
+		client_socket = accept4 (s, address, address_len, SOCK_CLOEXEC);
+#else
 		client_socket = accept (s, address, address_len);
+#endif
 	} while (ipc_retry_syscall (client_socket));
+
+#ifndef HOST_WIN32
+#if !HAVE_ACCEPT4 || !defined(SOCK_CLOEXEC)
+#if defined(FD_CLOEXEC)
+		if (client_socket != -1)
+		{
+			// ignore any failures; this is best effort
+			fcntl (client_socket, F_SETFD, FD_CLOEXEC);
+		}
+#endif
+#endif
+#endif
 	DS_EXIT_BLOCKING_PAL_SECTION;
 	return client_socket;
 }
@@ -551,7 +586,7 @@ ipc_socket_connect (
 	// the server hasn't called `accept`, so no need to check for timeout or connect error.
 
 #if defined(DS_IPC_PAL_AF_INET) || defined(DS_IPC_PAL_AF_INET6)
-	if (timeout_ms != DS_IPC_TIMEOUT_INFINITE) {
+	if (timeout_ms != IPC_TIMEOUT_INFINITE) {
 		// Set socket to none blocking.
 		ipc_socket_set_blocking (s, false);
 	}
@@ -564,7 +599,7 @@ ipc_socket_connect (
 	DS_EXIT_BLOCKING_PAL_SECTION;
 
 #if defined(DS_IPC_PAL_AF_INET) || defined(DS_IPC_PAL_AF_INET6)
-	if (timeout_ms != DS_IPC_TIMEOUT_INFINITE) {
+	if (timeout_ms != IPC_TIMEOUT_INFINITE) {
 		if (result_connect == DS_IPC_SOCKET_ERROR) {
 			if (ipc_get_last_error () == DS_IPC_SOCKET_ERROR_WOULDBLOCK) {
 				ds_ipc_pollfd_t pfd;
@@ -590,7 +625,7 @@ ipc_socket_connect (
 		}
 	}
 
-	if (timeout_ms != DS_IPC_TIMEOUT_INFINITE) {
+	if (timeout_ms != IPC_TIMEOUT_INFINITE) {
 		// Reset socket to blocking.
 		int last_error = ipc_get_last_error ();
 		ipc_socket_set_blocking (s, true);
@@ -618,7 +653,7 @@ ipc_socket_recv (
 	while (continue_recv && bytes_to_read - total_bytes_read > 0) {
 		current_bytes_read = recv (
 			s,
-			buffer_cursor,
+			(char *)buffer_cursor,
 			bytes_to_read - total_bytes_read,
 			0);
 		if (ipc_retry_syscall (current_bytes_read))
@@ -652,7 +687,7 @@ ipc_socket_send (
 	while (continue_send && bytes_to_write - total_bytes_written > 0) {
 		current_bytes_written = send (
 			s,
-			buffer_cursor,
+			(const char *)buffer_cursor,
 			bytes_to_write - total_bytes_written,
 			0);
 		if (ipc_retry_syscall (current_bytes_written))
@@ -699,7 +734,8 @@ ipc_transport_get_default_name (
 		pd.m_Pid,
 		pd.m_ApplicationGroupId,
 		"socket");
-	return true;
+	// PAL_GetTransportName returns void, but sets name[0] to '\0' when it fails to generate a name.
+	return name [0] != '\0';
 #else
 	return false;
 #endif
@@ -778,7 +814,7 @@ ipc_alloc_uds_address (
 	EP_ASSERT (ipc != NULL);
 
 	struct sockaddr_un *server_address = ep_rt_object_alloc (struct sockaddr_un);
-	ep_return_null_if_nok (server_address != NULL);
+	ep_raise_error_if_nok (server_address != NULL);
 
 	server_address->sun_family = AF_UNIX;
 
@@ -788,20 +824,29 @@ ipc_alloc_uds_address (
 			sizeof (server_address->sun_path),
 			"%s",
 			ipc_name);
-		if (result <= 0 || result >= (int32_t)(sizeof (server_address->sun_path)))
-			server_address->sun_path [0] = '\0';
+		ep_raise_error_if_nok (result > 0 && result < (int32_t)(sizeof (server_address->sun_path)));
 	} else {
 		// generate the default socket name
-		ipc_transport_get_default_name (
+		ep_raise_error_if_nok (ipc_transport_get_default_name (
 			server_address->sun_path,
-			sizeof (server_address->sun_path));
+			sizeof (server_address->sun_path)));
 	}
+
+	// An empty sun_path would bind to the Linux abstract namespace, which is not supported.
+	ep_raise_error_if_nok (server_address->sun_path [0] != '\0');
 
 	ipc->server_address = (ds_ipc_socket_address_t *)server_address;
 	ipc->server_address_len = sizeof (struct sockaddr_un);
 	ipc->server_address_family = server_address->sun_family;
+	server_address = NULL;
 
+ep_on_exit:
 	return ipc;
+
+ep_on_error:
+	ep_rt_object_free (server_address);
+	ipc = NULL;
+	ep_exit_error_handler ();
 #else
 	return NULL;
 #endif
@@ -828,13 +873,16 @@ ipc_alloc_tcp_address (
 	ds_ipc_addrinfo_t *info = NULL;
 	ep_char8_t *address = NULL;
 	int32_t port = 0;
+	int result_getaddrinfo = -1;
+	const ep_char8_t *host_address = NULL;
+	const ep_char8_t *host_port = NULL;
 
 	address = ep_rt_utf8_string_dup (ipc_name);
 	ep_raise_error_if_nok (address != NULL);
 
-	const ep_char8_t *host_address = address;
-	const ep_char8_t *host_port = strrchr (address, ':');
-	
+	host_address = address;
+	host_port = strrchr (address, ':');
+
 	if (host_port && host_port != host_address) {
 		size_t host_address_len = host_port - address;
 		address [host_address_len] = 0;
@@ -847,7 +895,6 @@ ipc_alloc_tcp_address (
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags = (mode == DS_IPC_CONNECTION_MODE_LISTEN) ? AI_PASSIVE : 0;
 
-	int result_getaddrinfo = -1;
 	DS_ENTER_BLOCKING_PAL_SECTION;
 	if (mode == DS_IPC_CONNECTION_MODE_LISTEN && *host_address == '*') {
 #ifdef DS_IPC_PAL_AF_INET6
@@ -870,7 +917,7 @@ ipc_alloc_tcp_address (
 		if (!ipc->server_address && info->ai_family == AF_INET) {
 			server_address = ep_rt_object_alloc (struct sockaddr_in);
 			if (server_address) {
-				server_address->sin_family = info->ai_family;
+				server_address->sin_family = (uint8_t) info->ai_family;
 				server_address->sin_port = htons (port);
 				server_address->sin_addr = ((struct sockaddr_in*)info->ai_addr)->sin_addr;
 				ipc->server_address = (ds_ipc_socket_address_t *)server_address;
@@ -884,7 +931,7 @@ ipc_alloc_tcp_address (
 		if (!ipc->server_address && info->ai_family == AF_INET6) {
 			server_address6 = ep_rt_object_alloc (struct sockaddr_in6);
 			if (server_address6) {
-				server_address6->sin6_family = info->ai_family;
+				server_address6->sin6_family = (uint8_t) info->ai_family;
 				server_address6->sin6_port = htons (port);
 				server_address6->sin6_addr = ((struct sockaddr_in6*)info->ai_addr)->sin6_addr;
 				ipc->server_address = (ds_ipc_socket_address_t *)server_address6;
@@ -1046,6 +1093,11 @@ ds_ipc_free (DiagnosticsIpc *ipc)
 	ep_rt_object_free (ipc);
 }
 
+void
+ds_ipc_reset (DiagnosticsIpc *ipc)
+{
+}
+
 int32_t
 ds_ipc_poll (
 	DiagnosticsIpcPollHandle *poll_handles_data,
@@ -1102,17 +1154,17 @@ ds_ipc_poll (
 				// check for hangup first because a closed socket
 				// will technically meet the requirements for POLLIN
 				// i.e., a call to recv/read won't block
-				poll_handles_data [i].events = (uint8_t)DS_IPC_POLL_EVENTS_HANGUP;
+				poll_handles_data [i].events = (uint8_t)IPC_POLL_EVENTS_HANGUP;
 			} else if ((poll_fds [i].revents & (POLLERR|POLLNVAL))) {
 				if (callback)
 					callback ("Poll error", (uint32_t)poll_fds [i].revents);
-				poll_handles_data [i].events = (uint8_t)DS_IPC_POLL_EVENTS_ERR;
+				poll_handles_data [i].events = (uint8_t)IPC_POLL_EVENTS_ERR;
 			} else if (poll_fds [i].revents & (POLLIN|POLLPRI)) {
-				poll_handles_data [i].events = (uint8_t)DS_IPC_POLL_EVENTS_SIGNALED;
+				poll_handles_data [i].events = (uint8_t)IPC_POLL_EVENTS_SIGNALED;
 			} else {
-				poll_handles_data [i].events = (uint8_t)DS_IPC_POLL_EVENTS_UNKNOWN;
+				poll_handles_data [i].events = (uint8_t)IPC_POLL_EVENTS_UNKNOWN;
 				if (callback)
-					callback ("unkown poll response", (uint32_t)poll_fds [i].revents);
+					callback ("unknown poll response", (uint32_t)poll_fds [i].revents);
 			}
 		}
 	}
@@ -1357,7 +1409,7 @@ ipc_stream_read_func (
 	DiagnosticsIpcStream *ipc_stream = (DiagnosticsIpcStream *)object;
 	ssize_t total_bytes_read = 0;
 
-	if (timeout_ms != DS_IPC_TIMEOUT_INFINITE) {
+	if (timeout_ms != IPC_TIMEOUT_INFINITE) {
 		ds_ipc_pollfd_t pfd;
 		pfd.fd = ipc_stream->client_socket;
 		pfd.events = POLLIN;
@@ -1401,7 +1453,7 @@ ipc_stream_write_func (
 	DiagnosticsIpcStream *ipc_stream = (DiagnosticsIpcStream *)object;
 	ssize_t total_bytes_written = 0;
 
-	if (timeout_ms != DS_IPC_TIMEOUT_INFINITE) {
+	if (timeout_ms != IPC_TIMEOUT_INFINITE) {
 		ds_ipc_pollfd_t pfd;
 		pfd.fd = ipc_stream->client_socket;
 		pfd.events = POLLOUT;
@@ -1445,12 +1497,24 @@ ipc_stream_close_func (void *object)
 	return ds_ipc_stream_close (ipc_stream, NULL);
 }
 
+static
+IpcPollEvents
+ipc_stream_poll_func (
+	void *object,
+	uint32_t timeout_ms)
+{
+	EP_ASSERT (object != NULL);
+	DiagnosticsIpcStream *ipc_stream = (DiagnosticsIpcStream *)object;
+	return ds_ipc_stream_poll (ipc_stream, timeout_ms);
+}
+
 static IpcStreamVtable ipc_stream_vtable = {
 	ipc_stream_free_func,
 	ipc_stream_read_func,
 	ipc_stream_write_func,
 	ipc_stream_flush_func,
-	ipc_stream_close_func };
+	ipc_stream_close_func,
+	ipc_stream_poll_func };
 
 static
 DiagnosticsIpcStream *
@@ -1512,6 +1576,60 @@ ds_ipc_stream_read (
 		timeout_ms);
 }
 
+#if HAVE_SYS_SOCKET_H && defined(SOL_SOCKET) && defined(SCM_RIGHTS) && defined(CMSG_SPACE) && defined(CMSG_FIRSTHDR) && defined(CMSG_DATA)
+bool
+ds_ipc_stream_read_fd (
+	DiagnosticsIpcStream *ipc_stream,
+	int *data_fd)
+{
+	EP_ASSERT (ipc_stream != NULL);
+	EP_ASSERT (data_fd != NULL);
+
+	struct msghdr msg = {0};
+
+	msg.msg_name = NULL;
+	msg.msg_namelen = 0;
+
+	struct iovec io_vec[1];
+	char buffer[1];
+	io_vec[0].iov_base = buffer;
+	io_vec[0].iov_len = 1;
+
+	msg.msg_iov = io_vec;
+	msg.msg_iovlen = 1;
+
+	char control[CMSG_SPACE(sizeof(int))];
+	msg.msg_control = control;
+	msg.msg_controllen = sizeof(control);
+
+	ssize_t res;
+	while ((res = recvmsg(ipc_stream->client_socket, &msg, 0)) < 0 && errno == EINTR);
+	if (res < 0)
+	   return false;
+
+	struct cmsghdr *cmptr;
+	if ((cmptr = CMSG_FIRSTHDR(&msg)) == NULL ||
+		 cmptr->cmsg_level != SOL_SOCKET ||
+		 cmptr->cmsg_type != SCM_RIGHTS)
+		return false;
+
+	memcpy(data_fd, CMSG_DATA(cmptr), sizeof(int));
+	if (*data_fd < 0)
+		return false;
+
+	return true;
+}
+#else // HAVE_SYS_SOCKET_H && defined(SOL_SOCKET) && defined(SCM_RIGHTS) && defined(CMSG_SPACE) && defined(CMSG_FIRSTHDR) && defined(CMSG_DATA)
+bool
+ds_ipc_stream_read_fd (
+	DiagnosticsIpcStream *ipc_stream,
+	int *data_fd)
+{
+	// Not supported
+	return false;
+}
+#endif // HAVE_SYS_SOCKET_H && defined(SOL_SOCKET) && defined(SCM_RIGHTS) && defined(CMSG_SPACE) && defined(CMSG_FIRSTHDR) && defined(CMSG_DATA)
+
 bool
 ds_ipc_stream_write (
 	DiagnosticsIpcStream *ipc_stream,
@@ -1568,6 +1686,44 @@ ds_ipc_stream_to_string (
 
 	int32_t result = snprintf (buffer, buffer_len, "{ client_socket = %d }", (int32_t)(size_t)ipc_stream->client_socket);
 	return (result > 0 && result < (int32_t)buffer_len) ? result : 0;
+}
+
+IpcPollEvents
+ds_ipc_stream_poll (
+	DiagnosticsIpcStream *ipc_stream,
+	uint32_t timeout_ms)
+{
+	EP_ASSERT (ipc_stream != NULL);
+
+	if (ipc_stream->client_socket == DS_IPC_INVALID_SOCKET)
+		return IPC_POLL_EVENTS_HANGUP;
+
+	ds_ipc_pollfd_t pfd;
+	pfd.fd = ipc_stream->client_socket;
+	pfd.events = POLLIN | POLLPRI | POLLOUT;
+
+	int result_poll;
+	result_poll = ipc_poll_fds (&pfd, 1, timeout_ms);
+
+	if (result_poll < 0)
+		return IPC_POLL_EVENTS_ERR;
+
+	if (result_poll == 0)
+		return IPC_POLL_EVENTS_NONE;
+
+	if (pfd.revents == 0)
+		return IPC_POLL_EVENTS_NONE;
+
+	if (pfd.revents & POLLHUP)
+		return IPC_POLL_EVENTS_HANGUP;
+
+	if (pfd.revents & (POLLERR | POLLNVAL))
+		return IPC_POLL_EVENTS_ERR;
+
+	if (pfd.revents & (POLLIN | POLLPRI | POLLOUT))
+		return IPC_POLL_EVENTS_SIGNALED;
+
+	return IPC_POLL_EVENTS_UNKNOWN;
 }
 
 #endif /* ENABLE_PERFTRACING */

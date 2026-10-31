@@ -1,18 +1,19 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Collections;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.IO;
 using System.Reflection;
 using System.Reflection.Emit;
-using System.Collections;
-using System.IO;
-using System.Text;
-using System.Threading;
-using System.Security;
-using System.Globalization;
-using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
+using System.Security;
+using System.Text;
+using System.Threading;
 
 namespace System.Xml.Serialization
 {
@@ -21,8 +22,8 @@ namespace System.Xml.Serialization
         internal const string GeneratedAssemblyNamespace = "Microsoft.Xml.Serialization.GeneratedAssembly";
         private readonly Assembly? _assembly;
         private XmlSerializerImplementation? _contract;
-        private IDictionary? _writerMethods;
-        private IDictionary? _readerMethods;
+        private Hashtable? _writerMethods;
+        private Hashtable? _readerMethods;
         private TempMethodDictionary? _methods;
 
         internal sealed class TempMethod
@@ -47,6 +48,7 @@ namespace System.Xml.Serialization
         }
 
         [RequiresUnreferencedCode("calls GenerateRefEmitAssembly")]
+        [RequiresDynamicCode(XmlSerializer.AotSerializationWarning)]
         internal TempAssembly(XmlMapping[] xmlMappings, Type?[] types, string? defaultNamespace, string? location)
         {
             bool containsSoapMapping = false;
@@ -59,29 +61,25 @@ namespace System.Xml.Serialization
                 }
             }
 
-            // We will make best effort to use RefEmit for assembly generation
-            bool fallbackToCSharpAssemblyGeneration = false;
-
             if (!containsSoapMapping && !TempAssembly.UseLegacySerializerGeneration)
             {
                 try
                 {
-                    _assembly = GenerateRefEmitAssembly(xmlMappings, types, defaultNamespace);
+                    _assembly = GenerateRefEmitAssembly(xmlMappings, types);
                 }
                 // Only catch and handle known failures with RefEmit
-                catch (CodeGeneratorConversionException)
+                catch (CodeGeneratorConversionException ex)
                 {
-                    fallbackToCSharpAssemblyGeneration = true;
+                    // There is no CSharp-generating/compiling fallback in .Net Core because compilers are not part of the runtime.
+                    // Instead of throwing a PNSE as a result of trying this "fallback" which doesn't exist, lets just let the
+                    // original error bubble up.
+                    //fallbackToCSharpAssemblyGeneration = true;
+                    throw new InvalidOperationException(ex.Message, ex);
                 }
                 // Add other known exceptions here...
                 //
             }
             else
-            {
-                fallbackToCSharpAssemblyGeneration = true;
-            }
-
-            if (fallbackToCSharpAssemblyGeneration)
             {
                 throw new PlatformNotSupportedException(SR.CompilingScriptsNotSupported);
             }
@@ -105,14 +103,7 @@ namespace System.Xml.Serialization
         internal XmlSerializerImplementation Contract
         {
             [RequiresUnreferencedCode("calls GetTypeFromAssembly")]
-            get
-            {
-                if (_contract == null)
-                {
-                    _contract = (XmlSerializerImplementation)Activator.CreateInstance(GetTypeFromAssembly(_assembly!, "XmlSerializerContract"))!;
-                }
-                return _contract;
-            }
+            get => _contract ??= (XmlSerializerImplementation)Activator.CreateInstance(GetTypeFromAssembly(_assembly!, "XmlSerializerContract"))!;
         }
 
         internal void InitAssemblyMethods(XmlMapping[] xmlMappings)
@@ -149,7 +140,7 @@ namespace System.Xml.Serialization
         {
             Assembly? serializer = null;
             contract = null;
-            string? serializerName = null;
+            string? serializerName;
 
             using (AssemblyLoadContext.EnterContextualReflection(type.Assembly))
             {
@@ -162,7 +153,6 @@ namespace System.Xml.Serialization
                     serializerName = Compiler.GetTempAssemblyName(name, defaultNamespace);
                     // use strong name
                     name.Name = serializerName;
-                    name.CodeBase = null;
                     name.CultureInfo = CultureInfo.InvariantCulture;
 
                     try
@@ -312,149 +302,167 @@ namespace System.Xml.Serialization
         internal static bool GenerateSerializerToStream(XmlMapping[] xmlMappings, Type?[] types, string? defaultNamespace, Assembly? assembly, Hashtable assemblies, Stream stream)
         {
             var compiler = new Compiler();
-            try
+            var scopeTable = new Hashtable();
+            foreach (XmlMapping mapping in xmlMappings)
+                scopeTable[mapping.Scope!] = mapping;
+
+            var scopes = new TypeScope[scopeTable.Keys.Count];
+            scopeTable.Keys.CopyTo(scopes, 0);
+            assemblies.Clear();
+            var importedTypes = new Hashtable();
+
+            foreach (TypeScope scope in scopes)
             {
-                var scopeTable = new Hashtable();
-                foreach (XmlMapping mapping in xmlMappings)
-                    scopeTable[mapping.Scope!] = mapping;
-
-                var scopes = new TypeScope[scopeTable.Keys.Count];
-                scopeTable.Keys.CopyTo(scopes, 0);
-                assemblies.Clear();
-                var importedTypes = new Hashtable();
-
-                foreach (TypeScope scope in scopes)
+                foreach (Type t in scope.Types)
                 {
-                    foreach (Type t in scope.Types)
+                    Compiler.AddImport(t, importedTypes);
+                    Assembly a = t.Assembly;
+                    string name = a.FullName!;
+                    if (assemblies[name] != null)
                     {
-                        compiler.AddImport(t, importedTypes);
-                        Assembly a = t.Assembly;
-                        string name = a.FullName!;
-                        if (assemblies[name] != null)
-                        {
-                            continue;
-                        }
-
-                        assemblies[name] = a;
+                        continue;
                     }
-                }
 
+                    assemblies[name] = a;
+                }
+            }
+
+            for (int i = 0; i < types.Length; i++)
+            {
+                Compiler.AddImport(types[i], importedTypes);
+            }
+
+            var writer = new IndentedWriter(compiler.Source, false);
+            writer.WriteLine("[assembly:System.Security.AllowPartiallyTrustedCallers()]");
+            writer.WriteLine("[assembly:System.Security.SecurityTransparent()]");
+            writer.WriteLine("[assembly:System.Security.SecurityRules(System.Security.SecurityRuleSet.Level1)]");
+
+            if (assembly != null && types.Length > 0)
+            {
                 for (int i = 0; i < types.Length; i++)
                 {
-                    compiler.AddImport(types[i], importedTypes);
-                }
-
-                compiler.AddImport(typeof(object).Assembly);
-                compiler.AddImport(typeof(System.Xml.Serialization.XmlSerializer).Assembly);
-                var writer = new IndentedWriter(compiler.Source, false);
-                writer.WriteLine("[assembly:System.Security.AllowPartiallyTrustedCallers()]");
-                writer.WriteLine("[assembly:System.Security.SecurityTransparent()]");
-                writer.WriteLine("[assembly:System.Security.SecurityRules(System.Security.SecurityRuleSet.Level1)]");
-
-                if (assembly != null && types.Length > 0)
-                {
-                    for (int i = 0; i < types.Length; i++)
+                    Type? type = types[i];
+                    if (type == null)
                     {
-                        Type? type = types[i];
-                        if (type == null)
-                        {
-                            continue;
-                        }
-
-                        if (DynamicAssemblies.IsTypeDynamic(type))
-                        {
-                            throw new InvalidOperationException(SR.Format(SR.XmlPregenTypeDynamic, types[i]!.FullName));
-                        }
+                        continue;
                     }
 
-                    writer.Write("[assembly:");
-                    writer.Write(typeof(XmlSerializerVersionAttribute).FullName);
-                    writer.Write("(");
-                    writer.Write("ParentAssemblyId=");
-                    ReflectionAwareCodeGen.WriteQuotedCSharpString(writer, GenerateAssemblyId(types[0]!));
-                    writer.Write(", Version=");
-                    ReflectionAwareCodeGen.WriteQuotedCSharpString(writer, ThisAssembly.Version);
-                    if (defaultNamespace != null)
+                    if (DynamicAssemblies.IsTypeDynamic(type))
                     {
-                        writer.Write(", Namespace=");
-                        ReflectionAwareCodeGen.WriteQuotedCSharpString(writer, defaultNamespace);
-                    }
-
-                    writer.WriteLine(")]");
-                }
-
-                var classes = new CodeIdentifiers();
-                classes.AddUnique("XmlSerializationWriter", "XmlSerializationWriter");
-                classes.AddUnique("XmlSerializationReader", "XmlSerializationReader");
-                string? suffix = null;
-
-                if (types != null && types.Length == 1 && types[0] != null)
-                {
-                    suffix = CodeIdentifier.MakeValid(types[0]!.Name);
-                    if (types[0]!.IsArray)
-                    {
-                        suffix += "Array";
+                        throw new InvalidOperationException(SR.Format(SR.XmlPregenTypeDynamic, types[i]!.FullName));
                     }
                 }
 
-                writer.WriteLine($"namespace {GeneratedAssemblyNamespace} {{");
-                writer.Indent++;
-                writer.WriteLine();
-
-                string writerClass = $"XmlSerializationWriter{suffix}";
-                writerClass = classes.AddUnique(writerClass, writerClass);
-                var writerCodeGen = new XmlSerializationWriterCodeGen(writer, scopes, "public", writerClass);
-                writerCodeGen.GenerateBegin();
-                string?[] writeMethodNames = new string[xmlMappings.Length];
-
-                for (int i = 0; i < xmlMappings.Length; i++)
+                writer.Write("[assembly:");
+                writer.Write(typeof(XmlSerializerVersionAttribute).FullName);
+                writer.Write("(");
+                writer.Write("ParentAssemblyId=");
+                ReflectionAwareCodeGen.WriteQuotedCSharpString(writer, GenerateAssemblyId(types[0]!));
+                writer.Write(", Version=");
+                ReflectionAwareCodeGen.WriteQuotedCSharpString(writer, ThisAssembly.Version);
+                if (defaultNamespace != null)
                 {
-                    writeMethodNames[i] = writerCodeGen.GenerateElement(xmlMappings[i]);
+                    writer.Write(", Namespace=");
+                    ReflectionAwareCodeGen.WriteQuotedCSharpString(writer, defaultNamespace);
                 }
 
-                writerCodeGen.GenerateEnd();
-                writer.WriteLine();
-
-                string readerClass = $"XmlSerializationReader{suffix}";
-                readerClass = classes.AddUnique(readerClass, readerClass);
-                var readerCodeGen = new XmlSerializationReaderCodeGen(writer, scopes, "public", readerClass);
-                readerCodeGen.GenerateBegin();
-                string?[] readMethodNames = new string[xmlMappings.Length];
-                for (int i = 0; i < xmlMappings.Length; i++)
-                {
-                    readMethodNames[i] = readerCodeGen.GenerateElement(xmlMappings[i])!;
-                }
-
-                readerCodeGen.GenerateEnd(readMethodNames, xmlMappings, types);
-
-                string baseSerializer = readerCodeGen.GenerateBaseSerializer("XmlSerializer1", readerClass, writerClass, classes);
-                var serializers = new Hashtable();
-                for (int i = 0; i < xmlMappings.Length; i++)
-                {
-                    if (serializers[xmlMappings[i].Key!] == null)
-                    {
-                        serializers[xmlMappings[i].Key!] = readerCodeGen.GenerateTypedSerializer(readMethodNames[i], writeMethodNames[i], xmlMappings[i], classes, baseSerializer, readerClass, writerClass);
-                    }
-                }
-
-                readerCodeGen.GenerateSerializerContract("XmlSerializerContract", xmlMappings, types!, readerClass, readMethodNames, writerClass, writeMethodNames, serializers);
-                writer.Indent--;
-                writer.WriteLine("}");
-
-                string codecontent = compiler.Source.ToString()!;
-                byte[] info = new UTF8Encoding(true).GetBytes(codecontent);
-                stream.Write(info, 0, info.Length);
-                stream.Flush();
-                return true;
+                writer.WriteLine(")]");
             }
-            finally
+
+            var classes = new CodeIdentifiers();
+            classes.AddUnique("XmlSerializationWriter", "XmlSerializationWriter");
+            classes.AddUnique("XmlSerializationReader", "XmlSerializationReader");
+            string? suffix = null;
+
+            if (types != null && types.Length == 1 && types[0] != null)
             {
-                compiler.Close();
+                suffix = CodeIdentifier.MakeValid(types[0]!.Name);
+                if (types[0]!.IsArray)
+                {
+                    suffix += "Array";
+                }
             }
+
+            writer.WriteLine($"namespace {GeneratedAssemblyNamespace} {{");
+            writer.Indent++;
+            writer.WriteLine();
+
+            string writerClass = $"XmlSerializationWriter{suffix}";
+            writerClass = classes.AddUnique(writerClass, writerClass);
+            var writerCodeGen = new XmlSerializationWriterCodeGen(writer, scopes, "public", writerClass);
+            writerCodeGen.GenerateBegin();
+            string?[] writeMethodNames = new string[xmlMappings.Length];
+
+            for (int i = 0; i < xmlMappings.Length; i++)
+            {
+                writeMethodNames[i] = writerCodeGen.GenerateElement(xmlMappings[i]);
+            }
+
+            writerCodeGen.GenerateEnd();
+            writer.WriteLine();
+
+            string readerClass = $"XmlSerializationReader{suffix}";
+            readerClass = classes.AddUnique(readerClass, readerClass);
+            var readerCodeGen = new XmlSerializationReaderCodeGen(writer, scopes, "public", readerClass);
+            readerCodeGen.GenerateBegin();
+            string?[] readMethodNames = new string[xmlMappings.Length];
+            for (int i = 0; i < xmlMappings.Length; i++)
+            {
+                readMethodNames[i] = readerCodeGen.GenerateElement(xmlMappings[i])!;
+            }
+
+            readerCodeGen.GenerateEnd();
+
+            string baseSerializer = readerCodeGen.GenerateBaseSerializer("XmlSerializer1", readerClass, writerClass, classes);
+            var serializers = new Hashtable();
+            for (int i = 0; i < xmlMappings.Length; i++)
+            {
+                if (serializers[xmlMappings[i].Key!] == null)
+                {
+                    serializers[xmlMappings[i].Key!] = readerCodeGen.GenerateTypedSerializer(readMethodNames[i], writeMethodNames[i], xmlMappings[i], classes, baseSerializer, readerClass, writerClass);
+                }
+            }
+
+            readerCodeGen.GenerateSerializerContract(xmlMappings, types!, readerClass, readMethodNames, writerClass, writeMethodNames, serializers);
+            writer.Indent--;
+            writer.WriteLine("}");
+
+            string codecontent = compiler.Source.ToString()!;
+            byte[] info = new UTF8Encoding(true).GetBytes(codecontent);
+            stream.Write(info, 0, info.Length);
+            stream.Flush();
+            return true;
+        }
+
+        internal static Assembly? FindCollectibleAssembly(Type t)
+        {
+            // Shortcut the common case
+            if (!t.IsCollectible)
+                return null;
+
+            if (t.Assembly.IsCollectible)
+                return t.Assembly;
+
+            if (t.IsGenericType && !t.IsGenericTypeDefinition)
+            {
+                foreach (Type arg in t.GenericTypeArguments)
+                {
+                    Assembly? found = FindCollectibleAssembly(arg);
+                    if (found is not null)
+                        return found;
+                }
+            }
+            else if (t.HasElementType)
+            {
+                return FindCollectibleAssembly(t.GetElementType()!);
+            }
+
+            return null;
         }
 
         [RequiresUnreferencedCode("calls GenerateElement")]
-        internal static Assembly GenerateRefEmitAssembly(XmlMapping[] xmlMappings, Type?[] types, string? defaultNamespace)
+        [RequiresDynamicCode(XmlSerializer.AotSerializationWarning)]
+        internal static Assembly GenerateRefEmitAssembly(XmlMapping[] xmlMappings, Type?[] types)
         {
             var mainType = (types.Length > 0) ? types[0] : null;
             Assembly? mainAssembly = mainType?.Assembly;
@@ -464,17 +472,37 @@ namespace System.Xml.Serialization
             TypeScope[] scopes = new TypeScope[scopeTable.Keys.Count];
             scopeTable.Keys.CopyTo(scopes, 0);
 
-            using (AssemblyLoadContext.EnterContextualReflection(mainAssembly))
+            // Make sure we enter the correct ALC. If we have any collectible types, we should enter
+            // the ALC of those types. The mainType's assembly might not satisfy that requirement.
+            Assembly? collectibleAssembly = null;
+            foreach (var t in types)
+            {
+                if (t?.IsCollectible == true)
+                {
+                    collectibleAssembly = FindCollectibleAssembly(t);
+                    Debug.Assert(collectibleAssembly != null);
+                    break;
+                }
+            }
+
+            // Validate collectible types against the same assembly whose ALC we enter below, so
+            // that a collectible type combined with a non-collectible mainAssembly is checked
+            // against the collectible context rather than the default one.
+            Assembly? contextAssembly = collectibleAssembly ?? mainAssembly;
+
+            using (AssemblyLoadContext.EnterContextualReflection(contextAssembly))
             {
                 // Before generating any IL, check each mapping and supported type to make sure
                 // they are compatible with the current ALC
                 for (int i = 0; i < types.Length; i++)
-                    VerifyLoadContext(types[i], mainAssembly);
+                    VerifyLoadContext(types[i], contextAssembly);
                 foreach (var mapping in xmlMappings)
-                    VerifyLoadContext(mapping.Accessor.Mapping?.TypeDesc?.Type, mainAssembly);
+                    VerifyLoadContext(mapping.Accessor.Mapping?.TypeDesc?.Type, contextAssembly);
 
                 string assemblyName = "Microsoft.GeneratedCode";
-                AssemblyBuilder assemblyBuilder = CodeGenerator.CreateAssemblyBuilder(assemblyName);
+                AssemblyBuilder assemblyBuilder = CodeGenerator.CreateAssemblyBuilder(
+                    assemblyName,
+                    collectible: collectibleAssembly is not null);
                 // Add AssemblyVersion attribute to match parent assembly version
                 if (mainType != null)
                 {
@@ -499,10 +527,10 @@ namespace System.Xml.Serialization
 
                 ModuleBuilder moduleBuilder = CodeGenerator.CreateModuleBuilder(assemblyBuilder, assemblyName);
 
-            string writerClass = $"XmlSerializationWriter{suffix}";
-            writerClass = classes.AddUnique(writerClass, writerClass);
-            XmlSerializationWriterILGen writerCodeGen = new XmlSerializationWriterILGen(scopes, "public", writerClass);
-            writerCodeGen.ModuleBuilder = moduleBuilder;
+                string writerClass = $"XmlSerializationWriter{suffix}";
+                writerClass = classes.AddUnique(writerClass, writerClass);
+                XmlSerializationWriterILGen writerCodeGen = new XmlSerializationWriterILGen(scopes, "public", writerClass);
+                writerCodeGen.ModuleBuilder = moduleBuilder;
 
                 writerCodeGen.GenerateBegin();
                 string[] writeMethodNames = new string[xmlMappings.Length];
@@ -513,9 +541,9 @@ namespace System.Xml.Serialization
                 }
                 Type writerType = writerCodeGen.GenerateEnd();
 
-            string readerClass = $"XmlSerializationReader{suffix}";
-            readerClass = classes.AddUnique(readerClass, readerClass);
-            XmlSerializationReaderILGen readerCodeGen = new XmlSerializationReaderILGen(scopes, "public", readerClass);
+                string readerClass = $"XmlSerializationReader{suffix}";
+                readerClass = classes.AddUnique(readerClass, readerClass);
+                XmlSerializationReaderILGen readerCodeGen = new XmlSerializationReaderILGen(scopes, "public", readerClass);
 
                 readerCodeGen.ModuleBuilder = moduleBuilder;
                 readerCodeGen.CreatedTypes.Add(writerType.Name, writerType);
@@ -526,7 +554,7 @@ namespace System.Xml.Serialization
                 {
                     readMethodNames[i] = readerCodeGen.GenerateElement(xmlMappings[i])!;
                 }
-                readerCodeGen.GenerateEnd(readMethodNames, xmlMappings, types!);
+                readerCodeGen.GenerateEnd();
 
                 string baseSerializer = readerCodeGen.GenerateBaseSerializer("XmlSerializer1", readerClass, writerClass, classes);
                 var serializers = new Dictionary<string, string>();
@@ -537,7 +565,7 @@ namespace System.Xml.Serialization
                         serializers[xmlMappings[i].Key!] = readerCodeGen.GenerateTypedSerializer(readMethodNames[i], writeMethodNames[i], xmlMappings[i], classes, baseSerializer, readerClass, writerClass);
                     }
                 }
-                readerCodeGen.GenerateSerializerContract("XmlSerializerContract", xmlMappings, types!, readerClass, readMethodNames, writerClass, writeMethodNames, serializers);
+                readerCodeGen.GenerateSerializerContract(xmlMappings, types!, readerClass, readMethodNames, writerClass, writeMethodNames, serializers);
 
                 return writerType.Assembly;
             }
@@ -578,7 +606,7 @@ namespace System.Xml.Serialization
             return xmlReader.IsStartElement(method.name!, method.ns!);
         }
 
-        [return: NotNullIfNotNull("encodingStyle")]
+        [return: NotNullIfNotNull(nameof(encodingStyle))]
         private string? ValidateEncodingStyle(string? encodingStyle, string methodKey)
         {
             if (encodingStyle != null && encodingStyle.Length > 0)
@@ -625,18 +653,15 @@ namespace System.Xml.Serialization
         [RequiresUnreferencedCode("calls Contract")]
         internal object? InvokeReader(XmlMapping mapping, XmlReader xmlReader, XmlDeserializationEvents events, string? encodingStyle)
         {
-            XmlSerializationReader? reader = null;
+            XmlSerializationReader? reader;
             try
             {
                 encodingStyle = ValidateEncodingStyle(encodingStyle, mapping.Key!);
                 reader = Contract.Reader;
-                reader.Init(xmlReader, events, encodingStyle, this);
+                reader.Init(xmlReader, events, encodingStyle);
                 if (_methods![mapping.Key!].readMethod == null)
                 {
-                    if (_readerMethods == null)
-                    {
-                        _readerMethods = Contract.ReadMethods;
-                    }
+                    _readerMethods ??= Contract.ReadMethods;
                     string? methodName = (string?)_readerMethods[mapping.Key!];
                     if (methodName == null)
                     {
@@ -650,28 +675,20 @@ namespace System.Xml.Serialization
             {
                 throw new InvalidOperationException(SR.XmlNoPartialTrust, e);
             }
-            finally
-            {
-                if (reader != null)
-                    reader.Dispose();
-            }
         }
 
         [RequiresUnreferencedCode("calls Contract")]
         internal void InvokeWriter(XmlMapping mapping, XmlWriter xmlWriter, object? o, XmlSerializerNamespaces? namespaces, string? encodingStyle, string? id)
         {
-            XmlSerializationWriter? writer = null;
+            XmlSerializationWriter? writer;
             try
             {
                 encodingStyle = ValidateEncodingStyle(encodingStyle, mapping.Key!);
                 writer = Contract.Writer;
-                writer.Init(xmlWriter, namespaces, encodingStyle, id, this);
+                writer.Init(xmlWriter, namespaces, encodingStyle, id);
                 if (_methods![mapping.Key!].writeMethod == null)
                 {
-                    if (_writerMethods == null)
-                    {
-                        _writerMethods = Contract.WriteMethods;
-                    }
+                    _writerMethods ??= Contract.WriteMethods;
                     string? methodName = (string?)_writerMethods[mapping.Key!];
                     if (methodName == null)
                     {
@@ -684,11 +701,6 @@ namespace System.Xml.Serialization
             catch (SecurityException e)
             {
                 throw new InvalidOperationException(SR.XmlNoPartialTrust, e);
-            }
-            finally
-            {
-                if (writer != null)
-                    writer.Dispose();
             }
         }
 
@@ -724,8 +736,8 @@ namespace System.Xml.Serialization
 
     internal sealed class TempAssemblyCache
     {
+        private readonly ConditionalWeakTable<Assembly, Dictionary<TempAssemblyCacheKey, TempAssembly>> _collectibleCaches = new ConditionalWeakTable<Assembly, Dictionary<TempAssemblyCacheKey, TempAssembly>>();
         private Dictionary<TempAssemblyCacheKey, TempAssembly> _fastCache = new Dictionary<TempAssemblyCacheKey, TempAssembly>();
-        private ConditionalWeakTable<Assembly, Dictionary<TempAssemblyCacheKey, TempAssembly>> _collectibleCaches = new ConditionalWeakTable<Assembly, Dictionary<TempAssemblyCacheKey, TempAssembly>>();
 
         internal TempAssembly? this[string? ns, Type t]
         {
@@ -737,7 +749,8 @@ namespace System.Xml.Serialization
                 if (_fastCache.TryGetValue(key, out tempAssembly))
                     return tempAssembly;
 
-                if (_collectibleCaches.TryGetValue(t.Assembly, out var cCache))
+                Assembly lookupAssembly = TempAssembly.FindCollectibleAssembly(t) ?? t.Assembly;
+                if (_collectibleCaches.TryGetValue(lookupAssembly, out var cCache))
                     cCache.TryGetValue(key, out tempAssembly);
 
                 return tempAssembly;
@@ -752,17 +765,22 @@ namespace System.Xml.Serialization
                 if (tempAssembly == assembly)
                     return;
 
-                AssemblyLoadContext? alc = AssemblyLoadContext.GetLoadContext(t.Assembly);
                 TempAssemblyCacheKey key = new TempAssemblyCacheKey(ns, t);
                 Dictionary<TempAssemblyCacheKey, TempAssembly>? cache;
 
-                if (alc != null && alc.IsCollectible)
+                // Use the collectible cache for any collectible type so that the cache entry
+                // can be released when the collectible ALC is unloaded. For generic types like
+                // List<Bar> where Bar is collectible, t.Assembly is the default ALC assembly
+                // (System.Collections), so we need to find the actual collectible assembly from
+                // the type's generic arguments or element type.
+                Assembly? collectibleAssembly = TempAssembly.FindCollectibleAssembly(t);
+                if (collectibleAssembly != null)
                 {
-                    cache = _collectibleCaches.TryGetValue(t.Assembly, out var c)   // Clone or create
+                    cache = _collectibleCaches.TryGetValue(collectibleAssembly, out var c)
                         ? new Dictionary<TempAssemblyCacheKey, TempAssembly>(c)
                         : new Dictionary<TempAssemblyCacheKey, TempAssembly>();
                     cache[key] = assembly;
-                    _collectibleCaches.AddOrUpdate(t.Assembly, cache);
+                    _collectibleCaches.AddOrUpdate(collectibleAssembly, cache);
                 }
                 else
                 {

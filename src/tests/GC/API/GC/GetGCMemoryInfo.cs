@@ -5,6 +5,8 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using Xunit;
+using TestLibrary;
 
 public class Test_GetGCMemoryInfo
 {
@@ -71,7 +73,7 @@ public class Test_GetGCMemoryInfo
         int byteArraySize = 1000;
         for (int i = 0; i < (totalTempAllocBytes / byteArraySize); i++)
         {
-            byte[] byteArray = new byte[byteArraySize];
+            GC.KeepAlive(new byte[byteArraySize]);
         }
     }
 
@@ -90,10 +92,18 @@ public class Test_GetGCMemoryInfo
         return listByteArray;
     }
 
-    public static int Main()
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/37950", TestRuntimes.Mono)]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/131766", typeof(PlatformDetection), nameof(PlatformDetection.IsBrowser), nameof(PlatformDetection.IsCoreCLR))]
+    [SkipOnCoreClr("This test is not compatible with GC stress because it captures GC indices and asserts no ephemeral GC occurred between measurements.", RuntimeTestModes.AnyGCStress)]
+    [Fact]
+    public static int TestEntryPoint()
     {
         // We will keep executing the test in case of a failure to see if we have multiple failures.
         bool isTestSucceeded = true;
+
+        // Before any GCs happen, this should not assert
+        GCMemoryInfo memoryInfoNoGC = GC.GetGCMemoryInfo(GCKind.Background);
+        Console.WriteLine("BGC index is {0}", memoryInfoNoGC.Index);
 
         try
         {

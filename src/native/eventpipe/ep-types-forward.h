@@ -31,18 +31,25 @@ typedef struct _EventPipeProvider EventPipeProvider;
 typedef struct _EventPipeProviderCallbackData EventPipeProviderCallbackData;
 typedef struct _EventPipeProviderCallbackDataQueue EventPipeProviderCallbackDataQueue;
 typedef struct _EventPipeProviderConfiguration EventPipeProviderConfiguration;
+typedef struct _EventPipeProviderEventFilter EventPipeProviderEventFilter;
+typedef struct _EventPipeProviderTracepointConfiguration EventPipeProviderTracepointConfiguration;
+typedef struct _EventPipeProviderTracepointSet EventPipeProviderTracepointSet;
 typedef struct _EventPipeExecutionCheckpoint EventPipeExecutionCheckpoint;
 typedef struct _EventPipeSession EventPipeSession;
 typedef struct _EventPipeSessionProvider EventPipeSessionProvider;
+typedef struct _EventPipeSessionProviderEventFilter EventPipeSessionProviderEventFilter;
 typedef struct _EventPipeSessionProviderList EventPipeSessionProviderList;
+typedef struct _EventPipeSessionProviderTracepointConfiguration EventPipeSessionProviderTracepointConfiguration;
 typedef struct _EventPipeSequencePoint EventPipeSequencePoint;
 typedef struct _EventPipeSequencePointBlock EventPipeSequencePointBlock;
 typedef struct _EventPipeStackBlock EventPipeStackBlock;
 typedef struct _EventPipeStackContents EventPipeStackContents;
+typedef struct _EventPipeStackContentsInstance EventPipeStackContentsInstance;
 typedef struct _EventPipeSystemTime EventPipeSystemTime;
 typedef struct _EventPipeThread EventPipeThread;
 typedef struct _EventPipeThreadHolder EventPipeThreadHolder;
 typedef struct _EventPipeThreadSessionState EventPipeThreadSessionState;
+typedef struct _EventPipeSessionProviderTracepoint EventPipeSessionProviderTracepoint;
 typedef struct _FastSerializableObject FastSerializableObject;
 typedef struct _FastSerializableObjectVtable FastSerializableObjectVtable;
 typedef struct _FastSerializer FastSerializer;
@@ -146,8 +153,25 @@ typedef enum {
 	EP_SESSION_TYPE_LISTENER,
 	EP_SESSION_TYPE_IPCSTREAM,
 	EP_SESSION_TYPE_SYNCHRONOUS,
-	EP_SESSION_TYPE_FILESTREAM
+	EP_SESSION_TYPE_FILESTREAM,
+	EP_SESSION_TYPE_USEREVENTS
 } EventPipeSessionType ;
+
+typedef enum {
+	// Producers drop events when the circular buffer is full (default, lossy).
+	EP_BUFFERING_MODE_DROP,
+	// Producers block until the reader frees buffer capacity (non-lossy).
+	EP_BUFFERING_MODE_BLOCK
+} EventPipeBufferingMode;
+
+typedef enum {
+	// The event was written to a buffer.
+	EP_WRITE_EVENT_RESULT_WRITTEN,
+	// The event was not written (buffers full and dropping, oversized, suspended, or not enabled).
+	EP_WRITE_EVENT_RESULT_NOT_WRITTEN,
+	// The buffers are full in Block mode; the caller should park until the reader frees capacity, then retry.
+	EP_WRITE_EVENT_RESULT_BLOCKED
+} EventPipeWriteEventResult;
 
 typedef enum {
 	EP_STATE_NOT_INITIALIZED,
@@ -174,9 +198,14 @@ typedef int64_t ep_system_timestamp_t;
 /*
  * EventPipe Callbacks.
  */
+#if defined(_WIN32) && defined(_M_IX86)
+#define EP_CALLBACK_CALLTYPE __stdcall
+#else
+#define EP_CALLBACK_CALLTYPE
+#endif
 
 // Define the event pipe callback to match the ETW callback signature.
-typedef void (*EventPipeCallback)(
+typedef void (EP_CALLBACK_CALLTYPE *EventPipeCallback)(
 	const uint8_t *source_id,
 	unsigned long is_enabled,
 	uint8_t level,
@@ -185,11 +214,7 @@ typedef void (*EventPipeCallback)(
 	EventFilterDescriptor *filter_data,
 	void *callback_data);
 
-typedef void (*EventPipeCallbackDataFree)(
-	EventPipeCallback callback,
-	void *callback_data);
-
-typedef void (*EventPipeSessionSynchronousCallback)(
+typedef void (EP_CALLBACK_CALLTYPE *EventPipeSessionSynchronousCallback)(
 	EventPipeProvider *provider,
 	uint32_t event_id,
 	uint32_t event_version,
@@ -202,9 +227,9 @@ typedef void (*EventPipeSessionSynchronousCallback)(
 	/*ep_rt_thread_handle_t*/ void *event_thread,
 	uint32_t stack_frames_len,
 	uintptr_t *stack_frames,
-    void *additional_data);
+	void *additional_data);
 
-typedef bool (*EventPipeIpcStreamFactorySuspendedPortsCallback)(void);
+typedef bool (EP_CALLBACK_CALLTYPE *EventPipeIpcStreamFactorySuspendedPortsCallback)(void);
 
 #endif /* ENABLE_PERFTRACING */
 #endif /* __EVENTPIPE_TYPES_FORWARD_H__ */

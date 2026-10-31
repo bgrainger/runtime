@@ -2,10 +2,17 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using System.Buffers.Text;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+#if NET
+using Base64Url = System.Buffers.Text.Base64Url;
+#else
+using Base64Url = Microsoft.NET.HostModel.Base64Url;
+#endif
 
 namespace Microsoft.NET.HostModel.Bundle
 {
@@ -51,9 +58,9 @@ namespace Microsoft.NET.HostModel.Bundle
     /// </summary>
     public class Manifest
     {
-        // NetcoreApp3CompatMode flag is set on a .net5 app,
+        // NetcoreApp3CompatMode flag is set on a .net5+ app,
         // which chooses to build single-file apps in .netcore3.x compat mode,
-        // by constructing the bundler with BundleAllConent option.
+        // by constructing the bundler with BundleAllContent option.
         // This mode is expected to be deprecated in future versions of .NET.
         [Flags]
         private enum HeaderFlags : ulong
@@ -63,11 +70,10 @@ namespace Microsoft.NET.HostModel.Bundle
         }
 
         // Bundle ID is a string that is used to uniquely
-        // identify this bundle. It is choosen to be compatible
+        // identify this bundle. It is chosen to be compatible
         // with path-names so that the AppHost can use it in
         // extraction path.
         public string BundleID { get; private set; }
-        //Same as Path.GetRandomFileName
         private const int BundleIdLength = 12;
         private SHA256 bundleHash = SHA256.Create();
         public readonly uint BundleMajorVersion;
@@ -75,7 +81,7 @@ namespace Microsoft.NET.HostModel.Bundle
         public const uint BundleMinorVersion = 0;
         private FileEntry DepsJsonEntry;
         private FileEntry RuntimeConfigJsonEntry;
-        private HeaderFlags Flags;
+        private readonly HeaderFlags Flags;
         public List<FileEntry> Files;
         public string BundleVersion => $"{BundleMajorVersion}.{BundleMinorVersion}";
 
@@ -133,13 +139,15 @@ namespace Microsoft.NET.HostModel.Bundle
             byte[] manifestHash = bundleHash.Hash;
             bundleHash.Dispose();
             bundleHash = null;
-
-            return Convert.ToBase64String(manifestHash).Substring(BundleIdLength).Replace('/', '_');
+            string id = Base64Url.EncodeToString(manifestHash).Substring(0, BundleIdLength);
+            Debug.Assert(id.Length == BundleIdLength);
+            return id;
         }
+
 
         public long Write(BinaryWriter writer)
         {
-            BundleID = BundleID ?? GenerateDeterministicId();
+            BundleID ??= GenerateDeterministicId();
 
             long startOffset = writer.BaseStream.Position;
 
@@ -165,8 +173,31 @@ namespace Microsoft.NET.HostModel.Bundle
             {
                 entry.Write(writer);
             }
+            Debug.Assert(writer.BaseStream.Position - startOffset == GetManifestLength(BundleMajorVersion, Files.Select(static f => f.RelativePath)),
+                $"Manifest size mismatch: {writer.BaseStream.Position - startOffset} != {GetManifestLength(BundleMajorVersion, Files.Select(static f => f.RelativePath))}");
 
             return startOffset;
+        }
+
+        /// <summary>
+        /// Calculates the length of the manifest in bytes.
+        /// </summary>
+        public static long GetManifestLength(uint bundleMajorVersion, IEnumerable<string> fileSpecs)
+        {
+            const string dummyBundleId = "FakeBundleID";
+            Debug.Assert(dummyBundleId.Length == BundleIdLength);
+            // Size of the header
+            long size = sizeof(uint) * 2 + // BundleMajorVersion + BundleMinorVersion
+                        sizeof(int) + // NumEmbeddedFiles
+                        (bundleMajorVersion >= 2 ? (sizeof(long) * 4 + sizeof(ulong)) : 0); // DepsJson and RuntimeConfigJson offsets and sizes, and Flags
+            size += Bundler.GetBinaryWriterStringLength(dummyBundleId);
+            // Size of each FileEntry
+            foreach (var fileSpec in fileSpecs)
+            {
+                size += FileEntry.GetFileEntryLength(bundleMajorVersion, fileSpec);
+            }
+
+            return size;
         }
 
         public bool Contains(string relativePath)

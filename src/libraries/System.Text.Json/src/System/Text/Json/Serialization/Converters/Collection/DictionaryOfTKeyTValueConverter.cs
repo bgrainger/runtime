@@ -15,19 +15,23 @@ namespace System.Text.Json.Serialization.Converters
         where TCollection : Dictionary<TKey, TValue>
         where TKey : notnull
     {
+        internal override bool CanPopulate => true;
+
         protected override void Add(TKey key, in TValue value, JsonSerializerOptions options, ref ReadStack state)
         {
-            ((TCollection)state.Current.ReturnValue!)[key] = value;
-        }
+            TCollection dictionary = (TCollection)state.Current.ReturnValue!;
 
-        protected override void CreateCollection(ref Utf8JsonReader reader, ref ReadStack state)
-        {
-            if (state.Current.JsonTypeInfo.CreateObject == null)
+            if (options.AllowDuplicateProperties)
             {
-                ThrowHelper.ThrowNotSupportedException_SerializationNotSupported(state.Current.JsonTypeInfo.Type);
+                dictionary[key] = value;
             }
-
-            state.Current.ReturnValue = state.Current.JsonTypeInfo.CreateObject();
+            else
+            {
+                if (!dictionary.TryAdd(key, value))
+                {
+                    ThrowHelper.ThrowJsonException_DuplicatePropertyNotAllowed();
+                }
+            }
         }
 
         protected internal override bool OnWriteResume(
@@ -37,7 +41,7 @@ namespace System.Text.Json.Serialization.Converters
             ref WriteStack state)
         {
             Dictionary<TKey, TValue>.Enumerator enumerator;
-            if (state.Current.CollectionEnumerator == null)
+            if (state.Current.CollectionEnumerator is null)
             {
                 enumerator = value.GetEnumerator();
                 if (!enumerator.MoveNext())
@@ -55,7 +59,7 @@ namespace System.Text.Json.Serialization.Converters
             _keyConverter ??= GetConverter<TKey>(typeInfo.KeyTypeInfo!);
             _valueConverter ??= GetConverter<TValue>(typeInfo.ElementTypeInfo!);
 
-            if (!state.SupportContinuation && _valueConverter.CanUseDirectReadOrWrite && state.Current.NumberHandling == null)
+            if (!state.SupportContinuation && _valueConverter.CanUseDirectReadOrWrite && state.Current.NumberHandling is null)
             {
                 // Fast path that avoids validation and extra indirection.
                 do
@@ -69,7 +73,7 @@ namespace System.Text.Json.Serialization.Converters
             {
                 do
                 {
-                    if (ShouldFlush(writer, ref state))
+                    if (ShouldFlush(ref state, writer))
                     {
                         state.Current.CollectionEnumerator = enumerator;
                         return false;
@@ -90,7 +94,7 @@ namespace System.Text.Json.Serialization.Converters
                         return false;
                     }
 
-                    state.Current.EndDictionaryElement();
+                    state.Current.EndDictionaryEntry();
                 } while (enumerator.MoveNext());
             }
 

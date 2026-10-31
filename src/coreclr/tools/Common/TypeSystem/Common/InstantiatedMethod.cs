@@ -3,8 +3,9 @@
 
 using System;
 using System.Diagnostics;
-using System.Text;
+
 using Internal.NativeFormat;
+using Internal.Text;
 
 namespace Internal.TypeSystem
 {
@@ -35,7 +36,7 @@ namespace Internal.TypeSystem
 
         protected override int ComputeHashCode()
         {
-            return TypeHashingAlgorithms.ComputeMethodHashCode(OwningType.GetHashCode(), Instantiation.ComputeGenericInstanceHashCode(TypeHashingAlgorithms.ComputeNameHashCode(Name)));
+            return OwningType.GetHashCode() ^ VersionResilientHashCode.GenericInstanceHashCode(VersionResilientHashCode.NameHashCode(Name), Instantiation);
         }
 
         public override TypeSystemContext Context
@@ -56,7 +57,7 @@ namespace Internal.TypeSystem
 
         private TypeDesc Instantiate(TypeDesc type)
         {
-            return type.InstantiateSignature(new Instantiation(), _instantiation);
+            return type.InstantiateSignature(default(Instantiation), _instantiation);
         }
 
         public override MethodSignature Signature
@@ -119,12 +120,37 @@ namespace Internal.TypeSystem
             }
         }
 
+        public override bool IsPublic
+        {
+            get
+            {
+                return _methodDef.IsPublic;
+            }
+        }
+
+        public override bool IsAsync
+        {
+            get
+            {
+                return _methodDef.IsAsync;
+            }
+        }
+
+
         public override bool HasCustomAttribute(string attributeNamespace, string attributeName)
         {
             return _methodDef.HasCustomAttribute(attributeNamespace, attributeName);
         }
 
         public override bool IsDefaultConstructor
+        {
+            get
+            {
+                return false;
+            }
+        }
+
+        public override bool IsStaticConstructor
         {
             get
             {
@@ -142,7 +168,7 @@ namespace Internal.TypeSystem
             return _methodDef.GetTypicalMethodDefinition();
         }
 
-        public override string Name
+        public override Utf8Span Name
         {
             get
             {

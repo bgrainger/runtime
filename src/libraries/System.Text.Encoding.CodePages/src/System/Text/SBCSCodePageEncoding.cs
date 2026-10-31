@@ -3,13 +3,13 @@
 
 using System;
 using System.Buffers.Binary;
-using System.IO;
 using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Runtime.CompilerServices;
+using System.Security;
 using System.Text;
 using System.Threading;
-using System.Globalization;
-using System.Security;
-using System.Runtime.CompilerServices;
 
 namespace System.Text
 {
@@ -37,11 +37,11 @@ namespace System.Text
         {
             if (BitConverter.IsLittleEndian)
             {
-              return *(ushort*)pByte;
+                return *(ushort*)pByte;
             }
             else
             {
-              return BinaryPrimitives.ReverseEndianness(*(ushort*)pByte);
+                return BinaryPrimitives.ReverseEndianness(*(ushort*)pByte);
             }
         }
 
@@ -99,7 +99,8 @@ namespace System.Text
                 lock (s_streamLock)
                 {
                     s_codePagesEncodingDataStream.Seek(m_firstDataWordOffset, SeekOrigin.Begin);
-                    s_codePagesEncodingDataStream.Read(buffer, 0, buffer.Length);
+                    int bytesRead = s_codePagesEncodingDataStream.Read(buffer, 0, buffer.Length);
+                    Debug.Assert(bytesRead == buffer.Length, "s_codePagesEncodingDataStream.Read should have read a full buffer.");
                 }
 
                 fixed (byte* pBuffer = &buffer[0])
@@ -128,22 +129,11 @@ namespace System.Text
         }
 
         // Private object for locking instead of locking on a public type for SQL reliability work.
-        private static object? s_InternalSyncObject;
-        private static object InternalSyncObject
-        {
-            get
-            {
-                if (s_InternalSyncObject == null)
-                {
-                    object o = new object();
-                    Interlocked.CompareExchange<object?>(ref s_InternalSyncObject, o, null);
-                }
-                return s_InternalSyncObject;
-            }
-        }
+        private static object InternalSyncObject =>
+            field ?? Interlocked.CompareExchange(ref field, new object(), null) ?? field;
 
         // Read in our best fit table
-        protected unsafe override void ReadBestFitTable()
+        protected override unsafe void ReadBestFitTable()
         {
             // Lock so we don't confuse ourselves.
             lock (InternalSyncObject)
@@ -162,7 +152,8 @@ namespace System.Text
                     lock (s_streamLock)
                     {
                         s_codePagesEncodingDataStream.Seek(m_firstDataWordOffset + 512, SeekOrigin.Begin);
-                        s_codePagesEncodingDataStream.Read(buffer, 0, buffer.Length);
+                        int bytesRead = s_codePagesEncodingDataStream.Read(buffer, 0, buffer.Length);
+                        Debug.Assert(bytesRead == buffer.Length, "s_codePagesEncodingDataStream.Read should have read a full buffer.");
                     }
 
                     fixed (byte* pBuffer = buffer)
@@ -618,8 +609,8 @@ namespace System.Text
                 if (bytes >= byteEnd)
                 {
                     // didn't use this char, we'll throw or use buffer
-                    Debug.Assert(fallbackBuffer == null || fallbackHelper.bFallingBack == false, "[SBCSCodePageEncoding.GetBytes]Expected to NOT be falling back");
-                    if (fallbackBuffer == null || fallbackHelper.bFallingBack == false)
+                    Debug.Assert(fallbackBuffer == null || !fallbackHelper.bFallingBack, "[SBCSCodePageEncoding.GetBytes]Expected to NOT be falling back");
+                    if (fallbackBuffer == null || !fallbackHelper.bFallingBack)
                     {
                         Debug.Assert(chars > charStart, "[SBCSCodePageEncoding.GetBytes]Expected chars to have advanced (normal)");
                         chars--;                                        // don't use last char
@@ -694,7 +685,7 @@ namespace System.Text
             // Have to do it the hard way.
             // Assume charCount will be == count
             int charCount = count;
-            byte[] byteBuffer = new byte[1];
+            byte[]? byteBuffer = null;
 
             // Do it our fast way
             byte* byteEnd = bytes + count;
@@ -725,6 +716,7 @@ namespace System.Text
                     }
 
                     // Use fallback buffer
+                    byteBuffer ??= new byte[1];
                     byteBuffer[0] = *(bytes - 1);
                     charCount--;                            // We'd already reserved one for *(bytes-1)
                     charCount += fallbackHelper.InternalFallback(byteBuffer, bytes);
@@ -819,14 +811,13 @@ namespace System.Text
                 }
 
                 // bytes & chars used are the same
-                if (decoder != null)
-                    decoder.m_bytesUsed = (int)(bytes - byteStart);
+                decoder?.m_bytesUsed = (int)(bytes - byteStart);
                 return (int)(chars - charStart);
             }
 
             // Slower way's going to need a fallback buffer
             DecoderFallbackBuffer? fallbackBuffer = null;
-            byte[] byteBuffer = new byte[1];
+            byte[]? byteBuffer = null;
             char* charEnd = chars + charCount;
 
             DecoderFallbackBufferHelper fallbackHelper = new DecoderFallbackBufferHelper(null);
@@ -857,6 +848,7 @@ namespace System.Text
                     // Use fallback buffer
                     Debug.Assert(bytes > byteStart,
                         "[SBCSCodePageEncoding.GetChars]Expected bytes to have advanced already (unknown byte)");
+                    byteBuffer ??= new byte[1];
                     byteBuffer[0] = *(bytes - 1);
                     // Fallback adds fallback to chars, but doesn't increment chars unless the whole thing fits.
                     if (!fallbackHelper.InternalFallback(byteBuffer, bytes, ref chars))
@@ -886,8 +878,7 @@ namespace System.Text
             }
 
             // Might have had decoder fallback stuff.
-            if (decoder != null)
-                decoder.m_bytesUsed = (int)(bytes - byteStart);
+            decoder?.m_bytesUsed = (int)(bytes - byteStart);
 
             // Expect Empty fallback buffer for GetChars
             Debug.Assert(fallbackBuffer == null || fallbackBuffer.Remaining == 0,

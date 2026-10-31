@@ -7,7 +7,7 @@
 #ifndef __QCall_h__
 #define __QCall_h__
 
-#include "clr_std/type_traits"
+#include <type_traits>
 
 //
 // QCALLS
@@ -20,14 +20,8 @@
 // GC mode like a normal P/Invoke. These two features should make QCalls easier to write reliably compared to FCalls.
 // QCalls are not prone to GC holes and GC starvation bugs that are common with FCalls.
 //
-// QCalls perform better compared to FCalls w/ HelperMethodFrame. The QCall overhead is about 1.4x less compared to
-// FCall w/ HelperMethodFrame overhead on x86. The performance is about the same on x64. However, the implementation
-// of P/Invoke marshaling on x64 is not tuned for performance yet. The QCalls should become significantly faster compared
-// to FCalls w/ HelperMethodFrame on x64 as we do performance tuning of P/Invoke marshaling on x64.
-//
-//
 // The preferred type of QCall arguments is primitive types that efficiently handled by the P/Invoke marshaler (INT32, LPCWSTR, BOOL).
-// (Notice that BOOL is the correct boolean flavor for QCall arguments. CLR_BOOL is the correct boolean flavor for FCall arguments.)
+// (Notice that BOOL is the correct boolean flavor for QCall arguments. FC_BOOL_ARG is the correct boolean flavor for FCall arguments.)
 //
 // The pointers to common unmanaged EE structures should be wrapped into helper handle types. This is to make the managed implementation
 // type safe and avoid falling into unsafe C# everywhere. See the AssemblyHandle below for a good example.
@@ -42,12 +36,13 @@
 // QCall example - managed part (do not replicate the comments into your actual QCall implementation):
 // ---------------------------------------------------------------------------------------------------
 //
-// class Foo {
+// class Foo
+// {
 //
-//  // All QCalls should have the following DllImport and SuppressUnmanagedCodeSecurity attributes
-//  [DllImport(JitHelpers.QCall, EntryPoint = "FooNative_Bar", CharSet = CharSet.Unicode)]
-//  // QCalls should always be static extern.
-//  private static extern bool Bar(int flags, string inString, StringHandleOnStack retString);
+//  // All QCalls that use BEGIN_QCALL must use the hidden last parameter error handler.
+//  [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+//  [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "FooNative_Bar", StringMarshalling = StringMarshalling.Utf16)]
+//  private static partial bool Bar(int flags, string inString, StringHandleOnStack retString);
 //
 //  // Many QCalls have a thin managed wrapper around them to expose them to the world in more meaningful way.
 //  public string Bar(int flags)
@@ -56,7 +51,7 @@
 //
 //      // The strings are returned from QCalls by taking address
 //      // of a local variable using JitHelpers.GetStringHandleOnStack method
-//      if (!Bar(flags, this.Id, JitHelpers.GetStringHandleOnStack(ref retString)))
+//      if (!Bar(flags, this.Id, StringHandleOnStack.Create(ref retString)))
 //          FatalError();
 //
 //      return retString;
@@ -70,8 +65,10 @@
 //
 // The entrypoints of all QCalls has to be registered in tables in vm\qcallentrypoints.cpp using the DllImportEntry macro,
 // For example: DllImportEntry(FooNative_Bar)
+// WebAssembly instead generates the QCall table in callhelpers-pinvoke.cpp from the managed assembly closure.
 //
-// extern "C" BOOL QCALLTYPE FooNative_Bar(int flags, LPCWSTR wszString, QCall::StringHandleOnStack retString)
+// extern "C" BOOL QCALLTYPE FooNative_Bar(
+//     int flags, LPCWSTR wszString, QCall::StringHandleOnStack retString, QCallExceptionStatus* qcallError)
 // {
 //      // All QCalls should have QCALL_CONTRACT. It is alias for THROWS; GC_TRIGGERS; MODE_PREEMPTIVE.
 //      QCALL_CONTRACT;
@@ -82,8 +79,6 @@
 //      //     PRECONDITION(wszString != NULL);
 //      // } CONTRACTL_END;
 //
-//      // The only line between QCALL_CONTRACT and BEGIN_QCALL
-//      // should be the return value declaration if there is one.
 //      BOOL retVal = FALSE;
 //
 //      // The body has to be enclosed in BEGIN_QCALL/END_QCALL macro. It is necessary to make the exception handling work.
@@ -95,7 +90,7 @@
 //          COMPlusThrow(kArgumentException, L"InvalidFlags");
 //
 //      // No need to worry about GC moving strings passed into QCall. Marshaling pins them for us.
-//      printf("%S", wszString);
+//      wprintf("%s", wszString);
 //
 //      // This is the most efficient way to return strings back to managed code. No need to use StringBuilder.
 //      retString.Set(L"Hello");
@@ -116,12 +111,13 @@
 #endif // !TARGET_UNIX
 
 #define BEGIN_QCALL                      \
-    INSTALL_MANAGED_EXCEPTION_DISPATCHER \
-    INSTALL_UNWIND_AND_CONTINUE_HANDLER
+    *qcallError = 0;                     \
+    INSTALL_RESUME_AFTER_CATCH_HANDLER_WITH_FRAME(GetThread()->GetFrame()) \
+    INSTALL_MANAGED_EXCEPTION_CAPTURE_DISPATCHER
 
 #define END_QCALL                         \
-    UNINSTALL_UNWIND_AND_CONTINUE_HANDLER \
-    UNINSTALL_MANAGED_EXCEPTION_DISPATCHER
+    UNINSTALL_MANAGED_EXCEPTION_CAPTURE_DISPATCHER \
+    UNINSTALL_RESUME_AFTER_CATCH_HANDLER_WITH_FRAME
 
 #define QCALL_CHECK             \
     THROWS;                     \
@@ -129,8 +125,8 @@
     MODE_PREEMPTIVE;            \
 
 #define QCALL_CHECK_NO_GC_TRANSITION    \
-    THROWS;                             \
-    GC_TRIGGERS;                        \
+    NOTHROW;                            \
+    GC_NOTRIGGER;                       \
     MODE_COOPERATIVE;                   \
 
 #define QCALL_CONTRACT CONTRACTL { QCALL_CHECK; } CONTRACTL_END;
@@ -158,6 +154,12 @@ public:
     struct StringHandleOnStack
     {
         StringObject ** m_ppStringObject;
+
+        STRINGREF Get()
+        {
+            LIMITED_METHOD_CONTRACT;
+            return ObjectToSTRINGREF(*m_ppStringObject);
+        }
 
 #ifndef DACCESS_COMPILE
         //
@@ -190,14 +192,26 @@ public:
     //
     // ObjectHandleOnStack type is used for managed objects
     //
-    struct ObjectHandleOnStack
+    struct ObjectHandleOnStack final
     {
-        Object ** m_ppObject;
+        Object** m_ppObject;
+
+        bool IsNull() const
+        {
+            LIMITED_METHOD_CONTRACT;
+            return *m_ppObject == NULL;
+        }
 
         OBJECTREF Get()
         {
             LIMITED_METHOD_CONTRACT;
             return ObjectToOBJECTREF(*m_ppObject);
+        }
+
+        Object** GetObjectPointer() const
+        {
+            LIMITED_METHOD_CONTRACT;
+            return m_ppObject;
         }
 
 #ifndef DACCESS_COMPILE
@@ -221,8 +235,39 @@ public:
        // Do not add operator overloads to convert this object into a stack reference to a specific object type
        // such as OBJECTREF *. While such things are correct, our debug checking logic is unable to verify that
        // the object reference is actually protected from access and therefore will assert.
-       // See bug 254159 for details.
 
+#endif // !DACCESS_COMPILE
+    };
+
+    //
+    // ByteRefOnStack type is used for returning on stack byref to byte.
+    //
+    struct ByteRefOnStack final
+    {
+        struct ByteRef
+        {
+            BYTE* m_pByte;
+        };
+
+        ByteRef* m_pByteRef;
+
+#ifndef DACCESS_COMPILE
+        void Set(BYTE* data)
+        {
+            CONTRACTL
+            {
+                NOTHROW;
+                GC_NOTRIGGER;
+                MODE_COOPERATIVE;
+                PRECONDITION(m_pByteRef != NULL);
+            }
+            CONTRACTL_END;
+
+            // The space for the return value has to be on the stack
+            _ASSERTE(Thread::IsAddressInCurrentStack(m_pByteRef));
+
+            m_pByteRef->m_pByte = data;
+        }
 #endif // !DACCESS_COMPILE
     };
 
@@ -243,15 +288,15 @@ public:
     struct AssemblyHandle
     {
         Object ** m_ppObject;
-        DomainAssembly * m_pAssembly;
+        Assembly * m_pAssembly;
 
-        operator DomainAssembly * ()
+        operator Assembly * ()
         {
             LIMITED_METHOD_CONTRACT;
             return m_pAssembly;
         }
 
-        DomainAssembly * operator->() const
+        Assembly * operator->() const
         {
             LIMITED_METHOD_CONTRACT;
             return m_pAssembly;

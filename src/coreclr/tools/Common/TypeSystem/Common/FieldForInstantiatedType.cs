@@ -3,7 +3,12 @@
 
 using System;
 
+using Internal.Text;
+
 using Debug = System.Diagnostics.Debug;
+#if TYPE_LOADER_IMPLEMENTATION
+using MetadataType = Internal.TypeSystem.DefType;
+#endif
 
 namespace Internal.TypeSystem
 {
@@ -27,7 +32,7 @@ namespace Internal.TypeSystem
             }
         }
 
-        public override DefType OwningType
+        public override MetadataType OwningType
         {
             get
             {
@@ -35,7 +40,7 @@ namespace Internal.TypeSystem
             }
         }
 
-        public override string Name
+        public override Utf8Span Name
         {
             get
             {
@@ -47,7 +52,20 @@ namespace Internal.TypeSystem
         {
             get
             {
-                return _fieldDef.FieldType.InstantiateSignature(_instantiatedType.Instantiation, new Instantiation());
+                return _fieldDef.FieldType.InstantiateSignature(_instantiatedType.Instantiation, default(Instantiation));
+            }
+        }
+
+        public override EmbeddedSignatureData[] GetEmbeddedSignatureData()
+        {
+            return _fieldDef.GetEmbeddedSignatureData();
+        }
+
+        public override bool HasEmbeddedSignatureData
+        {
+            get
+            {
+                return _fieldDef.HasEmbeddedSignatureData;
             }
         }
 

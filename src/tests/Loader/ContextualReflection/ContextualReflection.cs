@@ -11,6 +11,7 @@ using System.Runtime.Loader;
 using System.Runtime.Remoting;
 using System.Threading.Tasks;
 using Xunit;
+using TestLibrary;
 
 namespace ContextualReflectionTest
 {
@@ -23,7 +24,7 @@ namespace ContextualReflectionTest
         public MockAssembly() {}
     }
 
-    class Program : IProgram
+    public class Program : IProgram
     {
         public AssemblyLoadContext alc { get; set; }
         public Assembly alcAssembly { get; set; }
@@ -31,15 +32,16 @@ namespace ContextualReflectionTest
         public IProgram alcProgramInstance { get; set; }
         public Assembly defaultAssembly { get; set; }
 
-        public static int Main()
+        [ActiveIssue("https://github.com/dotnet/runtimelab/issues/165", typeof(Utilities), nameof(Utilities.IsNativeAot))]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/34072", TestRuntimes.Mono)]
+        [ConditionalFact(typeof(Utilities), nameof(Utilities.HasAssemblyFiles))]
+        public static void TestEntryPoint()
         {
             Program program = new Program(isolated:false);
 
             program.RunTests();
 
             Console.WriteLine("Success");
-
-            return 100;
         }
 
         public Program()
@@ -47,7 +49,7 @@ namespace ContextualReflectionTest
             InitializeIsolation(true);
         }
 
-        public Program(bool isolated)
+        internal Program(bool isolated)
         {
             InitializeIsolation(isolated);
         }
@@ -84,7 +86,7 @@ namespace ContextualReflectionTest
             VerifyIsolation();
             Assert.Equal(defaultAssembly, Assembly.GetExecutingAssembly());
             Assert.Equal(AssemblyLoadContext.Default, AssemblyLoadContext.GetLoadContext(Assembly.GetExecutingAssembly()));
-            Assert.NotEqual(alcProgramType, typeof(Program));
+            Assert.NotEqual(typeof(Program), alcProgramType);
             Assert.NotEqual((object)alcProgramInstance, (object)this);
         }
 
@@ -93,7 +95,7 @@ namespace ContextualReflectionTest
             VerifyIsolation();
             Assert.Equal(alcAssembly, Assembly.GetExecutingAssembly());
             Assert.Equal(alc, AssemblyLoadContext.GetLoadContext(Assembly.GetExecutingAssembly()));
-            Assert.Equal(alcProgramType, typeof(Program));
+            Assert.Equal(typeof(Program), alcProgramType);
             Assert.Equal((object)alcProgramInstance, (object)this);
         }
 
@@ -286,7 +288,7 @@ namespace ContextualReflectionTest
                 try
                 {
                     IDisposable defaultScope = AssemblyLoadContext.EnterContextualReflection(null);
-                    Assert.Equal(null, AssemblyLoadContext.CurrentContextualReflectionContext);
+                    Assert.Null(AssemblyLoadContext.CurrentContextualReflectionContext);
 
                     throw new InvalidOperationException();
                 }
@@ -738,7 +740,7 @@ namespace ContextualReflectionTest
 
             AssemblyLoadContext context = AssemblyLoadContext.GetLoadContext(assemblyBuilder);
             Assert.Equal(assemblyLoadContext, context);
-            Assert.True(assemblyLoadContext.Assemblies.Any(a => AssemblyName.ReferenceMatchesDefinition(a.GetName(), assemblyBuilder.GetName())));
+            Assert.Contains(assemblyLoadContext.Assemblies, a => AssemblyName.ReferenceMatchesDefinition(a.GetName(), assemblyBuilder.GetName()));
         }
 
         void TestMockAssemblyThrows()
@@ -783,4 +785,3 @@ namespace ContextualReflectionTest
         }
     }
 }
-

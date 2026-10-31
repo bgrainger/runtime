@@ -62,7 +62,7 @@ public:
     __checkReturn
     inline HRESULT GetRecord(
                         UINT32 nRowIndex,
-        __deref_out_opt BYTE **ppRecord,
+        _Outptr_opt_ BYTE **ppRecord,
                         UINT32 cbRecordSize,
                         UINT32 cRecordCount,
                         UINT32 nTableIndex)
@@ -151,25 +151,29 @@ public:
     {
         return const_cast<RecordPool &>(m_RecordStorage).Count();
     }
+#ifdef FEATURE_METADATA_PERSISTENCE
     inline HRESULT GetRecordsDataSize(UINT32 *pcbSize) const
     {
         return m_RecordStorage.GetSaveSize(pcbSize);
     }
+#endif
 
     __checkReturn
     inline HRESULT GetRecord(
                         UINT32 nIndex,
-        __deref_out_opt BYTE **ppRecord)
+        _Outptr_opt_ BYTE **ppRecord)
     {
         return m_RecordStorage.GetRecord(nIndex, ppRecord);
     }
 
+#ifdef FEATURE_METADATA_PERSISTENCE
     __checkReturn
     inline HRESULT SaveToStream(
         IStream *pStream) const
     {
         return const_cast<RecordPool &>(m_RecordStorage).PersistToStream(pStream);
     }
+#endif
 
 public:
     //
@@ -178,8 +182,8 @@ public:
 
     __checkReturn
     inline HRESULT AddRecord(
-        __out                        BYTE  **ppbRecord,
-        __out                        UINT32 *pnIndex)
+        _Out_                        BYTE  **ppbRecord,
+        _Out_                        UINT32 *pnIndex)
     {
         return m_RecordStorage.AddRecord(ppbRecord, pnIndex);
     }

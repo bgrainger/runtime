@@ -1,10 +1,11 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using System.Text.Json.Serialization;
 
 namespace System.Text.Json.Serialization.Metadata
 {
@@ -56,11 +57,22 @@ namespace System.Text.Json.Serialization.Metadata
         private readonly MethodInfo? _fsharpSetCtor;
         private readonly MethodInfo? _fsharpMapCtor;
 
+        // Union-related reflection members
+        private readonly MethodInfo? _getUnionCases;
+        private readonly MethodInfo? _preComputeUnionTagReader;
+        private readonly MethodInfo? _preComputeUnionReader;
+        private readonly MethodInfo? _preComputeUnionConstructor;
+        private readonly MethodInfo? _unionCaseInfoNameGetter;
+        private readonly MethodInfo? _unionCaseInfoTagGetter;
+        private readonly MethodInfo? _unionCaseInfoGetFields;
+        private readonly MethodInfo? _unionCaseInfoGetCustomAttributes;
+
         /// <summary>
         /// Checks if the provided System.Type instance is emitted by the F# compiler.
         /// If true, also initializes the proxy singleton for future by other F# types.
         /// </summary>
         [RequiresUnreferencedCode(FSharpCoreUnreferencedCodeMessage)]
+        [RequiresDynamicCode(FSharpCoreUnreferencedCodeMessage)]
         public static bool IsFSharpType(Type type)
         {
             if (s_singletonInstance is null)
@@ -92,6 +104,7 @@ namespace System.Text.Json.Serialization.Metadata
         }
 
         [RequiresUnreferencedCode(FSharpCoreUnreferencedCodeMessage)]
+        [RequiresDynamicCode(FSharpCoreUnreferencedCodeMessage)]
         private FSharpCoreReflectionProxy(Assembly fsharpCoreAssembly)
         {
             Debug.Assert(fsharpCoreAssembly.GetName().Name == "FSharp.Core");
@@ -109,9 +122,28 @@ namespace System.Text.Json.Serialization.Metadata
             _fsharpListCtor = fsharpCoreAssembly.GetType("Microsoft.FSharp.Collections.ListModule")?.GetMethod("OfSeq", BindingFlags.Public | BindingFlags.Static);
             _fsharpSetCtor = fsharpCoreAssembly.GetType("Microsoft.FSharp.Collections.SetModule")?.GetMethod("OfSeq", BindingFlags.Public | BindingFlags.Static);
             _fsharpMapCtor = fsharpCoreAssembly.GetType("Microsoft.FSharp.Collections.MapModule")?.GetMethod("OfSeq", BindingFlags.Public | BindingFlags.Static);
+
+            // Union reflection APIs from Microsoft.FSharp.Reflection namespace
+            Type? fsharpType = fsharpCoreAssembly.GetType("Microsoft.FSharp.Reflection.FSharpType");
+            Type? fsharpValue = fsharpCoreAssembly.GetType("Microsoft.FSharp.Reflection.FSharpValue");
+            Type? unionCaseInfoType = fsharpCoreAssembly.GetType("Microsoft.FSharp.Reflection.UnionCaseInfo");
+
+            _getUnionCases = fsharpType?.GetMethod("GetUnionCases", BindingFlags.Public | BindingFlags.Static);
+            _preComputeUnionTagReader = fsharpValue?.GetMethod("PreComputeUnionTagReader", BindingFlags.Public | BindingFlags.Static);
+
+            if (unionCaseInfoType is not null)
+            {
+                _preComputeUnionReader = fsharpValue?.GetMethod("PreComputeUnionReader", BindingFlags.Public | BindingFlags.Static);
+                _preComputeUnionConstructor = fsharpValue?.GetMethod("PreComputeUnionConstructor", BindingFlags.Public | BindingFlags.Static);
+                _unionCaseInfoNameGetter = unionCaseInfoType.GetMethod("get_Name", BindingFlags.Public | BindingFlags.Instance);
+                _unionCaseInfoTagGetter = unionCaseInfoType.GetMethod("get_Tag", BindingFlags.Public | BindingFlags.Instance);
+                _unionCaseInfoGetFields = unionCaseInfoType.GetMethod("GetFields", BindingFlags.Public | BindingFlags.Instance, binder: null, Type.EmptyTypes, modifiers: null);
+                _unionCaseInfoGetCustomAttributes = unionCaseInfoType.GetMethod("GetCustomAttributes", BindingFlags.Public | BindingFlags.Instance, binder: null, Type.EmptyTypes, modifiers: null);
+            }
         }
 
         [RequiresUnreferencedCode(FSharpCoreUnreferencedCodeMessage)]
+        [RequiresDynamicCode(FSharpCoreUnreferencedCodeMessage)]
         public FSharpKind DetectFSharpKind(Type type)
         {
             Attribute? compilationMappingAttribute = GetFSharpCompilationMappingAttribute(type);
@@ -139,7 +171,77 @@ namespace System.Text.Json.Serialization.Metadata
             };
         }
 
+        /// <summary>
+        /// Gets the union case metadata for the specified F# discriminated union type.
+        /// Returns an array of case descriptors with pre-computed delegates for tag reading,
+        /// field reading, and case construction.
+        /// </summary>
         [RequiresUnreferencedCode(FSharpCoreUnreferencedCodeMessage)]
+        [RequiresDynamicCode(FSharpCoreUnreferencedCodeMessage)]
+        public FSharpUnionCaseInfo[] GetUnionCaseInfos(Type unionType)
+        {
+            MethodInfo getUnionCases = EnsureMemberExists(_getUnionCases, "Microsoft.FSharp.Reflection.FSharpType.GetUnionCases(Type, BindingFlags?)");
+            MethodInfo preComputeUnionReader = EnsureMemberExists(_preComputeUnionReader, "Microsoft.FSharp.Reflection.FSharpValue.PreComputeUnionReader(UnionCaseInfo, BindingFlags?)");
+            MethodInfo preComputeUnionConstructor = EnsureMemberExists(_preComputeUnionConstructor, "Microsoft.FSharp.Reflection.FSharpValue.PreComputeUnionConstructor(UnionCaseInfo, BindingFlags?)");
+            MethodInfo nameGetter = EnsureMemberExists(_unionCaseInfoNameGetter, "Microsoft.FSharp.Reflection.UnionCaseInfo.get_Name()");
+            MethodInfo tagGetter = EnsureMemberExists(_unionCaseInfoTagGetter, "Microsoft.FSharp.Reflection.UnionCaseInfo.get_Tag()");
+            MethodInfo getFields = EnsureMemberExists(_unionCaseInfoGetFields, "Microsoft.FSharp.Reflection.UnionCaseInfo.GetFields()");
+            MethodInfo getCustomAttributes = EnsureMemberExists(_unionCaseInfoGetCustomAttributes, "Microsoft.FSharp.Reflection.UnionCaseInfo.GetCustomAttributes()");
+
+            // FSharpType.GetUnionCases(type, bindingFlags: null) returns UnionCaseInfo[]
+            object[] cases = (object[])getUnionCases.Invoke(null, new object?[] { unionType, null })!;
+            var result = new FSharpUnionCaseInfo[cases.Length];
+
+            for (int i = 0; i < cases.Length; i++)
+            {
+                object caseInfo = cases[i];
+                string caseName = (string)nameGetter.Invoke(caseInfo, null)!;
+                int caseTag = (int)tagGetter.Invoke(caseInfo, null)!;
+                PropertyInfo[] fields = (PropertyInfo[])getFields.Invoke(caseInfo, null)!;
+
+                // Read custom attributes to check for JsonPropertyNameAttribute
+                object[] customAttributes = (object[])getCustomAttributes.Invoke(caseInfo, null)!;
+                string? jsonPropertyName = null;
+                foreach (object attr in customAttributes)
+                {
+                    if (attr is JsonPropertyNameAttribute jpn)
+                    {
+                        jsonPropertyName = jpn.Name;
+                        break;
+                    }
+                }
+
+                // PreComputeUnionReader returns FSharpFunc<obj, obj[]>
+                Func<object, object[]> fieldReader = ConvertFSharpFunc<object, object[]>(
+                    preComputeUnionReader.Invoke(null, new object?[] { caseInfo, null })!);
+
+                // PreComputeUnionConstructor returns FSharpFunc<obj[], obj>
+                Func<object[], object> constructor = ConvertFSharpFunc<object[], object>(
+                    preComputeUnionConstructor.Invoke(null, new object?[] { caseInfo, null })!);
+
+                result[i] = new FSharpUnionCaseInfo(caseName, caseTag, fields, jsonPropertyName, fieldReader, constructor);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Creates a tag reader delegate for the specified F# union type.
+        /// The delegate takes a union value (boxed) and returns the integer tag.
+        /// </summary>
+        [RequiresUnreferencedCode(FSharpCoreUnreferencedCodeMessage)]
+        [RequiresDynamicCode(FSharpCoreUnreferencedCodeMessage)]
+        public Func<object, int> CreateUnionTagReader(Type unionType)
+        {
+            MethodInfo preComputeUnionTagReader = EnsureMemberExists(_preComputeUnionTagReader, "Microsoft.FSharp.Reflection.FSharpValue.PreComputeUnionTagReader(Type, BindingFlags?)");
+
+            // PreComputeUnionTagReader returns FSharpFunc<obj, int>
+            return ConvertFSharpFunc<object, int>(
+                preComputeUnionTagReader.Invoke(null, new object?[] { unionType, null })!);
+        }
+
+        [RequiresUnreferencedCode(FSharpCoreUnreferencedCodeMessage)]
+        [RequiresDynamicCode(FSharpCoreUnreferencedCodeMessage)]
         public Func<TFSharpOption, T> CreateFSharpOptionValueGetter<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicMethods)] TFSharpOption, T>()
         {
             Debug.Assert(typeof(TFSharpOption).GetGenericTypeDefinition() == _fsharpOptionType);
@@ -148,6 +250,7 @@ namespace System.Text.Json.Serialization.Metadata
         }
 
         [RequiresUnreferencedCode(FSharpCoreUnreferencedCodeMessage)]
+        [RequiresDynamicCode(FSharpCoreUnreferencedCodeMessage)]
         public Func<TElement?, TFSharpOption> CreateFSharpOptionSomeConstructor<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicMethods)] TFSharpOption, TElement>()
         {
             Debug.Assert(typeof(TFSharpOption).GetGenericTypeDefinition() == _fsharpOptionType);
@@ -156,6 +259,7 @@ namespace System.Text.Json.Serialization.Metadata
         }
 
         [RequiresUnreferencedCode(FSharpCoreUnreferencedCodeMessage)]
+        [RequiresDynamicCode(FSharpCoreUnreferencedCodeMessage)]
         public StructGetter<TFSharpValueOption, TElement> CreateFSharpValueOptionValueGetter<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicMethods)] TFSharpValueOption, TElement>()
             where TFSharpValueOption : struct
         {
@@ -165,6 +269,7 @@ namespace System.Text.Json.Serialization.Metadata
         }
 
         [RequiresUnreferencedCode(FSharpCoreUnreferencedCodeMessage)]
+        [RequiresDynamicCode(FSharpCoreUnreferencedCodeMessage)]
         public Func<TElement?, TFSharpOption> CreateFSharpValueOptionSomeConstructor<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicMethods)] TFSharpOption, TElement>()
         {
             Debug.Assert(typeof(TFSharpOption).GetGenericTypeDefinition() == _fsharpValueOptionType);
@@ -173,6 +278,7 @@ namespace System.Text.Json.Serialization.Metadata
         }
 
         [RequiresUnreferencedCode(FSharpCoreUnreferencedCodeMessage)]
+        [RequiresDynamicCode(FSharpCoreUnreferencedCodeMessage)]
         public Func<IEnumerable<TElement>, TFSharpList> CreateFSharpListConstructor<TFSharpList, TElement>()
         {
             Debug.Assert(typeof(TFSharpList).GetGenericTypeDefinition() == _fsharpListType);
@@ -180,6 +286,7 @@ namespace System.Text.Json.Serialization.Metadata
         }
 
         [RequiresUnreferencedCode(FSharpCoreUnreferencedCodeMessage)]
+        [RequiresDynamicCode(FSharpCoreUnreferencedCodeMessage)]
         public Func<IEnumerable<TElement>, TFSharpSet> CreateFSharpSetConstructor<TFSharpSet, TElement>()
         {
             Debug.Assert(typeof(TFSharpSet).GetGenericTypeDefinition() == _fsharpSetType);
@@ -187,6 +294,7 @@ namespace System.Text.Json.Serialization.Metadata
         }
 
         [RequiresUnreferencedCode(FSharpCoreUnreferencedCodeMessage)]
+        [RequiresDynamicCode(FSharpCoreUnreferencedCodeMessage)]
         public Func<IEnumerable<Tuple<TKey, TValue>>, TFSharpMap> CreateFSharpMapConstructor<TFSharpMap, TKey, TValue>()
         {
             Debug.Assert(typeof(TFSharpMap).GetGenericTypeDefinition() == _fsharpMapType);
@@ -194,7 +302,10 @@ namespace System.Text.Json.Serialization.Metadata
         }
 
         private Attribute? GetFSharpCompilationMappingAttribute(Type type)
-            => type.GetCustomAttribute(_compilationMappingAttributeType, inherit: true);
+        {
+            object[] attributes = type.GetCustomAttributes(_compilationMappingAttributeType, inherit: true);
+            return attributes.Length == 0 ? null : (Attribute)attributes[0];
+        }
 
         private SourceConstructFlags GetSourceConstructFlags(Attribute compilationMappingAttribute)
             => _sourceConstructFlagsGetter is null ? SourceConstructFlags.None : (SourceConstructFlags)_sourceConstructFlagsGetter.Invoke(compilationMappingAttribute, null)!;
@@ -217,7 +328,18 @@ namespace System.Text.Json.Serialization.Metadata
         private static TDelegate CreateDelegate<TDelegate>(MethodInfo methodInfo) where TDelegate : Delegate
             => (TDelegate)Delegate.CreateDelegate(typeof(TDelegate), methodInfo, throwOnBindFailure: true)!;
 
-        private TMemberInfo EnsureMemberExists<TMemberInfo>(TMemberInfo? memberInfo, string memberName) where TMemberInfo : MemberInfo
+        // Converts an FSharpFunc<TArg, TResult> (which is not statically known) into a Func<TArg, TResult>.
+        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2075:GetMethod",
+            Justification = "FSharpFunc<TArg, TResult>.Invoke is always available. Callers are marked RequiresUnreferencedCode.")]
+        private static Func<TArg, TResult> ConvertFSharpFunc<TArg, TResult>(object fsharpFunc)
+        {
+            // FSharpFunc<TArg, TResult> has an Invoke(TArg) method.
+            // Create a closed delegate to avoid MethodInfo.Invoke overhead and object[] allocation per call.
+            MethodInfo invokeMethod = fsharpFunc.GetType().GetMethod("Invoke", BindingFlags.Public | BindingFlags.Instance)!;
+            return (Func<TArg, TResult>)Delegate.CreateDelegate(typeof(Func<TArg, TResult>), fsharpFunc, invokeMethod);
+        }
+
+        private static TMemberInfo EnsureMemberExists<TMemberInfo>(TMemberInfo? memberInfo, string memberName) where TMemberInfo : MemberInfo
         {
             if (memberInfo is null)
             {
@@ -243,6 +365,36 @@ namespace System.Text.Json.Serialization.Metadata
             Value = 9,
             KindMask = 31,
             NonPublicRepresentation = 32
+        }
+
+        /// <summary>
+        /// Represents metadata for a single F# discriminated union case.
+        /// </summary>
+        internal sealed class FSharpUnionCaseInfo
+        {
+            public FSharpUnionCaseInfo(
+                string name,
+                int tag,
+                PropertyInfo[] fields,
+                string? jsonPropertyName,
+                Func<object, object[]> fieldReader,
+                Func<object[], object> constructor)
+            {
+                Name = name;
+                Tag = tag;
+                Fields = fields;
+                JsonPropertyName = jsonPropertyName;
+                FieldReader = fieldReader;
+                Constructor = constructor;
+            }
+
+            public string Name { get; }
+            public int Tag { get; }
+            public PropertyInfo[] Fields { get; }
+            public string? JsonPropertyName { get; }
+            public Func<object, object[]> FieldReader { get; }
+            public Func<object[], object> Constructor { get; }
+            public bool IsFieldless => Fields.Length == 0;
         }
     }
 }

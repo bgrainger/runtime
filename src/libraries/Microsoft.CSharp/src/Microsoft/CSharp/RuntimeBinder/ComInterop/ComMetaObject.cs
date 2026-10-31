@@ -8,9 +8,10 @@ using System.Linq.Expressions;
 namespace Microsoft.CSharp.RuntimeBinder.ComInterop
 {
     // Note: we only need to support the operations used by ComBinder
+    [RequiresUnreferencedCode(Binder.TrimmerWarning)]
+    [RequiresDynamicCode(Binder.DynamicCodeWarning)]
     internal sealed class ComMetaObject : DynamicMetaObject
     {
-        [RequiresUnreferencedCode(Binder.TrimmerWarning)]
         internal ComMetaObject(Expression expression, BindingRestrictions restrictions, object arg)
             : base(expression, restrictions, arg)
         {
@@ -18,42 +19,40 @@ namespace Microsoft.CSharp.RuntimeBinder.ComInterop
 
         public override DynamicMetaObject BindInvokeMember(InvokeMemberBinder binder, DynamicMetaObject[] args)
         {
-            Requires.NotNull(binder, nameof(binder));
+            Requires.NotNull(binder);
             return binder.Defer(args.AddFirst(WrapSelf()));
         }
 
         public override DynamicMetaObject BindInvoke(InvokeBinder binder, DynamicMetaObject[] args)
         {
-            Requires.NotNull(binder, nameof(binder));
+            Requires.NotNull(binder);
             return binder.Defer(args.AddFirst(WrapSelf()));
         }
 
         public override DynamicMetaObject BindGetMember(GetMemberBinder binder)
         {
-            Requires.NotNull(binder, nameof(binder));
+            Requires.NotNull(binder);
             return binder.Defer(WrapSelf());
         }
 
         public override DynamicMetaObject BindSetMember(SetMemberBinder binder, DynamicMetaObject value)
         {
-            Requires.NotNull(binder, nameof(binder));
+            Requires.NotNull(binder);
             return binder.Defer(WrapSelf(), value);
         }
 
         public override DynamicMetaObject BindGetIndex(GetIndexBinder binder, DynamicMetaObject[] indexes)
         {
-            Requires.NotNull(binder, nameof(binder));
+            Requires.NotNull(binder);
             return binder.Defer(WrapSelf(), indexes);
         }
 
         public override DynamicMetaObject BindSetIndex(SetIndexBinder binder, DynamicMetaObject[] indexes, DynamicMetaObject value)
         {
-            Requires.NotNull(binder, nameof(binder));
+            Requires.NotNull(binder);
             return binder.Defer(WrapSelf(), indexes.AddLast(value));
         }
 
-        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
-            Justification = "This whole class is unsafe. Constructors are marked as such.")]
         private DynamicMetaObject WrapSelf()
         {
             return new DynamicMetaObject(

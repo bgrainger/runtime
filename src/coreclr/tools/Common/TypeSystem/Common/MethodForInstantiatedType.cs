@@ -3,6 +3,8 @@
 
 using System;
 
+using Internal.Text;
+
 using Debug = System.Diagnostics.Debug;
 
 namespace Internal.TypeSystem
@@ -48,7 +50,7 @@ namespace Internal.TypeSystem
 
         private TypeDesc Instantiate(TypeDesc type)
         {
-            return type.InstantiateSignature(_instantiatedType.Instantiation, new Instantiation());
+            return type.InstantiateSignature(_instantiatedType.Instantiation, default(Instantiation));
         }
 
         public override MethodSignature Signature
@@ -111,6 +113,22 @@ namespace Internal.TypeSystem
             }
         }
 
+        public override bool IsPublic
+        {
+            get
+            {
+                return _typicalMethodDef.IsPublic;
+            }
+        }
+
+        public override bool IsAsync
+        {
+            get
+            {
+                return _typicalMethodDef.IsAsync;
+            }
+        }
+
         public override bool HasCustomAttribute(string attributeNamespace, string attributeName)
         {
             return _typicalMethodDef.HasCustomAttribute(attributeNamespace, attributeName);
@@ -129,7 +147,15 @@ namespace Internal.TypeSystem
             }
         }
 
-        public override string Name
+        public override bool IsStaticConstructor
+        {
+            get
+            {
+                return _typicalMethodDef.IsStaticConstructor;
+            }
+        }
+
+        public override Utf8Span Name
         {
             get
             {

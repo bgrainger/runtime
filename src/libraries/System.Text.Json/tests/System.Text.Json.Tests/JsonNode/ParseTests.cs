@@ -4,6 +4,7 @@
 using System.IO;
 using System.Reflection;
 using System.Text.Json.Serialization.Tests;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace System.Text.Json.Nodes.Tests
@@ -84,6 +85,60 @@ namespace System.Text.Json.Nodes.Tests
         }
 
         [Fact]
+        public static void Parse_TryGetPropertyValueWithIndex()
+        {
+            JsonObject jObject = JsonNode.Parse(JsonNodeTests.ExpectedDomJson).AsObject();
+
+            JsonNode? node;
+            int index;
+
+            Assert.True(jObject.TryGetPropertyValue("MyString", out node, out index));
+            Assert.Equal("Hello!", node.GetValue<string>());
+            Assert.Equal(0, index);
+
+            Assert.True(jObject.TryGetPropertyValue("MyNull", out node, out index));
+            Assert.Null(node);
+            Assert.Equal(1, index);
+
+            Assert.True(jObject.TryGetPropertyValue("MyBoolean", out node, out index));
+            Assert.False(node.GetValue<bool>());
+            Assert.Equal(2, index);
+
+            Assert.True(jObject.TryGetPropertyValue("MyArray", out node, out index));
+            Assert.IsType<JsonArray>(node);
+            Assert.Equal(3, index);
+
+            Assert.True(jObject.TryGetPropertyValue("MyInt", out node, out index));
+            Assert.Equal(43, node.GetValue<int>());
+            Assert.Equal(4, index);
+
+            Assert.True(jObject.TryGetPropertyValue("MyDateTime", out node, out index));
+            Assert.Equal("2020-07-08T00:00:00", node.GetValue<string>());
+            Assert.Equal(5, index);
+
+            Assert.True(jObject.TryGetPropertyValue("MyGuid", out node, out index));
+            Assert.Equal("ed957609-cdfe-412f-88c1-02daca1b4f51", node.AsValue().GetValue<Guid>().ToString());
+            Assert.Equal(6, index);
+
+            Assert.True(jObject.TryGetPropertyValue("MyObject", out node, out index));
+            Assert.IsType<JsonObject>(node);
+            Assert.Equal(7, index);
+        }
+
+        [Fact]
+        public static void Parse_TryGetPropertyValueFail()
+        {
+            JsonObject jObject = JsonNode.Parse(JsonNodeTests.ExpectedDomJson).AsObject();
+
+            JsonNode? node;
+            int index;
+
+            Assert.False(jObject.TryGetPropertyValue("NonExistentKey", out node, out index));
+            Assert.Null(node);
+            Assert.Equal(-1, index);
+        }
+
+        [Fact]
         public static void Parse_TryGetValue()
         {
             Assert.True(JsonNode.Parse("\"Hello\"").AsValue().TryGetValue(out string? _));
@@ -125,27 +180,30 @@ namespace System.Text.Json.Nodes.Tests
         }
 
         [Fact]
-        public static void NullReference_Fail()
+        public static async Task NullReference_Fail()
         {
             Assert.Throws<ArgumentNullException>(() => JsonSerializer.Deserialize<JsonNode>((string)null));
             Assert.Throws<ArgumentNullException>(() => JsonNode.Parse((string)null));
             Assert.Throws<ArgumentNullException>(() => JsonNode.Parse((Stream)null));
+            await Assert.ThrowsAsync<ArgumentNullException>(() => JsonNode.ParseAsync(null));
         }
 
         [Fact]
-        public static void NullLiteral()
+        public static async Task NullLiteral()
         {
             Assert.Null(JsonSerializer.Deserialize<JsonNode>("null"));
             Assert.Null(JsonNode.Parse("null"));
 
-            using (MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes("null")))
+            using (MemoryStream stream = new MemoryStream("null"u8.ToArray()))
             {
                 Assert.Null(JsonNode.Parse(stream));
+                stream.Position = 0;
+                Assert.Null(await JsonNode.ParseAsync(stream));
             }
         }
 
         [Fact]
-        public static void InternalValueFields()
+        public static async Task InternalValueFields()
         {
             // Use reflection to inspect the internal state of the 3 fields that hold values.
             // There is not another way to verify, and using a debug watch causes nodes to be created.
@@ -154,17 +212,6 @@ namespace System.Text.Json.Nodes.Tests
 
             FieldInfo jsonDictionaryField = typeof(JsonObject).GetField("_dictionary", BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(jsonDictionaryField);
-
-            Type jsonPropertyDictionaryType = typeof(JsonObject).Assembly.GetType("System.Text.Json.JsonPropertyDictionary`1");
-            Assert.NotNull(jsonPropertyDictionaryType);
-
-            jsonPropertyDictionaryType = jsonPropertyDictionaryType.MakeGenericType(new Type[] { typeof(JsonNode) });
-
-            FieldInfo listField = jsonPropertyDictionaryType.GetField("_propertyList", BindingFlags.Instance | BindingFlags.NonPublic);
-            Assert.NotNull(listField);
-
-            FieldInfo dictionaryField = jsonPropertyDictionaryType.GetField("_propertyDictionary", BindingFlags.Instance | BindingFlags.NonPublic);
-            Assert.NotNull(dictionaryField);
 
             using (MemoryStream stream = new MemoryStream(SimpleTestClass.s_data))
             {
@@ -182,8 +229,35 @@ namespace System.Text.Json.Nodes.Tests
                 jsonDictionary = jsonDictionaryField.GetValue(node);
                 Assert.NotNull(jsonDictionary);
 
-                Assert.NotNull(listField.GetValue(jsonDictionary));
-                Assert.NotNull(dictionaryField.GetValue(jsonDictionary)); // The dictionary threshold was reached.
+                Test();
+
+                void Test()
+                {
+                    string actual = node.ToJsonString();
+
+                    // Replace the escaped "+" sign used with DateTimeOffset.
+                    actual = actual.Replace("\\u002B", "+");
+
+                    Assert.Equal(SimpleTestClass.s_json.StripWhitespace(), actual);
+                }
+            }
+
+            using (MemoryStream stream = new MemoryStream(SimpleTestClass.s_data))
+            {
+                // Only JsonElement is present.
+                JsonNode node = await JsonNode.ParseAsync(stream);
+                object jsonDictionary = jsonDictionaryField.GetValue(node);
+                Assert.Null(jsonDictionary); // Value is null until converted from JsonElement.
+                Assert.NotNull(elementField.GetValue(node));
+                Test();
+
+                // Cause the single JsonElement to expand into individual JsonElement nodes.
+                Assert.Equal(1, node.AsObject()["MyInt16"].GetValue<int>());
+                Assert.Null(elementField.GetValue(node));
+
+                jsonDictionary = jsonDictionaryField.GetValue(node);
+                Assert.NotNull(jsonDictionary);
+
                 Test();
 
                 void Test()
@@ -199,17 +273,29 @@ namespace System.Text.Json.Nodes.Tests
         }
 
         [Fact]
-        public static void ReadSimpleObjectWithTrailingTrivia()
+        public static async Task ReadSimpleObjectWithTrailingTrivia()
         {
             byte[] data = Encoding.UTF8.GetBytes(SimpleTestClass.s_json + " /* Multi\r\nLine Comment */\t");
+
+            var options = new JsonDocumentOptions
+            {
+                CommentHandling = JsonCommentHandling.Skip
+            };
+
             using (MemoryStream stream = new MemoryStream(data))
             {
-                var options = new JsonDocumentOptions
-                {
-                    CommentHandling = JsonCommentHandling.Skip
-                };
-
                 JsonNode node = JsonNode.Parse(stream, nodeOptions: null, options);
+
+                string actual = node.ToJsonString();
+                // Replace the escaped "+" sign used with DateTimeOffset.
+                actual = actual.Replace("\\u002B", "+");
+
+                Assert.Equal(SimpleTestClass.s_json.StripWhitespace(), actual);
+            }
+
+            using (MemoryStream stream = new MemoryStream(data))
+            {
+                JsonNode node = await JsonNode.ParseAsync(stream, nodeOptions: null, options);
 
                 string actual = node.ToJsonString();
                 // Replace the escaped "+" sign used with DateTimeOffset.
@@ -220,11 +306,17 @@ namespace System.Text.Json.Nodes.Tests
         }
 
         [Fact]
-        public static void ReadPrimitives()
+        public static async Task ReadPrimitives()
         {
             using (MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes(@"1")))
             {
                 int i = JsonNode.Parse(stream).AsValue().GetValue<int>();
+                Assert.Equal(1, i);
+            }
+
+            using (MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes(@"1")))
+            {
+                int i = (await JsonNode.ParseAsync(stream)).AsValue().GetValue<int>();
                 Assert.Equal(1, i);
             }
         }
@@ -254,4 +346,3 @@ namespace System.Text.Json.Nodes.Tests
         }
     }
 }
-

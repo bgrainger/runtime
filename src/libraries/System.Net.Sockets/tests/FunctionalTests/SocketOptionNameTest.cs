@@ -12,11 +12,15 @@ using Xunit;
 
 namespace System.Net.Sockets.Tests
 {
+    [ConditionalClass(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
     public partial class SocketOptionNameTest
     {
         private static bool SocketsReuseUnicastPortSupport => Capability.SocketsReuseUnicastPortSupport().HasValue;
+        // Does not work on Nano and Qemu and AzureLinux has firewall enabled by default
+        private static readonly bool CanRunMulticastTests = !(PlatformDetection.IsWindowsNanoServer || PlatformDetection.IsWindowsServerCore ||
+                                                              PlatformDetection.IsAzureLinux || PlatformDetection.IsQemuLinux);
 
-        [ConditionalFact(nameof(SocketsReuseUnicastPortSupport))]
+        [ConditionalFact(typeof(SocketOptionNameTest), nameof(SocketsReuseUnicastPortSupport))]
         public void ReuseUnicastPort_CreateSocketGetOption()
         {
             using (var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
@@ -32,7 +36,7 @@ namespace System.Net.Sockets.Tests
             }
         }
 
-        [ConditionalFact(nameof(SocketsReuseUnicastPortSupport))]
+        [ConditionalFact(typeof(SocketOptionNameTest), nameof(SocketsReuseUnicastPortSupport))]
         public void ReuseUnicastPort_CreateSocketSetOption()
         {
             using (var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
@@ -51,6 +55,7 @@ namespace System.Net.Sockets.Tests
         }
 
         [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/104547", typeof(PlatformDetection), nameof(PlatformDetection.IsQemuLinux))]
         public void MulticastOption_CreateSocketSetGetOption_GroupAndInterfaceIndex_SetSucceeds_GetThrows()
         {
             int interfaceIndex = 0;
@@ -64,11 +69,19 @@ namespace System.Net.Sockets.Tests
             }
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsNotWindowsNanoNorServerCore))] // Skip on Nano: https://github.com/dotnet/runtime/issues/26286
+        [ConditionalFact(typeof(SocketOptionNameTest), nameof(CanRunMulticastTests))]
         public async Task MulticastInterface_Set_AnyInterface_Succeeds()
         {
             // On all platforms, index 0 means "any interface"
-            await MulticastInterface_Set_Helper(0);
+            try
+            {
+                await MulticastInterface_Set_Helper(0);
+            }
+            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.HostUnreachable && PlatformDetection.IsApplePlatform)
+            {
+                // https://github.com/dotnet/runtime/issues/114450
+                throw new SkipTestException("HostUnreachable indicates missing local network permission; this test might pass or fail depending on the environment. Please verify manually.");
+            }
         }
 
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsNotWindowsNanoNorServerCore))] // Skip on Nano: https://github.com/dotnet/runtime/issues/26286
@@ -120,17 +133,11 @@ namespace System.Net.Sockets.Tests
             }
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsNotWindowsNanoNorServerCore))] // Skip on Nano: https://github.com/dotnet/runtime/issues/26286
+        [ConditionalFact(typeof(SocketOptionNameTest), nameof(CanRunMulticastTests))]
         [SkipOnPlatform(TestPlatforms.OSX | TestPlatforms.FreeBSD, "Expected behavior is different on OSX or FreeBSD")]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/52124", TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
         public async Task MulticastInterface_Set_IPv6_AnyInterface_Succeeds()
         {
-            if (PlatformDetection.IsRedHatFamily7)
-            {
-                // RH7 seems to have issues with multicast in Azure. Same code and setup can pass when executed outside of Azure.
-                throw new SkipTestException("IPv6 multicast environment not available");
-            }
-
             // On all platforms, index 0 means "any interface"
             await MulticastInterface_Set_IPv6_Helper(0);
         }
@@ -242,11 +249,8 @@ namespace System.Net.Sockets.Tests
                     Assert.ThrowsAny<Exception>(() => client.Connect(server.LocalEndPoint));
                 }
 
-                // Verify via Select that there's an error
-                const int FailedTimeout = 10 * 1000 * 1000; // 10 seconds
-                var errorList = new List<Socket> { client };
-                Socket.Select(null, null, errorList, FailedTimeout);
-                Assert.Equal(1, errorList.Count);
+                // Verify via Poll that there's an error
+                Assert.True(client.Poll(10_000_000, SelectMode.SelectError));
 
                 // Get the last error and validate it's what's expected
                 int errorCode;
@@ -423,6 +427,39 @@ namespace System.Net.Sockets.Tests
             }
         }
 
+        [ConditionalFact]
+        public async Task TcpFastOpen_Roundrip_Succeeds()
+        {
+            if (PlatformDetection.IsWindows && !PlatformDetection.IsWindows10OrLater)
+            {
+                // Old Windows versions do not support fast open and SetSocketOption fails with error.
+                throw new SkipTestException("TCP fast open is not supported");
+            }
+
+            using (Socket l = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
+            {
+                l.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+                l.Listen();
+
+                int oldValue = (int)l.GetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.FastOpen);
+                int newValue = oldValue == 0 ? 1 : 0;
+                l.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.FastOpen, newValue);
+                oldValue = (int)l.GetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.FastOpen);
+                Assert.Equal(newValue, oldValue);
+
+                using (Socket c = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
+                {
+                    oldValue = (int)c.GetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.FastOpen);
+                    newValue = oldValue == 0 ? 1 : 0;
+                    c.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.FastOpen, newValue);
+                    oldValue = (int)c.GetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.FastOpen);
+                    Assert.Equal(newValue, oldValue);
+
+                    await c.ConnectAsync(l.LocalEndPoint);
+                }
+            }
+        }
+
         [Fact]
         [PlatformSpecific(TestPlatforms.Linux | TestPlatforms.OSX)]
         public unsafe void ReuseAddressUdp()
@@ -504,7 +541,7 @@ namespace System.Net.Sockets.Tests
             }
         }
 
-        [Theory]
+        [ConditionalTheory]
         [InlineData(AddressFamily.InterNetwork)]
         [InlineData(AddressFamily.InterNetworkV6)]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/50568", TestPlatforms.Android)]
@@ -515,6 +552,7 @@ namespace System.Net.Sockets.Tests
             int SO_RCVBUF;
 
             if (OperatingSystem.IsWindows() ||
+                OperatingSystem.IsFreeBSD() ||
                 OperatingSystem.IsMacOS())
             {
                 SOL_SOCKET = 0xffff;
@@ -558,7 +596,7 @@ namespace System.Net.Sockets.Tests
                 s.Bind(new IPEndPoint(IPAddress.Loopback, 0));
                 s.Listen();
 
-                Assert.Equal(1, s.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.AcceptConnection));
+                Assert.NotEqual(0, s.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.AcceptConnection));
             }
         }
 
@@ -690,9 +728,10 @@ namespace System.Net.Sockets.Tests
         private static int SOL_SOCKET = OperatingSystem.IsLinux() ? 1 : (int)SocketOptionLevel.Socket;
     }
 
-    [Collection("NoParallelTests")]
+    [Collection(nameof(DisableParallelization))]
     // Set of tests to not run  together with any other tests.
-    public partial class NoParallelTests
+    [ConditionalClass(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
+    public class NoParallelTests
     {
         [Fact]
         public void BindDuringTcpWait_Succeeds()
@@ -714,7 +753,7 @@ namespace System.Net.Sockets.Tests
             }
 
             // Bind a socket to the same address we just used.
-            // To avoid conflict with other tests, this is part of the NoParallelTests test collection.
+            // To avoid conflict with other tests, this is part of the DisableParallelization test collection.
             using (Socket b = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
             {
                 b.Bind(new IPEndPoint(IPAddress.Loopback, port));

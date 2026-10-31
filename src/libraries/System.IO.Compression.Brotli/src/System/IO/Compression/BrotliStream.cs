@@ -18,28 +18,37 @@ namespace System.IO.Compression
         private readonly CompressionMode _mode;
 
         /// <summary>Initializes a new instance of the <see cref="System.IO.Compression.BrotliStream" /> class by using the specified stream and compression mode.</summary>
-        /// <param name="stream">The stream to compress.</param>
-        /// <param name="mode">One of the enumeration values that indicates whether to compress or decompress the stream.</param>
+        /// <param name="stream">The stream to which compressed data is written or from which data to decompress is read.</param>
+        /// <param name="mode">One of the enumeration values that indicates whether to compress data to the stream or decompress data from the stream.</param>
         public BrotliStream(Stream stream, CompressionMode mode) : this(stream, mode, leaveOpen: false) { }
+
         /// <summary>Initializes a new instance of the <see cref="System.IO.Compression.BrotliStream" /> class by using the specified stream and compression mode, and optionally leaves the stream open.</summary>
-        /// <param name="stream">The stream to compress.</param>
-        /// <param name="mode">One of the enumeration values that indicates whether to compress or decompress the stream.</param>
+        /// <param name="stream">The stream to which compressed data is written or from which data to decompress is read.</param>
+        /// <param name="mode">One of the enumeration values that indicates whether to compress data to the stream or decompress data from the stream.</param>
         /// <param name="leaveOpen"><see langword="true" /> to leave the stream open after the <see cref="System.IO.Compression.BrotliStream" /> object is disposed; otherwise, <see langword="false" />.</param>
         public BrotliStream(Stream stream, CompressionMode mode, bool leaveOpen)
         {
-            if (stream == null)
-                throw new ArgumentNullException(nameof(stream));
+            ArgumentNullException.ThrowIfNull(stream);
 
             switch (mode)
             {
                 case CompressionMode.Compress:
                     if (!stream.CanWrite)
+                    {
                         throw new ArgumentException(SR.Stream_FalseCanWrite, nameof(stream));
+                    }
+
+                    _encoder.SetQuality(BrotliUtils.Quality_Default);
+                    _encoder.SetWindow(BrotliUtils.WindowBits_Default);
                     break;
+
                 case CompressionMode.Decompress:
                     if (!stream.CanRead)
+                    {
                         throw new ArgumentException(SR.Stream_FalseCanRead, nameof(stream));
+                    }
                     break;
+
                 default:
                     throw new ArgumentException(SR.ArgumentOutOfRange_Enum, nameof(mode));
             }
@@ -52,8 +61,7 @@ namespace System.IO.Compression
 
         private void EnsureNotDisposed()
         {
-            if (_stream == null)
-                throw new ObjectDisposedException(GetType().Name, SR.ObjectDisposed_StreamClosed);
+            ObjectDisposedException.ThrowIf(_stream is null, this);
         }
 
         /// <summary>Releases the unmanaged resources used by the <see cref="System.IO.Compression.BrotliStream" /> and optionally releases the managed resources.</summary>
@@ -84,9 +92,9 @@ namespace System.IO.Compression
 
         /// <summary>Asynchronously releases the unmanaged resources used by the <see cref="System.IO.Compression.BrotliStream" />.</summary>
         /// <returns>A task that represents the asynchronous dispose operation.</returns>
-        /// <remarks>The `DisposeAsync` method lets you perform a resource-intensive dispose operation without blocking the main thread. This performance consideration is particularly important in a Windows 8.x Store app or desktop app where a time-consuming stream operation can block the UI thread and make your app appear as if it is not working. The async methods are used in conjunction with the <see langword="async" /> and <see langword="await" /> keywords in Visual Basic and C#.
-        /// This method disposes the Brotli stream by writing any changes to the backing store and closing the stream to release resources.
-        /// Calling `DisposeAsync` allows the resources used by the <see cref="System.IO.Compression.BrotliStream" /> to be reallocated for other purposes. For more information, see [Cleaning Up Unmanaged Resources](/dotnet/standard/garbage-collection/unmanaged).</remarks>
+        /// <remarks><para>This method lets you perform a resource-intensive dispose operation without blocking the main thread. This performance consideration is particularly important in apps where a time-consuming stream operation can block the UI thread and make your app appear as if it is not working. The async methods are used in conjunction with the <see langword="async" /> and <see langword="await" /> keywords in Visual Basic and C#.</para>
+        /// <para>This method disposes the Brotli stream by writing any changes to the backing store and closing the stream to release resources.</para>
+        /// <para>Calling <see cref="System.IO.Compression.BrotliStream.DisposeAsync" /> allows the resources used by the <see cref="System.IO.Compression.BrotliStream" /> to be reallocated for other purposes. For more information, see [Cleaning Up Unmanaged Resources](/dotnet/standard/garbage-collection/unmanaged).</para></remarks>
         public override async ValueTask DisposeAsync()
         {
             try
@@ -110,6 +118,32 @@ namespace System.IO.Compression
             }
         }
 
+        /// <summary>
+        /// Rewinds the underlying stream to the exact end of the compressed data if there are unconsumed bytes.
+        /// This is called when decompression finishes to reset the stream position.
+        /// </summary>
+        private void TryRewindStream(Stream stream)
+        {
+            Debug.Assert(stream != null);
+            Debug.Assert(_mode == CompressionMode.Decompress);
+            Debug.Assert(stream.CanSeek);
+
+            // Check if there are unconsumed bytes in the buffer
+            int unconsumedBytes = _bufferCount;
+            if (unconsumedBytes > 0)
+            {
+                try
+                {
+                    // Rewind the stream to the exact end of the compressed data
+                    stream.Seek(-unconsumedBytes, SeekOrigin.Current);
+                }
+                catch
+                {
+                    // If seeking fails, we don't want to throw during disposal
+                }
+            }
+        }
+
         private void ReleaseStateForDispose()
         {
             _stream = null!;
@@ -120,7 +154,7 @@ namespace System.IO.Compression
             if (buffer != null)
             {
                 _buffer = null!;
-                if (!AsyncOperationIsActive)
+                if (!_activeAsyncOperation)
                 {
                     ArrayPool<byte>.Shared.Return(buffer);
                 }
@@ -130,7 +164,14 @@ namespace System.IO.Compression
         /// <summary>Gets a reference to the underlying stream.</summary>
         /// <value>A stream object that represents the underlying stream.</value>
         /// <exception cref="System.ObjectDisposedException">The underlying stream is closed.</exception>
-        public Stream BaseStream => _stream;
+        public Stream BaseStream
+        {
+            get
+            {
+                EnsureNotDisposed();
+                return _stream;
+            }
+        }
         /// <summary>Gets a value indicating whether the stream supports reading while decompressing a file.</summary>
         /// <value><see langword="true" /> if the <see cref="System.IO.Compression.CompressionMode" /> value is <see langword="Decompress," /> and the underlying stream supports reading and is not closed; otherwise, <see langword="false" />.</value>
         public override bool CanRead => _mode == CompressionMode.Decompress && _stream != null && _stream.CanRead;
@@ -162,18 +203,19 @@ namespace System.IO.Compression
         /// <param name="value">The length of the stream.</param>
         public override void SetLength(long value) => throw new NotSupportedException();
 
-        private int _activeAsyncOperation; // 1 == true, 0 == false
-        private bool AsyncOperationIsActive => _activeAsyncOperation != 0;
+        private volatile bool _activeAsyncOperation;
 
         private void EnsureNoActiveAsyncOperation()
         {
-            if (AsyncOperationIsActive)
+            if (_activeAsyncOperation)
+            {
                 ThrowInvalidBeginCall();
+            }
         }
 
         private void AsyncOperationStarting()
         {
-            if (Interlocked.Exchange(ref _activeAsyncOperation, 1) != 0)
+            if (Interlocked.Exchange(ref _activeAsyncOperation, true))
             {
                 ThrowInvalidBeginCall();
             }
@@ -181,8 +223,8 @@ namespace System.IO.Compression
 
         private void AsyncOperationCompleting()
         {
-            Debug.Assert(_activeAsyncOperation == 1);
-            Volatile.Write(ref _activeAsyncOperation, 0);
+            Debug.Assert(_activeAsyncOperation);
+            _activeAsyncOperation = false;
         }
 
         private static void ThrowInvalidBeginCall() =>

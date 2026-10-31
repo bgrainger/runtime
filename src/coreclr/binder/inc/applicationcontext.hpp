@@ -16,7 +16,6 @@
 
 #include "bindertypes.hpp"
 #include "failurecache.hpp"
-#include "assemblyidentitycache.hpp"
 #include "stringarraylist.h"
 
 namespace BINDER_SPACE
@@ -29,7 +28,6 @@ namespace BINDER_SPACE
     {
         LPWSTR m_wszSimpleName;
         LPWSTR m_wszILFileName;
-        LPWSTR m_wszNIFileName;
     };
 
     // SHash traits for Namespace -> FileNameList hash
@@ -54,13 +52,6 @@ namespace BINDER_SPACE
 
         void OnDestructPerEntryCleanupAction(const SimpleNameToFileNameMapEntry & e)
         {
-            if (e.m_wszILFileName == nullptr && e.m_wszNIFileName == nullptr)
-            {
-                // Don't delete simple name here since it's a filename only entry and will be cleaned up
-                // by the SimpleName -> FileName entry which reuses the same filename pointer.
-                return;
-            }
-
             if (e.m_wszSimpleName != nullptr)
             {
                 delete [] e.m_wszSimpleName;
@@ -69,15 +60,14 @@ namespace BINDER_SPACE
             {
                 delete [] e.m_wszILFileName;
             }
-            if (e.m_wszNIFileName != nullptr)
-            {
-                delete [] e.m_wszNIFileName;
-            }
         }
         static const bool s_DestructPerEntryCleanupAction = true;
     };
 
     typedef SHash<SimpleNameToFileNameMapTraits> SimpleNameToFileNameMap;
+
+    class AssemblyHashTraits;
+    typedef SHash<AssemblyHashTraits> ExecutionContext;
 
     class ApplicationContext
     {
@@ -87,21 +77,16 @@ namespace BINDER_SPACE
         ~ApplicationContext();
         HRESULT Init();
 
-        inline SString &GetApplicationName();
-
         HRESULT SetupBindingPaths(/* in */ SString &sTrustedPlatformAssemblies,
                                   /* in */ SString &sPlatformResourceRoots,
-                                  /* in */ SString &sAppPaths,
-                                  /* in */ BOOL     fAcquireLock);
-
-        HRESULT GetAssemblyIdentity(/* in */ LPCSTR                szTextualIdentity,
-                                    /* in */ AssemblyIdentityUTF8 **ppAssemblyIdentity);
+                                  /* in */ SString &sAppPaths);
 
         // Getters/Setter
         inline ExecutionContext *GetExecutionContext();
         inline FailureCache *GetFailureCache();
         inline HRESULT AddToFailureCache(SString &assemblyNameOrPath,
-                                         HRESULT  hrBindResult);
+                                         HRESULT  hrBindResult,
+                                         LPCWSTR  diagnosticInfo);
         inline StringArrayList *GetAppPaths();
         inline SimpleNameToFileNameMap *GetTpaList();
         inline StringArrayList *GetPlatformResourceRoots();
@@ -114,12 +99,9 @@ namespace BINDER_SPACE
 
     private:
         Volatile<LONG>     m_cVersion;
-        SString            m_applicationName;
         ExecutionContext  *m_pExecutionContext;
         FailureCache      *m_pFailureCache;
         CRITSEC_COOKIE     m_contextCS;
-
-        AssemblyIdentityCache m_assemblyIdentityCache;
 
         StringArrayList    m_platformResourceRoots;
         StringArrayList    m_appPaths;

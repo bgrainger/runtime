@@ -10,16 +10,17 @@ namespace Profiler.Tests
 {
     class MultiplyLoaded
     {
-        static readonly Guid MultipleProfilerGuid = new Guid("BFA8EF13-E144-49B9-B95C-FC1C150C7651");
-        static readonly string ProfilerPath = ProfilerTestRunner.GetProfilerPath();
+        private static readonly Guid MultipleProfilerGuid = new Guid("BFA8EF13-E144-49B9-B95C-FC1C150C7651");
+        private static readonly string ProfilerPath = ProfilerTestRunner.GetProfilerPath();
 
         [DllImport("Profiler")]
         private static extern void PassCallbackToProfiler(ProfilerCallback callback);
 
-        public static int RunTest(String[] args) 
+        public static int RunTest(String[] args)
         {
-            ManualResetEvent _profilerDone = new ManualResetEvent(false);
-            PassCallbackToProfiler(() => _profilerDone.Set());
+            ManualResetEvent profilerDone = new ManualResetEvent(false);
+            ProfilerCallback profilerDoneDelegate = () => profilerDone.Set();
+            PassCallbackToProfiler(profilerDoneDelegate);
 
             ProfilerControlHelpers.AttachProfilerToSelf(MultipleProfilerGuid, ProfilerPath);
 
@@ -35,11 +36,12 @@ namespace Profiler.Tests
             }
 
             Console.WriteLine("Waiting for profilers to all detach");
-            if (!_profilerDone.WaitOne(TimeSpan.FromMinutes(5)))
+            if (!profilerDone.WaitOne(TimeSpan.FromMinutes(5)))
             {
-                Console.WriteLine("Profiler did not set the callback, test will fail.");
+                throw new Exception("Test timed out waiting for the profilers to set the callback, test will fail.");
             }
 
+            GC.KeepAlive(profilerDoneDelegate);
             return 100;
         }
 
@@ -50,11 +52,41 @@ namespace Profiler.Tests
                 return RunTest(args);
             }
 
+            Console.WriteLine($"Running the test using environment variables with CORECLR prefix.");
+            ProfilerTestRunner.Run(profileePath: System.Reflection.Assembly.GetExecutingAssembly().Location,
+                                   testName: "MultiplyLoaded",
+                                   profilerClsid: MultipleProfilerGuid,
+                                   loadAsNotification: true,
+                                   notificationCopies: 2,
+                                   envVarProfilerPrefix: "CORECLR");
+
+            Console.WriteLine($"Running the test using environment variables with DOTNET prefix.");
+            ProfilerTestRunner.Run(profileePath: System.Reflection.Assembly.GetExecutingAssembly().Location,
+                                   testName: "MultiplyLoaded",
+                                   profilerClsid: MultipleProfilerGuid,
+                                   loadAsNotification: true,
+                                   notificationCopies: 2,
+                                   envVarProfilerPrefix: "DOTNET");
+
+            // A notification profiler list whose final entry has no trailing ';' must still
+            // load every entry.
+            Console.WriteLine($"Running the test with no trailing separator (CORECLR prefix).");
+            ProfilerTestRunner.Run(profileePath: System.Reflection.Assembly.GetExecutingAssembly().Location,
+                                   testName: "MultiplyLoaded",
+                                   profilerClsid: MultipleProfilerGuid,
+                                   loadAsNotification: true,
+                                   notificationCopies: 2,
+                                   appendNotificationSeparator: false,
+                                   envVarProfilerPrefix: "CORECLR");
+
+            Console.WriteLine($"Running the test with no trailing separator (DOTNET prefix).");
             return ProfilerTestRunner.Run(profileePath: System.Reflection.Assembly.GetExecutingAssembly().Location,
-                                          testName: "MultiplyLoaded",
-                                          profilerClsid: MultipleProfilerGuid,
-                                          loadAsNotification: true,
-                                          notificationCopies: 2);
+                                   testName: "MultiplyLoaded",
+                                   profilerClsid: MultipleProfilerGuid,
+                                   loadAsNotification: true,
+                                   notificationCopies: 2,
+                                   appendNotificationSeparator: false,
+                                   envVarProfilerPrefix: "DOTNET");
         }
     }
 }

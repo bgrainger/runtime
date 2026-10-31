@@ -2,7 +2,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 //
 
+namespace JitTest_Directed_TypedReference_TypedReference;
+
 using System;
+using Xunit;
 
 
 public class BringUpTest_TypedReference
@@ -12,7 +15,9 @@ public class BringUpTest_TypedReference
     const string Apple = "apple";
     const string Orange = "orange";
 
-    public static int Main()
+    [OuterLoop]
+    [Fact]
+    public static int TestEntryPoint()
     {
         int i = Fail;
         F(__makeref(i));

@@ -14,26 +14,29 @@
 
 .assembly extern mscorlib
 {
-                           
-  
-           
-  
+
+
+
+
 }
-.assembly 'test'
+.assembly ASSEMBLY_NAME
 {
 
 
-  
-  
+
+
 }
 .assembly extern xunit.core {}
-.module 'test.exe'
-.namespace JitTest
+.assembly extern Microsoft.DotNet.XUnitExtensions { .publickeytoken = (31 BF 38 56 AD 36 4E 35 ) }
+.assembly extern TestLibrary { .ver 0:0:0:0 }
+
+.namespace JitTest_huge_b_huge_il
 {
-  .class private auto ansi Test
+  .class public auto ansi Test
          extends [mscorlib]System.Object
   {
-    .method private hidebysig static int32
+    .custom instance void [Microsoft.DotNet.XUnitExtensions]Xunit.ActiveIssueAttribute::.ctor(string, class [mscorlib]System.Type, string[]) = {string('https://github.com/dotnet/runtimelab/issues/155: Arrays with non-zero lower bounds') type([TestLibrary]TestLibrary.PlatformDetection) string[1] ('IsNonZeroLowerBoundArrayNotSupported') }
+    .method public hidebysig static int32
             Main() il managed
     {
       .custom instance void [xunit.core]Xunit.FactAttribute::.ctor() = (
@@ -44,14 +47,14 @@
       .locals (bool[,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,] matrix,
                int32 count,
 			   int32[] dim)
-               
+
       			ldstr     "Creating 32-dimension array"
       			call       void [System.Console]System.Console::WriteLine(string)
 
       			ldc.i4	32
       			dup
 				stloc count
-				
+
 				dup
 				add
 				newarr    int32
@@ -85,7 +88,7 @@
 				stelem.i4
 				ldloc count
 				brtrue again
-				
+
 				ldc.i4.0
 				stloc count
 			again2:
@@ -103,7 +106,7 @@
 				ldc.i4 64
 				ceq
 				brfalse again2
-				
+
 				stloc dim
 				ldloc dim ldc.i4.0 ldelem.i4
 				ldloc dim ldc.i4.1 ldelem.i4
@@ -187,7 +190,7 @@
       					int32, int32, int32, int32,
       					int32, int32, int32, int32)
       			stloc matrix
-      			
+
       			ldloc matrix
 				ldloc dim ldc.i4.0 ldelem.i4
 				ldloc dim ldc.i4.2 ldelem.i4
@@ -313,10 +316,10 @@
 				ldloc dim ldc.i4 60 ldelem.i4
 				ldloc dim ldc.i4 62 ldelem.i4
 				br  go1
-				
+
       		cont2:
       			br cont3
-      			
+
       		go1:
       			call 	instance bool bool[,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,]::Get(
       					int32, int32, int32, int32,
@@ -332,10 +335,10 @@
       			newobj		instance void [mscorlib]System.Exception::.ctor()
       		throw1:
 				throw
-				
+
       		pass1:
       			br cont0
-      			
+
       		pass2:
       			ldloc matrix
 				ldloc dim ldc.i4.0 ldelem.i4
@@ -384,18 +387,18 @@
       			ldnull
       			stloc matrix
       			call void [mscorlib]System.GC::Collect()
-      			
+
       			ldc.i4 100
       			ldstr     "TEST PASSED"
       			call       void [System.Console]System.Console::Write(string)
       			ret
-      			
+
 			cont0:
       			br cont2
-      			
+
       		cont3:
       			br cont1
-      			
+
       		pass1_5:
 				ldloc matrix
 				ldloc dim ldc.i4.0 ldelem.i4
@@ -442,12 +445,12 @@
 
       			ldind.i1
       			brtrue pass2
-      			
+
       			newobj		instance void [mscorlib]System.Exception::.ctor()
 				br throw1
     } // end of method 'Test::Main'
 
-    .method public hidebysig specialname rtspecialname 
+    .method public hidebysig specialname rtspecialname
             instance void .ctor() il managed
     {
       .maxstack  8
@@ -455,7 +458,7 @@
       IL_0001:  call       instance void [mscorlib]System.Object::.ctor()
       IL_0006:  ret
     } // end of method 'Test::.ctor'
-    
+
   } // end of class 'Test'
-  
-} // end of namespace 'JitTest'
+
+} // end of namespace 'JitTest_huge_b_huge_il'

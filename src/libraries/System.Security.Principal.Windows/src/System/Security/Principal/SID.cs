@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Microsoft.Win32.SafeHandles;
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -9,6 +8,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
 
 namespace System.Security.Principal
 {
@@ -392,25 +392,15 @@ namespace System.Security.Principal
 
         [MemberNotNull(nameof(_binaryForm))]
         [MemberNotNull(nameof(_subAuthorities))]
-        private void CreateFromBinaryForm(byte[] binaryForm, int offset)
+        private unsafe void CreateFromBinaryForm(byte[] binaryForm, int offset)
         {
-            //
-            // Give us something to work with
-            //
-
-            if (binaryForm == null)
-            {
-                throw new ArgumentNullException(nameof(binaryForm));
-            }
+            ArgumentNullException.ThrowIfNull(binaryForm);
 
             //
             // Negative offsets are not allowed
             //
 
-            if (offset < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(offset), offset, SR.ArgumentOutOfRange_NeedNonNegNum);
-            }
+            ArgumentOutOfRangeException.ThrowIfNegative(offset);
 
             //
             // At least a minimum-size SID should fit in the buffer
@@ -497,14 +487,7 @@ namespace System.Security.Principal
 
         public SecurityIdentifier(string sddlForm)
         {
-            //
-            // Give us something to work with
-            //
-
-            if (sddlForm == null)
-            {
-                throw new ArgumentNullException(nameof(sddlForm));
-            }
+            ArgumentNullException.ThrowIfNull(sddlForm);
 
             //
             // Call into the underlying O/S conversion routine
@@ -535,10 +518,8 @@ namespace System.Security.Principal
 
         public SecurityIdentifier(byte[] binaryForm, int offset)
         {
-            if (binaryForm is null)
-            {
-                throw new ArgumentNullException(nameof(binaryForm));
-            }
+            ArgumentNullException.ThrowIfNull(binaryForm);
+
             CreateFromBinaryForm(binaryForm, offset);
         }
 
@@ -628,7 +609,7 @@ namespace System.Security.Principal
             if (error == Interop.Errors.ERROR_INVALID_PARAMETER)
             {
 #pragma warning disable CA2208 // Instantiate argument exceptions correctly, combination of arguments used
-                throw new ArgumentException(new Win32Exception(error).Message, "sidType/domainSid");
+                throw new ArgumentException(Marshal.GetPInvokeErrorMessage(error), "sidType/domainSid");
 #pragma warning restore CS2208
             }
             else if (error != Interop.Errors.ERROR_SUCCESS)
@@ -718,7 +699,7 @@ namespace System.Security.Principal
             return hashCode;
         }
 
-        public override string ToString()
+        public override unsafe string ToString()
         {
             if (_sddlForm == null)
             {
@@ -824,10 +805,7 @@ namespace System.Security.Principal
 
         public override IdentityReference Translate(Type targetType)
         {
-            if (targetType == null)
-            {
-                throw new ArgumentNullException(nameof(targetType));
-            }
+            ArgumentNullException.ThrowIfNull(targetType);
 
             if (targetType == typeof(SecurityIdentifier))
             {
@@ -883,9 +861,9 @@ namespace System.Security.Principal
 
         public int CompareTo(SecurityIdentifier? sid)
         {
-            if (sid == null)
+            if (sid is null)
             {
-                throw new ArgumentNullException(nameof(sid));
+                return 1;
             }
 
             if (this.IdentifierAuthority < sid.IdentifierAuthority)
@@ -960,12 +938,9 @@ namespace System.Security.Principal
         }
 
 
-        private static IdentityReferenceCollection TranslateToNTAccounts(IdentityReferenceCollection sourceSids, out bool someFailed)
+        private static unsafe IdentityReferenceCollection TranslateToNTAccounts(IdentityReferenceCollection sourceSids, out bool someFailed)
         {
-            if (sourceSids == null)
-            {
-                throw new ArgumentNullException(nameof(sourceSids));
-            }
+            ArgumentNullException.ThrowIfNull(sourceSids);
 
             if (sourceSids.Count == 0)
             {
@@ -1039,7 +1014,7 @@ namespace System.Security.Principal
                 }
 
 
-                NamesPtr.Initialize((uint)sourceSids.Count, (uint)Marshal.SizeOf<Interop.LSA_TRANSLATED_NAME>());
+                NamesPtr.Initialize((uint)sourceSids.Count, (uint)sizeof(Interop.LSA_TRANSLATED_NAME));
                 ReferencedDomainsPtr.InitializeReferencedDomainsList();
 
                 //
@@ -1059,8 +1034,8 @@ namespace System.Security.Principal
 
                     for (int i = 0; i < rdl.Entries; i++)
                     {
-                        Interop.LSA_TRUST_INFORMATION ti = (Interop.LSA_TRUST_INFORMATION)Marshal.PtrToStructure<Interop.LSA_TRUST_INFORMATION>(new IntPtr((long)rdl.Domains + i * Marshal.SizeOf<Interop.LSA_TRUST_INFORMATION>()));
-                        ReferencedDomains[i] = Marshal.PtrToStringUni(ti.Name.Buffer, ti.Name.Length / sizeof(char));
+                        Interop.LSA_TRUST_INFORMATION* ti = (Interop.LSA_TRUST_INFORMATION*)rdl.Domains + i;
+                        ReferencedDomains[i] = Marshal.PtrToStringUni(ti->Name.Buffer, ti->Name.Length / sizeof(char));
                     }
 
                     Interop.LSA_TRANSLATED_NAME[] translatedNames = new Interop.LSA_TRANSLATED_NAME[sourceSids.Count];
@@ -1141,10 +1116,7 @@ namespace System.Security.Principal
 
         internal static IdentityReferenceCollection Translate(IdentityReferenceCollection sourceSids, Type targetType, out bool someFailed)
         {
-            if (sourceSids == null)
-            {
-                throw new ArgumentNullException(nameof(sourceSids));
-            }
+            ArgumentNullException.ThrowIfNull(sourceSids);
 
             if (targetType == typeof(NTAccount))
             {

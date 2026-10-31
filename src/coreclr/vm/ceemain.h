@@ -45,6 +45,15 @@ void ForceEEShutdown(ShutdownCompleteAction sca = SCA_ExitProcessWhenShutdownCom
 // Notification of a DLL_THREAD_DETACH or a Thread Terminate.
 void ThreadDetaching();
 
+void EnsureTlsDestructionMonitor();
+
+// Fails fast if the runtime thread state of the current thread has already been destroyed.
+void CheckThreadStateNotDestroyed();
+#ifdef TARGET_WINDOWS
+void InitFlsSlot();
+void OsDetachThread(void* thread);
+#endif
+
 void SetLatchedExitCode (INT32 code);
 INT32 GetLatchedExitCode (void);
 
@@ -52,5 +61,10 @@ INT32 GetLatchedExitCode (void);
 // Stronger than IsGCHeapInitialized
 BOOL IsGarbageCollectorFullyInitialized();
 
+// Specifies whether coreclr is embedded or standalone
+extern bool g_coreclr_embedded;
+
+// Specifies whether hostpolicy is embedded in executable or standalone
+extern bool g_hostpolicy_embedded;
 
 #endif

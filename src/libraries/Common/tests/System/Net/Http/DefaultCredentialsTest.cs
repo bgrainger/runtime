@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
+using System.IO;
 using System.Security.Principal;
 using System.Threading.Tasks;
 
@@ -41,7 +42,7 @@ namespace System.Net.Http.Functional.Tests
         public DefaultCredentialsTest(ITestOutputHelper output) : base(output) { }
 
         [OuterLoop("Uses external servers")]
-        [ConditionalTheory(nameof(ServerAuthenticationTestsEnabled))]
+        [ConditionalTheory(typeof(DefaultCredentialsTest), nameof(ServerAuthenticationTestsEnabled))]
         [MemberData(nameof(AuthenticatedServers))]
         public async Task UseDefaultCredentials_DefaultValue_Unauthorized(string uri, bool useProxy)
         {
@@ -56,7 +57,7 @@ namespace System.Net.Http.Functional.Tests
         }
 
         [OuterLoop("Uses external servers")]
-        [ConditionalTheory(nameof(ServerAuthenticationTestsEnabled))]
+        [ConditionalTheory(typeof(DefaultCredentialsTest), nameof(ServerAuthenticationTestsEnabled))]
         [MemberData(nameof(AuthenticatedServers))]
         public async Task UseDefaultCredentials_SetFalse_Unauthorized(string uri, bool useProxy)
         {
@@ -72,7 +73,7 @@ namespace System.Net.Http.Functional.Tests
         }
 
         [OuterLoop("Uses external servers")]
-        [ConditionalTheory(nameof(ServerAuthenticationTestsEnabled))]
+        [ConditionalTheory(typeof(DefaultCredentialsTest), nameof(ServerAuthenticationTestsEnabled))]
         [MemberData(nameof(AuthenticatedServers))]
         public async Task UseDefaultCredentials_SetTrue_ConnectAsCurrentIdentity(string uri, bool useProxy)
         {
@@ -86,14 +87,15 @@ namespace System.Net.Http.Functional.Tests
                 Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
                 string responseBody = await response.Content.ReadAsStringAsync();
-                WindowsIdentity currentIdentity = WindowsIdentity.GetCurrent();
+
+                using WindowsIdentity currentIdentity = WindowsIdentity.GetCurrent();
                 _output.WriteLine("currentIdentity={0}", currentIdentity.Name);
                 VerifyAuthentication(responseBody, true, currentIdentity.Name);
             }
         }
 
         [OuterLoop("Uses external servers")]
-        [ConditionalTheory(nameof(ServerAuthenticationTestsEnabled))]
+        [ConditionalTheory(typeof(DefaultCredentialsTest), nameof(ServerAuthenticationTestsEnabled))]
         [MemberData(nameof(AuthenticatedServers))]
         public async Task Credentials_SetToWrappedDefaultCredential_ConnectAsCurrentIdentity(string uri, bool useProxy)
         {
@@ -110,14 +112,15 @@ namespace System.Net.Http.Functional.Tests
                 Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
                 string responseBody = await response.Content.ReadAsStringAsync();
-                WindowsIdentity currentIdentity = WindowsIdentity.GetCurrent();
+
+                using WindowsIdentity currentIdentity = WindowsIdentity.GetCurrent();
                 _output.WriteLine("currentIdentity={0}", currentIdentity.Name);
                 VerifyAuthentication(responseBody, true, currentIdentity.Name);
             }
         }
 
         [OuterLoop("Uses external servers")]
-        [ConditionalTheory(nameof(ServerAuthenticationTestsEnabled))]
+        [ConditionalTheory(typeof(DefaultCredentialsTest), nameof(ServerAuthenticationTestsEnabled))]
         [MemberData(nameof(AuthenticatedServers))]
         public async Task Credentials_SetToBadCredential_Unauthorized(string uri, bool useProxy)
         {
@@ -134,7 +137,7 @@ namespace System.Net.Http.Functional.Tests
 
         [OuterLoop("Uses external servers")]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/17845")]
-        [ConditionalTheory(nameof(DomainJoinedTestsEnabled))]
+        [ConditionalTheory(typeof(DefaultCredentialsTest), nameof(DomainJoinedTestsEnabled))]
         [InlineData(false)]
         [InlineData(true)]
         public async Task Credentials_SetToSpecificCredential_ConnectAsSpecificIdentity(bool useProxy)
@@ -156,7 +159,7 @@ namespace System.Net.Http.Functional.Tests
 
         [OuterLoop("Uses external servers")]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/17845")]
-        [ConditionalFact(nameof(DomainProxyTestsEnabled))]
+        [ConditionalFact(typeof(DefaultCredentialsTest), nameof(DomainProxyTestsEnabled))]
         public async Task Proxy_UseAuthenticatedProxyWithNoCredentials_ProxyAuthenticationRequired()
         {
             HttpClientHandler handler = CreateHttpClientHandler();
@@ -171,7 +174,7 @@ namespace System.Net.Http.Functional.Tests
 
         [OuterLoop("Uses external servers")]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/17845")]
-        [ConditionalFact(nameof(DomainProxyTestsEnabled))]
+        [ConditionalFact(typeof(DefaultCredentialsTest), nameof(DomainProxyTestsEnabled))]
         public async Task Proxy_UseAuthenticatedProxyWithDefaultCredentials_OK()
         {
             HttpClientHandler handler = CreateHttpClientHandler();
@@ -185,7 +188,7 @@ namespace System.Net.Http.Functional.Tests
         }
 
         [OuterLoop("Uses external servers")]
-        [ConditionalFact(nameof(DomainProxyTestsEnabled))]
+        [ConditionalFact(typeof(DefaultCredentialsTest), nameof(DomainProxyTestsEnabled))]
         public async Task Proxy_UseAuthenticatedProxyWithWrappedDefaultCredentials_OK()
         {
             ICredentials wrappedCreds = new CredentialWrapper

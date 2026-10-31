@@ -7,7 +7,9 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using System.Runtime.Loader;
 using System.Runtime.Versioning;
 
@@ -31,11 +33,24 @@ namespace Internal.Runtime.InteropServices
 
     [ComImport]
     [ComVisible(false)]
+    [Guid("00000001-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IClassFactory
+    {
+        void CreateInstance(
+            [MarshalAs(UnmanagedType.Interface)] object? pUnkOuter,
+            ref Guid riid,
+            out IntPtr ppvObject);
+
+        void LockServer([MarshalAs(UnmanagedType.Bool)] bool fLock);
+    }
+
+    [ComImport]
+    [ComVisible(false)]
     [Guid("B196B28F-BAB4-101A-B69C-00AA00341D07")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     internal interface IClassFactory2 : IClassFactory
     {
-        [RequiresUnreferencedCode("Built-in COM support is not trim compatible", Url = "https://aka.ms/dotnet-illink/com")]
         new void CreateInstance(
             [MarshalAs(UnmanagedType.Interface)] object? pUnkOuter,
             ref Guid riid,
@@ -57,10 +72,17 @@ namespace Internal.Runtime.InteropServices
             out IntPtr ppvObject);
     }
 
-    internal partial struct ComActivationContext
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ComActivationContext
     {
-        [RequiresUnreferencedCode("Built-in COM support is not trim compatible", Url = "https://aka.ms/dotnet-illink/com")]
-        public static unsafe ComActivationContext Create(ref ComActivationContextInternal cxtInt)
+        public Guid ClassId;
+        public Guid InterfaceId;
+        public string AssemblyPath;
+        public string AssemblyName;
+        public string TypeName;
+        public IntPtr LoadContext;
+
+        public static unsafe ComActivationContext Create(ref ComActivationContextInternal cxtInt, IntPtr loadContext)
         {
             if (!Marshal.IsBuiltInComSupported)
             {
@@ -73,18 +95,15 @@ namespace Internal.Runtime.InteropServices
                 InterfaceId = cxtInt.InterfaceId,
                 AssemblyPath = Marshal.PtrToStringUni(new IntPtr(cxtInt.AssemblyPathBuffer))!,
                 AssemblyName = Marshal.PtrToStringUni(new IntPtr(cxtInt.AssemblyNameBuffer))!,
-                TypeName = Marshal.PtrToStringUni(new IntPtr(cxtInt.TypeNameBuffer))!
+                TypeName = Marshal.PtrToStringUni(new IntPtr(cxtInt.TypeNameBuffer))!,
+                LoadContext = loadContext
             };
         }
     }
 
     [SupportedOSPlatform("windows")]
-    public static class ComActivator
+    internal static class ComActivator
     {
-        // Collection of all ALCs used for COM activation. In the event we want to support
-        // unloadable COM server ALCs, this will need to be changed.
-        private static readonly Dictionary<string, AssemblyLoadContext> s_assemblyLoadContexts = new Dictionary<string, AssemblyLoadContext>(StringComparer.InvariantCultureIgnoreCase);
-
         /// <summary>
         /// Entry point for unmanaged COM activation API from managed code
         /// </summary>
@@ -97,7 +116,8 @@ namespace Internal.Runtime.InteropServices
                 throw new NotSupportedException(SR.NotSupported_COM);
             }
 
-            if (cxt.InterfaceId != typeof(IClassFactory).GUID
+            if (cxt.InterfaceId != Marshal.IID_IUnknown
+                && cxt.InterfaceId != typeof(IClassFactory).GUID
                 && cxt.InterfaceId != typeof(IClassFactory2).GUID)
             {
                 throw new NotSupportedException();
@@ -108,7 +128,7 @@ namespace Internal.Runtime.InteropServices
                 throw new ArgumentException(null, nameof(cxt));
             }
 
-            Type classType = FindClassType(cxt.ClassId, cxt.AssemblyPath, cxt.AssemblyName, cxt.TypeName);
+            Type classType = FindClassType(cxt);
 
             if (LicenseInteropProxy.HasLicense(classType))
             {
@@ -146,7 +166,7 @@ namespace Internal.Runtime.InteropServices
                 throw new ArgumentException(null, nameof(cxt));
             }
 
-            Type classType = FindClassType(cxt.ClassId, cxt.AssemblyPath, cxt.AssemblyName, cxt.TypeName);
+            Type classType = FindClassType(cxt);
 
             Type? currentType = classType;
             bool calledFunction = false;
@@ -174,9 +194,8 @@ namespace Internal.Runtime.InteropServices
                     }
 
                     // Finally validate signature
-                    ParameterInfo[] methParams = method.GetParameters();
+                    ReadOnlySpan<ParameterInfo> methParams = method.GetParametersAsSpan();
                     if (method.ReturnType != typeof(void)
-                        || methParams == null
                         || methParams.Length != 1
                         || (methParams[0].ParameterType != typeof(string) && methParams[0].ParameterType != typeof(Type)))
                     {
@@ -214,35 +233,46 @@ namespace Internal.Runtime.InteropServices
         }
 
         /// <summary>
-        /// Internal entry point for unmanaged COM activation API from native code
+        /// Gets a class factory for COM activation in an isolated load context
         /// </summary>
         /// <param name="pCxtInt">Pointer to a <see cref="ComActivationContextInternal"/> instance</param>
-        [RequiresUnreferencedCode("Built-in COM support is not trim compatible", Url = "https://aka.ms/dotnet-illink/com")]
         [UnmanagedCallersOnly]
         private static unsafe int GetClassFactoryForTypeInternal(ComActivationContextInternal* pCxtInt)
         {
             if (!Marshal.IsBuiltInComSupported)
-            {
                 throw new NotSupportedException(SR.NotSupported_COM);
-            }
 
+#pragma warning disable IL2026 // suppressed in ILLink.Suppressions.LibraryBuild.xml
+            return GetClassFactoryForTypeImpl(pCxtInt, ComponentLoadContextManager.IsolatedContext);
+#pragma warning restore IL2026
+        }
+
+        /// <summary>
+        /// Gets a class factory for COM activation in the specified load context
+        /// </summary>
+        /// <param name="pCxtInt">Pointer to a <see cref="ComActivationContextInternal"/> instance</param>
+        /// <param name="loadContext">Load context specification</param>
+        [UnmanagedCallersOnly]
+        private static unsafe int GetClassFactoryForTypeInContext(ComActivationContextInternal* pCxtInt, IntPtr loadContext)
+        {
+            if (!Marshal.IsBuiltInComSupported)
+                throw new NotSupportedException(SR.NotSupported_COM);
+
+            return GetClassFactoryForTypeLocal(pCxtInt, loadContext);
+
+            // Use a local function for a targeted suppression of the requires unreferenced code warning
+            [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
+                Justification = "The same feature switch applies to GetClassFactoryForTypeInternal and this function. We rely on the warning from GetClassFactoryForTypeInternal.")]
+            static int GetClassFactoryForTypeLocal(ComActivationContextInternal* pCxtInt, IntPtr loadContext) => GetClassFactoryForTypeImpl(pCxtInt, loadContext);
+        }
+
+        [RequiresUnreferencedCode("Built-in COM support is not trim compatible", Url = "https://aka.ms/dotnet-illink/com")]
+        private static unsafe int GetClassFactoryForTypeImpl(ComActivationContextInternal* pCxtInt, IntPtr loadContext)
+        {
             ref ComActivationContextInternal cxtInt = ref *pCxtInt;
-
-            if (IsLoggingEnabled())
-            {
-                Log(
-$@"{nameof(GetClassFactoryForTypeInternal)} arguments:
-    {cxtInt.ClassId}
-    {cxtInt.InterfaceId}
-    0x{(ulong)cxtInt.AssemblyPathBuffer:x}
-    0x{(ulong)cxtInt.AssemblyNameBuffer:x}
-    0x{(ulong)cxtInt.TypeNameBuffer:x}
-    0x{cxtInt.ClassFactoryDest.ToInt64():x}");
-            }
-
             try
             {
-                var cxt = ComActivationContext.Create(ref cxtInt);
+                var cxt = ComActivationContext.Create(ref cxtInt, loadContext);
                 object cf = GetClassFactoryForType(cxt);
                 IntPtr nativeIUnknown = Marshal.GetIUnknownForObject(cf);
                 Marshal.WriteIntPtr(cxtInt.ClassFactoryDest, nativeIUnknown);
@@ -256,32 +286,35 @@ $@"{nameof(GetClassFactoryForTypeInternal)} arguments:
         }
 
         /// <summary>
-        /// Internal entry point for registering a managed COM server API from native code
+        /// Registers a managed COM server in an isolated load context
         /// </summary>
         /// <param name="pCxtInt">Pointer to a <see cref="ComActivationContextInternal"/> instance</param>
-        [RequiresUnreferencedCode("Built-in COM support is not trim compatible", Url = "https://aka.ms/dotnet-illink/com")]
         [UnmanagedCallersOnly]
         private static unsafe int RegisterClassForTypeInternal(ComActivationContextInternal* pCxtInt)
         {
             if (!Marshal.IsBuiltInComSupported)
-            {
                 throw new NotSupportedException(SR.NotSupported_COM);
-            }
 
+            return RegisterClassForTypeImpl(pCxtInt, ComponentLoadContextManager.IsolatedContext);
+        }
+
+        /// <summary>
+        /// Registers a managed COM server in the specified load context
+        /// </summary>
+        /// <param name="pCxtInt">Pointer to a <see cref="ComActivationContextInternal"/> instance</param>
+        /// <param name="loadContext">Load context specification</param>
+        [UnmanagedCallersOnly]
+        private static unsafe int RegisterClassForTypeInContext(ComActivationContextInternal* pCxtInt, IntPtr loadContext)
+        {
+            if (!Marshal.IsBuiltInComSupported)
+                throw new NotSupportedException(SR.NotSupported_COM);
+
+            return RegisterClassForTypeImpl(pCxtInt, loadContext);
+        }
+
+        private static unsafe int RegisterClassForTypeImpl(ComActivationContextInternal* pCxtInt, IntPtr loadContext)
+        {
             ref ComActivationContextInternal cxtInt = ref *pCxtInt;
-
-            if (IsLoggingEnabled())
-            {
-                Log(
-$@"{nameof(RegisterClassForTypeInternal)} arguments:
-    {cxtInt.ClassId}
-    {cxtInt.InterfaceId}
-    0x{(ulong)cxtInt.AssemblyPathBuffer:x}
-    0x{(ulong)cxtInt.AssemblyNameBuffer:x}
-    0x{(ulong)cxtInt.TypeNameBuffer:x}
-    0x{cxtInt.ClassFactoryDest.ToInt64():x}");
-            }
-
             if (cxtInt.InterfaceId != Guid.Empty
                 || cxtInt.ClassFactoryDest != IntPtr.Zero)
             {
@@ -290,8 +323,8 @@ $@"{nameof(RegisterClassForTypeInternal)} arguments:
 
             try
             {
-                var cxt = ComActivationContext.Create(ref cxtInt);
-                ClassRegistrationScenarioForType(cxt, register: true);
+                var cxt = ComActivationContext.Create(ref cxtInt, loadContext);
+                ClassRegistrationScenarioForTypeLocal(cxt, register: true);
             }
             catch (Exception e)
             {
@@ -299,34 +332,42 @@ $@"{nameof(RegisterClassForTypeInternal)} arguments:
             }
 
             return 0;
+
+            // Use a local function for a targeted suppression of the requires unreferenced code warning
+            [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
+                Justification = "The same feature switch applies to GetClassFactoryForTypeInternal and this function. We rely on the warning from GetClassFactoryForTypeInternal.")]
+            static void ClassRegistrationScenarioForTypeLocal(ComActivationContext cxt, bool register) => ClassRegistrationScenarioForType(cxt, register);
         }
 
         /// <summary>
-        /// Internal entry point for unregistering a managed COM server API from native code
+        /// Unregisters a managed COM server in an isolated load context
         /// </summary>
-        [RequiresUnreferencedCode("Built-in COM support is not trim compatible", Url = "https://aka.ms/dotnet-illink/com")]
         [UnmanagedCallersOnly]
         private static unsafe int UnregisterClassForTypeInternal(ComActivationContextInternal* pCxtInt)
         {
             if (!Marshal.IsBuiltInComSupported)
-            {
                 throw new NotSupportedException(SR.NotSupported_COM);
-            }
 
+            return UnregisterClassForTypeImpl(pCxtInt, ComponentLoadContextManager.IsolatedContext);
+        }
+
+        /// <summary>
+        /// Unregisters a managed COM server in the specified load context
+        /// </summary>
+        /// <param name="pCxtInt">Pointer to a <see cref="ComActivationContextInternal"/> instance</param>
+        /// <param name="loadContext">Load context specification</param>
+        [UnmanagedCallersOnly]
+        private static unsafe int UnregisterClassForTypeInContext(ComActivationContextInternal* pCxtInt, IntPtr loadContext)
+        {
+            if (!Marshal.IsBuiltInComSupported)
+                throw new NotSupportedException(SR.NotSupported_COM);
+
+            return UnregisterClassForTypeImpl(pCxtInt, loadContext);
+        }
+
+        private static unsafe int UnregisterClassForTypeImpl(ComActivationContextInternal* pCxtInt, IntPtr loadContext)
+        {
             ref ComActivationContextInternal cxtInt = ref *pCxtInt;
-
-            if (IsLoggingEnabled())
-            {
-                Log(
-$@"{nameof(UnregisterClassForTypeInternal)} arguments:
-    {cxtInt.ClassId}
-    {cxtInt.InterfaceId}
-    0x{(ulong)cxtInt.AssemblyPathBuffer:x}
-    0x{(ulong)cxtInt.AssemblyNameBuffer:x}
-    0x{(ulong)cxtInt.TypeNameBuffer:x}
-    0x{cxtInt.ClassFactoryDest.ToInt64():x}");
-            }
-
             if (cxtInt.InterfaceId != Guid.Empty
                 || cxtInt.ClassFactoryDest != IntPtr.Zero)
             {
@@ -335,8 +376,8 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
 
             try
             {
-                var cxt = ComActivationContext.Create(ref cxtInt);
-                ClassRegistrationScenarioForType(cxt, register: false);
+                var cxt = ComActivationContext.Create(ref cxtInt, loadContext);
+                ClassRegistrationScenarioForTypeLocal(cxt, register: false);
             }
             catch (Exception e)
             {
@@ -344,32 +385,22 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
             }
 
             return 0;
-        }
 
-        private static bool IsLoggingEnabled()
-        {
-#if COM_ACTIVATOR_DEBUG
-            return true;
-#else
-            return false;
-#endif
-        }
-
-        private static void Log(string fmt, params object[] args)
-        {
-            // [TODO] Use FrameworkEventSource in release builds
-            Debug.WriteLine(fmt, args);
+            // Use a local function for a targeted suppression of the requires unreferenced code warning
+            [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
+                Justification = "The same feature switch applies to GetClassFactoryForTypeInternal and this function. We rely on the warning from GetClassFactoryForTypeInternal.")]
+            static void ClassRegistrationScenarioForTypeLocal(ComActivationContext cxt, bool register) => ClassRegistrationScenarioForType(cxt, register);
         }
 
         [RequiresUnreferencedCode("Built-in COM support is not trim compatible", Url = "https://aka.ms/dotnet-illink/com")]
-        private static Type FindClassType(Guid clsid, string assemblyPath, string assemblyName, string typeName)
+        private static Type FindClassType(ComActivationContext cxt)
         {
             try
             {
-                AssemblyLoadContext alc = GetALC(assemblyPath);
-                var assemblyNameLocal = new AssemblyName(assemblyName);
+                AssemblyLoadContext alc = ComponentLoadContextManager.Get(cxt.LoadContext, cxt.AssemblyPath);
+                var assemblyNameLocal = new AssemblyName(cxt.AssemblyName);
                 Assembly assem = alc.LoadFromAssemblyName(assemblyNameLocal);
-                Type? t = assem.GetType(typeName);
+                Type? t = assem.GetType(cxt.TypeName);
                 if (t != null)
                 {
                     return t;
@@ -377,34 +408,15 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
             }
             catch (Exception e)
             {
-                if (IsLoggingEnabled())
-                {
-                    Log($"COM Activation of {clsid} failed. {e}");
-                }
+                Debug.WriteLine($"COM Activation of {cxt.ClassId} failed. {e}");
             }
 
             const int CLASS_E_CLASSNOTAVAILABLE = unchecked((int)0x80040111);
             throw new COMException(string.Empty, CLASS_E_CLASSNOTAVAILABLE);
         }
 
-        [RequiresUnreferencedCode("The trimmer might remove types which are needed by the assemblies loaded in this method.")]
-        private static AssemblyLoadContext GetALC(string assemblyPath)
-        {
-            AssemblyLoadContext? alc;
-
-            lock (s_assemblyLoadContexts)
-            {
-                if (!s_assemblyLoadContexts.TryGetValue(assemblyPath, out alc))
-                {
-                    alc = new IsolatedComponentLoadContext(assemblyPath);
-                    s_assemblyLoadContexts.Add(assemblyPath, alc);
-                }
-            }
-
-            return alc;
-        }
-
         [ComVisible(true)]
+        [RequiresUnreferencedCode("Built-in COM support is not trim compatible", Url = "https://aka.ms/dotnet-illink/com")]
         private sealed class BasicClassFactory : IClassFactory
         {
             private readonly Guid _classId;
@@ -418,12 +430,39 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
                 _classType = classType;
             }
 
-            public static Type GetValidatedInterfaceType([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type classType, ref Guid riid, object? outer)
+            public enum ValidatedInterfaceKind
+            {
+                IUnknown,
+                IDispatch,
+                ManagedType,
+            }
+
+            public struct ValidatedInterfaceType
+            {
+                public ValidatedInterfaceKind Kind { get; init; }
+                public Type? ManagedType { get; init; }
+            }
+
+            public static ValidatedInterfaceType CreateValidatedInterfaceType([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type classType, ref Guid riid, object? outer)
             {
                 Debug.Assert(classType != null);
                 if (riid == Marshal.IID_IUnknown)
                 {
-                    return typeof(object);
+                    return new ValidatedInterfaceType() { Kind = ValidatedInterfaceKind.IUnknown, ManagedType = null };
+                }
+                else if (riid == Marshal.IID_IDispatch)
+                {
+                    ClassInterfaceAttribute? attr =
+                        classType.GetCustomAttribute<ClassInterfaceAttribute>()
+                        ?? classType.Assembly.GetCustomAttribute<ClassInterfaceAttribute>(); // If there is no attribute on the Type, check the Assembly.
+
+                    // If the attribute is unspecified, the default is ClassInterfaceType.AutoDispatch.
+                    // See DEFAULT_CLASS_INTERFACE_TYPE in native.
+                    if (attr is null
+                        || attr.Value is ClassInterfaceType.AutoDispatch or ClassInterfaceType.AutoDual)
+                    {
+                        return new ValidatedInterfaceType() { Kind = ValidatedInterfaceKind.IDispatch, ManagedType = null };
+                    }
                 }
 
                 // Aggregation can only be done when requesting IUnknown.
@@ -438,7 +477,7 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
                 {
                     if (i.GUID == riid)
                     {
-                        return i;
+                        return new ValidatedInterfaceType() { Kind = ValidatedInterfaceKind.ManagedType, ManagedType = i };
                     }
                 }
 
@@ -446,15 +485,22 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
                 throw new InvalidCastException();
             }
 
-            public static IntPtr GetObjectAsInterface(object obj, Type interfaceType)
+            public static IntPtr GetObjectAsInterface(object obj, ValidatedInterfaceType interfaceType)
             {
-                // If the requested "interface type" is type object then return as IUnknown
-                if (interfaceType == typeof(object))
+                if (interfaceType.Kind is ValidatedInterfaceKind.IUnknown)
                 {
+                    Debug.Assert(interfaceType.ManagedType is null);
                     return Marshal.GetIUnknownForObject(obj);
                 }
+                else if (interfaceType.Kind is ValidatedInterfaceKind.IDispatch)
+                {
+                    Debug.Assert(interfaceType.ManagedType is null);
+                    return Marshal.GetIDispatchForObject(obj);
+                }
 
-                Debug.Assert(interfaceType.IsInterface);
+                Debug.Assert(interfaceType.Kind is ValidatedInterfaceKind.ManagedType
+                    && interfaceType.ManagedType != null
+                    && interfaceType.ManagedType.IsInterface);
 
                 // The intent of this call is to get AND validate the interface can be
                 // marshalled to native code. An exception will be thrown if the
@@ -462,7 +508,7 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
                 // Scenarios where this is relevant:
                 //  - Interfaces that use Generics
                 //  - Interfaces that define implementation
-                IntPtr interfaceMaybe = Marshal.GetComInterfaceForObject(obj, interfaceType, CustomQueryInterfaceMode.Ignore);
+                IntPtr interfaceMaybe = Marshal.GetComInterfaceForObject(obj, interfaceType.ManagedType, CustomQueryInterfaceMode.Ignore);
 
                 if (interfaceMaybe == IntPtr.Zero)
                 {
@@ -490,21 +536,20 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
                 }
             }
 
-            [RequiresUnreferencedCode("Built-in COM support is not trim compatible", Url = "https://aka.ms/dotnet-illink/com")]
             public void CreateInstance(
                 [MarshalAs(UnmanagedType.Interface)] object? pUnkOuter,
                 ref Guid riid,
                 out IntPtr ppvObject)
             {
-                Type interfaceType = BasicClassFactory.GetValidatedInterfaceType(_classType, ref riid, pUnkOuter);
+                var interfaceType = CreateValidatedInterfaceType(_classType, ref riid, pUnkOuter);
 
                 object obj = Activator.CreateInstance(_classType)!;
                 if (pUnkOuter != null)
                 {
-                    obj = BasicClassFactory.CreateAggregatedObject(pUnkOuter, obj);
+                    obj = CreateAggregatedObject(pUnkOuter, obj);
                 }
 
-                ppvObject = BasicClassFactory.GetObjectAsInterface(obj, interfaceType);
+                ppvObject = GetObjectAsInterface(obj, interfaceType);
             }
 
             public void LockServer([MarshalAs(UnmanagedType.Bool)] bool fLock)
@@ -514,9 +559,9 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
         }
 
         [ComVisible(true)]
+        [RequiresUnreferencedCode("Built-in COM support is not trim compatible", Url = "https://aka.ms/dotnet-illink/com")]
         private sealed class LicenseClassFactory : IClassFactory2
         {
-            private readonly LicenseInteropProxy _licenseProxy = new LicenseInteropProxy();
             private readonly Guid _classId;
 
             [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces | DynamicallyAccessedMemberTypes.PublicConstructors)]
@@ -528,7 +573,6 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
                 _classType = classType;
             }
 
-            [RequiresUnreferencedCode("Built-in COM support is not trim compatible", Url = "https://aka.ms/dotnet-illink/com")]
             public void CreateInstance(
                 [MarshalAs(UnmanagedType.Interface)] object? pUnkOuter,
                 ref Guid riid,
@@ -544,7 +588,7 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
 
             public void GetLicInfo(ref LICINFO licInfo)
             {
-                _licenseProxy.GetLicInfo(_classType, out bool runtimeKeyAvail, out bool licVerified);
+                LicenseInteropProxy.GetLicInfo(_classType, out bool runtimeKeyAvail, out bool licVerified);
 
                 // The LICINFO is a struct with a DWORD size field and two BOOL fields. Each BOOL
                 // is typedef'd from a DWORD, therefore the size is manually computed as below.
@@ -555,7 +599,7 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
 
             public void RequestLicKey(int dwReserved, [MarshalAs(UnmanagedType.BStr)] out string pBstrKey)
             {
-                pBstrKey = _licenseProxy.RequestLicKey(_classType);
+                pBstrKey = LicenseInteropProxy.RequestLicKey(_classType);
             }
 
             public void CreateInstanceLic(
@@ -576,9 +620,9 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
                 bool isDesignTime,
                 out IntPtr ppvObject)
             {
-                Type interfaceType = BasicClassFactory.GetValidatedInterfaceType(_classType, ref riid, pUnkOuter);
+                var interfaceType = BasicClassFactory.CreateValidatedInterfaceType(_classType, ref riid, pUnkOuter);
 
-                object obj = _licenseProxy.AllocateAndValidateLicense(_classType, key, isDesignTime);
+                object obj = LicenseInteropProxy.AllocateAndValidateLicense(_classType, key, isDesignTime);
                 if (pUnkOuter != null)
                 {
                     obj = BasicClassFactory.CreateAggregatedObject(pUnkOuter, obj);
@@ -600,57 +644,73 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
         private static readonly Type? s_licenseAttrType = Type.GetType("System.ComponentModel.LicenseProviderAttribute, System.ComponentModel.TypeConverter", throwOnError: false);
         private static readonly Type? s_licenseExceptionType = Type.GetType("System.ComponentModel.LicenseException, System.ComponentModel.TypeConverter", throwOnError: false);
 
-        // LicenseManager
-        private readonly MethodInfo _createWithContext;
+        private const string LicenseManagerTypeName = "System.ComponentModel.LicenseManager, System.ComponentModel.TypeConverter";
+        private const string LicenseContextTypeName = "System.ComponentModel.LicenseContext, System.ComponentModel.TypeConverter";
+        private const string LicenseInteropHelperTypeName = "System.ComponentModel.LicenseManager+LicenseInteropHelper, System.ComponentModel.TypeConverter";
+        private const string CLRLicenseContextTypeName = "System.ComponentModel.LicenseManager+CLRLicenseContext, System.ComponentModel.TypeConverter";
+        private const string LicenseRefTypeName = "System.ComponentModel.License&, System.ComponentModel.TypeConverter";
+        private const string LicInfoHelperLicenseContextTypeName = "System.ComponentModel.LicenseManager+LicInfoHelperLicenseContext, System.ComponentModel.TypeConverter";
 
-        // LicenseInteropHelper
-        private readonly MethodInfo _validateTypeAndReturnDetails;
-        private readonly MethodInfo _getCurrentContextInfo;
+        private readonly object _licContext;
+        private readonly Type _targetRcwType;
 
-        // CLRLicenseContext
-        private readonly MethodInfo _createDesignContext;
-        private readonly MethodInfo _createRuntimeContext;
-
-        // LicenseContext
-        private readonly MethodInfo _setSavedLicenseKey;
-
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicMethods | DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)]
-        private readonly Type _licInfoHelper;
-
-        private readonly MethodInfo _licInfoHelperContains;
-
-        // RCW Activation
-        private object? _licContext;
-        private Type? _targetRcwType;
-
-        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2111:ReflectionToDynamicallyAccessedMembers",
-            Justification = "The type parameter to LicenseManager.CreateWithContext method has PublicConstructors annotation. We only invoke this method" +
-                "from AllocateAndValidateLicense which annotates the value passed in with the same annotation.")]
-        public LicenseInteropProxy()
+        private LicenseInteropProxy(object licContext, Type targetRcwType)
         {
-            Type licManager = Type.GetType("System.ComponentModel.LicenseManager, System.ComponentModel.TypeConverter", throwOnError: true)!;
-
-            Type licContext = Type.GetType("System.ComponentModel.LicenseContext, System.ComponentModel.TypeConverter", throwOnError: true)!;
-            _setSavedLicenseKey = licContext.GetMethod("SetSavedLicenseKey", BindingFlags.Instance | BindingFlags.Public)!;
-            _createWithContext = licManager.GetMethod("CreateWithContext", new[] { typeof(Type), licContext })!;
-
-            Type interopHelper = licManager.GetNestedType("LicenseInteropHelper", BindingFlags.NonPublic)!;
-            _validateTypeAndReturnDetails = interopHelper.GetMethod("ValidateAndRetrieveLicenseDetails", BindingFlags.Static | BindingFlags.Public)!;
-            _getCurrentContextInfo = interopHelper.GetMethod("GetCurrentContextInfo", BindingFlags.Static | BindingFlags.Public)!;
-
-            Type clrLicContext = licManager.GetNestedType("CLRLicenseContext", BindingFlags.NonPublic)!;
-            _createDesignContext = clrLicContext.GetMethod("CreateDesignContext", BindingFlags.Static | BindingFlags.Public)!;
-            _createRuntimeContext = clrLicContext.GetMethod("CreateRuntimeContext", BindingFlags.Static | BindingFlags.Public)!;
-
-            _licInfoHelper = licManager.GetNestedType("LicInfoHelperLicenseContext", BindingFlags.NonPublic)!;
-            _licInfoHelperContains = _licInfoHelper.GetMethod("Contains", BindingFlags.Instance | BindingFlags.Public)!;
+            _licContext = licContext;
+            _targetRcwType = targetRcwType;
         }
 
-        // Helper function to create an object from the native side
-        public static object Create()
-        {
-            return new LicenseInteropProxy();
-        }
+        [UnsafeAccessor(UnsafeAccessorKind.Method)]
+        private static extern void SetSavedLicenseKey(
+            [UnsafeAccessorType(LicenseContextTypeName)] object licContext,
+            Type type,
+            string key);
+
+        [UnconditionalSuppressMessage("Trimming", "IL2111", Justification = "Manually validated that the annotations are kept in sync.")]
+        [UnsafeAccessor(UnsafeAccessorKind.StaticMethod)]
+        private static extern object? CreateWithContext(
+            [UnsafeAccessorType(LicenseManagerTypeName)] object? licManager,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] Type type,
+            [UnsafeAccessorType(LicenseContextTypeName)] object licContext
+        );
+
+        [UnsafeAccessor(UnsafeAccessorKind.StaticMethod)]
+        private static extern bool ValidateAndRetrieveLicenseDetails(
+            [UnsafeAccessorType(LicenseInteropHelperTypeName)] object? licInteropHelper,
+            [UnsafeAccessorType(LicenseContextTypeName)] object? licContext,
+            Type type,
+            [UnsafeAccessorType(LicenseRefTypeName)] out object? license,
+            out string? licenseKey);
+
+        [UnsafeAccessor(UnsafeAccessorKind.StaticMethod)]
+        [return: UnsafeAccessorType(LicenseContextTypeName)]
+        private static extern object GetCurrentContextInfo(
+            [UnsafeAccessorType(LicenseInteropHelperTypeName)] object? licInteropHelper,
+            Type type,
+            out bool isDesignTime,
+            out string? key);
+
+        [UnsafeAccessor(UnsafeAccessorKind.StaticMethod)]
+        [return: UnsafeAccessorType(CLRLicenseContextTypeName)]
+        private static extern object CreateDesignContext(
+            [UnsafeAccessorType(CLRLicenseContextTypeName)] object? context,
+            Type type);
+
+        [UnsafeAccessor(UnsafeAccessorKind.StaticMethod)]
+        [return: UnsafeAccessorType(CLRLicenseContextTypeName)]
+        private static extern object CreateRuntimeContext(
+            [UnsafeAccessorType(CLRLicenseContextTypeName)] object? context,
+            Type type,
+            string? key);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Constructor)]
+        [return:UnsafeAccessorType(LicInfoHelperLicenseContextTypeName)]
+        private static extern object CreateLicInfoHelperLicenseContext();
+
+        [UnsafeAccessor(UnsafeAccessorKind.Method)]
+        private static extern bool Contains(
+            [UnsafeAccessorType(LicInfoHelperLicenseContextTypeName)] object? licInfoHelperContext,
+            string assemblyName);
 
         // Determine if the type supports licensing
         public static bool HasLicense(Type type)
@@ -670,35 +730,35 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
         //
         // COM normally doesn't expect this function to fail so this method
         // should only throw in the case of a catastrophic error (stack, memory, etc.)
-        public void GetLicInfo(Type type, out bool runtimeKeyAvail, out bool licVerified)
+        public static void GetLicInfo(Type type, out bool runtimeKeyAvail, out bool licVerified)
         {
             runtimeKeyAvail = false;
             licVerified = false;
 
-            // Types are as follows:
-            // LicenseContext, Type, out License, out string
-            object licContext = Activator.CreateInstance(_licInfoHelper)!;
-            var parameters = new object?[] { licContext, type, /* out */ null, /* out */ null };
-            bool isValid = (bool)_validateTypeAndReturnDetails.Invoke(null, BindingFlags.DoNotWrapExceptions, binder: null, parameters: parameters, culture: null)!;
+            object licContext = CreateLicInfoHelperLicenseContext();
+            bool isValid = ValidateAndRetrieveLicenseDetails(null, licContext, type, out object? license, out _);
             if (!isValid)
             {
                 return;
             }
 
-            var license = (IDisposable?)parameters[2];
-            if (license != null)
+            if (license is IDisposable disp)
             {
-                license.Dispose();
+                // Dispose of the license if it implements IDisposable
+                // and we are not in design mode.  This is a bit of a hack
+                // but we need to do this to avoid leaking the license.
+                // The license will be disposed of when the context is
+                // disposed of.
+                disp.Dispose();
                 licVerified = true;
             }
 
-            parameters = new object?[] { type.AssemblyQualifiedName };
-            runtimeKeyAvail = (bool)_licInfoHelperContains.Invoke(licContext, BindingFlags.DoNotWrapExceptions, binder: null, parameters: parameters, culture: null)!;
+            runtimeKeyAvail = Contains(licContext, type.AssemblyQualifiedName!);
         }
 
         // The CLR invokes this whenever a COM client invokes
         // IClassFactory2::RequestLicKey on a managed class.
-        public string RequestLicKey(Type type)
+        public static string RequestLicKey(Type type)
         {
             // License will be null, since we passed no instance,
             // however we can still retrieve the "first" license
@@ -707,28 +767,14 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
             // like LicFileLicenseProvider that don't require the
             // instance to grant a key.
 
-            // Types are as follows:
-            // LicenseContext, Type, out License, out string
-            var parameters = new object?[] { /* use global LicenseContext */ null, type, /* out */ null, /* out */ null };
-            bool isValid = (bool)_validateTypeAndReturnDetails.Invoke(null, BindingFlags.DoNotWrapExceptions, binder: null, parameters: parameters, culture: null)!;
-            if (!isValid)
+            if (!ValidateAndRetrieveLicenseDetails(null, null, type, out object? license, out string? licenseKey))
             {
                 throw new COMException(); // E_FAIL
             }
 
-            var license = (IDisposable?)parameters[2];
-            if (license != null)
-            {
-                license.Dispose();
-            }
+            ((IDisposable?)license)?.Dispose();
 
-            var licenseKey = (string?)parameters[3];
-            if (licenseKey == null)
-            {
-                throw new COMException(); // E_FAIL
-            }
-
-            return licenseKey;
+            return licenseKey ?? throw new COMException(); // E_FAIL
         }
 
         // The CLR invokes this whenever a COM client invokes
@@ -741,25 +787,21 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
         // If we are being entered because of a call to ICF::CreateInstanceLic(),
         // "isDesignTime" will be "false" and "key" will point to a non-null
         // license key.
-        public object AllocateAndValidateLicense([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] Type type, string? key, bool isDesignTime)
+        public static object AllocateAndValidateLicense([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] Type type, string? key, bool isDesignTime)
         {
-            object?[] parameters;
-            object? licContext;
+            object licContext;
             if (isDesignTime)
             {
-                parameters = new object[] { type };
-                licContext = _createDesignContext.Invoke(null, BindingFlags.DoNotWrapExceptions, binder: null, parameters: parameters, culture: null);
+                licContext = CreateDesignContext(null, type);
             }
             else
             {
-                parameters = new object?[] { type, key };
-                licContext = _createRuntimeContext.Invoke(null, BindingFlags.DoNotWrapExceptions, binder: null, parameters: parameters, culture: null);
+                licContext = CreateRuntimeContext(null, type, key);
             }
 
             try
             {
-                parameters = new object?[] { type, licContext };
-                return _createWithContext.Invoke(null, BindingFlags.DoNotWrapExceptions, binder: null, parameters: parameters, culture: null)!;
+                return CreateWithContext(null, type, licContext)!;
             }
             catch (Exception exception) when (exception.GetType() == s_licenseExceptionType)
             {
@@ -768,35 +810,42 @@ $@"{nameof(UnregisterClassForTypeInternal)} arguments:
             }
         }
 
-        // See usage in native RCW code
-        public void GetCurrentContextInfo(RuntimeTypeHandle rth, out bool isDesignTime, out IntPtr bstrKey)
+        [UnmanagedCallersOnly]
+        private static unsafe void GetCurrentContextInfoAndProxy(MethodTable* pMT, bool* pIsDesignTime, ushort** pBstrKey, object* pProxy, Exception* pException)
         {
-            Type targetRcwTypeMaybe = Type.GetTypeFromHandle(rth)!;
+            try
+            {
+                RuntimeType targetRcwTypeMaybe = RuntimeTypeHandle.GetRuntimeType(pMT);
+                object licContext = GetCurrentContextInfo(null, targetRcwTypeMaybe, out *pIsDesignTime, out string? key);
 
-            // Types are as follows:
-            // Type, out bool, out string -> LicenseContext
-            var parameters = new object?[] { targetRcwTypeMaybe, /* out */ null, /* out */ null };
-            _licContext = _getCurrentContextInfo.Invoke(null, BindingFlags.DoNotWrapExceptions, binder: null, parameters: parameters, culture: null);
-
-            _targetRcwType = targetRcwTypeMaybe;
-            isDesignTime = (bool)parameters[1]!;
-            bstrKey = Marshal.StringToBSTR((string)parameters[2]!);
+                *pBstrKey = BStrStringMarshaller.ConvertToUnmanaged(key);
+                *pProxy = new LicenseInteropProxy(licContext, targetRcwTypeMaybe);
+            }
+            catch (Exception ex)
+            {
+                *pException = ex;
+            }
         }
 
         // The CLR invokes this when instantiating a licensed COM
-        // object inside a designtime license context.
+        // object inside a design-time license context.
         // It's purpose is to save away the license key that the CLR
         // retrieved using RequestLicKey().
-        public void SaveKeyInCurrentContext(IntPtr bstrKey)
+        [UnmanagedCallersOnly]
+        private static unsafe void SaveKeyInCurrentContext(LicenseInteropProxy* pProxy, ushort* bstrKey, Exception* pException)
         {
-            if (bstrKey == IntPtr.Zero)
+            try
             {
-                return;
+                string? key = BStrStringMarshaller.ConvertToManaged(bstrKey);
+                if (key is not null)
+                {
+                    SetSavedLicenseKey(pProxy->_licContext, pProxy->_targetRcwType, key);
+                }
             }
-
-            string key = Marshal.PtrToStringBSTR(bstrKey);
-            var parameters = new object?[] { _targetRcwType, key };
-            _setSavedLicenseKey.Invoke(_licContext, BindingFlags.DoNotWrapExceptions, binder: null, parameters: parameters, culture: null);
+            catch (Exception ex)
+            {
+                *pException = ex;
+            }
         }
     }
 }

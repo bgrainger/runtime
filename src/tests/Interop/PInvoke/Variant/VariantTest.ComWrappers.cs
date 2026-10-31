@@ -10,9 +10,14 @@ using static VariantNative;
 using ComTypes = System.Runtime.InteropServices.ComTypes;
 
 #pragma warning disable CS0612, CS0618
-partial class Test_VariantTest
+public partial class Test_VariantTest
 {
-    public static int Main()
+    [Fact]
+    [PlatformSpecific(TestPlatforms.Windows)]
+    [ActiveIssue("https://github.com/dotnet/runtimelab/issues/155", typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsNativeAot))]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/129581", TestRuntimes.Mono)]
+    [Xunit.SkipOnCoreClrAttribute("Depends on marshalled calli", RuntimeTestModes.InterpreterActive)]
+    public static int TestEntryPoint()
     {
         bool testComMarshal=true;
         ComWrappers.RegisterForMarshalling(new ComWrappersImpl());
@@ -23,6 +28,7 @@ partial class Test_VariantTest
             TestOut();
             TestFieldByValue(testComMarshal);
             TestFieldByRef(testComMarshal);
+            TestBSTRWithTrailingByte();
         }
         catch (Exception e)
         {

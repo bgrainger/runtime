@@ -4,24 +4,28 @@
 
 // <Area> Nullable - Lifting - Operators </Area>
 // <Title> general lifting of builtin operators on bool </Title>
-// <Description>  
+// <Description>
 // Logical AND	&
 // Logical XOR	^
 // Logical OR	|
 // Equality	==  !=
-// Conditional AND	&& 
+// Conditional AND	&&
 // Conditional OR	||
 // Conditional	?:
 // Assignment	=  &=  ^=  |=
-// </Description> 
-// <RelatedBugs> </RelatedBugs>  
+// </Description>
+// <RelatedBugs> </RelatedBugs>
 
 //<Expects Status=success></Expects>
 
-// <Code> 
+// <Code>
 
 #pragma warning disable 458, 169
+
+namespace b311420;
+
 using System;
+using Xunit;
 
 public class NullableTest
 {
@@ -11284,7 +11288,7 @@ public class Test_b311420
     public static int counter = 0;
     public static bool result = true;
 
-    public static void Eval(bool expr)
+    internal static void Eval(bool expr)
     {
         counter++;
         if (!expr)
@@ -11295,7 +11299,7 @@ public class Test_b311420
 
     }
 
-    public static void Eval(object obj1, object obj2)
+    internal static void Eval(object obj1, object obj2)
     {
         counter++;
 
@@ -11308,7 +11312,10 @@ public class Test_b311420
 
     }
 
-    public static int Main()
+    [OuterLoop]
+    [Fact]
+    [SkipOnCoreClr("this test simply takes too long to complete under GC stress; it is not fundamentally incompatible", RuntimeTestModes.AnyGCStress)]
+    public static int TestEntryPoint()
     {
 
         NullableTest.Run();

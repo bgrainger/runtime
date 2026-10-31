@@ -21,8 +21,9 @@ void ILLocation::Dump() const
     else
     {
         printf("0x%03X[", GetOffset());
-        printf("%c", IsStackEmpty() ? 'E' : '-');
-        printf("%c", IsCall() ? 'C' : '-');
+        printf("%c", ((m_sourceTypes & ICorDebugInfo::STACK_EMPTY) != 0) ? 'E' : '-');
+        printf("%c", ((m_sourceTypes & ICorDebugInfo::CALL_INSTRUCTION) != 0) ? 'C' : '-');
+        printf("%c", ((m_sourceTypes & ICorDebugInfo::ASYNC) != 0) ? 'A' : '-');
         printf("]");
     }
 }

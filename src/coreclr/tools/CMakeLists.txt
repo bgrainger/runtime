@@ -1,6 +1,3 @@
-if (CLR_CMAKE_TARGET_WIN32 AND NOT CLR_CMAKE_CROSS_ARCH)
-  add_subdirectory(GenClrDebugResource)
-  add_subdirectory(InjectResource)
-
-  install(EXPORT dactabletools DESTINATION dactabletools COMPONENT crosscomponents)
+if (NOT CLR_CMAKE_TARGET_BROWSER AND NOT CLR_CMAKE_TARGET_WASI)
+  add_subdirectory(superpmi)
 endif()

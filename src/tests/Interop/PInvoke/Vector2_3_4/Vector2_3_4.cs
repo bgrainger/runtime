@@ -5,13 +5,19 @@ using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Xunit;
+using TestLibrary;
 
 public class Vector2_3_4Test
 {
     private const int StartingIntValue = 42;
     private const int NewIntValue = 18;
 
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/82859", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoMiniJIT), nameof(PlatformDetection.IsArm64Process))]
+    [ActiveIssue("needs native libraries", TestPlatforms.Browser)]
+    [ActiveIssue("needs triage", TestPlatforms.Android)]
+    [ActiveIssue("missing assembly", TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
     [Fact]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/91388", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
     public static void RunVector2Tests()
     {
         Console.WriteLine($"Running {nameof(RunVector2Tests)}... ");
@@ -54,7 +60,12 @@ public class Vector2_3_4Test
         }));
     }
 
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/82859", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoMiniJIT), nameof(PlatformDetection.IsArm64Process))]
+    [ActiveIssue("needs native libraries", TestPlatforms.Browser)]
+    [ActiveIssue("needs triage", TestPlatforms.Android)]
+    [ActiveIssue("missing assembly", TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
     [Fact]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/91388", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
     public static void RunVector3Tests()
     {
         Console.WriteLine($"Running {nameof(RunVector3Tests)}... ");
@@ -97,7 +108,12 @@ public class Vector2_3_4Test
         }));
     }
 
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/82859", typeof(PlatformDetection), nameof(PlatformDetection.IsMonoMiniJIT), nameof(PlatformDetection.IsArm64Process))]
+    [ActiveIssue("needs native libraries", TestPlatforms.Browser)]
+    [ActiveIssue("needs triage", TestPlatforms.Android)]
+    [ActiveIssue("missing assembly", TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
     [Fact]
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/91388", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
     public static void RunVector4Tests()
     {
         Console.WriteLine($"Running {nameof(RunVector4Tests)}... ");

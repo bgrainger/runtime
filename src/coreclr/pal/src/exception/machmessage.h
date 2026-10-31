@@ -2,15 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 /*++
-
 Module Name:
-
     machmessage.h
 
 Abstract:
-
     Abstraction over Mach messages used during exception handling.
-
 --*/
 
 #include <mach/mach.h>
@@ -20,12 +16,6 @@ Abstract:
 using namespace CorUnix;
 
 #if HAVE_MACH_EXCEPTIONS
-
-#if defined(HOST_AMD64)
-#define MACH_EH_TYPE(x) mach_##x
-#else
-#define MACH_EH_TYPE(x) x
-#endif // defined(HOST_AMD64)
 
 // The vast majority of Mach calls we make in this module are critical: we cannot recover from failures of
 // these methods (principally because we're handling hardware exceptions in the context of a single dedicated
@@ -87,10 +77,10 @@ struct MachExceptionInfo
 {
     exception_type_t ExceptionType;
     mach_msg_type_number_t SubcodeCount;
-    MACH_EH_TYPE(exception_data_type_t) Subcodes[2];
+    mach_exception_data_type_t Subcodes[2];
 #if defined(HOST_AMD64)
     x86_thread_state_t ThreadState;
-    x86_float_state_t FloatState;
+    x86_avx512_state_t FloatState;
     x86_debug_state_t DebugState;
 #elif defined(HOST_ARM64)
     arm_thread_state64_t ThreadState;
@@ -115,15 +105,9 @@ public:
         SET_THREAD_MESSAGE_ID = 1,
         FORWARD_EXCEPTION_MESSAGE_ID = 2,
         NOTIFY_SEND_ONCE_MESSAGE_ID = 71,
-        EXCEPTION_RAISE_MESSAGE_ID = 2401,
-        EXCEPTION_RAISE_STATE_MESSAGE_ID = 2402,
-        EXCEPTION_RAISE_STATE_IDENTITY_MESSAGE_ID = 2403,
         EXCEPTION_RAISE_64_MESSAGE_ID = 2405,
         EXCEPTION_RAISE_STATE_64_MESSAGE_ID = 2406,
         EXCEPTION_RAISE_STATE_IDENTITY_64_MESSAGE_ID = 2407,
-        EXCEPTION_RAISE_REPLY_MESSAGE_ID = 2501,
-        EXCEPTION_RAISE_STATE_REPLY_MESSAGE_ID = 2502,
-        EXCEPTION_RAISE_STATE_IDENTITY_REPLY_MESSAGE_ID = 2503,
         EXCEPTION_RAISE_REPLY_64_MESSAGE_ID = 2505,
         EXCEPTION_RAISE_STATE_REPLY_64_MESSAGE_ID = 2506,
         EXCEPTION_RAISE_STATE_IDENTITY_REPLY_64_MESSAGE_ID = 2507
@@ -165,7 +149,7 @@ public:
     thread_act_t GetThread();           // Get the faulting thread
     exception_type_t GetException();    // Get the exception type (e.g. EXC_BAD_ACCESS)
     int GetExceptionCodeCount();        // Get the number of exception sub-codes
-    MACH_EH_TYPE(exception_data_type_t) GetExceptionCode(int iIndex);   // Get the exception sub-code at the given index
+    mach_exception_data_type_t GetExceptionCode(int iIndex);   // Get the exception sub-code at the given index
 
     // Fetch the thread state flavor from a notification or reply message (return THREAD_STATE_NONE for the
     // messages that don't contain a thread state).
@@ -176,9 +160,6 @@ public:
     // state will be fetched directly from the target thread instead (which can be computed implicitly for
     // exception messages or passed explicitly for reply messages).
     mach_msg_type_number_t GetThreadState(thread_state_flavor_t eFlavor, thread_state_t pState, thread_act_t thread = NULL);
-
-    // Fetch the return code from a reply type message.
-    kern_return_t GetReturnCode();
 
     // Initialize and send a request to set the register context of a particular thread.
     void SendSetThread(mach_port_t hServerPort, CONTEXT *pContext);
@@ -198,11 +179,6 @@ public:
     void ReplyToNotification(MachMessage& message, kern_return_t eResult);
 
 private:
-    // The maximum size in bytes of any Mach message we can send or receive. Calculating an exact size for
-    // this is non trivial (basically because of the security trailers that Mach appends) but the current
-    // value has proven to be more than enough so far.
-    static const size_t kcbMaxMessageSize = 1500;
-
     // The following are structures describing the formats of the Mach messages we understand.
 
     // Request to set the register context on a particular thread.
@@ -224,25 +200,6 @@ private:
 
 #pragma pack(4)
 
-    // EXCEPTION_RAISE_MESSAGE_ID
-    struct exception_raise_notification_t
-    {
-        mach_msg_body_t msgh_body;
-        mach_msg_port_descriptor_t thread_port;
-        mach_msg_port_descriptor_t task_port;
-        NDR_record_t ndr;
-        exception_type_t exception;
-        mach_msg_type_number_t code_count;
-        exception_data_type_t code[2];
-    };
-
-    // EXCEPTION_RAISE_REPLY_MESSAGE_ID
-    struct exception_raise_reply_t
-    {
-        NDR_record_t ndr;
-        kern_return_t ret;
-    };
-
     // EXCEPTION_RAISE_64_MESSAGE_ID
     struct exception_raise_notification_64_t
     {
@@ -262,28 +219,6 @@ private:
         kern_return_t ret;
     };
 
-    // EXCEPTION_RAISE_STATE_MESSAGE_ID
-    struct exception_raise_state_notification_t
-    {
-        NDR_record_t ndr;
-        exception_type_t exception;
-        mach_msg_type_number_t code_count;
-        exception_data_type_t code[2];
-        thread_state_flavor_t flavor;
-        mach_msg_type_number_t old_state_count;
-        natural_t old_state[THREAD_STATE_MAX];
-    };
-
-    // EXCEPTION_RAISE_STATE_REPLY_MESSAGE_ID
-    struct exception_raise_state_reply_t
-    {
-        NDR_record_t ndr;
-        kern_return_t ret;
-        thread_state_flavor_t flavor;
-        mach_msg_type_number_t new_state_count;
-        natural_t new_state[THREAD_STATE_MAX];
-    };
-
     // EXCEPTION_RAISE_STATE_64_MESSAGE_ID
     struct exception_raise_state_notification_64_t
     {
@@ -298,31 +233,6 @@ private:
 
     // EXCEPTION_RAISE_STATE_REPLY_64_MESSAGE_ID
     struct exception_raise_state_reply_64_t
-    {
-        NDR_record_t ndr;
-        kern_return_t ret;
-        thread_state_flavor_t flavor;
-        mach_msg_type_number_t new_state_count;
-        natural_t new_state[THREAD_STATE_MAX];
-    };
-
-    // EXCEPTION_RAISE_STATE_IDENTITY_MESSAGE_ID
-    struct exception_raise_state_identity_notification_t
-    {
-        mach_msg_body_t msgh_body;
-        mach_msg_port_descriptor_t thread_port;
-        mach_msg_port_descriptor_t task_port;
-        NDR_record_t ndr;
-        exception_type_t exception;
-        mach_msg_type_number_t code_count;
-        exception_data_type_t code[2];
-        thread_state_flavor_t flavor;
-        mach_msg_type_number_t old_state_count;
-        natural_t old_state[THREAD_STATE_MAX];
-    };
-
-    // EXCEPTION_RAISE_STATE_IDENTITY_REPLY_MESSAGE_ID
-    struct exception_raise_state_identity_reply_t
     {
         NDR_record_t ndr;
         kern_return_t ret;
@@ -367,20 +277,17 @@ private:
         {
             set_thread_request_t                                set_thread;
             forward_exception_request_t                         forward_exception;
-            exception_raise_notification_t                      raise;
-            exception_raise_state_notification_t                raise_state;
-            exception_raise_state_identity_notification_t       raise_state_identity;
             exception_raise_notification_64_t                   raise_64;
             exception_raise_state_notification_64_t             raise_state_64;
             exception_raise_state_identity_notification_64_t    raise_state_identity_64;
-            exception_raise_reply_t                             raise_reply;
-            exception_raise_state_reply_t                       raise_state_reply;
-            exception_raise_state_identity_reply_t              raise_state_identity_reply;
             exception_raise_reply_64_t                          raise_reply_64;
             exception_raise_state_reply_64_t                    raise_state_reply_64;
             exception_raise_state_identity_reply_64_t           raise_state_identity_reply_64;
         } data;
     } __attribute__((packed));;
+
+    // The maximum size in bytes of any Mach message we can send or receive including possible trailers
+    static const size_t kcbMaxMessageSize = sizeof(mach_message_t) + MAX_TRAILER_SIZE;
 
     // Re-initializes this data structure (to the same state as default construction, containing no message).
     void ResetMessage();
@@ -419,7 +326,7 @@ private:
     void SetThread(thread_act_t thread);
     void SetException(exception_type_t eException);
     void SetExceptionCodeCount(int cCodes);
-    void SetExceptionCode(int iIndex, MACH_EH_TYPE(exception_data_type_t) iCode);
+    void SetExceptionCode(int iIndex, mach_exception_data_type_t iCode);
 
     // Defined for replies:
     void SetReturnCode(kern_return_t eReturnCode);

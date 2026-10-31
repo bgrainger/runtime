@@ -1,14 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-#nullable enable
-
-using Microsoft.Win32.SafeHandles;
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.Apple;
+using Microsoft.Win32.SafeHandles;
 
 internal static partial class Interop
 {
@@ -17,7 +15,6 @@ internal static partial class Interop
         internal enum PAL_SignatureAlgorithm : uint
         {
             Unknown = 0,
-            DSA = 1,
             RsaPkcs1 = 2,
             RsaPss = 3,
             RsaRaw = 4,
@@ -47,7 +44,7 @@ internal static partial class Interop
             }
         }
 
-        [GeneratedDllImport(Libraries.AppleCryptoNative)]
+        [LibraryImport(Libraries.AppleCryptoNative)]
         private static unsafe partial int AppleCryptoNative_SecKeyVerifySignature(
             SafeSecKeyRefHandle publicKey,
             byte* pbDataHash,
@@ -79,7 +76,7 @@ internal static partial class Interop
             }
         }
 
-        [GeneratedDllImport(Libraries.AppleCryptoNative)]
+        [LibraryImport(Libraries.AppleCryptoNative)]
         private static unsafe partial int AppleCryptoNative_SecKeyCreateSignature(
             SafeSecKeyRefHandle privateKey,
             byte* pbDataHash,

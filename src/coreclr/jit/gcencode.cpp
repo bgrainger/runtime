@@ -15,94 +15,53 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 #include "jitpch.h"
 #ifdef _MSC_VER
 #pragma hdrstop
-
-#pragma warning(disable : 4244) // loss of data int -> char ..
-
 #endif
 
+#include <minipal/mutex.h>
 #include "gcinfotypes.h"
 #include "patchpointinfo.h"
 
-ReturnKind GCTypeToReturnKind(CorInfoGCType gcType)
-{
-    switch (gcType)
-    {
-        case TYPE_GC_NONE:
-            return RT_Scalar;
-        case TYPE_GC_REF:
-            return RT_Object;
-        case TYPE_GC_BYREF:
-            return RT_ByRef;
-        default:
-            _ASSERTE(!"TYP_GC_OTHER is unexpected");
-            return RT_Illegal;
-    }
-}
+#ifdef JIT32_GCENCODER
 
-ReturnKind GCInfo::getReturnKind()
+ReturnKind VarTypeToReturnKind(var_types type)
 {
-    switch (compiler->info.compRetType)
+    switch (type)
     {
         case TYP_REF:
             return RT_Object;
         case TYP_BYREF:
             return RT_ByRef;
-        case TYP_STRUCT:
-        {
-            CORINFO_CLASS_HANDLE structType = compiler->info.compMethodInfo->args.retTypeClass;
-            var_types            retType    = compiler->getReturnTypeForStruct(structType, compiler->info.compCallConv);
-
-            switch (retType)
-            {
-                case TYP_REF:
-                    return RT_Object;
-
-                case TYP_BYREF:
-                    return RT_ByRef;
-
-                case TYP_STRUCT:
-                    if (compiler->IsHfa(structType))
-                    {
-#ifdef TARGET_X86
-                        _ASSERTE(false && "HFAs not expected for X86");
-#endif // TARGET_X86
-
-                        return RT_Scalar;
-                    }
-                    else
-                    {
-                        // Multi-reg return
-                        BYTE gcPtrs[2] = {TYPE_GC_NONE, TYPE_GC_NONE};
-                        compiler->info.compCompHnd->getClassGClayout(structType, gcPtrs);
-
-                        ReturnKind first  = GCTypeToReturnKind((CorInfoGCType)gcPtrs[0]);
-                        ReturnKind second = GCTypeToReturnKind((CorInfoGCType)gcPtrs[1]);
-
-                        return GetStructReturnKind(first, second);
-                    }
-
-#ifdef TARGET_X86
-                case TYP_FLOAT:
-                case TYP_DOUBLE:
-                    return RT_Float;
-#endif // TARGET_X86
-                default:
-                    return RT_Scalar;
-            }
-        }
-
-#ifdef TARGET_X86
         case TYP_FLOAT:
         case TYP_DOUBLE:
             return RT_Float;
-#endif // TARGET_X86
-
         default:
             return RT_Scalar;
     }
 }
 
-#if !defined(JIT32_GCENCODER) || defined(FEATURE_EH_FUNCLETS)
+ReturnKind GCInfo::getReturnKind()
+{
+    // Note the JIT32 GCInfo representation only supports structs with 1 GC pointer.
+    ReturnTypeDesc retTypeDesc = m_compiler->compRetTypeDesc;
+    const unsigned regCount    = retTypeDesc.GetReturnRegCount();
+
+    if (regCount == 1)
+    {
+        return VarTypeToReturnKind(retTypeDesc.GetReturnRegType(0));
+    }
+    else
+    {
+#ifdef DEBUG
+        for (unsigned i = 0; i < regCount; i++)
+        {
+            assert(!varTypeIsGC(retTypeDesc.GetReturnRegType(i)));
+        }
+#endif // DEBUG
+        return RT_Scalar;
+    }
+}
+
+#endif // JIT32_GCENCODER
 
 // gcMarkFilterVarsPinned - Walk all lifetimes and make it so that anything
 //     live in a filter is marked as pinned (often by splitting the lifetime
@@ -126,14 +85,14 @@ ReturnKind GCInfo::getReturnKind()
 //
 void GCInfo::gcMarkFilterVarsPinned()
 {
-    assert(compiler->ehAnyFunclets());
+    assert(m_compiler->ehAnyFunclets());
 
-    for (EHblkDsc* const HBtab : EHClauses(compiler))
+    for (EHblkDsc* const HBtab : EHClauses(m_compiler))
     {
         if (HBtab->HasFilter())
         {
-            const UNATIVE_OFFSET filterBeg = compiler->ehCodeOffset(HBtab->ebdFilter);
-            const UNATIVE_OFFSET filterEnd = compiler->ehCodeOffset(HBtab->ebdHndBeg);
+            const UNATIVE_OFFSET filterBeg = m_compiler->ehCodeOffset(HBtab->ebdFilter);
+            const UNATIVE_OFFSET filterEnd = m_compiler->ehCodeOffset(HBtab->ebdHndBeg);
 
             for (varPtrDsc* varTmp = gcVarPtrList; varTmp != nullptr; varTmp = varTmp->vpdNext)
             {
@@ -174,22 +133,21 @@ void GCInfo::gcMarkFilterVarsPinned()
                         //     (2) a regular one for after the filter
                         // and then adjust the original lifetime to end before
                         // the filter.
-                        CLANG_FORMAT_COMMENT_ANCHOR;
 
 #ifdef DEBUG
-                        if (compiler->verbose)
+                        if (m_compiler->verbose)
                         {
                             printf("Splitting lifetime for filter: [%04X, %04X).\nOld: ", filterBeg, filterEnd);
                             gcDumpVarPtrDsc(varTmp);
                         }
 #endif // DEBUG
 
-                        varPtrDsc* desc1 = new (compiler, CMK_GC) varPtrDsc;
+                        varPtrDsc* desc1 = new (m_compiler, CMK_GC) varPtrDsc;
                         desc1->vpdVarNum = varTmp->vpdVarNum | pinned_OFFSET_FLAG;
                         desc1->vpdBegOfs = filterBeg;
                         desc1->vpdEndOfs = filterEnd;
 
-                        varPtrDsc* desc2 = new (compiler, CMK_GC) varPtrDsc;
+                        varPtrDsc* desc2 = new (m_compiler, CMK_GC) varPtrDsc;
                         desc2->vpdVarNum = varTmp->vpdVarNum;
                         desc2->vpdBegOfs = filterEnd;
                         desc2->vpdEndOfs = endOffs;
@@ -200,7 +158,7 @@ void GCInfo::gcMarkFilterVarsPinned()
                         gcInsertVarPtrDscSplit(desc2, varTmp);
 
 #ifdef DEBUG
-                        if (compiler->verbose)
+                        if (m_compiler->verbose)
                         {
                             printf("New (1 of 3): ");
                             gcDumpVarPtrDsc(varTmp);
@@ -217,17 +175,16 @@ void GCInfo::gcMarkFilterVarsPinned()
                         // somewhere inside it, so we only create 1 new lifetime,
                         // and then adjust the original lifetime to end before
                         // the filter.
-                        CLANG_FORMAT_COMMENT_ANCHOR;
 
 #ifdef DEBUG
-                        if (compiler->verbose)
+                        if (m_compiler->verbose)
                         {
                             printf("Splitting lifetime for filter.\nOld: ");
                             gcDumpVarPtrDsc(varTmp);
                         }
 #endif // DEBUG
 
-                        varPtrDsc* desc = new (compiler, CMK_GC) varPtrDsc;
+                        varPtrDsc* desc = new (m_compiler, CMK_GC) varPtrDsc;
                         desc->vpdVarNum = varTmp->vpdVarNum | pinned_OFFSET_FLAG;
                         desc->vpdBegOfs = filterBeg;
                         desc->vpdEndOfs = endOffs;
@@ -237,7 +194,7 @@ void GCInfo::gcMarkFilterVarsPinned()
                         gcInsertVarPtrDscSplit(desc, varTmp);
 
 #ifdef DEBUG
-                        if (compiler->verbose)
+                        if (m_compiler->verbose)
                         {
                             printf("New (1 of 2): ");
                             gcDumpVarPtrDsc(varTmp);
@@ -256,16 +213,15 @@ void GCInfo::gcMarkFilterVarsPinned()
                         // lifetime for the part inside the filter and adjust
                         // the start of the original lifetime to be the end
                         // of the filter
-                        CLANG_FORMAT_COMMENT_ANCHOR;
 #ifdef DEBUG
-                        if (compiler->verbose)
+                        if (m_compiler->verbose)
                         {
                             printf("Splitting lifetime for filter.\nOld: ");
                             gcDumpVarPtrDsc(varTmp);
                         }
 #endif // DEBUG
 
-                        varPtrDsc* desc = new (compiler, CMK_GC) varPtrDsc;
+                        varPtrDsc* desc = new (m_compiler, CMK_GC) varPtrDsc;
 #ifndef JIT32_GCENCODER
                         desc->vpdVarNum = varTmp->vpdVarNum | pinned_OFFSET_FLAG;
                         desc->vpdBegOfs = begOffs;
@@ -286,7 +242,7 @@ void GCInfo::gcMarkFilterVarsPinned()
                         gcInsertVarPtrDscSplit(desc, varTmp);
 
 #ifdef DEBUG
-                        if (compiler->verbose)
+                        if (m_compiler->verbose)
                         {
                             printf("New (1 of 2): ");
                             gcDumpVarPtrDsc(desc);
@@ -299,9 +255,8 @@ void GCInfo::gcMarkFilterVarsPinned()
                     {
                         // The variable lifetime is completely within the filter,
                         // so just add the pinned flag.
-                        CLANG_FORMAT_COMMENT_ANCHOR;
 #ifdef DEBUG
-                        if (compiler->verbose)
+                        if (m_compiler->verbose)
                         {
                             printf("Pinning lifetime for filter.\nOld: ");
                             gcDumpVarPtrDsc(varTmp);
@@ -310,7 +265,7 @@ void GCInfo::gcMarkFilterVarsPinned()
 
                         varTmp->vpdVarNum |= pinned_OFFSET_FLAG;
 #ifdef DEBUG
-                        if (compiler->verbose)
+                        if (m_compiler->verbose)
                         {
                             printf("New : ");
                             gcDumpVarPtrDsc(varTmp);
@@ -375,24 +330,22 @@ void GCInfo::gcDumpVarPtrDsc(varPtrDsc* desc)
     const GCtype gcType = (desc->vpdVarNum & byref_OFFSET_FLAG) ? GCT_BYREF : GCT_GCREF;
     const bool   isPin  = (desc->vpdVarNum & pinned_OFFSET_FLAG) != 0;
 
-    printf("[%08X] %s%s var at [%s", dspPtr(desc), GCtypeStr(gcType), isPin ? "pinned-ptr" : "",
-           compiler->isFramePointerUsed() ? STR_FPBASE : STR_SPBASE);
+    printf("[%p] %s%s var at [%s", dspPtr(desc), GCtypeStr(gcType), isPin ? "pinned-ptr" : "",
+           m_compiler->isFramePointerUsed() ? STR_FPBASE : STR_SPBASE);
 
     if (offs < 0)
     {
-        printf("-%02XH", -offs);
+        printf("-0x%02X", -offs);
     }
     else if (offs > 0)
     {
-        printf("+%02XH", +offs);
+        printf("+0x%02X", +offs);
     }
 
     printf("] live from %04X to %04X\n", desc->vpdBegOfs, desc->vpdEndOfs);
 }
 
 #endif // DEBUG
-
-#endif // !defined(JIT32_GCENCODER) || defined(FEATURE_EH_FUNCLETS)
 
 #ifdef JIT32_GCENCODER
 
@@ -417,8 +370,8 @@ void GCInfo::gcDumpVarPtrDsc(varPtrDsc* desc)
 // find . -name regen.txt | xargs cat | grep CallSite | sort | uniq -c | sort -r | head -80
 
 #if REGEN_SHORTCUTS || REGEN_CALLPAT
-static FILE*     logFile = NULL;
-CRITICAL_SECTION logFileLock;
+static FILE*  logFile = NULL;
+minipal_mutex logFileLock;
 #endif
 
 #if REGEN_CALLPAT
@@ -440,13 +393,13 @@ static void regenLog(unsigned codeDelta,
 
     if (logFile == NULL)
     {
-        logFile = fopen("regen.txt", "a");
-        InitializeCriticalSection(&logFileLock);
+        logFile = fopen_utf8("regen.txt", "a");
+        minipal_mutex_init(&logFileLock);
     }
 
     assert(((enSize > 0) && (enSize < 256)) && ((pat.val & 0xffffff) != 0xffffff));
 
-    EnterCriticalSection(&logFileLock);
+    minipal_mutex_enter(&logFileLock);
 
     fprintf(logFile, "CallSite( 0x%08x, 0x%02x%02x, 0x", pat.val, byrefArgMask, byrefRegMask);
 
@@ -458,7 +411,7 @@ static void regenLog(unsigned codeDelta,
     fprintf(logFile, "),\n");
     fflush(logFile);
 
-    LeaveCriticalSection(&logFileLock);
+    minipal_mutex_leave(&logFileLock);
 }
 #endif
 
@@ -467,18 +420,19 @@ static void regenLog(unsigned encoding, InfoHdr* header, InfoHdr* state)
 {
     if (logFile == NULL)
     {
-        logFile = fopen("regen.txt", "a");
-        InitializeCriticalSection(&logFileLock);
+        logFile = fopen_utf8("regen.txt", "a");
+        minipal_mutex_init(&logFileLock);
     }
 
-    EnterCriticalSection(&logFileLock);
+    minipal_mutex_enter(&logFileLock);
 
-    fprintf(logFile, "InfoHdr( %2d, %2d, %1d, %1d, %1d,"
-                     " %1d, %1d, %1d, %1d, %1d,"
-                     " %1d, %1d, %1d, %1d, %1d, %1d,"
-                     " %1d, %1d, %1d,"
-                     " %1d, %2d, %2d,"
-                     " %2d, %2d, %2d, %2d, %2d, %2d), \n",
+    fprintf(logFile,
+            "InfoHdr( %2d, %2d, %1d, %1d, %1d,"
+            " %1d, %1d, %1d, %1d, %1d,"
+            " %1d, %1d, %1d, %1d, %1d, %1d,"
+            " %1d, %1d, %1d,"
+            " %1d, %2d, %2d,"
+            " %2d, %2d, %2d, %2d, %2d, %2d), \n",
             state->prologSize, state->epilogSize, state->epilogCount, state->epilogAtEnd, state->ediSaved,
             state->esiSaved, state->ebxSaved, state->ebpSaved, state->ebpFrame, state->interruptible,
             state->doubleAlign, state->security, state->handlers, state->localloc, state->editNcontinue, state->varargs,
@@ -493,7 +447,7 @@ static void regenLog(unsigned encoding, InfoHdr* header, InfoHdr* state)
 
     fflush(logFile);
 
-    LeaveCriticalSection(&logFileLock);
+    minipal_mutex_leave(&logFileLock);
 }
 #endif
 
@@ -516,10 +470,10 @@ int FASTCALL lookupCallPattern(unsigned argCnt, unsigned regMask, unsigned argMa
     {
         CallPattern pat;
 
-        pat.fld.argCnt    = argCnt;
-        pat.fld.regMask   = regMask; // EBP,EBX,ESI,EDI
-        pat.fld.argMask   = argMask;
-        pat.fld.codeDelta = codeDelta;
+        pat.fld.argCnt    = (BYTE)argCnt;
+        pat.fld.regMask   = (BYTE)regMask; // EBP,EBX,ESI,EDI
+        pat.fld.argMask   = (BYTE)argMask;
+        pat.fld.codeDelta = (BYTE)codeDelta;
 
         bool     codeDeltaOK = (pat.fld.codeDelta == codeDelta);
         unsigned bestDelta2  = 0xff;
@@ -651,7 +605,7 @@ BYTE FASTCALL encodeHeaderNext(const InfoHdr& header, InfoHdr* state, BYTE& code
         if (header.argCount <= SET_ARGCOUNT_MAX)
         {
             state->argCount = header.argCount;
-            encoding        = SET_ARGCOUNT + header.argCount;
+            encoding        = (BYTE)(SET_ARGCOUNT + header.argCount);
             goto DO_RETURN;
         }
         else
@@ -660,16 +614,16 @@ BYTE FASTCALL encodeHeaderNext(const InfoHdr& header, InfoHdr* state, BYTE& code
             if (initNeeded4(state->argCount, header.argCount, SET_ARGCOUNT_MAX, &hint))
             {
                 assert(hint <= SET_ARGCOUNT_MAX);
-                state->argCount = hint;
-                encoding        = SET_ARGCOUNT + hint;
+                state->argCount = (unsigned short)hint;
+                encoding        = (BYTE)(SET_ARGCOUNT + hint);
                 goto DO_RETURN;
             }
             else
             {
                 assert(hint <= 0xf);
                 state->argCount <<= 4;
-                state->argCount += hint;
-                encoding = NEXT_FOUR_ARGCOUNT + hint;
+                state->argCount += ((unsigned short)hint);
+                encoding = (BYTE)(NEXT_FOUR_ARGCOUNT + hint);
                 goto DO_RETURN;
             }
         }
@@ -681,7 +635,7 @@ BYTE FASTCALL encodeHeaderNext(const InfoHdr& header, InfoHdr* state, BYTE& code
         if (header.frameSize <= SET_FRAMESIZE_MAX)
         {
             state->frameSize = header.frameSize;
-            encoding         = SET_FRAMESIZE + header.frameSize;
+            encoding         = (BYTE)(SET_FRAMESIZE + header.frameSize);
             goto DO_RETURN;
         }
         else
@@ -691,7 +645,7 @@ BYTE FASTCALL encodeHeaderNext(const InfoHdr& header, InfoHdr* state, BYTE& code
             {
                 assert(hint <= SET_FRAMESIZE_MAX);
                 state->frameSize = hint;
-                encoding         = SET_FRAMESIZE + hint;
+                encoding         = (BYTE)(SET_FRAMESIZE + hint);
                 goto DO_RETURN;
             }
             else
@@ -699,7 +653,7 @@ BYTE FASTCALL encodeHeaderNext(const InfoHdr& header, InfoHdr* state, BYTE& code
                 assert(hint <= 0xf);
                 state->frameSize <<= 4;
                 state->frameSize += hint;
-                encoding = NEXT_FOUR_FRAMESIZE + hint;
+                encoding = (BYTE)(NEXT_FOUR_FRAMESIZE + hint);
                 goto DO_RETURN;
             }
         }
@@ -744,7 +698,7 @@ BYTE FASTCALL encodeHeaderNext(const InfoHdr& header, InfoHdr* state, BYTE& code
         if (header.untrackedCnt <= SET_UNTRACKED_MAX)
         {
             state->untrackedCnt = header.untrackedCnt;
-            encoding            = SET_UNTRACKED + header.untrackedCnt;
+            encoding            = (BYTE)(SET_UNTRACKED + header.untrackedCnt);
             goto DO_RETURN;
         }
         else if (state->untrackedCnt != HAS_UNTRACKED)
@@ -770,16 +724,16 @@ BYTE FASTCALL encodeHeaderNext(const InfoHdr& header, InfoHdr* state, BYTE& code
             if (initNeeded3(state->epilogSize, header.epilogSize, SET_EPILOGSIZE_MAX, &hint))
             {
                 assert(hint <= SET_EPILOGSIZE_MAX);
-                state->epilogSize = hint;
-                encoding          = SET_EPILOGSIZE + hint;
+                state->epilogSize = (BYTE)hint;
+                encoding          = (BYTE)(SET_EPILOGSIZE + hint);
                 goto DO_RETURN;
             }
             else
             {
                 assert(hint <= 0x7);
                 state->epilogSize <<= 3;
-                state->epilogSize += hint;
-                encoding = NEXT_THREE_EPILOGSIZE + hint;
+                state->epilogSize += (BYTE)hint;
+                encoding = (BYTE)(NEXT_THREE_EPILOGSIZE + hint);
                 goto DO_RETURN;
             }
         }
@@ -801,16 +755,16 @@ BYTE FASTCALL encodeHeaderNext(const InfoHdr& header, InfoHdr* state, BYTE& code
             if (initNeeded3(state->prologSize, header.prologSize, 15, &hint))
             {
                 assert(hint <= 15);
-                state->prologSize = hint;
-                encoding          = SET_PROLOGSIZE + hint;
+                state->prologSize = (BYTE)hint;
+                encoding          = (BYTE)(SET_PROLOGSIZE + hint);
                 goto DO_RETURN;
             }
             else
             {
                 assert(hint <= 0x7);
                 state->prologSize <<= 3;
-                state->prologSize += hint;
-                encoding = NEXT_THREE_PROLOGSIZE + hint;
+                state->prologSize += ((BYTE)hint);
+                encoding = (BYTE)(NEXT_THREE_PROLOGSIZE + hint);
                 goto DO_RETURN;
             }
         }
@@ -923,12 +877,13 @@ BYTE FASTCALL encodeHeaderNext(const InfoHdr& header, InfoHdr* state, BYTE& code
         goto DO_RETURN;
     }
 
-    if (state->returnKind != header.returnKind)
+    if ((state->returnKind != header.returnKind) || (state->isAsync != header.isAsync))
     {
         state->returnKind = header.returnKind;
+        state->isAsync    = header.isAsync;
         codeSet           = 2; // Two byte encoding
-        encoding          = header.returnKind;
-        _ASSERTE(encoding < SET_RET_KIND_MAX);
+        encoding          = header.returnKind | (header.isAsync ? 4 : 0);
+        _ASSERTE(encoding <= SET_RET_KIND_MAX_V5);
         goto DO_RETURN;
     }
 
@@ -992,6 +947,27 @@ BYTE FASTCALL encodeHeaderNext(const InfoHdr& header, InfoHdr* state, BYTE& code
         }
     }
 
+    if (state->noGCRegionCnt != header.noGCRegionCnt)
+    {
+        assert(state->noGCRegionCnt <= SET_NOGCREGIONS_MAX || state->noGCRegionCnt == HAS_NOGCREGIONS);
+
+        // We have two-byte encodings for 0..4
+        if (header.noGCRegionCnt <= SET_NOGCREGIONS_MAX)
+        {
+            state->noGCRegionCnt = header.noGCRegionCnt;
+            codeSet              = 2;
+            encoding             = (BYTE)(SET_NOGCREGIONS_CNT_V5 + header.noGCRegionCnt);
+            goto DO_RETURN;
+        }
+        else if (state->noGCRegionCnt != HAS_NOGCREGIONS)
+        {
+            state->noGCRegionCnt = HAS_NOGCREGIONS;
+            codeSet              = 2;
+            encoding             = FFFF_NOGCREGION_CNT_V5;
+            goto DO_RETURN;
+        }
+    }
+
 DO_RETURN:
     _ASSERTE(encoding < MORE_BYTES_TO_FOLLOW);
     if (!state->isHeaderMatch(header))
@@ -1006,7 +982,7 @@ static int measureDistance(const InfoHdr& header, const InfoHdrSmall* p, int clo
 
     if (p->untrackedCnt != header.untrackedCnt)
     {
-        if (header.untrackedCnt > 3)
+        if (header.untrackedCnt > SET_UNTRACKED_MAX)
         {
             if (p->untrackedCnt != HAS_UNTRACKED)
                 distance += 1;
@@ -1212,9 +1188,9 @@ static int measureDistance(const InfoHdr& header, const InfoHdrSmall* p, int clo
             return distance;
     }
 
-    if (p->returnKind != header.returnKind)
+    if ((p->returnKind != header.returnKind) || (p->isAsync != header.isAsync))
     {
-        // Setting the ReturnKind requires two bytes of encoding.
+        // Setting the ReturnKind/isAsync requires two bytes of encoding.
         distance += 2;
         if (distance >= closeness)
             return distance;
@@ -1237,6 +1213,13 @@ static int measureDistance(const InfoHdr& header, const InfoHdrSmall* p, int clo
     if (header.revPInvokeOffset != INVALID_REV_PINVOKE_OFFSET)
     {
         distance += 1;
+        if (distance >= closeness)
+            return distance;
+    }
+
+    if (header.noGCRegionCnt > 0)
+    {
+        distance += 2;
         if (distance >= closeness)
             return distance;
     }
@@ -1336,7 +1319,7 @@ BYTE FASTCALL encodeHeaderFirst(const InfoHdr& header, InfoHdr* state, int* more
             // exact match found
             GetInfoHdr(n, state);
             *more = 0;
-            return n;
+            return (BYTE)n;
         }
     }
 
@@ -1363,7 +1346,7 @@ BYTE FASTCALL encodeHeaderFirst(const InfoHdr& header, InfoHdr* state, int* more
                 GetInfoHdr(n, state);
                 *pCached = n; // cache the value
                 *more    = 0;
-                return n;
+                return (BYTE)n;
             }
         }
     }
@@ -1408,7 +1391,7 @@ BYTE FASTCALL encodeHeaderFirst(const InfoHdr& header, InfoHdr* state, int* more
         {
             GetInfoHdr(*pCached, state);
             *more = distance;
-            return 0x80 | *pCached;
+            return (BYTE)(0x80 | *pCached);
         }
         else
         {
@@ -1432,7 +1415,7 @@ BYTE FASTCALL encodeHeaderFirst(const InfoHdr& header, InfoHdr* state, int* more
             GetInfoHdr(n, state);
             *pCached = n; // Cache this value
             *more    = distance;
-            return 0x80 | n;
+            return (BYTE)(0x80 | n);
         }
         else if (distance < closeness)
         {
@@ -1459,7 +1442,7 @@ BYTE FASTCALL encodeHeaderFirst(const InfoHdr& header, InfoHdr* state, int* more
             GetInfoHdr(n, state);
             *pCached = n; // Cache this value
             *more    = distance;
-            return 0x80 | n;
+            return (BYTE)(0x80 | n);
         }
         else if (distance < closeness)
         {
@@ -1477,7 +1460,7 @@ BYTE FASTCALL encodeHeaderFirst(const InfoHdr& header, InfoHdr* state, int* more
     GetInfoHdr(nearest, state);
     *pCached = nearest; // Cache this value
     *more    = closeness;
-    return 0x80 | nearest;
+    return (BYTE)(0x80 | nearest);
 }
 
 /*****************************************************************************
@@ -1491,7 +1474,7 @@ size_t GCInfo::gcInfoBlockHdrSave(
     BYTE* dest, int mask, unsigned methodSize, unsigned prologSize, unsigned epilogSize, InfoHdr* header, int* pCached)
 {
 #ifdef DEBUG
-    if (compiler->verbose)
+    if (m_compiler->verbose)
         printf("*************** In gcInfoBlockHdrSave()\n");
 #endif
     size_t size = 0;
@@ -1502,10 +1485,9 @@ size_t GCInfo::gcInfoBlockHdrSave(
 #endif
 
     /* Write the method size first (using between 1 and 5 bytes) */
-    CLANG_FORMAT_COMMENT_ANCHOR;
 
 #ifdef DEBUG
-    if (compiler->verbose)
+    if (m_compiler->verbose)
     {
         if (mask)
             printf("GCINFO: methodSize = %04X\n", methodSize);
@@ -1536,30 +1518,30 @@ size_t GCInfo::gcInfoBlockHdrSave(
     header->prologSize = static_cast<unsigned char>(prologSize);
     assert(FitsIn<unsigned char>(epilogSize));
     header->epilogSize  = static_cast<unsigned char>(epilogSize);
-    header->epilogCount = compiler->GetEmitter()->emitGetEpilogCnt();
-    if (header->epilogCount != compiler->GetEmitter()->emitGetEpilogCnt())
+    header->epilogCount = m_compiler->GetEmitter()->emitGetEpilogCnt();
+    if (header->epilogCount != m_compiler->GetEmitter()->emitGetEpilogCnt())
         IMPL_LIMITATION("emitGetEpilogCnt() does not fit in InfoHdr::epilogCount");
-    header->epilogAtEnd = compiler->GetEmitter()->emitHasEpilogEnd();
+    header->epilogAtEnd = m_compiler->GetEmitter()->emitHasEpilogEnd();
 
-    if (compiler->codeGen->regSet.rsRegsModified(RBM_EDI))
+    if (m_compiler->codeGen->regSet.rsRegsModified(RBM_EDI))
         header->ediSaved = 1;
-    if (compiler->codeGen->regSet.rsRegsModified(RBM_ESI))
+    if (m_compiler->codeGen->regSet.rsRegsModified(RBM_ESI))
         header->esiSaved = 1;
-    if (compiler->codeGen->regSet.rsRegsModified(RBM_EBX))
+    if (m_compiler->codeGen->regSet.rsRegsModified(RBM_EBX))
         header->ebxSaved = 1;
 
-    header->interruptible = compiler->codeGen->GetInterruptible();
+    header->interruptible = m_compiler->codeGen->GetInterruptible();
 
-    if (!compiler->isFramePointerUsed())
+    if (!m_compiler->isFramePointerUsed())
     {
 #if DOUBLE_ALIGN
-        if (compiler->genDoubleAlign())
+        if (m_compiler->genDoubleAlign())
         {
             header->ebpSaved = true;
-            assert(!compiler->codeGen->regSet.rsRegsModified(RBM_EBP));
+            assert(!m_compiler->codeGen->regSet.rsRegsModified(RBM_EBP));
         }
 #endif
-        if (compiler->codeGen->regSet.rsRegsModified(RBM_EBP))
+        if (m_compiler->codeGen->regSet.rsRegsModified(RBM_EBP))
         {
             header->ebpSaved = true;
         }
@@ -1571,80 +1553,79 @@ size_t GCInfo::gcInfoBlockHdrSave(
     }
 
 #if DOUBLE_ALIGN
-    header->doubleAlign = compiler->genDoubleAlign();
+    header->doubleAlign = m_compiler->genDoubleAlign();
 #endif
 
     header->security = false;
 
-    header->handlers = compiler->ehHasCallableHandlers();
-    header->localloc = compiler->compLocallocUsed;
+    header->handlers = m_compiler->ehHasCallableHandlers();
+    header->localloc = m_compiler->compLocallocUsed;
 
-    header->varargs         = compiler->info.compIsVarArgs;
-    header->profCallbacks   = compiler->info.compProfilerCallback;
-    header->editNcontinue   = compiler->opts.compDbgEnC;
-    header->genericsContext = compiler->lvaReportParamTypeArg();
+    header->varargs         = m_compiler->info.compIsVarArgs;
+    header->profCallbacks   = m_compiler->info.compProfilerCallback;
+    header->editNcontinue   = m_compiler->opts.compDbgEnC;
+    header->genericsContext = m_compiler->lvaReportParamTypeArg();
     header->genericsContextIsMethodDesc =
-        header->genericsContext && (compiler->info.compMethodInfo->options & (CORINFO_GENERICS_CTXT_FROM_METHODDESC));
+        header->genericsContext && (m_compiler->info.compMethodInfo->options & (CORINFO_GENERICS_CTXT_FROM_METHODDESC));
 
     ReturnKind returnKind = getReturnKind();
     _ASSERTE(IsValidReturnKind(returnKind) && "Return Kind must be valid");
     _ASSERTE(!IsStructReturnKind(returnKind) && "Struct Return Kinds Unexpected for JIT32");
-    _ASSERTE(((int)returnKind < (int)SET_RET_KIND_MAX) && "ReturnKind has no legal encoding");
+    _ASSERTE(((int)returnKind <= (int)SET_RET_KIND_MAX_V5) && "ReturnKind has no legal encoding");
     header->returnKind = returnKind;
+    header->isAsync    = m_compiler->compIsAsync();
 
     header->gsCookieOffset = INVALID_GS_COOKIE_OFFSET;
-    if (compiler->getNeedsGSSecurityCookie())
+    if (m_compiler->getNeedsGSSecurityCookie())
     {
-        assert(compiler->lvaGSSecurityCookie != BAD_VAR_NUM);
-        int stkOffs            = compiler->lvaTable[compiler->lvaGSSecurityCookie].GetStackOffset();
-        header->gsCookieOffset = compiler->isFramePointerUsed() ? -stkOffs : stkOffs;
+        assert(m_compiler->lvaGSSecurityCookie != BAD_VAR_NUM);
+        int stkOffs            = m_compiler->lvaTable[m_compiler->lvaGSSecurityCookie].GetStackOffset();
+        header->gsCookieOffset = m_compiler->isFramePointerUsed() ? -stkOffs : stkOffs;
         assert(header->gsCookieOffset != INVALID_GS_COOKIE_OFFSET);
     }
 
     header->syncStartOffset = INVALID_SYNC_OFFSET;
     header->syncEndOffset   = INVALID_SYNC_OFFSET;
-#ifndef UNIX_X86_ABI
-    // JIT is responsible for synchronization on funclet-based EH model that x86/Linux uses.
-    if (compiler->info.compFlags & CORINFO_FLG_SYNCH)
+
+    if (m_compiler->info.compFlags & CORINFO_FLG_SYNCH)
     {
-        assert(compiler->syncStartEmitCookie != NULL);
-        header->syncStartOffset = compiler->GetEmitter()->emitCodeOffset(compiler->syncStartEmitCookie, 0);
-        assert(header->syncStartOffset != INVALID_SYNC_OFFSET);
-
-        assert(compiler->syncEndEmitCookie != NULL);
-        header->syncEndOffset = compiler->GetEmitter()->emitCodeOffset(compiler->syncEndEmitCookie, 0);
-        assert(header->syncEndOffset != INVALID_SYNC_OFFSET);
-
-        assert(header->syncStartOffset < header->syncEndOffset);
-        // synchronized methods can't have more than 1 epilog
-        assert(header->epilogCount <= 1);
+        // While the sync start offset and end offset are not used by the stackwalker/EH system
+        // in funclets mode, we do need to know if the code is synchronized if we are generating
+        // an edit and continue method, so that we can properly manage the stack during a Remap
+        // operation, for determining the ParamTypeArg for collectible generics purposes, and
+        // for determining the offset of the localloc variable in the stack frame.
+        // Instead of inventing a new encoding, just encode some non-0 offsets into these fields.
+        // to indicate that the method is synchronized.
+        //
+        // Use 1 for both offsets, since that doesn't actually make sense and implies that the
+        // sync region is 0 bytes long. The JIT will never emit a sync region of 0 bytes in non-
+        // funclet mode.
+        header->syncStartOffset = 1;
+        header->syncEndOffset   = 1;
     }
-#endif
 
     header->revPInvokeOffset = INVALID_REV_PINVOKE_OFFSET;
-    if (compiler->opts.IsReversePInvoke())
+    if (m_compiler->opts.IsReversePInvoke())
     {
-        assert(compiler->lvaReversePInvokeFrameVar != BAD_VAR_NUM);
-        int stkOffs              = compiler->lvaTable[compiler->lvaReversePInvokeFrameVar].GetStackOffset();
-        header->revPInvokeOffset = compiler->isFramePointerUsed() ? -stkOffs : stkOffs;
+        assert(m_compiler->lvaReversePInvokeFrameVar != BAD_VAR_NUM);
+        int stkOffs              = m_compiler->lvaTable[m_compiler->lvaReversePInvokeFrameVar].GetStackOffset();
+        header->revPInvokeOffset = m_compiler->isFramePointerUsed() ? -stkOffs : stkOffs;
         assert(header->revPInvokeOffset != INVALID_REV_PINVOKE_OFFSET);
     }
 
-    assert((compiler->compArgSize & 0x3) == 0);
-
-    size_t argCount =
-        (compiler->compArgSize - (compiler->codeGen->intRegState.rsCalleeRegArgCount * REGSIZE_BYTES)) / REGSIZE_BYTES;
+    size_t argCount = m_compiler->lvaParameterStackSize / REGSIZE_BYTES;
     assert(argCount <= MAX_USHORT_SIZE_T);
     header->argCount = static_cast<unsigned short>(argCount);
 
-    header->frameSize = compiler->compLclFrameSize / sizeof(int);
-    if (header->frameSize != (compiler->compLclFrameSize / sizeof(int)))
+    header->frameSize = m_compiler->compLclFrameSize / sizeof(int);
+    if (header->frameSize != (m_compiler->compLclFrameSize / sizeof(int)))
         IMPL_LIMITATION("compLclFrameSize does not fit in InfoHdr::frameSize");
 
     if (mask == 0)
     {
         gcCountForHeader((UNALIGNED unsigned int*)&header->untrackedCnt,
-                         (UNALIGNED unsigned int*)&header->varPtrTableSize);
+                         (UNALIGNED unsigned int*)&header->varPtrTableSize,
+                         (UNALIGNED unsigned int*)&header->noGCRegionCnt);
     }
 
     //
@@ -1741,6 +1722,14 @@ size_t GCInfo::gcInfoBlockHdrSave(
         dest += (sz & mask);
     }
 
+    if (header->noGCRegionCnt > SET_NOGCREGIONS_MAX)
+    {
+        unsigned count = header->noGCRegionCnt;
+        unsigned sz    = encodeUnsigned(mask ? dest : NULL, count);
+        size += sz;
+        dest += (sz & mask);
+    }
+
     if (header->epilogCount)
     {
         /* Generate table unless one epilog at the end of the method */
@@ -1757,7 +1746,7 @@ size_t GCInfo::gcInfoBlockHdrSave(
             gcEpilogTable      = mask ? dest : NULL;
             gcEpilogPrevOffset = 0;
 
-            size_t sz = compiler->GetEmitter()->emitGenEpilogLst(gcRecordEpilog, this);
+            size_t sz = m_compiler->GetEmitter()->emitGenEpilogLst(gcRecordEpilog, this);
 
             /* Add the size of the epilog table to the total size */
 
@@ -1770,7 +1759,7 @@ size_t GCInfo::gcInfoBlockHdrSave(
 
     if (mask)
     {
-        if (compiler->codeGen->GetInterruptible())
+        if (m_compiler->codeGen->GetInterruptible())
         {
             genMethodICnt++;
         }
@@ -1856,7 +1845,7 @@ static int (*zeroFunc)() = zeroFN;
  */
 
 typedef unsigned pasMaskType;
-#define BITS_IN_pasMask (BITS_IN_BYTE * sizeof(pasMaskType))
+#define BITS_IN_pasMask     (BITS_PER_BYTE * sizeof(pasMaskType))
 #define HIGHEST_pasMask_BIT (((pasMaskType)0x1) << (BITS_IN_pasMask - 1))
 
 //-----------------------------------------------------------------------------
@@ -1889,8 +1878,8 @@ public:
     // Use these in the case where there actually are more ptrs than pasArgMask
     unsigned pasEnumGCoffsCount();
 #define pasENUM_START ((unsigned)-1)
-#define pasENUM_LAST ((unsigned)-2)
-#define pasENUM_END ((unsigned)-3)
+#define pasENUM_LAST  ((unsigned)-2)
+#define pasENUM_END   ((unsigned)-3)
     unsigned pasEnumGCoffs(unsigned iter, unsigned* offs);
 
 protected:
@@ -2074,7 +2063,7 @@ unsigned PendingArgsStack::pasEnumGCoffsCount()
 }
 
 //-----------------------------------------------------------------------------
-//  Initalize enumeration by passing in iter=pasENUM_START.
+//  Initialize enumeration by passing in iter=pasENUM_START.
 //  Continue by passing in the return value as the new value of iter
 //  End of enumeration when pasENUM_END is returned
 //  If return value != pasENUM_END, *offs is set to the offset for GCinfo
@@ -2133,6 +2122,43 @@ unsigned PendingArgsStack::pasEnumGCoffs(unsigned iter, unsigned* offs)
     return pasENUM_END;
 }
 
+// Small helper class to handle the No-GC-Interrupt callbacks
+// when reporting interruptible ranges.
+class NoGCRegionEncoder
+{
+    BYTE*    dest;
+    unsigned lastSize    = 0;
+    unsigned lastEndOffs = -1;
+public:
+    size_t totalSize = 0;
+
+    NoGCRegionEncoder(BYTE* dest)
+        : dest(dest)
+    {
+    }
+
+    // This callback is called for each insGroup marked with IGF_NOGCINTERRUPT.
+    bool operator()(unsigned igFuncIdx, unsigned igOffs, unsigned igSize, unsigned firstInstrSize, bool isInProlog)
+    {
+        unsigned size;
+        if (igOffs == lastEndOffs) // Coalesce adjacent intervals by re-encoding the enlarged size.
+        {
+            totalSize -= encodeUnsigned(nullptr, lastSize);
+            size = lastSize + igSize;
+        }
+        else
+        {
+            totalSize += encodeUnsigned(dest == nullptr ? nullptr : dest + totalSize, igOffs);
+            size = igSize;
+        }
+        totalSize += encodeUnsigned(dest == nullptr ? nullptr : dest + totalSize, size);
+
+        lastSize    = size;
+        lastEndOffs = igOffs + igSize;
+        return true;
+    }
+};
+
 /*****************************************************************************
  *
  *  Generate the register pointer map, and return its total size in bytes. If
@@ -2140,11 +2166,6 @@ unsigned PendingArgsStack::pasEnumGCoffs(unsigned iter, unsigned* offs)
  *  entry, which is never more than 10 bytes), so this can be used to merely
  *  compute the size of the table.
  */
-
-#ifdef _PREFAST_
-#pragma warning(push)
-#pragma warning(disable : 21000) // Suppress PREFast warning about overly large function
-#endif
 size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, unsigned codeSize, size_t* pArgTabOffset)
 {
     unsigned   varNum;
@@ -2159,7 +2180,8 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
 
     /* Start computing the total size of the table */
 
-    bool emitArgTabOffset = (header.varPtrTableSize != 0 || header.untrackedCnt > SET_UNTRACKED_MAX);
+    bool emitArgTabOffset =
+        (header.varPtrTableSize != 0 || header.untrackedCnt > SET_UNTRACKED_MAX || header.noGCRegionCnt != 0);
     if (mask != 0 && emitArgTabOffset)
     {
         assert(*pArgTabOffset <= MAX_UNSIGNED_SIZE_T);
@@ -2179,17 +2201,28 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
 
 /**************************************************************************
  *
- *                      Untracked ptr variables
+ *                Untracked ptr variables and no GC regions
  *
  **************************************************************************
  */
 #if DEBUG
     unsigned untrackedCount  = 0;
     unsigned varPtrTableSize = 0;
-    gcCountForHeader(&untrackedCount, &varPtrTableSize);
+    unsigned noGCRegionCount = 0;
+    gcCountForHeader(&untrackedCount, &varPtrTableSize, &noGCRegionCount);
     assert(untrackedCount == header.untrackedCnt);
     assert(varPtrTableSize == header.varPtrTableSize);
+    assert(noGCRegionCount == header.noGCRegionCnt);
 #endif // DEBUG
+
+    if (header.noGCRegionCnt != 0)
+    {
+        NoGCRegionEncoder encoder(mask != 0 ? dest : NULL);
+        m_compiler->GetEmitter()->emitGenNoGCLst(encoder, /* skipMainPrologsAndEpilogs = */ true);
+        totalSize += encoder.totalSize;
+        if (mask != 0)
+            dest += encoder.totalSize;
+    }
 
     if (header.untrackedCnt != 0)
     {
@@ -2197,9 +2230,9 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
 
         int lastoffset = 0;
 
-        for (varNum = 0, varDsc = compiler->lvaTable; varNum < compiler->lvaCount; varNum++, varDsc++)
+        for (varNum = 0, varDsc = m_compiler->lvaTable; varNum < m_compiler->lvaCount; varNum++, varDsc++)
         {
-            if (compiler->lvaIsFieldOfDependentlyPromotedStruct(varDsc))
+            if (m_compiler->lvaIsFieldOfDependentlyPromotedStruct(varDsc))
             {
                 // Field local of a PROMOTION_TYPE_DEPENDENT struct must have been
                 // reported through its parent local
@@ -2218,15 +2251,15 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
                 // For genDoubleAlign(), locals are addressed relative to ESP and
                 // arguments are addressed relative to EBP.
 
-                if (compiler->genDoubleAlign() && varDsc->lvIsParam && !varDsc->lvIsRegArg)
-                    offset += compiler->codeGen->genTotalFrameSize();
+                if (m_compiler->genDoubleAlign() && varDsc->lvIsParam && !varDsc->lvIsRegArg)
+                    offset += m_compiler->codeGen->genTotalFrameSize();
 #endif
 
                 // The lower bits of the offset encode properties of the stk ptr
 
                 assert(~OFFSET_MASK % sizeof(offset) == 0);
 
-                if (varDsc->TypeGet() == TYP_BYREF)
+                if (varDsc->TypeIs(TYP_BYREF))
                 {
                     // Or in byref_OFFSET_FLAG for 'byref' pointer tracking
                     offset |= byref_OFFSET_FLAG;
@@ -2250,7 +2283,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
                     totalSize += sz;
                 }
             }
-            else if ((varDsc->TypeGet() == TYP_STRUCT) && varDsc->lvOnFrame && varDsc->HasGCPtr())
+            else if (varDsc->TypeIs(TYP_STRUCT) && varDsc->lvOnFrame && varDsc->HasGCPtr())
             {
                 ClassLayout* layout = varDsc->GetLayout();
                 unsigned     slots  = layout->GetSlotCount();
@@ -2267,9 +2300,9 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
                     // For genDoubleAlign(), locals are addressed relative to ESP and
                     // arguments are addressed relative to EBP.
 
-                    if (compiler->genDoubleAlign() && varDsc->lvIsParam && !varDsc->lvIsRegArg)
+                    if (m_compiler->genDoubleAlign() && varDsc->lvIsParam && !varDsc->lvIsRegArg)
                     {
-                        offset += compiler->codeGen->genTotalFrameSize();
+                        offset += m_compiler->codeGen->genTotalFrameSize();
                     }
 #endif
                     if (layout->GetGCPtrType(i) == TYP_BYREF)
@@ -2296,9 +2329,9 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
 
         /* Count&Write spill temps that hold pointers */
 
-        assert(compiler->codeGen->regSet.tmpAllFree());
-        for (TempDsc* tempItem = compiler->codeGen->regSet.tmpListBeg(); tempItem != nullptr;
-             tempItem          = compiler->codeGen->regSet.tmpListNxt(tempItem))
+        assert(m_compiler->codeGen->regSet.tmpAllFree());
+        for (TempDsc* tempItem = m_compiler->codeGen->regSet.tmpListBeg(); tempItem != nullptr;
+             tempItem          = m_compiler->codeGen->regSet.tmpListNxt(tempItem))
         {
             if (varTypeIsGC(tempItem->tdTempType()))
             {
@@ -2346,45 +2379,16 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
      **************************************************************************
      */
 
-    bool keepThisAlive = false;
-
-    if (!compiler->info.compIsStatic)
+    if (!m_compiler->info.compIsStatic)
     {
-        unsigned thisArgNum = compiler->info.compThisArg;
-        gcIsUntrackedLocalOrNonEnregisteredArg(thisArgNum, &keepThisAlive);
+        unsigned thisArgNum = m_compiler->info.compThisArg;
+        gcIsUntrackedLocalOrNonEnregisteredArg(thisArgNum);
     }
 
     // First we check for the most common case - no lifetimes at all.
 
     if (header.varPtrTableSize != 0)
     {
-#if !defined(FEATURE_EH_FUNCLETS)
-        if (keepThisAlive)
-        {
-            // Encoding of untracked variables does not support reporting
-            // "this". So report it as a tracked variable with a liveness
-            // extending over the entire method.
-
-            assert(compiler->lvaTable[compiler->info.compThisArg].TypeGet() == TYP_REF);
-
-            unsigned varOffs = compiler->lvaTable[compiler->info.compThisArg].GetStackOffset();
-
-            /* For negative stack offsets we must reset the low bits,
-                * take abs and then set them back */
-
-            varOffs = abs(static_cast<int>(varOffs));
-            varOffs |= this_OFFSET_FLAG;
-
-            size_t sz = 0;
-            sz        = encodeUnsigned(mask ? (dest + sz) : NULL, varOffs);
-            sz += encodeUDelta(mask ? (dest + sz) : NULL, 0, 0);
-            sz += encodeUDelta(mask ? (dest + sz) : NULL, codeSize, 0);
-
-            dest += (sz & mask);
-            totalSize += sz;
-        }
-#endif // !FEATURE_EH_FUNCLETS
-
         /* We'll use a delta encoding for the lifetime offsets */
 
         lastOffset = 0;
@@ -2462,10 +2466,10 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
 
     lastOffset = 0;
 
-    if (compiler->codeGen->GetInterruptible())
+    if (m_compiler->codeGen->GetInterruptible())
     {
 #ifdef TARGET_X86
-        assert(compiler->IsFullPtrRegMapRequired());
+        assert(m_compiler->IsFullPtrRegMapRequired());
 
         unsigned ptrRegs = 0;
 
@@ -2542,7 +2546,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
             if ((codeDelta >= 8) && (codeDelta <= (64 + 7)))
             {
                 unsigned biggerDelta = ((codeDelta - 8) & 0x38) + 8;
-                *dest++              = 0xF0 | ((biggerDelta - 8) >> 3);
+                *dest++              = (BYTE)(0xF0 | ((biggerDelta - 8) >> 3));
                 lastOffset += biggerDelta;
                 codeDelta &= 0x07;
             }
@@ -2606,7 +2610,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
 
                         bool isPop = genRegPtrTemp->rpdArgTypeGet() == rpdARG_POP;
 
-                        *dest++ = 0x80 | (BYTE)codeDelta | genRegPtrTemp->rpdPtrArg << 3 | isPop << 6;
+                        *dest++ = (BYTE)(0x80 | (BYTE)codeDelta | genRegPtrTemp->rpdPtrArg << 3 | isPop << 6);
 
                         /* Remember the new 'last' offset */
 
@@ -2626,9 +2630,6 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
 
                     assert((codeDelta & 0x7) == codeDelta);
                     *dest++ = 0xB0 | (BYTE)codeDelta;
-#ifndef UNIX_X86_ABI
-                    assert(!compiler->isFramePointerUsed());
-#endif
 
                     /* Remember the new 'last' offset */
 
@@ -2685,7 +2686,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
 
                     /* Get hold of the next register bit */
 
-                    tmpMask = genFindLowestReg(regMask);
+                    tmpMask = genFindLowestBit(regMask);
                     assert(tmpMask);
 
                     /* Remember the new state of this register */
@@ -2708,7 +2709,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
                      */
 
                     assert((codeDelta & 0x7) == codeDelta);
-                    *dest++ = 0x00 | regNum << 3 | (BYTE)codeDelta;
+                    *dest++ = (BYTE)(0x00 | regNum << 3 | (BYTE)codeDelta);
 
                     /* Turn the bit we've just generated off and continue */
 
@@ -2734,7 +2735,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
 
                     /* Get hold of the next register bit */
 
-                    tmpMask = genFindLowestReg(regMask);
+                    tmpMask = genFindLowestBit(regMask);
                     assert(tmpMask);
 
                     /* Remember the new state of this register */
@@ -2754,7 +2755,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
 
                     dest = gceByrefPrefixI(genRegPtrTemp, dest);
 
-                    if (!keepThisAlive && genRegPtrTemp->rpdIsThis)
+                    if (genRegPtrTemp->rpdIsThis)
                     {
                         // Mark with 'this' pointer prefix
                         *dest++ = 0xBC;
@@ -2763,7 +2764,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
                     }
 
                     assert((codeDelta & 0x7) == codeDelta);
-                    *dest++ = 0x40 | (regNum << 3) | (BYTE)codeDelta;
+                    *dest++ = (BYTE)(0x40 | (regNum << 3) | (BYTE)codeDelta);
 
                     /* Turn the bit we've just generated off and continue */
 
@@ -2796,7 +2797,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
         dest -= mask;
         totalSize++;
     }
-    else if (compiler->isFramePointerUsed()) // GetInterruptible() is false
+    else if (m_compiler->isFramePointerUsed()) // GetInterruptible() is false
     {
 #ifdef TARGET_X86
         /*
@@ -2916,22 +2917,22 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
         /* If "this" is enregistered, note it. We do this explicitly here as
            IsFullPtrRegMapRequired()==false, and so we don't have any regPtrDsc's. */
 
-        if (compiler->lvaKeepAliveAndReportThis() && compiler->lvaTable[compiler->info.compThisArg].lvRegister)
+        if (m_compiler->lvaKeepAliveAndReportThis() && m_compiler->lvaTable[m_compiler->info.compThisArg].lvRegister)
         {
-            unsigned thisRegMask   = genRegMask(compiler->lvaTable[compiler->info.compThisArg].GetRegNum());
+            unsigned thisRegMask = (unsigned)genRegMask(m_compiler->lvaTable[m_compiler->info.compThisArg].GetRegNum());
             unsigned thisPtrRegEnc = gceEncodeCalleeSavedRegs(thisRegMask) << 4;
 
             if (thisPtrRegEnc)
             {
                 totalSize += 1;
                 if (mask)
-                    *dest++ = thisPtrRegEnc;
+                    *dest++ = (BYTE)thisPtrRegEnc;
             }
         }
 
         CallDsc* call;
 
-        assert(compiler->IsFullPtrRegMapRequired() == false);
+        assert(m_compiler->IsFullPtrRegMapRequired() == false);
 
         /* Walk the list of pointer register/argument entries */
 
@@ -2981,7 +2982,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
                 if (mask != 0)
                 {
                     *dest++       = 0xFB;
-                    *dest++       = (byrefRegMask << 4) | regMask;
+                    *dest++       = (BYTE)((byrefRegMask << 4) | regMask);
                     *(DWORD*)dest = codeDelta;
                     dest += sizeof(DWORD);
                     *(DWORD*)dest = argCnt;
@@ -3014,23 +3015,23 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
             /* Check if we can use a tiny encoding */
             else if ((codeDelta < 16) && (codeDelta != 0) && (call->u1.cdArgMask == 0) && !byref)
             {
-                *dest++ = (regMask << 4) | (BYTE)codeDelta;
+                *dest++ = (BYTE)((regMask << 4) | (BYTE)codeDelta);
             }
 
             /* Check if we can use the small encoding */
             else if ((codeDelta < 0x79) && (call->u1.cdArgMask <= 0x1F) && !byref)
             {
                 *dest++ = 0x80 | (BYTE)codeDelta;
-                *dest++ = call->u1.cdArgMask | (regMask << 5);
+                *dest++ = (BYTE)(call->u1.cdArgMask | (regMask << 5));
             }
 
             /* Check if we can use the medium encoding */
             else if (codeDelta <= 0x01FF && call->u1.cdArgMask <= 0x0FFF && !byref)
             {
                 *dest++ = 0xFD;
-                *dest++ = call->u1.cdArgMask;
+                *dest++ = (BYTE)call->u1.cdArgMask;
                 *dest++ = ((call->u1.cdArgMask >> 4) & 0xF0) | ((BYTE)codeDelta & 0x0F);
-                *dest++ = (regMask << 5) | (BYTE)((codeDelta >> 4) & 0x1F);
+                *dest++ = (BYTE)(regMask << 5) | (BYTE)((codeDelta >> 4) & 0x1F);
             }
 
             /* Check if we can use the medium encoding with byrefs */
@@ -3038,15 +3039,15 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
             {
                 *dest++ = 0xF9;
                 *dest++ = (BYTE)codeDelta;
-                *dest++ = (regMask << 5) | call->u1.cdArgMask;
-                *dest++ = (byrefRegMask << 5) | call->u1.cdByrefArgMask;
+                *dest++ = (BYTE)((regMask << 5) | call->u1.cdArgMask);
+                *dest++ = (BYTE)((byrefRegMask << 5) | call->u1.cdByrefArgMask);
             }
 
             /* We'll use the large encoding */
             else if (!byref)
             {
                 *dest++       = 0xFE;
-                *dest++       = (byrefRegMask << 4) | regMask;
+                *dest++       = (BYTE)((byrefRegMask << 4) | regMask);
                 *(DWORD*)dest = codeDelta;
                 dest += sizeof(DWORD);
                 *(DWORD*)dest = call->u1.cdArgMask;
@@ -3057,7 +3058,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
             else
             {
                 *dest++       = 0xFA;
-                *dest++       = (byrefRegMask << 4) | regMask;
+                *dest++       = (BYTE)((byrefRegMask << 4) | regMask);
                 *(DWORD*)dest = codeDelta;
                 dest += sizeof(DWORD);
                 *(DWORD*)dest = call->u1.cdArgMask;
@@ -3085,13 +3086,13 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
     }
     else // GetInterruptible() is false and we have an EBP-less frame
     {
-        assert(compiler->IsFullPtrRegMapRequired());
+        assert(m_compiler->IsFullPtrRegMapRequired());
 
 #ifdef TARGET_X86
 
         regPtrDsc*       genRegPtrTemp;
         regNumber        thisRegNum = regNumber(0);
-        PendingArgsStack pasStk(compiler->GetEmitter()->emitMaxStackDepth, compiler);
+        PendingArgsStack pasStk(m_compiler->GetEmitter()->emitMaxStackDepth, m_compiler);
 
         /* Walk the list of pointer register/argument entries */
 
@@ -3193,7 +3194,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
             unsigned origCodeDelta = codeDelta;
 #endif
 
-            if (!keepThisAlive && genRegPtrTemp->rpdIsThis)
+            if (genRegPtrTemp->rpdIsThis)
             {
                 unsigned tmpMask = genRegPtrTemp->rpdCompiler.rpdAdd;
 
@@ -3246,9 +3247,24 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
 
                     callArgCnt = genRegPtrTemp->rpdPtrArg;
 
-                    unsigned gcrefRegMask = genRegPtrTemp->rpdCallGCrefRegs;
+                    unsigned gcrefRegMask = 0;
 
-                    byrefRegMask = genRegPtrTemp->rpdCallByrefRegs;
+                    byrefRegMask = 0;
+
+                    // The order here is fixed: it must agree with the order assumed in eetwain.
+                    // NB: x86 GC decoder does not report return registers at call sites.
+                    static const regNumber calleeSaveOrder[] = {REG_EDI, REG_ESI, REG_EBX, REG_EBP};
+                    for (unsigned i = 0; i < ArrLen(calleeSaveOrder); i++)
+                    {
+                        if ((genRegPtrTemp->rpdCallGCrefRegs & (1 << (calleeSaveOrder[i] - REG_INT_FIRST))) != 0)
+                        {
+                            gcrefRegMask |= 1u << i;
+                        }
+                        if ((genRegPtrTemp->rpdCallByrefRegs & (1 << (calleeSaveOrder[i] - REG_INT_FIRST))) != 0)
+                        {
+                            byrefRegMask |= 1u << i;
+                        }
+                    }
 
                     assert((gcrefRegMask & byrefRegMask) == 0);
 
@@ -3273,7 +3289,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
                         if (mask)
                         {
                             *dest++       = 0xF8;
-                            *dest++       = (byrefRegMask << 4) | regMask;
+                            *dest++       = (BYTE)((byrefRegMask << 4) | regMask);
                             *(DWORD*)dest = codeDelta;
                             dest += sizeof(DWORD);
                             *(DWORD*)dest = callArgCnt;
@@ -3324,7 +3340,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
 
                     assert(regMask || argMask || callArgCnt || pasStk.pasCurDepth());
 
-// Emit IPtrMask if needed
+                    // Emit IPtrMask if needed
 
 #define CHK_NON_INTRPT_ESP_IPtrMask                                                                                    \
                                                                                                                        \
@@ -3370,7 +3386,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
                             CHK_NON_INTRPT_ESP_IPtrMask;
 
                             assert((pattern >= 0) && (pattern < 80));
-                            *dest++ = 0x80 | pattern;
+                            *dest++ = (BYTE)(0x80 | pattern);
                             goto NEXT_RPD;
                         }
 
@@ -3411,8 +3427,8 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
                                     // Emit IPtrMask if needed
                                     CHK_NON_INTRPT_ESP_IPtrMask;
 
-                                    *dest++ = 0xD0 | regMask;
-                                    *dest++ = (inx << 6) | (callArgCnt << 3) | argMask;
+                                    *dest++ = (BYTE)(0xD0 | regMask);
+                                    *dest++ = (BYTE)((inx << 6) | (callArgCnt << 3) | argMask);
                                     goto NEXT_RPD;
                                 }
                             }
@@ -3467,7 +3483,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
                     /* use encoding:                                   */
                     /*   call 1110RRRR [ArgCnt] [ArgMask]              */
 
-                    *dest++ = 0xE0 | regMask;
+                    *dest++ = (BYTE)(0xE0 | regMask);
                     dest += encodeUnsigned(dest, callArgCnt);
 
                     dest += encodeUnsigned(dest, argMask);
@@ -3579,9 +3595,6 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
 
     return totalSize;
 }
-#ifdef _PREFAST_
-#pragma warning(pop)
-#endif
 
 /*****************************************************************************/
 #if DUMP_GC_TABLES
@@ -3607,7 +3620,12 @@ size_t GCInfo::gcInfoBlockHdrDump(const BYTE* table, InfoHdr* header, unsigned* 
 {
     GCDump gcDump(GCINFO_VERSION);
 
+#ifdef DEBUG
     gcDump.gcPrintf = gcDump_logf; // use my printf (which logs to VM)
+#else
+    gcDump.gcPrintf = printf;
+#endif
+
     printf("Method info block:\n");
 
     return gcDump.DumpInfoHdr(table, header, methodSize, verifyGCTables);
@@ -3617,10 +3635,22 @@ size_t GCInfo::gcInfoBlockHdrDump(const BYTE* table, InfoHdr* header, unsigned* 
 
 size_t GCInfo::gcDumpPtrTable(const BYTE* table, const InfoHdr& header, unsigned methodSize)
 {
-    printf("Pointer table:\n");
+    if (header.noGCRegionCnt > 0)
+    {
+        printf("No GC regions and pointer table:\n");
+    }
+    else
+    {
+        printf("Pointer table:\n");
+    }
 
     GCDump gcDump(GCINFO_VERSION);
+
+#ifdef DEBUG
     gcDump.gcPrintf = gcDump_logf; // use my printf (which logs to VM)
+#else
+    gcDump.gcPrintf = printf;
+#endif
 
     return gcDump.DumpGCTable(table, header, methodSize, verifyGCTables);
 }
@@ -3633,7 +3663,12 @@ size_t GCInfo::gcDumpPtrTable(const BYTE* table, const InfoHdr& header, unsigned
 void GCInfo::gcFindPtrsInFrame(const void* infoBlock, const void* codeBlock, unsigned offs)
 {
     GCDump gcDump(GCINFO_VERSION);
+
+#ifdef DEBUG
     gcDump.gcPrintf = gcDump_logf; // use my printf (which logs to VM)
+#else
+    gcDump.gcPrintf = printf;
+#endif
 
     gcDump.DumpPtrsInFrame((PTR_CBYTE)infoBlock, (const BYTE*)codeBlock, offs, verifyGCTables);
 }
@@ -3670,7 +3705,8 @@ class GcInfoEncoderWithLogging
 
 public:
     GcInfoEncoderWithLogging(GcInfoEncoder* gcInfoEncoder, bool verbose)
-        : m_gcInfoEncoder(gcInfoEncoder), m_doLogging(verbose INDEBUG(|| JitConfig.JitGCInfoLogging() != 0))
+        : m_gcInfoEncoder(gcInfoEncoder)
+        , m_doLogging(verbose INDEBUG(|| JitConfig.JitGCInfoLogging() != 0))
     {
     }
 
@@ -3737,15 +3773,6 @@ public:
         }
     }
 
-    void SetReturnKind(ReturnKind returnKind)
-    {
-        m_gcInfoEncoder->SetReturnKind(returnKind);
-        if (m_doLogging)
-        {
-            printf("Set ReturnKind to %s.\n", ReturnKindToString(returnKind));
-        }
-    }
-
     void SetStackBaseRegister(UINT32 registerNumber)
     {
         m_gcInfoEncoder->SetStackBaseRegister(registerNumber);
@@ -3774,15 +3801,6 @@ public:
         }
     }
 
-    void SetPSPSymStackSlot(INT32 spOffsetPSPSym)
-    {
-        m_gcInfoEncoder->SetPSPSymStackSlot(spOffsetPSPSym);
-        if (m_doLogging)
-        {
-            printf("Set PSPSym stack slot to %d.\n", spOffsetPSPSym);
-        }
-    }
-
     void SetGenericsInstContextStackSlot(INT32 spOffsetGenericsContext, GENERIC_CONTEXTPARAM_TYPE type)
     {
         m_gcInfoEncoder->SetGenericsInstContextStackSlot(spOffsetGenericsContext, type);
@@ -3793,15 +3811,6 @@ public:
                         ? "THIS"
                         : (type == GENERIC_CONTEXTPARAM_MT ? "MT"
                                                            : (type == GENERIC_CONTEXTPARAM_MD ? "MD" : "UNKNOWN!"))));
-        }
-    }
-
-    void SetSecurityObjectStackSlot(INT32 spOffset)
-    {
-        m_gcInfoEncoder->SetSecurityObjectStackSlot(spOffset);
-        if (m_doLogging)
-        {
-            printf("Set security object stack slot to %d.\n", spOffset);
         }
     }
 
@@ -3823,7 +3832,7 @@ public:
             printf("Set WantsReportOnlyLeaf.\n");
         }
     }
-#elif defined(TARGET_ARMARCH)
+#elif defined(TARGET_ARMARCH) || defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
     void SetHasTailCalls()
     {
         m_gcInfoEncoder->SetHasTailCalls();
@@ -3845,7 +3854,7 @@ public:
 };
 
 #define GCENCODER_WITH_LOGGING(withLog, realEncoder)                                                                   \
-    GcInfoEncoderWithLogging  withLog##Var(realEncoder, INDEBUG(compiler->verbose ||) compiler->opts.dspGCtbls);       \
+    GcInfoEncoderWithLogging  withLog##Var(realEncoder, INDEBUG(m_compiler->verbose ||) m_compiler->opts.dspGCtbls);   \
     GcInfoEncoderWithLogging* withLog = &withLog##Var;
 
 #else // !(defined(DEBUG) || DUMP_GC_TABLES)
@@ -3857,7 +3866,7 @@ public:
 void GCInfo::gcInfoBlockHdrSave(GcInfoEncoder* gcInfoEncoder, unsigned methodSize, unsigned prologSize)
 {
 #ifdef DEBUG
-    if (compiler->verbose)
+    if (m_compiler->verbose)
     {
         printf("*************** In gcInfoBlockHdrSave()\n");
     }
@@ -3869,28 +3878,26 @@ void GCInfo::gcInfoBlockHdrSave(GcInfoEncoder* gcInfoEncoder, unsigned methodSiz
 
     gcInfoEncoderWithLog->SetCodeLength(methodSize);
 
-    gcInfoEncoderWithLog->SetReturnKind(getReturnKind());
-
-    if (compiler->isFramePointerUsed())
+    if (m_compiler->isFramePointerUsed())
     {
         gcInfoEncoderWithLog->SetStackBaseRegister(REG_FPBASE);
     }
 
-    if (compiler->info.compIsVarArgs)
+    if (m_compiler->info.compIsVarArgs)
     {
         gcInfoEncoderWithLog->SetIsVarArg();
     }
     // No equivalents.
-    // header->profCallbacks = compiler->info.compProfilerCallback;
-    // header->editNcontinue = compiler->opts.compDbgEnC;
+    // header->profCallbacks = m_compiler->info.compProfilerCallback;
+    // header->editNcontinue = m_compiler->opts.compDbgEnC;
     //
-    if (compiler->lvaReportParamTypeArg())
+    if (m_compiler->lvaReportParamTypeArg())
     {
         // The predicate above is true only if there is an extra generic context parameter, not for
         // the case where the generic context is provided by "this."
-        assert((SIZE_T)compiler->info.compTypeCtxtArg != BAD_VAR_NUM);
+        assert((SIZE_T)m_compiler->info.compTypeCtxtArg != BAD_VAR_NUM);
         GENERIC_CONTEXTPARAM_TYPE ctxtParamType = GENERIC_CONTEXTPARAM_NONE;
-        switch (compiler->info.compMethodInfo->options & CORINFO_GENERICS_CTXT_MASK)
+        switch (m_compiler->info.compMethodInfo->options & CORINFO_GENERICS_CTXT_MASK)
         {
             case CORINFO_GENERICS_CTXT_FROM_METHODDESC:
                 ctxtParamType = GENERIC_CONTEXTPARAM_MD;
@@ -3906,20 +3913,29 @@ void GCInfo::gcInfoBlockHdrSave(GcInfoEncoder* gcInfoEncoder, unsigned methodSiz
                 assert(false);
         }
 
-        const int offset = compiler->lvaToCallerSPRelativeOffset(compiler->lvaCachedGenericContextArgOffset(),
-                                                                 compiler->isFramePointerUsed());
+        const int offset = m_compiler->lvaCachedGenericContextArgOffset();
 
 #ifdef DEBUG
-        if (compiler->opts.IsOSR())
+        if (m_compiler->opts.IsOSR())
         {
+            const int callerSpOffset =
+                m_compiler->lvaToCallerSPRelativeOffset(offset, m_compiler->isFramePointerUsed());
+
             // Sanity check the offset vs saved patchpoint info.
             //
+            const PatchpointInfo* const ppInfo = m_compiler->info.compPatchpointInfo;
+#if defined(TARGET_AMD64)
             // PP info has FP relative offset, to get to caller SP we need to
             // subtract off 2 register slots (saved FP, saved RA).
             //
-            const PatchpointInfo* const ppInfo    = compiler->info.compPatchpointInfo;
-            const int                   osrOffset = ppInfo->GenericContextArgOffset() - 2 * REGSIZE_BYTES;
-            assert(offset == osrOffset);
+            const int osrOffset = ppInfo->GenericContextArgOffset() - 2 * REGSIZE_BYTES;
+            assert(callerSpOffset == osrOffset);
+#elif defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+            // PP info has virtual offset. This is also the caller SP offset.
+            //
+            const int osrOffset = ppInfo->GenericContextArgOffset();
+            assert(callerSpOffset == osrOffset);
+#endif
         }
 #endif
 
@@ -3927,94 +3943,81 @@ void GCInfo::gcInfoBlockHdrSave(GcInfoEncoder* gcInfoEncoder, unsigned methodSiz
     }
     // As discussed above, handle the case where the generics context is obtained via
     // the method table of "this".
-    else if (compiler->lvaKeepAliveAndReportThis())
+    else if (m_compiler->lvaKeepAliveAndReportThis())
     {
-        assert(compiler->info.compThisArg != BAD_VAR_NUM);
+        assert(m_compiler->info.compThisArg != BAD_VAR_NUM);
 
-        // OSR can report the root method's frame slot, if that method reported context.
-        // If not, the OSR frame will have saved the needed context.
-        //
-        bool useRootFrameSlot = true;
-        if (compiler->opts.IsOSR())
-        {
-            const PatchpointInfo* const ppInfo = compiler->info.compPatchpointInfo;
-
-            useRootFrameSlot = ppInfo->HasKeptAliveThis();
-        }
-
-        const int offset = compiler->lvaToCallerSPRelativeOffset(compiler->lvaCachedGenericContextArgOffset(),
-                                                                 compiler->isFramePointerUsed(), useRootFrameSlot);
+        const int offset = m_compiler->lvaCachedGenericContextArgOffset();
 
 #ifdef DEBUG
-        if (compiler->opts.IsOSR() && useRootFrameSlot)
+        // OSR can report the root method's frame slot, if that method reported context.
+        // If not, the OSR frame will have saved the needed context.
+        if (m_compiler->opts.IsOSR() && m_compiler->info.compPatchpointInfo->HasKeptAliveThis())
         {
+            const int callerSpOffset =
+                m_compiler->lvaToCallerSPRelativeOffset(offset, m_compiler->isFramePointerUsed(), true);
+
             // Sanity check the offset vs saved patchpoint info.
             //
+            const PatchpointInfo* const ppInfo = m_compiler->info.compPatchpointInfo;
+#if defined(TARGET_AMD64)
             // PP info has FP relative offset, to get to caller SP we need to
             // subtract off 2 register slots (saved FP, saved RA).
             //
-            const PatchpointInfo* const ppInfo    = compiler->info.compPatchpointInfo;
-            const int                   osrOffset = ppInfo->KeptAliveThisOffset() - 2 * REGSIZE_BYTES;
-            assert(offset == osrOffset);
+            const int osrOffset = ppInfo->KeptAliveThisOffset() - 2 * REGSIZE_BYTES;
+            assert(callerSpOffset == osrOffset);
+#elif defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+            // PP info has virtual offset. This is also the caller SP offset.
+            //
+            const int osrOffset = ppInfo->KeptAliveThisOffset();
+            assert(callerSpOffset == osrOffset);
+#endif
         }
 #endif
 
         gcInfoEncoderWithLog->SetGenericsInstContextStackSlot(offset, GENERIC_CONTEXTPARAM_THIS);
     }
 
-    if (compiler->getNeedsGSSecurityCookie())
+    if (m_compiler->getNeedsGSSecurityCookie())
     {
-        assert(compiler->lvaGSSecurityCookie != BAD_VAR_NUM);
+        assert(m_compiler->lvaGSSecurityCookie != BAD_VAR_NUM);
 
         // The lv offset is FP-relative, and the using code expects caller-sp relative, so translate.
-        const int offset = compiler->lvaGetCallerSPRelativeOffset(compiler->lvaGSSecurityCookie);
+        const int offset = m_compiler->lvaGetCallerSPRelativeOffset(m_compiler->lvaGSSecurityCookie);
 
         // The code offset ranges assume that the GS Cookie slot is initialized in the prolog, and is valid
         // through the remainder of the method.  We will not query for the GS Cookie while we're in an epilog,
         // so the question of where in the epilog it becomes invalid is moot.
         gcInfoEncoderWithLog->SetGSCookieStackSlot(offset, prologSize, methodSize);
     }
-    else if (compiler->lvaReportParamTypeArg() || compiler->lvaKeepAliveAndReportThis())
+    else if (m_compiler->lvaReportParamTypeArg() || m_compiler->lvaKeepAliveAndReportThis())
     {
         gcInfoEncoderWithLog->SetPrologSize(prologSize);
     }
 
-#if defined(FEATURE_EH_FUNCLETS)
-    if (compiler->lvaPSPSym != BAD_VAR_NUM)
-    {
 #ifdef TARGET_AMD64
-        // The PSPSym is relative to InitialSP on X64 and CallerSP on other platforms.
-        gcInfoEncoderWithLog->SetPSPSymStackSlot(compiler->lvaGetInitialSPRelativeOffset(compiler->lvaPSPSym));
-#else  // !TARGET_AMD64
-        gcInfoEncoderWithLog->SetPSPSymStackSlot(compiler->lvaGetCallerSPRelativeOffset(compiler->lvaPSPSym));
-#endif // !TARGET_AMD64
-    }
-
-#ifdef TARGET_AMD64
-    if (compiler->ehAnyFunclets())
+    if (m_compiler->ehAnyFunclets())
     {
         // Set this to avoid double-reporting the parent frame (unlike JIT64)
         gcInfoEncoderWithLog->SetWantsReportOnlyLeaf();
     }
 #endif // TARGET_AMD64
 
-#endif // FEATURE_EH_FUNCLETS
-
-#ifdef TARGET_ARMARCH
-    if (compiler->codeGen->GetHasTailCalls())
+#if defined(TARGET_ARMARCH) || defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
+    if (m_compiler->codeGen->GetHasTailCalls())
     {
         gcInfoEncoderWithLog->SetHasTailCalls();
     }
-#endif // TARGET_ARMARCH
+#endif // TARGET_ARMARCH || TARGET_RISCV64 || TARGET_LOONGARCH64
 
 #if FEATURE_FIXED_OUT_ARGS
     // outgoing stack area size
-    gcInfoEncoderWithLog->SetSizeOfStackOutgoingAndScratchArea(compiler->lvaOutgoingArgSpaceSize);
+    gcInfoEncoderWithLog->SetSizeOfStackOutgoingAndScratchArea(m_compiler->lvaOutgoingArgSpaceSize);
 #endif // FEATURE_FIXED_OUT_ARGS
 
 #if DISPLAY_SIZES
 
-    if (compiler->codeGen->GetInterruptible())
+    if (m_compiler->codeGen->GetInterruptible())
     {
         genMethodICnt++;
     }
@@ -4037,39 +4040,51 @@ void GCInfo::gcInfoBlockHdrSave(GcInfoEncoder* gcInfoEncoder, unsigned methodSiz
 //
 // Encoder should be either GcInfoEncoder or GcInfoEncoderWithLogging
 //
-struct InterruptibleRangeReporter
+class InterruptibleRangeReporter
 {
-    unsigned prevStart;
-    Encoder* gcInfoEncoderWithLog;
+    unsigned m_uninterruptibleEnd;
+    Encoder* m_gcInfoEncoder;
 
-    InterruptibleRangeReporter(unsigned _prevStart, Encoder* _gcInfo)
-        : prevStart(_prevStart), gcInfoEncoderWithLog(_gcInfo)
+public:
+    InterruptibleRangeReporter(unsigned prologSize, Encoder* gcInfo)
+        : m_uninterruptibleEnd(prologSize)
+        , m_gcInfoEncoder(gcInfo)
     {
     }
 
-    // This callback is called for each insGroup marked with
-    // IGF_NOGCINTERRUPT (currently just prologs and epilogs).
+    // This callback is called for each insGroup marked with IGF_NOGCINTERRUPT.
     // Report everything between the previous region and the current
     // region as interruptible.
 
-    bool operator()(unsigned igFuncIdx, unsigned igOffs, unsigned igSize)
+    bool operator()(unsigned igFuncIdx, unsigned igOffs, unsigned igSize, unsigned firstInstrSize, bool isInProlog)
     {
-        if (igOffs < prevStart)
+        if (igOffs < m_uninterruptibleEnd)
         {
-            // We're still in the main method prolog, which has already
-            // had it's interruptible range reported.
+            // We're still in the main method prolog, which we know is not interruptible.
             assert(igFuncIdx == 0);
-            assert(igOffs + igSize <= prevStart);
+            assert(igOffs + igSize <= m_uninterruptibleEnd);
             return true;
         }
 
-        assert(igOffs >= prevStart);
-        if (igOffs > prevStart)
+        assert(igOffs >= m_uninterruptibleEnd);
+        if (igOffs > m_uninterruptibleEnd)
         {
-            gcInfoEncoderWithLog->DefineInterruptibleRange(prevStart, igOffs - prevStart);
+            // Once the first instruction in IG executes, we cannot have GC.
+            // But it is ok to have GC while the IP is on the first instruction, unless we are in prolog.
+            unsigned interruptibleEnd = igOffs;
+            if (!isInProlog)
+            {
+                interruptibleEnd += firstInstrSize;
+            }
+            m_gcInfoEncoder->DefineInterruptibleRange(m_uninterruptibleEnd, interruptibleEnd - m_uninterruptibleEnd);
         }
-        prevStart = igOffs + igSize;
+        m_uninterruptibleEnd = igOffs + igSize;
         return true;
+    }
+
+    unsigned UninterruptibleEnd()
+    {
+        return m_uninterruptibleEnd;
     }
 };
 
@@ -4078,14 +4093,17 @@ void GCInfo::gcMakeRegPtrTable(
 {
     GCENCODER_WITH_LOGGING(gcInfoEncoderWithLog, gcInfoEncoder);
 
-    const bool noTrackedGCSlots =
-        (compiler->opts.MinOpts() && !compiler->opts.jitFlags->IsSet(JitFlags::JIT_FLAG_PREJIT) &&
-         !JitConfig.JitMinOptsTrackGCrefs());
+    // TODO-WASM: Enable tracked GC slots for precise GC
+#ifdef TARGET_WASM
+    const bool noTrackedGCSlots = true;
+#else
+    const bool noTrackedGCSlots = m_compiler->opts.MinOpts();
+#endif
 
     if (mode == MAKE_REG_PTR_MODE_ASSIGN_SLOTS)
     {
-        m_regSlotMap   = new (compiler->getAllocator()) RegSlotMap(compiler->getAllocator());
-        m_stackSlotMap = new (compiler->getAllocator()) StackSlotMap(compiler->getAllocator());
+        m_regSlotMap   = new (m_compiler->getAllocator()) RegSlotMap(m_compiler->getAllocator());
+        m_stackSlotMap = new (m_compiler->getAllocator()) StackSlotMap(m_compiler->getAllocator());
     }
 
     /**************************************************************************
@@ -4099,9 +4117,9 @@ void GCInfo::gcMakeRegPtrTable(
 
     unsigned   varNum;
     LclVarDsc* varDsc;
-    for (varNum = 0, varDsc = compiler->lvaTable; varNum < compiler->lvaCount; varNum++, varDsc++)
+    for (varNum = 0, varDsc = m_compiler->lvaTable; varNum < m_compiler->lvaCount; varNum++, varDsc++)
     {
-        if (compiler->lvaIsFieldOfDependentlyPromotedStruct(varDsc))
+        if (m_compiler->lvaIsFieldOfDependentlyPromotedStruct(varDsc))
         {
             // Field local of a PROMOTION_TYPE_DEPENDENT struct must have been
             // reported through its parent local.
@@ -4113,10 +4131,12 @@ void GCInfo::gcMakeRegPtrTable(
             // Do we have an argument or local variable?
             if (!varDsc->lvIsParam)
             {
-                // If is is pinned, it must be an untracked local.
+                // If it is pinned, it must be an untracked local.
                 assert(!varDsc->lvPinned || !varDsc->lvTracked);
 
-                if (varDsc->lvTracked || !varDsc->lvOnFrame)
+                // When noTrackedGCSlots is true (e.g. on wasm) tracked on-frame GC vars
+                // must be reported here as untracked, since gcVarPtrList is not populated.
+                if ((varDsc->lvTracked && !noTrackedGCSlots) || !varDsc->lvOnFrame)
                 {
                     continue;
                 }
@@ -4128,7 +4148,6 @@ void GCInfo::gcMakeRegPtrTable(
                 // pointers" section of the GC info even if lvTracked==true
 
                 // Has this argument been fully enregistered?
-                CLANG_FORMAT_COMMENT_ANCHOR;
 
                 if (!varDsc->lvOnFrame)
                 {
@@ -4137,14 +4156,16 @@ void GCInfo::gcMakeRegPtrTable(
                     // in a JMP call.  Note that this is subtle as we require that
                     // argument offsets are always fixed up properly even if lvRegister
                     // is set.
-                    if (!compiler->compJmpOpUsed)
+                    if (!m_compiler->compJmpOpUsed)
                     {
                         continue;
                     }
                 }
                 else
                 {
-                    if (varDsc->lvIsRegArg && varDsc->lvTracked)
+                    // When noTrackedGCSlots is true (e.g. on wasm) tracked register args
+                    // must fall through and be reported as untracked.
+                    if (varDsc->lvIsRegArg && varDsc->lvTracked && !noTrackedGCSlots)
                     {
                         // If this register-passed arg is tracked, then
                         // it has been allocated space near the other
@@ -4157,17 +4178,20 @@ void GCInfo::gcMakeRegPtrTable(
             }
 
             // If we haven't continued to the next variable, we should report this as an untracked local.
-            CLANG_FORMAT_COMMENT_ANCHOR;
 
             GcSlotFlags flags = GC_SLOT_UNTRACKED;
 
-            if (varDsc->TypeGet() == TYP_BYREF)
+            if (varDsc->TypeIs(TYP_BYREF))
             {
                 // Or in byref_OFFSET_FLAG for 'byref' pointer tracking
                 flags = (GcSlotFlags)(flags | GC_SLOT_INTERIOR);
             }
 
+            // Per the wasm ABI refs homed on the linear stack are reported pinned, since copies of them
+            //  on the wasm operand stack are invisible to the GC. See "GC References at Call Sites".
+#ifndef TARGET_WASM
             if (varDsc->lvPinned)
+#endif // !TARGET_WASM
             {
                 // Or in pinned_OFFSET_FLAG for 'pinned' pointer tracking
                 flags = (GcSlotFlags)(flags | GC_SLOT_PINNED);
@@ -4203,7 +4227,8 @@ void GCInfo::gcMakeRegPtrTable(
 
         // If this is a TYP_STRUCT, handle its GC pointers.
         // Note that the enregisterable struct types cannot have GC pointers in them.
-        if ((varDsc->TypeGet() == TYP_STRUCT) && varDsc->lvOnFrame && (varDsc->lvExactSize >= TARGET_POINTER_SIZE))
+        if (varDsc->TypeIs(TYP_STRUCT) && varDsc->GetLayout()->HasGCPtr() && varDsc->lvOnFrame &&
+            (varDsc->lvExactSize() >= TARGET_POINTER_SIZE))
         {
             ClassLayout* layout = varDsc->GetLayout();
             unsigned     slots  = layout->GetSlotCount();
@@ -4215,13 +4240,37 @@ void GCInfo::gcMakeRegPtrTable(
                     continue;
                 }
 
-                int offset = varDsc->GetStackOffset() + i * TARGET_POINTER_SIZE;
+                unsigned const fieldOffset = i * TARGET_POINTER_SIZE;
+                int const      offset      = varDsc->GetStackOffset() + fieldOffset;
+
+#ifdef DEBUG
+                if (varDsc->lvPromoted)
+                {
+                    assert(m_compiler->lvaGetPromotionType(varDsc) == Compiler::PROMOTION_TYPE_DEPENDENT);
+
+                    // A dependently promoted tracked gc local can end up in the gc tracked
+                    // frame range. If so it should be excluded from tracking via lvaIsGCTracked.
+                    //
+                    unsigned const fieldLclNum = m_compiler->lvaGetFieldLocal(varDsc, fieldOffset);
+                    assert(fieldLclNum != BAD_VAR_NUM);
+                    LclVarDsc* const fieldVarDsc = m_compiler->lvaGetDesc(fieldLclNum);
+
+                    if (m_compiler->GetEmitter()->emitIsWithinFrameRangeGCRs(offset))
+                    {
+                        assert(!m_compiler->lvaIsGCTracked(fieldVarDsc));
+                        JITDUMP("Untracked GC struct slot V%02u+%u (P-DEP promoted V%02u) is at frame offset %d within "
+                                "tracked ref range; will report slot as untracked\n",
+                                varNum, fieldOffset, fieldLclNum, offset);
+                    }
+                }
+#endif
+
 #if DOUBLE_ALIGN
                 // For genDoubleAlign(), locals are addressed relative to ESP and
                 // arguments are addressed relative to EBP.
 
-                if (compiler->genDoubleAlign() && varDsc->lvIsParam && !varDsc->lvIsRegArg)
-                    offset += compiler->codeGen->genTotalFrameSize();
+                if (m_compiler->genDoubleAlign() && varDsc->lvIsParam && !varDsc->lvIsRegArg)
+                    offset += m_compiler->codeGen->genTotalFrameSize();
 #endif
                 GcSlotFlags flags = GC_SLOT_UNTRACKED;
                 if (layout->GetGCPtrType(i) == TYP_BYREF)
@@ -4252,9 +4301,9 @@ void GCInfo::gcMakeRegPtrTable(
     {
         // Count&Write spill temps that hold pointers.
 
-        assert(compiler->codeGen->regSet.tmpAllFree());
-        for (TempDsc* tempItem = compiler->codeGen->regSet.tmpListBeg(); tempItem != nullptr;
-             tempItem          = compiler->codeGen->regSet.tmpListNxt(tempItem))
+        assert(m_compiler->codeGen->regSet.tmpAllFree());
+        for (TempDsc* tempItem = m_compiler->codeGen->regSet.tmpListBeg(); tempItem != nullptr;
+             tempItem          = m_compiler->codeGen->regSet.tmpListNxt(tempItem))
         {
             if (varTypeIsGC(tempItem->tdTempType()))
             {
@@ -4267,7 +4316,7 @@ void GCInfo::gcMakeRegPtrTable(
                 }
 
                 GcStackSlotBase stackSlotBase = GC_SP_REL;
-                if (compiler->isFramePointerUsed())
+                if (m_compiler->isFramePointerUsed())
                 {
                     stackSlotBase = GC_FRAMEREG_REL;
                 }
@@ -4281,22 +4330,22 @@ void GCInfo::gcMakeRegPtrTable(
             }
         }
 
-        if (compiler->lvaKeepAliveAndReportThis())
+        if (m_compiler->lvaKeepAliveAndReportThis())
         {
             // We need to report the cached copy as an untracked pointer
-            assert(compiler->info.compThisArg != BAD_VAR_NUM);
-            assert(!compiler->lvaReportParamTypeArg());
+            assert(m_compiler->info.compThisArg != BAD_VAR_NUM);
+            assert(!m_compiler->lvaReportParamTypeArg());
             GcSlotFlags flags = GC_SLOT_UNTRACKED;
 
-            if (compiler->lvaTable[compiler->info.compThisArg].TypeGet() == TYP_BYREF)
+            if (m_compiler->lvaTable[m_compiler->info.compThisArg].TypeIs(TYP_BYREF))
             {
                 // Or in GC_SLOT_INTERIOR for 'byref' pointer tracking
                 flags = (GcSlotFlags)(flags | GC_SLOT_INTERIOR);
             }
 
-            GcStackSlotBase stackSlotBase = compiler->isFramePointerUsed() ? GC_FRAMEREG_REL : GC_SP_REL;
+            GcStackSlotBase stackSlotBase = m_compiler->isFramePointerUsed() ? GC_FRAMEREG_REL : GC_SP_REL;
 
-            gcInfoEncoderWithLog->GetStackSlotId(compiler->lvaCachedGenericContextArgOffset(), flags, stackSlotBase);
+            gcInfoEncoderWithLog->GetStackSlotId(m_compiler->lvaCachedGenericContextArgOffset(), flags, stackSlotBase);
         }
     }
 
@@ -4310,9 +4359,9 @@ void GCInfo::gcMakeRegPtrTable(
      **************************************************************************
      */
 
-    if (compiler->codeGen->GetInterruptible())
+    if (m_compiler->codeGen->GetInterruptible())
     {
-        assert(compiler->IsFullPtrRegMapRequired());
+        assert(m_compiler->IsFullPtrRegMapRequired());
 
         regMaskSmall ptrRegs          = 0;
         regPtrDsc*   regStackArgFirst = nullptr;
@@ -4398,23 +4447,22 @@ void GCInfo::gcMakeRegPtrTable(
         {
             assert(prologSize <= codeSize);
 
-            // Now exempt any other region marked as IGF_NOGCINTERRUPT
-            // Currently just prologs and epilogs.
+            // Now exempt any region marked as IGF_NOGCINTERRUPT
 
             InterruptibleRangeReporter reporter(prologSize, gcInfoEncoderWithLog);
-            compiler->GetEmitter()->emitGenNoGCLst(reporter);
-            prologSize = reporter.prevStart;
+            m_compiler->GetEmitter()->emitGenNoGCLst(reporter);
+            unsigned uninterruptibleEnd = reporter.UninterruptibleEnd();
 
             // Report any remainder
-            if (prologSize < codeSize)
+            if (uninterruptibleEnd < codeSize)
             {
-                gcInfoEncoderWithLog->DefineInterruptibleRange(prologSize, codeSize - prologSize);
+                gcInfoEncoderWithLog->DefineInterruptibleRange(uninterruptibleEnd, codeSize - uninterruptibleEnd);
             }
         }
     }
-    else if (compiler->isFramePointerUsed()) // GetInterruptible() is false, and we're using EBP as a frame pointer.
+    else if (m_compiler->isFramePointerUsed()) // GetInterruptible() is false, and we're using EBP as a frame pointer.
     {
-        assert(compiler->IsFullPtrRegMapRequired() == false);
+        assert(m_compiler->IsFullPtrRegMapRequired() == false);
 
         // Walk the list of pointer register/argument entries.
 
@@ -4449,8 +4497,8 @@ void GCInfo::gcMakeRegPtrTable(
                         numCallSites++;
                     }
                 }
-                pCallSites     = new (compiler, CMK_GC) unsigned[numCallSites];
-                pCallSiteSizes = new (compiler, CMK_GC) BYTE[numCallSites];
+                pCallSites     = new (m_compiler, CMK_GC) unsigned[numCallSites];
+                pCallSiteSizes = new (m_compiler, CMK_GC) BYTE[numCallSites];
             }
         }
 
@@ -4473,8 +4521,8 @@ void GCInfo::gcMakeRegPtrTable(
             assert(call->u1.cdArgMask == 0 && call->cdArgCnt == 0);
 
             // Other than that, we just have to deal with the regmasks.
-            regMaskSmall gcrefRegMask = call->cdGCrefRegs & RBM_CALLEE_SAVED;
-            regMaskSmall byrefRegMask = call->cdByrefRegs & RBM_CALLEE_SAVED;
+            regMaskSmall gcrefRegMask = call->cdGCrefRegs;
+            regMaskSmall byrefRegMask = call->cdByrefRegs;
 
             assert((gcrefRegMask & byrefRegMask) == 0);
 
@@ -4494,8 +4542,10 @@ void GCInfo::gcMakeRegPtrTable(
                 // Append an entry for the call if doing the real thing.
                 if (mode == MAKE_REG_PTR_MODE_DO_WORK)
                 {
-                    pCallSites[callSiteNum]     = callOffset;
-                    pCallSiteSizes[callSiteNum] = call->cdCallInstrSize;
+                    pCallSites[callSiteNum] = callOffset;
+
+                    assert(call->cdCallInstrSize <= BYTE_MAX);
+                    pCallSiteSizes[callSiteNum] = (BYTE)call->cdCallInstrSize;
                 }
                 callSiteNum++;
 
@@ -4520,7 +4570,7 @@ void GCInfo::gcMakeRegPtrTable(
     }
     else // GetInterruptible() is false and we have an EBP-less frame
     {
-        assert(compiler->IsFullPtrRegMapRequired());
+        assert(m_compiler->IsFullPtrRegMapRequired());
 
         // Walk the list of pointer register/argument entries */
         // First count them.
@@ -4544,8 +4594,8 @@ void GCInfo::gcMakeRegPtrTable(
 
             if (numCallSites > 0)
             {
-                pCallSites     = new (compiler, CMK_GC) unsigned[numCallSites];
-                pCallSiteSizes = new (compiler, CMK_GC) BYTE[numCallSites];
+                pCallSites     = new (m_compiler, CMK_GC) unsigned[numCallSites];
+                pCallSiteSizes = new (m_compiler, CMK_GC) BYTE[numCallSites];
             }
         }
 
@@ -4558,9 +4608,8 @@ void GCInfo::gcMakeRegPtrTable(
                 {
                     // This is a true call site.
 
-                    regMaskSmall gcrefRegMask = genRegMaskFromCalleeSavedMask(genRegPtrTemp->rpdCallGCrefRegs);
-
-                    regMaskSmall byrefRegMask = genRegMaskFromCalleeSavedMask(genRegPtrTemp->rpdCallByrefRegs);
+                    regMaskSmall gcrefRegMask = regMaskSmall(genRegPtrTemp->rpdCallGCrefRegs << REG_INT_FIRST);
+                    regMaskSmall byrefRegMask = regMaskSmall(genRegPtrTemp->rpdCallByrefRegs << REG_INT_FIRST);
 
                     assert((gcrefRegMask & byrefRegMask) == 0);
 
@@ -4612,6 +4661,7 @@ void GCInfo::gcInfoRecordGCRegStateChange(GcInfoEncoder* gcInfoEncoder,
                                           regMaskSmall   byRefMask,
                                           regMaskSmall*  pPtrRegs)
 {
+#if HAS_FIXED_REGISTER_SET
     // Precondition: byRefMask is a subset of regMask.
     assert((byRefMask & ~regMask) == 0);
 
@@ -4620,7 +4670,7 @@ void GCInfo::gcInfoRecordGCRegStateChange(GcInfoEncoder* gcInfoEncoder,
     while (regMask)
     {
         // Get hold of the next register bit.
-        regMaskTP tmpMask = genFindLowestReg(regMask);
+        regMaskSmall tmpMask = genFindLowestBit(regMask);
         assert(tmpMask);
 
         // Remember the new state of this register.
@@ -4648,7 +4698,8 @@ void GCInfo::gcInfoRecordGCRegStateChange(GcInfoEncoder* gcInfoEncoder,
             regFlags = (GcSlotFlags)(regFlags | GC_SLOT_INTERIOR);
         }
 
-        RegSlotIdKey rskey(regNum, regFlags);
+        assert(regNum == (regNumberSmall)regNum);
+        RegSlotIdKey rskey((unsigned short)regNum, regFlags);
         GcSlotId     regSlotId;
         if (mode == MAKE_REG_PTR_MODE_ASSIGN_SLOTS)
         {
@@ -4666,8 +4717,9 @@ void GCInfo::gcInfoRecordGCRegStateChange(GcInfoEncoder* gcInfoEncoder,
         }
 
         // Turn the bit we've just generated off and continue.
-        regMask -= tmpMask; // EAX,ECX,EDX,EBX,---,EBP,ESI,EDI
+        regMask ^= tmpMask; // EAX,ECX,EDX,EBX,---,EBP,ESI,EDI
     }
+#endif // HAS_FIXED_REGISTER_SET
 }
 
 /**************************************************************************
@@ -4687,33 +4739,17 @@ void GCInfo::gcMakeVarPtrTable(GcInfoEncoder* gcInfoEncoder, MakeRegPtrMode mode
 
     // Make sure any flags we hide in the offset are in the bits guaranteed
     // unused by alignment
-    C_ASSERT((OFFSET_MASK + 1) <= sizeof(int));
-
-#ifdef DEBUG
-    if (mode == MAKE_REG_PTR_MODE_ASSIGN_SLOTS)
-    {
-        // Tracked variables can't be pinned, and the encoding takes
-        // advantage of that by using the same bit for 'pinned' and 'this'
-        // Since we don't track 'this', we should never see either flag here.
-        // Check it now before we potentially add some pinned flags.
-        for (varPtrDsc* varTmp = gcVarPtrList; varTmp != nullptr; varTmp = varTmp->vpdNext)
-        {
-            const unsigned flags = varTmp->vpdVarNum & OFFSET_MASK;
-            assert((flags & pinned_OFFSET_FLAG) == 0);
-            assert((flags & this_OFFSET_FLAG) == 0);
-        }
-    }
-#endif // DEBUG
+    static_assert((OFFSET_MASK + 1) <= sizeof(int));
 
     // Only need to do this once, and only if we have EH.
-    if ((mode == MAKE_REG_PTR_MODE_ASSIGN_SLOTS) && compiler->ehAnyFunclets())
+    if ((mode == MAKE_REG_PTR_MODE_ASSIGN_SLOTS) && m_compiler->ehAnyFunclets())
     {
         gcMarkFilterVarsPinned();
     }
 
     for (varPtrDsc* varTmp = gcVarPtrList; varTmp != nullptr; varTmp = varTmp->vpdNext)
     {
-        C_ASSERT((OFFSET_MASK + 1) <= sizeof(int));
+        static_assert((OFFSET_MASK + 1) <= sizeof(int));
 
         // Get hold of the variable's stack offset.
 
@@ -4744,7 +4780,7 @@ void GCInfo::gcMakeVarPtrTable(GcInfoEncoder* gcInfoEncoder, MakeRegPtrMode mode
         }
 
         GcStackSlotBase stackSlotBase = GC_SP_REL;
-        if (compiler->isFramePointerUsed())
+        if (m_compiler->isFramePointerUsed())
         {
             stackSlotBase = GC_FRAMEREG_REL;
         }
@@ -4777,14 +4813,14 @@ void GCInfo::gcInfoRecordGCStackArgLive(GcInfoEncoder* gcInfoEncoder, MakeRegPtr
     assert(genStackPtr->rpdArg);
     assert(genStackPtr->rpdArgTypeGet() == rpdARG_PUSH);
 
-    // We only need to report these when we're doing fuly-interruptible
-    assert(compiler->codeGen->GetInterruptible());
+    // We only need to report these when we're doing fully-interruptible
+    assert(m_compiler->codeGen->GetInterruptible());
 
     GCENCODER_WITH_LOGGING(gcInfoEncoderWithLog, gcInfoEncoder);
 
     StackSlotIdKey sskey(genStackPtr->rpdPtrArg, false,
                          GcSlotFlags(genStackPtr->rpdGCtypeGet() == GCT_BYREF ? GC_SLOT_INTERIOR : GC_SLOT_BASE));
-    GcSlotId varSlotId;
+    GcSlotId       varSlotId;
     if (mode == MAKE_REG_PTR_MODE_ASSIGN_SLOTS)
     {
         if (!m_stackSlotMap->Lookup(sskey, &varSlotId))
@@ -4814,8 +4850,8 @@ void GCInfo::gcInfoRecordGCStackArgsDead(GcInfoEncoder* gcInfoEncoder,
     // Re-walk that list and mark all outgoing arguments that we're marked as live
     // earlier, as going dead after the call.
 
-    // We only need to report these when we're doing fuly-interruptible
-    assert(compiler->codeGen->GetInterruptible());
+    // We only need to report these when we're doing fully-interruptible
+    assert(m_compiler->codeGen->GetInterruptible());
 
     GCENCODER_WITH_LOGGING(gcInfoEncoderWithLog, gcInfoEncoder);
 
@@ -4832,8 +4868,8 @@ void GCInfo::gcInfoRecordGCStackArgsDead(GcInfoEncoder* gcInfoEncoder,
 
         StackSlotIdKey sskey(genRegPtrTemp->rpdPtrArg, false,
                              genRegPtrTemp->rpdGCtypeGet() == GCT_BYREF ? GC_SLOT_INTERIOR : GC_SLOT_BASE);
-        GcSlotId varSlotId;
-        bool     b = m_stackSlotMap->Lookup(sskey, &varSlotId);
+        GcSlotId       varSlotId;
+        bool           b = m_stackSlotMap->Lookup(sskey, &varSlotId);
         assert(b); // Should have been added in the first pass.
         // Live until the call.
         gcInfoEncoderWithLog->SetSlotState(instrOffset, varSlotId, GC_SLOT_DEAD);

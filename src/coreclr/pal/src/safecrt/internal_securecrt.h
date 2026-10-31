@@ -23,16 +23,21 @@
 #define _INC_INTERNAL_SECURECRT
 
 /* more VS specific goodness */
-#define __out_ecount_z( x )
-#define __out_ecount( x )
-#define __in_opt
-#define __in_z_opt
-#define __out_ecount_z_opt( x )
-#define __in_z
-#define __in
+#define _In_
+#define _In_z_
+#define _In_opt_
+#define _In_opt_z_
+#define _Out_
+#define _Out_opt_
+#define _Out_writes_(size)
+#define _Out_writes_opt_(size)
+#define _Out_writes_bytes_(size)
+#define _Out_writes_bytes_opt_(size)
+#define _Out_writes_z_(size)
+#define _Out_writes_opt_z_(size)
 
 /*
- * The original SafeCRT implemention allows runtime control over buffer checking.
+ * The original SafeCRT implementation allows runtime control over buffer checking.
  * For now we'll key this off the debug flag.
  */
 #ifdef _DEBUG
@@ -41,32 +46,14 @@
     #define _CrtGetCheckCount()                 ((int)0)
 #endif
 
-/* Assert message and Invalid parameter */
-#ifdef _DEBUG
-    #define _ASSERT_EXPR( val, exp )                                            \
-        {                                                                       \
-            if ( ( val ) == 0 )                                                 \
-            {                                                                   \
-                if ( sMBUSafeCRTAssertFunc != NULL )                            \
-                {                                                               \
-                    ( *sMBUSafeCRTAssertFunc )( #exp, "SafeCRT assert failed", __FILE__, __LINE__ );    \
-                }                                                               \
-            }                                                                   \
-        }
-    #define _INVALID_PARAMETER( exp )   _ASSERT_EXPR( 0, exp )
-    #define _ASSERTE( exp ) _ASSERT_EXPR( exp, exp )
-#else
-    #define _ASSERT_EXPR( val, expr )
-    #define _INVALID_PARAMETER( exp )
-    #define _ASSERTE( exp )
-#endif
+#define _ASSERT_EXPR( val, expr )
+#define _INVALID_PARAMETER( exp )
+#define _ASSERTE( exp )
 
 /* _TRUNCATE */
 #if !defined (_TRUNCATE)
 #define _TRUNCATE ((size_t)-1)
 #endif  /* !defined (_TRUNCATE) */
-
-/* #include <internal.h> */
 
 #define _VALIDATE_RETURN_VOID( expr, errorcode )                               \
     {                                                                          \

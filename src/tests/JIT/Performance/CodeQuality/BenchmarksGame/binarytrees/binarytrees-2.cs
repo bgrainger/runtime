@@ -7,6 +7,7 @@
 // Best-scoring single-threaded C# .NET Core version as of 2017-09-01
 
 /* The Computer Language Benchmarks Game
+using TestLibrary;
    http://benchmarksgame.alioth.debian.org/ 
 
    contributed by Marek Safar 
@@ -14,6 +15,8 @@
 */
 
 using System;
+using System.Runtime.CompilerServices;
+using Xunit;
 
 namespace BenchmarksGame
 {
@@ -21,10 +24,18 @@ namespace BenchmarksGame
     {
         const int minDepth = 4;
 
-        public static int Main(String[] args)
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+        [SkipOnCoreClr("This test is not compatible with GC stress.", RuntimeTestModes.AnyGCStress)]
+        [Fact]
+        public static int TestEntryPoint()
         {
-            int n = 0;
-            if (args.Length > 0) n = Int32.Parse(args[0]);
+            return Test(null);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public static int Test(int? arg)
+        {
+            int n = arg ?? 0;
 
             int check = Bench(n, true);
             int expected = 4398;

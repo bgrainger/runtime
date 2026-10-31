@@ -8,7 +8,6 @@
 // Common include file for utility code.
 //*****************************************************************************
 
-#define _CRT_DEPENDENCY_  //this code depends on the crt file functions
 #include <crtwrap.h>
 #include <string.h>
 #include <limits.h>
@@ -17,6 +16,7 @@
 #include <stdlib.h>		// for qsort
 #include <windows.h>
 #include <time.h>
+#include <algorithm>
 
 #include <corerror.h>
 #include <utilcode.h>
@@ -27,3 +27,6 @@
 
 #include "ceegen.h"
 #include "ceesectionstring.h"
+
+using std::min;
+using std::max;

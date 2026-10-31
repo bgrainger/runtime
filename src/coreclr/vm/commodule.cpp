@@ -7,7 +7,6 @@
 #include "comdynamic.h"
 #include "reflectclasswriter.h"
 #include "class.h"
-#include "ceesectionstring.h"
 #include <cor.h>
 #include "typeparse.h"
 #include "typekey.h"
@@ -24,8 +23,8 @@
 extern "C" mdTypeRef QCALLTYPE ModuleBuilder_GetTypeRef(QCall::ModuleHandle pModule,
                                           LPCWSTR wszFullName,
                                           QCall::ModuleHandle pRefedModule,
-                                          LPCWSTR wszRefedModuleFileName,
-                                          INT32 tkResolutionArg)
+                                          INT32 tkResolutionArg,
+                                          QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
 
@@ -36,8 +35,8 @@ extern "C" mdTypeRef QCALLTYPE ModuleBuilder_GetTypeRef(QCall::ModuleHandle pMod
     RefClassWriter * pRCW = pModule->GetReflectionModule()->GetClassWriter();
     _ASSERTE(pRCW);
 
-    IMetaDataEmit * pEmit = pRCW->GetEmitter();
-    IMetaDataImport * pImport = pRCW->GetRWImporter();
+    IMDInternalEmit * pEmit = pRCW->GetEmitter();
+    IMDInternalImport * pImport = pRCW->GetMDImport();
 
     if (wszFullName == NULL) {
         COMPlusThrow(kArgumentNullException, W("ArgumentNull_String"));
@@ -69,8 +68,14 @@ extern "C" mdTypeRef QCALLTYPE ModuleBuilder_GetTypeRef(QCall::ModuleHandle pMod
     if (pModule == pRefedModule)
     {
         // referenced type is from the same module so we must be able to find a TypeDef.
-        IfFailThrow(pImport->FindTypeDefByName(
-            wszFullNameUnescaped,
+        MAKE_UTF8PTR_FROMWIDE(szFullNameUnescaped, wszFullNameUnescaped);
+        LPCSTR szNamespace;
+        LPCSTR szName;
+        ns::SplitInline(szFullNameUnescaped, szNamespace, szName);
+
+        IfFailThrow(pImport->FindTypeDef(
+            szNamespace,
+            szName,
             RidFromToken(tkResolutionArg) ? tkResolutionArg : mdTypeDefNil,
             &tr));
     }
@@ -85,35 +90,22 @@ extern "C" mdTypeRef QCALLTYPE ModuleBuilder_GetTypeRef(QCall::ModuleHandle pMod
         else
         {
             // reference to top level type
-            if ( pThisAssembly != pRefedAssembly )
+
+            // Generate AssemblyRef
+            tkResolution = pThisAssembly->AddAssemblyRef(pRefedAssembly, pEmit);
+
+            // Add the assembly ref token and the manifest module it is referring to this module's rid map.
+            // This is needed regardless of whether the dynamic assembly has run access. Even in Save-only
+            // or Refleciton-only mode, CreateType() of the referencing type may still need the referenced
+            // type to be resolved and loaded, e.g. if the referencing type is a subclass of the referenced type.
+            //
+            // Don't cache if there is assembly associated with the token already. The assembly ref resolution
+            // can be ambiguous because of reflection emit does not require unique assembly names.
+            // We always let the first association win. Ideally, we would disallow this situation by throwing
+            // exception, but that would be a breaking change.
+            if(pModule->LookupAssemblyRef(tkResolution) == NULL)
             {
-                SafeComHolderPreemp<IMetaDataAssemblyEmit> pAssemblyEmit;
-
-                // Generate AssemblyRef
-                IfFailThrow( pEmit->QueryInterface(IID_IMetaDataAssemblyEmit, (void **) &pAssemblyEmit) );
-                tkResolution = pThisAssembly->AddAssemblyRef(pRefedAssembly, pAssemblyEmit);
-
-                // Add the assembly ref token and the manifest module it is referring to this module's rid map.
-                // This is needed regardless of whether the dynamic assembly has run access. Even in Save-only
-                // or Refleciton-only mode, CreateType() of the referencing type may still need the referenced
-                // type to be resolved and loaded, e.g. if the referencing type is a subclass of the referenced type.
-                //
-                // Don't cache if there is assembly associated with the token already. The assembly ref resolution
-                // can be ambiguous because of reflection emit does not require unique assembly names.
-                // We always let the first association win. Ideally, we would disallow this situation by throwing
-                // exception, but that would be a breaking change.
-                if(pModule->LookupAssemblyRef(tkResolution) == NULL)
-                {
-                    pModule->ForceStoreAssemblyRef(tkResolution, pRefedAssembly);
-                }
-            }
-            else
-            {
-                _ASSERTE(pModule != pRefedModule);
-                _ASSERTE(wszRefedModuleFileName != NULL);
-
-                // Generate ModuleRef
-                IfFailThrow(pEmit->DefineModuleRef(wszRefedModuleFileName, &tkResolution));
+                pModule->ForceStoreAssemblyRef(tkResolution, pRefedAssembly);
             }
         }
 
@@ -139,7 +131,8 @@ extern "C" INT32 QCALLTYPE ModuleBuilder_GetArrayMethodToken(QCall::ModuleHandle
                                                INT32 tkTypeSpec,
                                                LPCWSTR wszMethodName,
                                                LPCBYTE pSignature,
-                                               INT32 sigLength)
+                                               INT32 sigLength,
+                                               QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
 
@@ -175,36 +168,44 @@ namespace
     //
     //******************************************************************************
     void DefineTypeRefHelper(
-        IMetaDataEmit       *pEmit,         // given emit scope
+        IMDInternalImport  *pImport,       // given import scope
+        IMDInternalEmit     *pEmit,         // given emit scope
         mdTypeDef           td,             // given typedef in the emit scope
         mdTypeRef           *ptr)           // return typeref
     {
         CONTRACTL  {
             STANDARD_VM_CHECK;
 
+            PRECONDITION(CheckPointer(pImport));
             PRECONDITION(CheckPointer(pEmit));
             PRECONDITION(CheckPointer(ptr));
         }
         CONTRACTL_END;
 
-        CQuickBytes qb;
-        WCHAR* szTypeDef = (WCHAR*) qb.AllocThrows((MAX_CLASSNAME_LENGTH+1) * sizeof(WCHAR));
-        mdToken             rs;             // resolution scope
-        DWORD               dwFlags;
+        LPCSTR szName;
+        LPCSTR szNamespace;
+        IfFailThrow(pImport->GetNameOfTypeDef(td, &szName, &szNamespace));
 
-        SafeComHolder<IMetaDataImport> pImport;
-        IfFailThrow( pEmit->QueryInterface(IID_IMetaDataImport, (void **)&pImport) );
-        IfFailThrow( pImport->GetTypeDefProps(td, szTypeDef, MAX_CLASSNAME_LENGTH, NULL, &dwFlags, NULL) );
+        DWORD dwFlags;
+        mdToken extends;
+        IfFailThrow(pImport->GetTypeDefProps(td, &dwFlags, &extends));
+
+        mdToken rs;
         if ( IsTdNested(dwFlags) )
         {
             mdToken         tdNested;
             IfFailThrow( pImport->GetNestedClassProps(td, &tdNested) );
-            DefineTypeRefHelper( pEmit, tdNested, &rs);
+            DefineTypeRefHelper(pImport, pEmit, tdNested, &rs);
         }
         else
             rs = TokenFromRid( 1, mdtModule );
 
-        IfFailThrow( pEmit->DefineTypeRefByName( rs, szTypeDef, ptr) );
+        SString typeNamespace(SString::Utf8, szNamespace);
+        SString typeName(SString::Utf8, szName);
+        StackSString fullName;
+        fullName.MakeFullNamespacePath(typeNamespace, typeName);
+
+        IfFailThrow(pEmit->DefineTypeRefByName(rs, fullName.GetUnicode(), ptr));
     }   // DefineTypeRefHelper
 }
 
@@ -214,7 +215,7 @@ namespace
 // This function will return a MemberRef token given a MethodDef token and the module where the MethodDef/FieldDef is defined.
 //
 //******************************************************************************
-extern "C" INT32 QCALLTYPE ModuleBuilder_GetMemberRef(QCall::ModuleHandle pModule, QCall::ModuleHandle pRefedModule, INT32 tr, INT32 token)
+extern "C" INT32 QCALLTYPE ModuleBuilder_GetMemberRef(QCall::ModuleHandle pModule, QCall::ModuleHandle pRefedModule, INT32 tr, INT32 token, QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
 
@@ -255,18 +256,12 @@ extern "C" INT32 QCALLTYPE ModuleBuilder_GetMemberRef(QCall::ModuleHandle pModul
             COMPlusThrow(kNotSupportedException, W("NotSupported_CollectibleBoundNonCollectible"));
     }
 
-    SafeComHolderPreemp<IMetaDataAssemblyEmit> pAssemblyEmit;
-    IfFailThrow( pRefingAssembly->GetManifestModule()->GetEmitter()->QueryInterface(IID_IMetaDataAssemblyEmit, (void **) &pAssemblyEmit) );
-
     CQuickBytes             qbNewSig;
     ULONG                   cbNewSig;
 
     IfFailThrow( pRefedModule->GetMDImport()->TranslateSigWithScope(
-        pRefedAssembly->GetManifestImport(),
-        NULL, 0,        // hash value
         pvComSig,
         cbComSig,
-        pAssemblyEmit,  // Emit assembly scope.
         pRCW->GetEmitter(),
         &qbNewSig,
         &cbNewSig) );
@@ -276,7 +271,7 @@ extern "C" INT32 QCALLTYPE ModuleBuilder_GetMemberRef(QCall::ModuleHandle pModul
     if (TypeFromToken(tr) == mdtTypeDef)
     {
         // define a TypeRef using the TypeDef
-        DefineTypeRefHelper(pRCW->GetEmitter(), tr, &tref);
+        DefineTypeRefHelper(pRCW->GetMDImport(), pRCW->GetEmitter(), tr, &tref);
     }
     else
         tref = tr;
@@ -295,7 +290,7 @@ extern "C" INT32 QCALLTYPE ModuleBuilder_GetMemberRef(QCall::ModuleHandle pModul
 // Return a MemberRef token given a RuntimeMethodInfo
 //
 //******************************************************************************
-extern "C" INT32 QCALLTYPE ModuleBuilder_GetMemberRefOfMethodInfo(QCall::ModuleHandle pModule, INT32 tr, MethodDesc * pMeth)
+extern "C" INT32 QCALLTYPE ModuleBuilder_GetMemberRefOfMethodInfo(QCall::ModuleHandle pModule, INT32 tr, MethodDesc * pMeth, QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
 
@@ -306,14 +301,12 @@ extern "C" INT32 QCALLTYPE ModuleBuilder_GetMemberRefOfMethodInfo(QCall::ModuleH
     if (!pMeth)
         COMPlusThrow(kArgumentNullException);
 
-    // Otherwise, we want to return memberref token.
-    if (pMeth->IsArray())
-    {
-        _ASSERTE(!"Should not have come here!");
-        COMPlusThrow(kNotSupportedException);
-    }
+    // Should not have come here.
+    _ASSERTE(!pMeth->IsArray());
+    // Async variants should be hidden from reflection.
+    _ASSERTE(!pMeth->IsAsyncVariantMethod());
 
-    if (pMeth->GetMethodTable()->GetModule() == pModule)
+    if ((pMeth->GetMethodTable()->GetModule() == pModule))
     {
         // If the passed in method is defined in the same module, just return the MethodDef token
         memberRefE = pMeth->GetMemberDef();
@@ -334,9 +327,6 @@ extern "C" INT32 QCALLTYPE ModuleBuilder_GetMemberRefOfMethodInfo(QCall::ModuleH
         Assembly * pRefedAssembly = pMeth->GetModule()->GetAssembly();
         Assembly * pRefingAssembly = pModule->GetAssembly();
 
-        SafeComHolderPreemp<IMetaDataAssemblyEmit> pAssemblyEmit;
-        IfFailThrow( pRefingAssembly->GetManifestModule()->GetEmitter()->QueryInterface(IID_IMetaDataAssemblyEmit, (void **) &pAssemblyEmit) );
-
         CQuickBytes     qbNewSig;
         ULONG           cbNewSig;
 
@@ -349,11 +339,8 @@ extern "C" INT32 QCALLTYPE ModuleBuilder_GetMemberRefOfMethodInfo(QCall::ModuleH
         }
 
         IfFailThrow( pMeth->GetMDImport()->TranslateSigWithScope(
-            pRefedAssembly->GetManifestImport(),
-            NULL, 0,        // hash blob value
             pvComSig,
             cbComSig,
-            pAssemblyEmit,  // Emit assembly scope.
             pRCW->GetEmitter(),
             &qbNewSig,
             &cbNewSig) );
@@ -376,7 +363,7 @@ extern "C" INT32 QCALLTYPE ModuleBuilder_GetMemberRefOfMethodInfo(QCall::ModuleH
 // Return a MemberRef token given a RuntimeFieldInfo
 //
 //******************************************************************************
-extern "C" mdMemberRef QCALLTYPE ModuleBuilder_GetMemberRefOfFieldInfo(QCall::ModuleHandle pModule, mdTypeDef tr, QCall::TypeHandle th, mdFieldDef tkField)
+extern "C" mdMemberRef QCALLTYPE ModuleBuilder_GetMemberRefOfFieldInfo(QCall::ModuleHandle pModule, mdTypeDef tr, QCall::TypeHandle th, mdFieldDef tkField, QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
 
@@ -420,19 +407,13 @@ extern "C" mdMemberRef QCALLTYPE ModuleBuilder_GetMemberRefOfFieldInfo(QCall::Mo
             else
                 COMPlusThrow(kNotSupportedException, W("NotSupported_CollectibleBoundNonCollectible"));
         }
-        SafeComHolderPreemp<IMetaDataAssemblyEmit> pAssemblyEmit;
-        IfFailThrow( pRefingAssembly->GetManifestModule()->GetEmitter()->QueryInterface(IID_IMetaDataAssemblyEmit, (void **) &pAssemblyEmit) );
-
         // Translate the field signature this scope
         CQuickBytes     qbNewSig;
         ULONG           cbNewSig;
 
         IfFailThrow( pRefedMDImport->TranslateSigWithScope(
-        pRefedAssembly->GetManifestImport(),
-        NULL, 0,            // hash value
         pvComSig,
         cbComSig,
-        pAssemblyEmit,      // Emit assembly scope.
         pRCW->GetEmitter(),
         &qbNewSig,
         &cbNewSig) );
@@ -454,7 +435,8 @@ extern "C" INT32 QCALLTYPE ModuleBuilder_GetMemberRefFromSignature(QCall::Module
                                                      INT32 tr,
                                                      LPCWSTR wszMemberName,
                                                      LPCBYTE pSignature,
-                                                     INT32 sigLength)
+                                                     INT32 sigLength,
+                                                     QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
 
@@ -482,7 +464,7 @@ extern "C" INT32 QCALLTYPE ModuleBuilder_GetMemberRefFromSignature(QCall::Module
 // This function is used to set the FieldRVA with the content data
 //
 //******************************************************************************
-extern "C" void QCALLTYPE ModuleBuilder_SetFieldRVAContent(QCall::ModuleHandle pModule, INT32 tkField, LPCBYTE pContent, INT32 length)
+extern "C" void QCALLTYPE ModuleBuilder_SetFieldRVAContent(QCall::ModuleHandle pModule, INT32 tkField, LPCBYTE pContent, INT32 length, QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
 
@@ -491,22 +473,13 @@ extern "C" void QCALLTYPE ModuleBuilder_SetFieldRVAContent(QCall::ModuleHandle p
     RefClassWriter * pRCW = pModule->GetReflectionModule()->GetClassWriter();
     _ASSERTE(pRCW);
 
-    ICeeGenInternal * pGen = pRCW->GetCeeGen();
-
     ReflectionModule * pReflectionModule = pModule->GetReflectionModule();
 
-    // Create the .sdata section if not created
-    if (pReflectionModule->m_sdataSection == 0)
-        IfFailThrow( pGen->GetSectionCreate (".sdata", sdReadWrite, &pReflectionModule->m_sdataSection) );
+    // CreateSpan<T> requires natural alignment up to 8 bytes. Data whose size is not divisible
+    // by 8 only needs 4-byte alignment.
+    DWORD alignment = (length % 8 == 0) ? 8 : 4;
 
-    // Get the size of current .sdata section. This will be the RVA for this field within the section
-    DWORD dwRVA = 0;
-    IfFailThrow( pGen->GetSectionDataLen(pReflectionModule->m_sdataSection, &dwRVA) );
-    dwRVA = (dwRVA + sizeof(DWORD)-1) & ~(sizeof(DWORD)-1);
-
-    // allocate the space in .sdata section
-    void * pvBlob;
-    IfFailThrow( pGen->GetSectionBlock(pReflectionModule->m_sdataSection, length, sizeof(DWORD), (void**) &pvBlob) );
+    void * pvBlob = pReflectionModule->GetLoaderAllocator()->GetLowFrequencyHeap()->AllocAlignedMem(length, alignment);
 
     // copy over the initialized data if specified
     if (pContent != NULL)
@@ -518,8 +491,10 @@ extern "C" void QCALLTYPE ModuleBuilder_SetFieldRVAContent(QCall::ModuleHandle p
         LoaderAllocator::AssociateMemoryWithLoaderAllocator((BYTE*)pvBlob, ((BYTE*)pvBlob) + length, pReflectionModule->GetLoaderAllocator());
     }
 
-    // set FieldRVA into metadata. Note that this is not final RVA in the image if save to disk. We will do another round of fix up upon save.
-    IfFailThrow( pRCW->GetEmitter()->SetFieldRVA(tkField, dwRVA) );
+    pReflectionModule->SetDynamicRvaField(tkField, reinterpret_cast<TADDR>(pvBlob));
+
+    // Dynamic RVA fields are resolved by token, not by an image offset.
+    IfFailThrow( pRCW->GetEmitter()->SetFieldRVA(tkField, 0) );
 
     END_QCALL;
 }
@@ -532,7 +507,7 @@ extern "C" void QCALLTYPE ModuleBuilder_SetFieldRVAContent(QCall::ModuleHandle p
 //  string constant or return the token of an existing constant.
 //
 //******************************************************************************
-extern "C" mdString QCALLTYPE ModuleBuilder_GetStringConstant(QCall::ModuleHandle pModule, LPCWSTR pwzValue, INT32 iLength)
+extern "C" mdString QCALLTYPE ModuleBuilder_GetStringConstant(QCall::ModuleHandle pModule, LPCWSTR pwzValue, INT32 iLength, QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
 
@@ -559,7 +534,7 @@ extern "C" mdString QCALLTYPE ModuleBuilder_GetStringConstant(QCall::ModuleHandl
 /*=============================SetModuleName====================================
 // SetModuleName
 ==============================================================================*/
-extern "C" void QCALLTYPE ModuleBuilder_SetModuleName(QCall::ModuleHandle pModule, LPCWSTR wszModuleName)
+extern "C" void QCALLTYPE ModuleBuilder_SetModuleName(QCall::ModuleHandle pModule, LPCWSTR wszModuleName, QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
 
@@ -578,7 +553,7 @@ extern "C" void QCALLTYPE ModuleBuilder_SetModuleName(QCall::ModuleHandle pModul
 // Return a type spec token given a byte array
 //
 //******************************************************************************
-extern "C" mdTypeSpec QCALLTYPE ModuleBuilder_GetTokenFromTypeSpec(QCall::ModuleHandle pModule, LPCBYTE pSignature, INT32 sigLength)
+extern "C" mdTypeSpec QCALLTYPE ModuleBuilder_GetTokenFromTypeSpec(QCall::ModuleHandle pModule, LPCBYTE pSignature, INT32 sigLength, QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
 
@@ -597,55 +572,9 @@ extern "C" mdTypeSpec QCALLTYPE ModuleBuilder_GetTokenFromTypeSpec(QCall::Module
 }
 
 
-// GetType
-// Given a class name, this method will look for that class
-//  with in the module.
-extern "C" void QCALLTYPE RuntimeModule_GetType(QCall::ModuleHandle pModule, LPCWSTR wszName, BOOL bThrowOnError, BOOL bIgnoreCase, QCall::ObjectHandleOnStack retType, QCall::ObjectHandleOnStack keepAlive)
-{
-    CONTRACTL
-    {
-        QCALL_CHECK;
-        PRECONDITION(CheckPointer(wszName));
-    }
-    CONTRACTL_END;
-
-    TypeHandle retTypeHandle;
-
-    BEGIN_QCALL;
-
-    DomainAssembly *pAssembly = pModule->GetDomainAssembly();
-    _ASSERTE(pAssembly);
-
-    BOOL prohibitAsmQualifiedName = TRUE;
-
-    // Load the class from this assembly (fail if it is in a different one).
-    retTypeHandle = TypeName::GetTypeManaged(wszName, pAssembly, bThrowOnError, bIgnoreCase, prohibitAsmQualifiedName, NULL, (OBJECTREF*)keepAlive.m_ppObject);
-
-    // Verify that it's in 'this' module
-    // But, if it's in a different assembly than expected, that's okay, because
-    // it just means that it's been type forwarded.
-    if (!retTypeHandle.IsNull())
-    {
-        if ( (retTypeHandle.GetModule() != pModule) &&
-             (retTypeHandle.GetModule()->GetAssembly() == pModule->GetAssembly()) )
-            retTypeHandle = TypeHandle();
-    }
-
-    if (!retTypeHandle.IsNull())
-    {
-        GCX_COOP();
-        retType.Set(retTypeHandle.GetManagedClassObject());
-    }
-
-    END_QCALL;
-
-    return;
-}
-
-
 // GetName
 // This routine will return the name of the module as a String
-extern "C" void QCALLTYPE RuntimeModule_GetScopeName(QCall::ModuleHandle pModule, QCall::StringHandleOnStack retString)
+extern "C" void QCALLTYPE RuntimeModule_GetScopeName(QCall::ModuleHandle pModule, QCall::StringHandleOnStack retString, QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
 
@@ -663,24 +592,13 @@ extern "C" void QCALLTYPE RuntimeModule_GetScopeName(QCall::ModuleHandle pModule
     END_QCALL;
 }
 
-static void ReplaceNiExtension(SString& fileName, PCWSTR pwzOldSuffix, PCWSTR pwzNewSuffix)
-{
-    STANDARD_VM_CONTRACT;
-
-    if (fileName.EndsWithCaseInsensitive(pwzOldSuffix))
-    {
-        COUNT_T oldSuffixLen = (COUNT_T)wcslen(pwzOldSuffix);
-        fileName.Replace(fileName.End() - oldSuffixLen, oldSuffixLen, pwzNewSuffix);
-    }
-}
-
 /*============================GetFullyQualifiedName=============================
 **Action:
 **Returns:
 **Arguments:
 **Exceptions:
 ==============================================================================*/
-extern "C" void QCALLTYPE RuntimeModule_GetFullyQualifiedName(QCall::ModuleHandle pModule, QCall::StringHandleOnStack retString)
+extern "C" void QCALLTYPE RuntimeModule_GetFullyQualifiedName(QCall::ModuleHandle pModule, QCall::StringHandleOnStack retString, QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
 
@@ -688,12 +606,15 @@ extern "C" void QCALLTYPE RuntimeModule_GetFullyQualifiedName(QCall::ModuleHandl
 
     HRESULT hr = S_OK;
 
-    if (pModule->IsPEFile())
+    if (!pModule->IsReflectionEmit())
     {
         LPCWSTR fileName = pModule->GetPath();
-        if (*fileName != 0) {
-                retString.Set(fileName);
-        } else {
+        if (*fileName != W('\0'))
+        {
+            retString.Set(fileName);
+        }
+        else
+        {
             retString.Set(W("<Unknown>"));
         }
     }
@@ -711,7 +632,7 @@ extern "C" void QCALLTYPE RuntimeModule_GetFullyQualifiedName(QCall::ModuleHandl
 **Arguments: refThis
 **Exceptions: None.
 ==============================================================================*/
-extern "C" HINSTANCE QCALLTYPE MarshalNative_GetHINSTANCE(QCall::ModuleHandle pModule)
+extern "C" HINSTANCE QCALLTYPE MarshalNative_GetHINSTANCE(QCall::ModuleHandle pModule, QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;
 
@@ -721,8 +642,7 @@ extern "C" HINSTANCE QCALLTYPE MarshalNative_GetHINSTANCE(QCall::ModuleHandle pM
 
     // This returns the base address
     // Other modules should have zero base
-    PEAssembly *pPEAssembly = pModule->GetPEAssembly();
-    if (!pPEAssembly->IsDynamic())
+    if (!pModule->IsReflectionEmit())
     {
         hMod = (HMODULE) pModule->GetPEAssembly()->GetManagedFileContents();
     }
@@ -738,78 +658,45 @@ extern "C" HINSTANCE QCALLTYPE MarshalNative_GetHINSTANCE(QCall::ModuleHandle pM
     return (HINSTANCE)hMod;
 }
 
-static Object* GetTypesInner(Module* pModule);
-
 // Get class will return an array contain all of the classes
 //  that are defined within this Module.
-FCIMPL1(Object*, COMModule::GetTypes, ReflectModuleBaseObject* pModuleUNSAFE)
+extern "C" void QCALLTYPE RuntimeModule_GetTypes(QCall::ModuleHandle pModule, QCall::ObjectHandleOnStack retTypes, QCall::ObjectHandleOnStack retExceptions, QCallExceptionStatus* qcallError)
 {
-    FCALL_CONTRACT;
+    QCALL_CONTRACT;
 
-    OBJECTREF   refRetVal   = NULL;
-    REFLECTMODULEBASEREF refModule = (REFLECTMODULEBASEREF)ObjectToOBJECTREF(pModuleUNSAFE);
-    if (refModule == NULL)
-        FCThrowRes(kArgumentNullException, W("Arg_InvalidHandle"));
+    BEGIN_QCALL;
 
-    Module *pModule = refModule->GetModule();
+    GCX_COOP();
 
-    HELPER_METHOD_FRAME_BEGIN_RET_2(refRetVal, refModule);
+    struct
+    {
+        PTRARRAYREF refArrClasses;
+        PTRARRAYREF xcept;
+        PTRARRAYREF xceptRet;
+        OBJECTREF throwable;
+    } gc;
 
-    refRetVal = (OBJECTREF) GetTypesInner(pModule);
+    ZeroMemory(&gc, sizeof(gc));
 
-    HELPER_METHOD_FRAME_END();
+    GCPROTECT_BEGIN(gc);
 
-    return OBJECTREFToObject(refRetVal);
-}
-FCIMPLEND
-
-Object* GetTypesInner(Module* pModule)
-{
-    CONTRACT(Object*) {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-        INJECT_FAULT(COMPlusThrowOM());
-
-        PRECONDITION(CheckPointer(pModule));
-
-        POSTCONDITION(CheckPointer(RETVAL));
-    }
-    CONTRACT_END;
-
-    DWORD           dwNumTypeDefs = 0;
-    DWORD           i;
-    IMDInternalImport *pInternalImport;
-    PTRARRAYREF     refArrClasses = NULL;
-    PTRARRAYREF     xcept = NULL;
     DWORD           cXcept = 0;
-    HENUMInternal   hEnum;
-    bool            bSystemAssembly;    // Don't expose transparent proxy
-    int             AllocSize = 0;
-    MethodTable* pMT = NULL;
 
-    GCPROTECT_BEGIN(refArrClasses);
-    GCPROTECT_BEGIN(xcept);
-
-    pInternalImport = pModule->GetMDImport();
+    IMDInternalImport* pInternalImport = pModule->GetMDImport();
 
     HENUMTypeDefInternalHolder hEnum(pInternalImport);
     // Get the count of typedefs
     hEnum.EnumTypeDefInit();
 
-    dwNumTypeDefs = pInternalImport->EnumGetCount(&hEnum);
+    DWORD dwNumTypeDefs = pInternalImport->EnumGetCount(&hEnum);
 
-    // Allocate the COM+ array
-    bSystemAssembly = (pModule->GetAssembly() == SystemDomain::SystemAssembly());
-    AllocSize = dwNumTypeDefs;
-    refArrClasses = (PTRARRAYREF) AllocateObjectArray(AllocSize, CoreLibBinder::GetClass(CLASS__CLASS));
+    // Allocate the CLR array
+    gc.refArrClasses = (PTRARRAYREF) AllocateObjectArray(dwNumTypeDefs, CoreLibBinder::GetClass(CLASS__CLASS));
 
-    int curPos = 0;
-    OBJECTREF throwable = 0;
+    DWORD curPos = 0;
     mdTypeDef tdCur = mdTypeDefNil;
 
-    GCPROTECT_BEGIN(throwable);
-    // Now create each COM+ Method object and insert it into the array.
+    // Now create each CLR Method object and insert it into the array.
     while (pInternalImport->EnumNext(&hEnum, &tdCur))
     {
         // Get the VM class for the current class token
@@ -820,54 +707,51 @@ Object* GetTypesInner(Module* pModule)
                                              ClassLoader::ThrowIfNotFound,
                                              ClassLoader::PermitUninstDefOrRef);
         }
-        EX_CATCH_THROWABLE(&throwable);
+        EX_CATCH_THROWABLE(&gc.throwable);
 
-        if (throwable != 0) {
+        if (gc.throwable != NULL) {
             // Lazily allocate an array to store the exceptions in
-            if (xcept == NULL)
-                xcept = (PTRARRAYREF) AllocateObjectArray(dwNumTypeDefs,g_pExceptionClass);
+            if (gc.xcept == NULL)
+                gc.xcept = (PTRARRAYREF) AllocateObjectArray(dwNumTypeDefs,g_pExceptionClass);
 
             _ASSERTE(cXcept < dwNumTypeDefs);
-            xcept->SetAt(cXcept++, throwable);
-            throwable = 0;
+            gc.xcept->SetAt(cXcept++, gc.throwable);
+            gc.throwable = 0;
             continue;
         }
 
         _ASSERTE("LoadClass failed." && !curClass.IsNull());
 
-        pMT = curClass.GetMethodTable();
-        PREFIX_ASSUME(pMT != NULL);
+        MethodTable* pMT = curClass.GetMethodTable();
+        _ASSERTE(pMT != NULL);
 
-        // Get the COM+ Class object
+        // Get the CLR Class object
         OBJECTREF refCurClass = pMT->GetManagedClassObject();
         _ASSERTE("GetManagedClassObject failed." && refCurClass != NULL);
 
-        _ASSERTE(curPos < AllocSize);
-        refArrClasses->SetAt(curPos++, refCurClass);
+        _ASSERTE(curPos < dwNumTypeDefs);
+        gc.refArrClasses->SetAt(curPos++, refCurClass);
     }
-    GCPROTECT_END();    //throwable
 
-    // check if there were exceptions thrown
-    if (cXcept > 0) {
-        PTRARRAYREF xceptRet = NULL;
-        GCPROTECT_BEGIN(xceptRet);
-
-        xceptRet = (PTRARRAYREF) AllocateObjectArray(cXcept,g_pExceptionClass);
-        for (i=0;i<cXcept;i++) {
-            xceptRet->SetAt(i, xcept->GetAt(i));
+    // Return exceptions to managed side for throwing
+    if (cXcept > 0)
+    {
+        gc.xceptRet = (PTRARRAYREF) AllocateObjectArray(cXcept,g_pExceptionClass);
+        for (DWORD i=0;i<cXcept;i++) {
+            gc.xceptRet->SetAt(i, gc.xcept->GetAt(i));
         }
-        OBJECTREF except = InvokeUtil::CreateClassLoadExcept((OBJECTREF*) &refArrClasses,(OBJECTREF*) &xceptRet);
-        COMPlusThrow(except);
-
-        GCPROTECT_END();
+        retExceptions.Set(gc.xceptRet);
+    }
+    else
+    {
+        // We should have filled the array exactly.
+        _ASSERTE(curPos == dwNumTypeDefs);
     }
 
-    // We should have filled the array exactly.
-    _ASSERTE(curPos == AllocSize);
+    // Assign the return value to the CLR array
+    retTypes.Set(gc.refArrClasses);
 
-    // Assign the return value to the COM+ array
-    GCPROTECT_END();
     GCPROTECT_END();
 
-    RETURN(OBJECTREFToObject(refArrClasses));
+    END_QCALL;
 }

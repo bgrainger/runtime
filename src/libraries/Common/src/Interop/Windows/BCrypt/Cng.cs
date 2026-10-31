@@ -2,14 +2,14 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.Text;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-
+using System.Security.Cryptography;
+using System.Text;
 using Internal.Cryptography;
+using Microsoft.Win32.SafeHandles;
 using static Interop;
 using static Interop.BCrypt;
-using Microsoft.Win32.SafeHandles;
 
 namespace Internal.NativeCrypto
 {
@@ -20,22 +20,27 @@ namespace Internal.NativeCrypto
         /// </summary>
         internal static class AlgorithmName
         {
-            public const string DSA = "DSA";                    // BCRYPT_DSA_ALGORITHM
-            public const string ECDH = "ECDH";                  // BCRYPT_ECDH_ALGORITHM
-            public const string ECDHP256 = "ECDH_P256";         // BCRYPT_ECDH_P256_ALGORITHM
-            public const string ECDHP384 = "ECDH_P384";         // BCRYPT_ECDH_P384_ALGORITHM
-            public const string ECDHP521 = "ECDH_P521";         // BCRYPT_ECDH_P521_ALGORITHM
-            public const string ECDsa = "ECDSA";                // BCRYPT_ECDSA_ALGORITHM
-            public const string ECDsaP256 = "ECDSA_P256";       // BCRYPT_ECDSA_P256_ALGORITHM
-            public const string ECDsaP384 = "ECDSA_P384";       // BCRYPT_ECDSA_P384_ALGORITHM
-            public const string ECDsaP521 = "ECDSA_P521";       // BCRYPT_ECDSA_P521_ALGORITHM
-            public const string RSA = "RSA";                    // BCRYPT_RSA_ALGORITHM
-            public const string MD5 = "MD5";                    // BCRYPT_MD5_ALGORITHM
-            public const string Sha1 = "SHA1";                  // BCRYPT_SHA1_ALGORITHM
-            public const string Sha256 = "SHA256";              // BCRYPT_SHA256_ALGORITHM
-            public const string Sha384 = "SHA384";              // BCRYPT_SHA384_ALGORITHM
-            public const string Sha512 = "SHA512";              // BCRYPT_SHA512_ALGORITHM
-            public const string Pbkdf2 = "PBKDF2";              // BCRYPT_PBKDF2_ALGORITHM
+            public const string CompositeMLDsa = "Composite-ML-DSA";    // BCRYPT_COMPOSITE_MLDSA_ALGORITHM
+            public const string CompositeMLKem = "Composite-ML-KEM";    // BCRYPT_COMPOSITE_MLKEM_ALGORITHM
+            public const string DSA = "DSA";                            // BCRYPT_DSA_ALGORITHM
+            public const string ECDH = "ECDH";                          // BCRYPT_ECDH_ALGORITHM
+            public const string ECDHP256 = "ECDH_P256";                 // BCRYPT_ECDH_P256_ALGORITHM
+            public const string ECDHP384 = "ECDH_P384";                 // BCRYPT_ECDH_P384_ALGORITHM
+            public const string ECDHP521 = "ECDH_P521";                 // BCRYPT_ECDH_P521_ALGORITHM
+            public const string ECDsa = "ECDSA";                        // BCRYPT_ECDSA_ALGORITHM
+            public const string ECDsaP256 = "ECDSA_P256";               // BCRYPT_ECDSA_P256_ALGORITHM
+            public const string ECDsaP384 = "ECDSA_P384";               // BCRYPT_ECDSA_P384_ALGORITHM
+            public const string ECDsaP521 = "ECDSA_P521";               // BCRYPT_ECDSA_P521_ALGORITHM
+            public const string HKDF = "HKDF";                          // BCRYPT_HKDF_ALGORITHM
+            public const string MD5 = "MD5";                            // BCRYPT_MD5_ALGORITHM
+            public const string MLDsa = "ML-DSA";                       // BCRYPT_MLDSA_ALGORITHM
+            public const string MLKem = "ML-KEM";                       // BCRYPT_MLKEM_ALGORITHM
+            public const string RSA = "RSA";                            // BCRYPT_RSA_ALGORITHM
+            public const string Sha1 = "SHA1";                          // BCRYPT_SHA1_ALGORITHM
+            public const string Sha256 = "SHA256";                      // BCRYPT_SHA256_ALGORITHM
+            public const string Sha384 = "SHA384";                      // BCRYPT_SHA384_ALGORITHM
+            public const string Sha512 = "SHA512";                      // BCRYPT_SHA512_ALGORITHM
+            public const string Pbkdf2 = "PBKDF2";                      // BCRYPT_PBKDF2_ALGORITHM
         }
 
         internal static class KeyDerivationFunction
@@ -43,6 +48,7 @@ namespace Internal.NativeCrypto
             public const string Hash = "HASH";                  // BCRYPT_KDF_HASH
             public const string Hmac = "HMAC";                  // BCRYPT_KDF_HMAC
             public const string Tls = "TLS_PRF";                // BCRYPT_KDF_TLS_PRF
+            public const string Raw = "TRUNCATE";               // BCRYPT_KDF_RAW_SECRET
         }
     }
 
@@ -70,7 +76,10 @@ namespace Internal.NativeCrypto
         public const string BCRYPT_CHAIN_MODE_CFB = "ChainingModeCFB";
         public const string BCRYPT_CHAIN_MODE_CCM = "ChainingModeCCM";
 
-        public static SafeAlgorithmHandle BCryptOpenAlgorithmProvider(string pszAlgId, string? pszImplementation, OpenAlgorithmProviderFlags dwFlags)
+        public static SafeAlgorithmHandle BCryptOpenAlgorithmProvider(
+            string pszAlgId,
+            string? pszImplementation = null,
+            OpenAlgorithmProviderFlags dwFlags = 0)
         {
             SafeAlgorithmHandle hAlgorithm;
             NTSTATUS ntStatus = Interop.BCryptOpenAlgorithmProvider(out hAlgorithm, pszAlgId, pszImplementation, (int)dwFlags);
@@ -109,7 +118,7 @@ namespace Internal.NativeCrypto
             }
         }
 
-        private static Exception CreateCryptographicException(NTSTATUS ntStatus)
+        private static CryptographicException CreateCryptographicException(NTSTATUS ntStatus)
         {
             int hr = ((int)ntStatus) | 0x01000000;
             return hr.ToCryptographicException();
@@ -121,14 +130,21 @@ namespace Internal.NativeCrypto
     {
         internal static partial class Interop
         {
-            [GeneratedDllImport(Libraries.BCrypt, CharSet = CharSet.Unicode)]
+            [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+            [LibraryImport(Libraries.BCrypt, StringMarshalling = StringMarshalling.Utf16)]
             public static partial NTSTATUS BCryptOpenAlgorithmProvider(out SafeAlgorithmHandle phAlgorithm, string pszAlgId, string? pszImplementation, int dwFlags);
 
-            [GeneratedDllImport(Libraries.BCrypt, CharSet = CharSet.Unicode)]
+            [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+            [LibraryImport(Libraries.BCrypt, StringMarshalling = StringMarshalling.Utf16)]
             public static partial NTSTATUS BCryptSetProperty(SafeAlgorithmHandle hObject, string pszProperty, string pbInput, int cbInput, int dwFlags);
 
-            [GeneratedDllImport(Libraries.BCrypt, EntryPoint = "BCryptSetProperty", CharSet = CharSet.Unicode)]
+            [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+            [LibraryImport(Libraries.BCrypt, EntryPoint = "BCryptSetProperty", StringMarshalling = StringMarshalling.Utf16)]
             private static partial NTSTATUS BCryptSetIntPropertyPrivate(SafeBCryptHandle hObject, string pszProperty, ref int pdwInput, int cbInput, int dwFlags);
+
+            [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+            [LibraryImport(Libraries.BCrypt, StringMarshalling = StringMarshalling.Utf16)]
+            public static partial NTSTATUS BCryptSetProperty(SafeBCryptHandle hObject, string pszProperty, ReadOnlySpan<byte> pbInput, int cbInput, int dwFlags);
 
             public static unsafe NTSTATUS BCryptSetIntProperty(SafeBCryptHandle hObject, string pszProperty, ref int pdwInput, int dwFlags)
             {
@@ -145,7 +161,8 @@ namespace Internal.NativeCrypto
             return ntStatus == 0;
         }
 
-        [GeneratedDllImport(Libraries.BCrypt)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.BCrypt)]
         private static partial uint BCryptCloseAlgorithmProvider(IntPtr hAlgorithm, int dwFlags);
     }
 
@@ -177,7 +194,8 @@ namespace Internal.NativeCrypto
             return ntStatus == 0;
         }
 
-        [GeneratedDllImport(Libraries.BCrypt)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.BCrypt)]
         private static partial uint BCryptDestroyKey(IntPtr hKey);
     }
 }

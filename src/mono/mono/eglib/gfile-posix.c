@@ -142,8 +142,14 @@ g_file_open_tmp (const gchar *tmpl, gchar **name_used, GError **gerror)
 	}
 
 	t = g_build_filename (g_get_tmp_dir (), tmpl, (const char*)NULL);
+	g_assert (t);
 
+	#ifdef HOST_WASI
+	g_critical ("g_file_open_tmp is not implemented for WASI");
+	return 0;
+	#else
 	fd = mkstemp (t);
+	#endif
 
 	if (fd == -1) {
 		if (gerror) {

@@ -3,22 +3,30 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Threading;
-using System.Diagnostics;
+using Microsoft.Extensions.Internal;
 
 namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
 {
-    internal sealed class CallSiteRuntimeResolver : CallSiteVisitor<RuntimeResolverContext, object>
+    internal sealed class CallSiteRuntimeResolver : CallSiteVisitor<RuntimeResolverContext, object?>
     {
         public static CallSiteRuntimeResolver Instance { get; } = new();
+
+        // ThreadStatic set to track call sites currently being resolved on this thread.
+        // Used to detect circular dependencies that occur through factory functions.
+        [ThreadStatic]
+        private static HashSet<ServiceCallSite>? t_resolving;
 
         private CallSiteRuntimeResolver()
         {
         }
 
-        public object Resolve(ServiceCallSite callSite, ServiceProviderEngineScope scope)
+        public object? Resolve(ServiceCallSite callSite, ServiceProviderEngineScope scope)
         {
             // Fast path to avoid virtual calls if we already have the cached value in the root scope
             if (scope.IsRootScope && callSite.Value is object cached)
@@ -32,21 +40,21 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
             });
         }
 
-        protected override object VisitDisposeCache(ServiceCallSite transientCallSite, RuntimeResolverContext context)
+        protected override object? VisitDisposeCache(ServiceCallSite transientCallSite, RuntimeResolverContext context)
         {
             return context.Scope.CaptureDisposable(VisitCallSiteMain(transientCallSite, context));
         }
 
         protected override object VisitConstructor(ConstructorCallSite constructorCallSite, RuntimeResolverContext context)
         {
-            object[] parameterValues;
+            object?[] parameterValues;
             if (constructorCallSite.ParameterCallSites.Length == 0)
             {
                 parameterValues = Array.Empty<object>();
             }
             else
             {
-                parameterValues = new object[constructorCallSite.ParameterCallSites.Length];
+                parameterValues = new object?[constructorCallSite.ParameterCallSites.Length];
                 for (int index = 0; index < parameterValues.Length; index++)
                 {
                     parameterValues[index] = VisitCallSite(constructorCallSite.ParameterCallSites[index], context);
@@ -69,7 +77,7 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
 #endif
         }
 
-        protected override object VisitRootCache(ServiceCallSite callSite, RuntimeResolverContext context)
+        protected override object? VisitRootCache(ServiceCallSite callSite, RuntimeResolverContext context)
         {
             if (callSite.Value is object value)
             {
@@ -83,23 +91,39 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
             lock (callSite)
             {
                 // Lock the callsite and check if another thread already cached the value
-                if (callSite.Value is object resolved)
+                if (callSite.Value is object callSiteValue)
                 {
-                    return resolved;
+                    return callSiteValue;
                 }
 
-                resolved = VisitCallSiteMain(callSite, new RuntimeResolverContext
+                // Detect circular dependencies by tracking what we're currently resolving on this thread
+                t_resolving ??= new HashSet<ServiceCallSite>(ReferenceEqualityComparer.Instance);
+                if (!t_resolving.Add(callSite))
                 {
-                    Scope = serviceProviderEngine,
-                    AcquiredLocks = context.AcquiredLocks | lockType
-                });
-                serviceProviderEngine.CaptureDisposable(resolved);
-                callSite.Value = resolved;
-                return resolved;
+                    // We're already resolving this call site on this thread - circular dependency detected
+                    throw new InvalidOperationException(
+                        SR.Format(SR.CircularDependencyException, TypeNameHelper.GetTypeDisplayName(callSite.ServiceType)));
+                }
+
+                try
+                {
+                    object? resolved = VisitCallSiteMain(callSite, new RuntimeResolverContext
+                    {
+                        Scope = serviceProviderEngine,
+                        AcquiredLocks = context.AcquiredLocks | lockType
+                    });
+                    serviceProviderEngine.CaptureDisposable(resolved);
+                    callSite.Value = resolved;
+                    return resolved;
+                }
+                finally
+                {
+                    t_resolving.Remove(callSite);
+                }
             }
         }
 
-        protected override object VisitScopeCache(ServiceCallSite callSite, RuntimeResolverContext context)
+        protected override object? VisitScopeCache(ServiceCallSite callSite, RuntimeResolverContext context)
         {
             // Check if we are in the situation where scoped service was promoted to singleton
             // and we need to lock the root
@@ -108,11 +132,11 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
                 VisitCache(callSite, context, context.Scope, RuntimeResolverLock.Scope);
         }
 
-        private object VisitCache(ServiceCallSite callSite, RuntimeResolverContext context, ServiceProviderEngineScope serviceProviderEngine, RuntimeResolverLock lockType)
+        private object? VisitCache(ServiceCallSite callSite, RuntimeResolverContext context, ServiceProviderEngineScope serviceProviderEngine, RuntimeResolverLock lockType)
         {
             bool lockTaken = false;
             object sync = serviceProviderEngine.Sync;
-            Dictionary<ServiceCacheKey, object> resolvedServices = serviceProviderEngine.ResolvedServices;
+            Dictionary<ServiceCacheKey, object?> resolvedServices = serviceProviderEngine.ResolvedServices;
             // Taking locks only once allows us to fork resolution process
             // on another thread without causing the deadlock because we
             // always know that we are going to wait the other thread to finish before
@@ -126,7 +150,7 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
             {
                 // Note: This method has already taken lock by the caller for resolution and access synchronization.
                 // For scoped: takes a dictionary as both a resolution lock and a dictionary access lock.
-                if (resolvedServices.TryGetValue(callSite.Cache.Key, out object resolved))
+                if (resolvedServices.TryGetValue(callSite.Cache.Key, out object? resolved))
                 {
                     return resolved;
                 }
@@ -149,7 +173,7 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
             }
         }
 
-        protected override object VisitConstant(ConstantCallSite constantCallSite, RuntimeResolverContext context)
+        protected override object? VisitConstant(ConstantCallSite constantCallSite, RuntimeResolverContext context)
         {
             return constantCallSite.DefaultValue;
         }
@@ -161,16 +185,25 @@ namespace Microsoft.Extensions.DependencyInjection.ServiceLookup
 
         protected override object VisitIEnumerable(IEnumerableCallSite enumerableCallSite, RuntimeResolverContext context)
         {
-            var array = Array.CreateInstance(
+            Array array = CreateArray(
                 enumerableCallSite.ItemType,
                 enumerableCallSite.ServiceCallSites.Length);
 
             for (int index = 0; index < enumerableCallSite.ServiceCallSites.Length; index++)
             {
-                object value = VisitCallSite(enumerableCallSite.ServiceCallSites[index], context);
+                object? value = VisitCallSite(enumerableCallSite.ServiceCallSites[index], context);
                 array.SetValue(value, index);
             }
             return array;
+
+            [UnconditionalSuppressMessage("AotAnalysis", "IL3050:RequiresDynamicCode",
+                Justification = "The element type is guaranteed not to be a ValueType when dynamic code isn't supported")]
+            static Array CreateArray(Type elementType, int length)
+            {
+                Debug.Assert(ServiceProvider.IsDynamicCodeSupported || !elementType.IsValueType, "When dynamic code isn't supported, building the IEnumerableCallSite will throw if elementType is a ValueType.");
+
+                return Array.CreateInstance(elementType, length);
+            }
         }
 
         protected override object VisitFactory(FactoryCallSite factoryCallSite, RuntimeResolverContext context)

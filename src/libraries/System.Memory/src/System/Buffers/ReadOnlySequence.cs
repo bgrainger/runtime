@@ -2,10 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics;
-using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using Internal.Runtime.CompilerServices;
 
 namespace System.Buffers
 {
@@ -287,7 +285,7 @@ namespace System.Buffers
             // Single-Segment Sequence
             if (startObject == endObject)
             {
-                if (!InRange(sliceEndIndex, startIndex, endIndex))
+                if (startObject != sliceEndObject || !InRange(sliceEndIndex, startIndex, endIndex))
                 {
                     ThrowHelper.ThrowArgumentOutOfRangeException_PositionOutOfRange();
                 }
@@ -364,7 +362,7 @@ namespace System.Buffers
             // Single-Segment Sequence
             if (startObject == endObject)
             {
-                if (!InRange(sliceStartIndex, startIndex, endIndex))
+                if (startObject != sliceStartObject || !InRange(sliceStartIndex, startIndex, endIndex))
                 {
                     ThrowHelper.ThrowArgumentOutOfRangeException_PositionOutOfRange();
                 }
@@ -526,11 +524,15 @@ namespace System.Buffers
         }
 
         /// <summary>
-        /// Returns the offset of a <paramref name="position" /> within this sequence from the start.
+        /// Returns the offset of a <paramref name="position" /> within this sequence.
         /// </summary>
         /// <param name="position">The <see cref="System.SequencePosition"/> of which to get the offset.</param>
-        /// <returns>The offset from the start of the sequence.</returns>
+        /// <returns>The offset in the sequence.</returns>
         /// <exception cref="System.ArgumentOutOfRangeException">The position is out of range.</exception>
+        /// <remarks>
+        /// The returned offset is not a zero-based index from the start.
+        /// To obtain the zero-based index offset, subtract <code>mySequence.GetOffset(mySequence.Start)</code> from the returned offset.
+        /// </remarks>
         public long GetOffset(SequencePosition position)
         {
             object? positionSequenceObject = position.GetObject();
@@ -654,7 +656,6 @@ namespace System.Buffers
             Array = 0x1,
             MemoryManager = 0x2,
             String = 0x3,
-            Empty = 0x4
         }
     }
 

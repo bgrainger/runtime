@@ -7,6 +7,7 @@
 // Best-scoring single-threaded C# .NET Core version as of 2017-09-01
 
 /* The Computer Language Benchmarks Game
+using TestLibrary;
    http://benchmarksgame.alioth.debian.org/
 
    contributed by Isaac Gouy
@@ -15,15 +16,25 @@
 
 using System;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Text;
+using Xunit;
 
 namespace BenchmarksGame
 {
     public class Fasta_2
     {
-        static int Main(string[] args)
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+        [Fact]
+        public static int TestEntryPoint()
         {
-            int n = args.Length > 0 ? Int32.Parse(args[0]) : 1000;
+            return Test(null);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static int Test(int? arg)
+        {
+            int n = arg ?? 1000;
 
             Bench(n, true);
             return 100;

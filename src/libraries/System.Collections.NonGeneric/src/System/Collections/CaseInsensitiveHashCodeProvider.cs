@@ -12,7 +12,6 @@ namespace System.Collections
     [Obsolete("CaseInsensitiveHashCodeProvider has been deprecated. Use StringComparer instead.")]
     public class CaseInsensitiveHashCodeProvider : IHashCodeProvider
     {
-        private static volatile CaseInsensitiveHashCodeProvider? s_invariantCaseInsensitiveHashCodeProvider;
         private readonly CompareInfo _compareInfo;
 
         public CaseInsensitiveHashCodeProvider()
@@ -22,24 +21,18 @@ namespace System.Collections
 
         public CaseInsensitiveHashCodeProvider(CultureInfo culture)
         {
-            if (culture == null)
-            {
-                throw new ArgumentNullException(nameof(culture));
-            }
+            ArgumentNullException.ThrowIfNull(culture);
+
             _compareInfo = culture.CompareInfo;
         }
 
         public static CaseInsensitiveHashCodeProvider Default => new CaseInsensitiveHashCodeProvider();
 
-        public static CaseInsensitiveHashCodeProvider DefaultInvariant => s_invariantCaseInsensitiveHashCodeProvider ??
-            (s_invariantCaseInsensitiveHashCodeProvider = new CaseInsensitiveHashCodeProvider(CultureInfo.InvariantCulture));
+        public static CaseInsensitiveHashCodeProvider DefaultInvariant => field ??= new CaseInsensitiveHashCodeProvider(CultureInfo.InvariantCulture);
 
         public int GetHashCode(object obj)
         {
-            if (obj == null)
-            {
-                throw new ArgumentNullException(nameof(obj));
-            }
+            ArgumentNullException.ThrowIfNull(obj);
 
             string? s = obj as string;
             return s != null ?

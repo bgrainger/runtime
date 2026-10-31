@@ -11,23 +11,20 @@
 //
 // The right side of the debugger can be built to target multiple platforms. This means it is not
 // safe to use the CONTEXT structure directly: the context of the platform we're building for might not match
-// that of the one the debugger is targetting. So all right side code will use the DT_CONTEXT abstraction
+// that of the one the debugger is targeting. So all right side code will use the DT_CONTEXT abstraction
 // instead. When the debugger target is the local platform this will just resolve back into CONTEXT, but cross
 // platform we'll provide a hand-rolled version.
 //
 
-//
-// For cross platform cases we also need to provide a helper function for byte-swapping a context structure
-// should the endian-ness of the debugger and debuggee platforms differ. This is called ByteSwapContext and is
-// obviously a no-op for those cases where the left and right sides agree on storage format.
-//
-// NOTE: Any changes to the field layout of DT_CONTEXT must be tracked in the associated definition of
-// ByteSwapContext.
-//
-
-//
-// **** NOTE: Keep these in sync with pal/inc/pal.h ****
-//
+// ****
+// **** NOTE: T_CONTEXT (in pal/inc/pal.h) can now be larger than DT_CONTEXT (currently T_CONTEXT on Linux/MacOS
+// ****       x64 includes the XSTATE registers). This means the following:
+// ****
+// ****       1) The DBI/DAC APIs cannot assume that incoming context buffers are T_CONTEXT sized.
+// ****       2) When the DAC calls the supplied data target's context APIs, the size of the context buffer must
+// ****          be the size of the DT_CONTEXT for compatiblity.
+// ****       3) DBI/DAC code can not cast and copy from a T_CONTEXT into a DT_CONTEXT buffer.
+// ****       
 
 // This odd define pattern is needed because in DBI we set _TARGET_ to match the host and
 // DBG_TARGET to control our targeting. In x-plat DBI DBG_TARGET won't match _TARGET_ and
@@ -48,7 +45,15 @@
 #define DTCONTEXT_IS_ARM
 #elif defined (TARGET_ARM64)
 #define DTCONTEXT_IS_ARM64
+#elif defined (TARGET_LOONGARCH64)
+#define DTCONTEXT_IS_LOONGARCH64
+#elif defined (TARGET_RISCV64)
+#define DTCONTEXT_IS_RISCV64
+#elif defined (TARGET_WASM)
+#define DTCONTEXT_IS_WASM
 #endif
+
+#define CONTEXT_AREA_MASK 0xffff
 
 #if defined(DTCONTEXT_IS_X86)
 
@@ -114,50 +119,7 @@ typedef struct {
 
 } DT_CONTEXT;
 
-// Since the target is little endian in this case we only have to provide a real implementation of
-// ByteSwapContext if the platform we're building on is big-endian.
-#ifdef BIGENDIAN
-inline void ByteSwapContext(DT_CONTEXT *pContext)
-{
-    // Our job is simplified since the context has large contiguous ranges with fields of the same size. Keep
-    // the following logic in sync with the definition of DT_CONTEXT above.
-    BYTE *pbContext = (BYTE*)pContext;
-
-    // The first span consists of 4 byte fields.
-    DWORD cbFields = (offsetof(DT_CONTEXT, FloatSave) + offsetof(DT_FLOATING_SAVE_AREA, RegisterArea)) / 4;
-    for (DWORD i = 0; i < cbFields; i++)
-    {
-        ByteSwapPrimitive(pbContext, pbContext, 4);
-        pbContext += 4;
-    }
-
-    // Then there's a float save area containing 8 byte fields.
-    cbFields = sizeof(pContext->FloatSave.RegisterArea);
-    for (DWORD i = 0; i < cbFields; i++)
-    {
-        ByteSwapPrimitive(pbContext, pbContext, 8);
-        pbContext += 8;
-    }
-
-    // Back to 4 byte fields.
-    cbFields = (offsetof(DT_CONTEXT, ExtendedRegisters) - offsetof(DT_CONTEXT, SegGs)) / 4;
-    for (DWORD i = 0; i < cbFields; i++)
-    {
-        ByteSwapPrimitive(pbContext, pbContext, 4);
-        pbContext += 4;
-    }
-
-    // We don't know the formatting of the extended register area, but the debugger doesn't access this data
-    // on the left side, so just leave it in left-side format for now.
-
-    // Validate that we converted up to where we think we did as a hedge against DT_CONTEXT layout changes.
-    _PASSERT((pbContext - ((BYTE*)pContext)) == (sizeof(DT_CONTEXT) - sizeof(pContext->ExtendedRegisters)));
-}
-#else // BIGENDIAN
-inline void ByteSwapContext(DT_CONTEXT *pContext)
-{
-}
-#endif // BIGENDIAN
+static_assert(sizeof(DT_CONTEXT) == sizeof(T_CONTEXT), "DT_CONTEXT size must equal the T_CONTEXT size on X86");
 
 #elif defined(DTCONTEXT_IS_AMD64)
 
@@ -276,6 +238,12 @@ typedef struct DECLSPEC_ALIGN(16) {
     DWORD64 LastExceptionFromRip;
 } DT_CONTEXT;
 
+#if !defined(CROSS_COMPILE) && !defined(TARGET_WINDOWS)
+static_assert(sizeof(DT_CONTEXT) == offsetof(T_CONTEXT, XStateFeaturesMask), "DT_CONTEXT must not include the XSTATE registers on AMD64");
+#else
+static_assert(sizeof(DT_CONTEXT) == sizeof(T_CONTEXT), "DT_CONTEXT size must equal the T_CONTEXT size on AMD64");
+#endif
+
 #elif defined(DTCONTEXT_IS_ARM)
 
 #define DT_CONTEXT_ARM 0x00200000L
@@ -290,6 +258,7 @@ typedef struct DECLSPEC_ALIGN(16) {
 
 #define DT_ARM_MAX_BREAKPOINTS     8
 #define DT_ARM_MAX_WATCHPOINTS     1
+
 
 typedef struct {
     ULONGLONG Low;
@@ -355,6 +324,8 @@ typedef DECLSPEC_ALIGN(8) struct {
     DWORD Padding2[2];
 
 } DT_CONTEXT;
+
+static_assert(sizeof(DT_CONTEXT) == sizeof(T_CONTEXT), "DT_CONTEXT size must equal the T_CONTEXT size on ARM32");
 
 #elif defined(DTCONTEXT_IS_ARM64)
 
@@ -447,9 +418,150 @@ typedef DECLSPEC_ALIGN(16) struct {
 
 } DT_CONTEXT;
 
+
+#if !defined(CROSS_COMPILE) && !defined(TARGET_WINDOWS)
+static_assert(sizeof(DT_CONTEXT) == offsetof(T_CONTEXT, XStateFeaturesMask), "DT_CONTEXT must not include the SVE registers on ARM64");
+#else
+static_assert(sizeof(DT_CONTEXT) == sizeof(T_CONTEXT), "DT_CONTEXT size must equal the T_CONTEXT size on ARM64");
+#endif
+
+#elif defined(DTCONTEXT_IS_LOONGARCH64)
+
+#define DT_CONTEXT_LOONGARCH64 0x00800000L
+
+#define DT_CONTEXT_CONTROL         (DT_CONTEXT_LOONGARCH64 | 0x1L)
+#define DT_CONTEXT_INTEGER         (DT_CONTEXT_LOONGARCH64 | 0x2L)
+#define DT_CONTEXT_FLOATING_POINT  (DT_CONTEXT_LOONGARCH64 | 0x4L)
+#define DT_CONTEXT_DEBUG_REGISTERS (DT_CONTEXT_LOONGARCH64 | 0x8L)
+
+#define DT_CONTEXT_FULL (DT_CONTEXT_CONTROL | DT_CONTEXT_INTEGER | DT_CONTEXT_FLOATING_POINT)
+#define DT_CONTEXT_ALL (DT_CONTEXT_CONTROL | DT_CONTEXT_INTEGER | DT_CONTEXT_FLOATING_POINT | DT_CONTEXT_DEBUG_REGISTERS)
+
+typedef struct DECLSPEC_ALIGN(16) {
+    //
+    // Control flags.
+    //
+
+    /* +0x000 */ DWORD ContextFlags;
+
+    //
+    // Integer registers
+    //
+    DWORD64 R0;
+    DWORD64 Ra;
+    DWORD64 Tp;
+    DWORD64 Sp;
+    DWORD64 A0;
+    DWORD64 A1;
+    DWORD64 A2;
+    DWORD64 A3;
+    DWORD64 A4;
+    DWORD64 A5;
+    DWORD64 A6;
+    DWORD64 A7;
+    DWORD64 T0;
+    DWORD64 T1;
+    DWORD64 T2;
+    DWORD64 T3;
+    DWORD64 T4;
+    DWORD64 T5;
+    DWORD64 T6;
+    DWORD64 T7;
+    DWORD64 T8;
+    DWORD64 X0;
+    DWORD64 Fp;
+    DWORD64 S0;
+    DWORD64 S1;
+    DWORD64 S2;
+    DWORD64 S3;
+    DWORD64 S4;
+    DWORD64 S5;
+    DWORD64 S6;
+    DWORD64 S7;
+    DWORD64 S8;
+    DWORD64 Pc;
+
+    //
+    // Floating Point Registers: FPR64/LSX/LASX.
+    //
+    ULONGLONG F[4*32];
+    DWORD64 Fcc;
+    DWORD Fcsr;
+} DT_CONTEXT;
+
+static_assert(sizeof(DT_CONTEXT) == sizeof(T_CONTEXT), "DT_CONTEXT size must equal the T_CONTEXT size");
+
+#elif defined(DTCONTEXT_IS_RISCV64)
+
+#define DT_CONTEXT_RISCV64 0x01000000L
+
+#define DT_CONTEXT_CONTROL         (DT_CONTEXT_RISCV64 | 0x1L)
+#define DT_CONTEXT_INTEGER         (DT_CONTEXT_RISCV64 | 0x2L)
+#define DT_CONTEXT_FLOATING_POINT  (DT_CONTEXT_RISCV64 | 0x4L)
+#define DT_CONTEXT_DEBUG_REGISTERS (DT_CONTEXT_RISCV64 | 0x8L)
+
+#define DT_CONTEXT_FULL (DT_CONTEXT_CONTROL | DT_CONTEXT_INTEGER | DT_CONTEXT_FLOATING_POINT)
+#define DT_CONTEXT_ALL (DT_CONTEXT_CONTROL | DT_CONTEXT_INTEGER | DT_CONTEXT_FLOATING_POINT | DT_CONTEXT_DEBUG_REGISTERS)
+
+typedef struct DECLSPEC_ALIGN(16) {
+    //
+    // Control flags.
+    //
+
+    /* +0x000 */ DWORD ContextFlags;
+
+    //
+    // Integer registers
+    //
+    DWORD64 R0;
+    DWORD64 Ra;
+    DWORD64 Sp;
+    DWORD64 Gp;
+    DWORD64 Tp;
+    DWORD64 T0;
+    DWORD64 T1;
+    DWORD64 T2;
+    DWORD64 Fp;
+    DWORD64 S1;
+    DWORD64 A0;
+    DWORD64 A1;
+    DWORD64 A2;
+    DWORD64 A3;
+    DWORD64 A4;
+    DWORD64 A5;
+    DWORD64 A6;
+    DWORD64 A7;
+    DWORD64 S2;
+    DWORD64 S3;
+    DWORD64 S4;
+    DWORD64 S5;
+    DWORD64 S6;
+    DWORD64 S7;
+    DWORD64 S8;
+    DWORD64 S9;
+    DWORD64 S10;
+    DWORD64 S11;
+    DWORD64 T3;
+    DWORD64 T4;
+    DWORD64 T5;
+    DWORD64 T6;
+    DWORD64 Pc;
+
+    //
+    // Floating Point Registers
+    //
+    ULONGLONG F[32];
+    DWORD Fcsr;
+} DT_CONTEXT;
+
+static_assert(sizeof(DT_CONTEXT) == sizeof(T_CONTEXT), "DT_CONTEXT size must equal the T_CONTEXT size");
+
+#elif defined(DTCONTEXT_IS_WASM)
+// no context for wasm
+typedef struct {
+} DT_CONTEXT;
 #else
 #error Unsupported platform
 #endif
-
 
 #endif // __DBG_TARGET_CONTEXT_INCLUDED

@@ -2,11 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
-using System.IO;
 using System.Reflection;
-using System.Text;
-using System.Security.Cryptography;
-using Test.Cryptography;
+using Microsoft.DotNet.XUnitExtensions;
 using Xunit;
 
 namespace System.Security.Cryptography.Tests
@@ -17,12 +14,26 @@ namespace System.Security.Cryptography.Tests
         protected abstract byte[] IV { get; }
         protected abstract SymmetricAlgorithm CreateAlgorithm();
 
-        protected void OneShotRoundtripTest(byte[] plaintext, byte[] ciphertext, PaddingMode padding, CipherMode mode, int feedbackSize = 0)
+        protected void OneShotRoundtripTest(
+            byte[] plaintext,
+            byte[] ciphertext,
+            PaddingMode padding,
+            CipherMode mode,
+            int feedbackSize = 0,
+            bool viaSetKey = false)
         {
             using (SymmetricAlgorithm alg = CreateAlgorithm())
             {
                 int paddingSizeBytes = mode == CipherMode.CFB ? feedbackSize / 8 : alg.BlockSize / 8;
-                alg.Key = Key;
+
+                if (viaSetKey)
+                {
+                    alg.SetKey(Key);
+                }
+                else
+                {
+                    alg.Key = Key;
+                }
 
                 // Set the instance to use a different mode and padding than what will be used
                 // in the one-shots to test that the one shot "wins".
@@ -408,6 +419,283 @@ namespace System.Security.Cryptography.Tests
             Assert.Empty(missingMethods);
         }
 
+        [ConditionalFact]
+        public void DecryptOneShot_Cfb8_ToleratesExtraPadding()
+        {
+            using (SymmetricAlgorithm alg = CreateAlgorithm())
+            {
+                if (alg is RC2)
+                {
+                    throw new SkipTestException("RC2 does not support CFB.");
+                }
+
+                alg.Key = Key;
+
+                // This is a plaintext that is manually padded. It contains one byte of
+                // data, padded up to the block size, in bytes, of the algorithm.
+                Span<byte> excessPadding = new byte[alg.BlockSize / 8];
+                excessPadding.Fill((byte)(alg.BlockSize / 8 - 1));
+                excessPadding[0] = 0x42;
+
+                // Use paddingMode: None since we manually padded our data
+                byte[] ciphertext = alg.EncryptCfb(excessPadding, IV, paddingMode: PaddingMode.None, feedbackSizeInBits: 8);
+
+                // Now decrypt it with PKCS7 padding mode. It should remove all but the first byte since it is not padding.
+                byte[] decrypted = alg.DecryptCfb(ciphertext, IV, paddingMode: PaddingMode.PKCS7, feedbackSizeInBits: 8);
+                Assert.Equal(new byte[] { 0x42 }, decrypted);
+            }
+        }
+
+        [Theory]
+        [InlineData(PaddingMode.PKCS7, 0)]
+        [InlineData(PaddingMode.ANSIX923, 0)]
+        [InlineData(PaddingMode.ISO10126, 0)]
+        [InlineData(PaddingMode.PKCS7, 2048)]
+        [InlineData(PaddingMode.ANSIX923, 2048)]
+        [InlineData(PaddingMode.ISO10126, 2048)]
+        public void DecryptOneShot_Cbc_InvalidPadding_DoesNotContainPlaintext(PaddingMode paddingMode, int ciphertextSize)
+        {
+            using (SymmetricAlgorithm alg = CreateAlgorithm())
+            {
+                alg.Key = Key;
+                int size = ciphertextSize > 0 ? ciphertextSize : alg.BlockSize / 8;
+
+                byte plaintextByte = 0xFE;
+                byte[] invalidPadding = new byte[size];
+                invalidPadding.AsSpan().Fill(plaintextByte);
+                byte[] destination = new byte[size];
+
+                // Use paddingMode: None since we manually padded our data
+                byte[] ciphertext = alg.EncryptCbc(invalidPadding, IV, paddingMode: PaddingMode.None);
+                Assert.Throws<CryptographicException>(() => alg.DecryptCbc(ciphertext, IV, destination, paddingMode: paddingMode));
+                Assert.True(destination.AsSpan().IndexOf(plaintextByte) < 0, "does not contain plaintext data");
+            }
+        }
+
+        [Theory]
+        [InlineData(PaddingMode.PKCS7, 0)]
+        [InlineData(PaddingMode.ANSIX923, 0)]
+        [InlineData(PaddingMode.ISO10126, 0)]
+        [InlineData(PaddingMode.PKCS7, 2048)]
+        [InlineData(PaddingMode.ANSIX923, 2048)]
+        [InlineData(PaddingMode.ISO10126, 2048)]
+        public void DecryptOneShot_Ecb_InvalidPadding_DoesNotContainPlaintext(PaddingMode paddingMode, int ciphertextSize)
+        {
+            using (SymmetricAlgorithm alg = CreateAlgorithm())
+            {
+                alg.Key = Key;
+                int size = ciphertextSize > 0 ? ciphertextSize : alg.BlockSize / 8;
+
+                byte plaintextByte = 0xFE;
+                byte[] invalidPadding = new byte[size];
+                invalidPadding.AsSpan().Fill(plaintextByte);
+                byte[] destination = new byte[size];
+
+                // Use paddingMode: None since we manually padded our data
+                byte[] ciphertext = alg.EncryptEcb(invalidPadding, paddingMode: PaddingMode.None);
+                Assert.Throws<CryptographicException>(() => alg.DecryptEcb(ciphertext, destination, paddingMode: paddingMode));
+                Assert.True(destination.AsSpan().IndexOf(plaintextByte) < 0, "does not contain plaintext data");
+            }
+        }
+
+        [ConditionalTheory]
+        [InlineData(PaddingMode.PKCS7, 0)]
+        [InlineData(PaddingMode.ANSIX923, 0)]
+        [InlineData(PaddingMode.ISO10126, 0)]
+        [InlineData(PaddingMode.PKCS7, 2048)]
+        [InlineData(PaddingMode.ANSIX923, 2048)]
+        [InlineData(PaddingMode.ISO10126, 2048)]
+        public void DecryptOneShot_Cfb_InvalidPadding_DoesNotContainPlaintext(PaddingMode paddingMode, int ciphertextSize)
+        {
+            using (SymmetricAlgorithm alg = CreateAlgorithm())
+            {
+                if (alg is RC2)
+                {
+                    throw new SkipTestException("RC2 does not support CFB.");
+                }
+
+                alg.Key = Key;
+                int size = ciphertextSize > 0 ? ciphertextSize : alg.BlockSize / 8;
+
+                byte plaintextByte = 0xFE;
+                byte[] invalidPadding = new byte[size];
+                invalidPadding.AsSpan().Fill(plaintextByte);
+                byte[] destination = new byte[size];
+
+                // Use paddingMode: None since we manually padded our data
+                byte[] ciphertext = alg.EncryptCfb(invalidPadding, IV, paddingMode: PaddingMode.None);
+                Assert.Throws<CryptographicException>(() => alg.DecryptCfb(ciphertext, IV, destination, paddingMode: paddingMode));
+                Assert.True(destination.AsSpan().IndexOf(plaintextByte) < 0, "does not contain plaintext data");
+            }
+        }
+
+        [Theory]
+        [InlineData(PaddingMode.PKCS7)]
+        [InlineData(PaddingMode.ANSIX923)]
+        [InlineData(PaddingMode.ISO10126)]
+        public void DecryptOneShot_Cbc_TooShortDoesNotContainPlaintext(PaddingMode paddingMode)
+        {
+            using (SymmetricAlgorithm alg = CreateAlgorithm())
+            {
+                alg.Key = Key;
+                int size = 2048;
+
+                byte plaintextByte = 0xFE;
+                Span<byte> plaintext = new byte[size + 1];
+                plaintext.Fill(plaintextByte);
+                Span<byte> destination = new byte[size];
+                byte[] ciphertext = alg.EncryptCbc(plaintext, IV, paddingMode: paddingMode);
+
+                bool success = alg.TryDecryptCbc(ciphertext, IV, destination, out int bytesWritten, paddingMode: paddingMode);
+                Assert.False(success, nameof(alg.TryDecryptCbc));
+                Assert.True(destination.IndexOf(plaintextByte) < 0, "does not contain plaintext data");
+                Assert.Equal(0, bytesWritten);
+            }
+        }
+
+        [ConditionalTheory]
+        [InlineData(PaddingMode.PKCS7)]
+        [InlineData(PaddingMode.ANSIX923)]
+        [InlineData(PaddingMode.ISO10126)]
+        public void DecryptOneShot_Cfb8_TooShortDoesNotContainPlaintext(PaddingMode paddingMode)
+        {
+            using (SymmetricAlgorithm alg = CreateAlgorithm())
+            {
+                if (alg is RC2)
+                {
+                    throw new SkipTestException("RC2 does not support CFB.");
+                }
+
+                alg.Key = Key;
+                int size = 2048;
+
+                byte plaintextByte = 0xFE;
+                Span<byte> plaintext = new byte[size + 1];
+                plaintext.Fill(0xFE);
+                Span<byte> destination = new byte[size];
+                byte[] ciphertext = alg.EncryptCfb(plaintext, IV, paddingMode: paddingMode);
+
+                bool success = alg.TryDecryptCfb(ciphertext, IV, destination, out int bytesWritten, paddingMode: paddingMode);
+                Assert.False(success, nameof(alg.TryDecryptCfb));
+                Assert.True(destination.IndexOf(plaintextByte) < 0, "does not contain plaintext data");
+                Assert.Equal(0, bytesWritten);
+            }
+        }
+
+        [Theory]
+        [InlineData(PaddingMode.PKCS7)]
+        [InlineData(PaddingMode.ANSIX923)]
+        [InlineData(PaddingMode.ISO10126)]
+        public void DecryptOneShot_Cbc_IncompleteBlock(PaddingMode paddingMode)
+        {
+            using (SymmetricAlgorithm alg = CreateAlgorithm())
+            {
+                alg.Key = Key;
+                byte[] ciphertext = new byte[alg.BlockSize / 8 - 1];
+                byte[] destination = new byte[alg.BlockSize / 8];
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptCbc(ciphertext, IV, paddingMode));
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptCbc(ciphertext, IV, destination, paddingMode));
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptCbc(new ReadOnlySpan<byte>(ciphertext), IV, paddingMode));
+                Assert.ThrowsAny<CryptographicException>(() =>
+                    alg.TryDecryptCbc(new ReadOnlySpan<byte>(ciphertext), IV, destination, out _, paddingMode));
+            }
+        }
+
+        [Theory]
+        [InlineData(PaddingMode.PKCS7)]
+        [InlineData(PaddingMode.ANSIX923)]
+        [InlineData(PaddingMode.ISO10126)]
+        public void DecryptOneShot_Cbc_EmptyBlock(PaddingMode paddingMode)
+        {
+            using (SymmetricAlgorithm alg = CreateAlgorithm())
+            {
+                alg.Key = Key;
+                byte[] ciphertext = [];
+                byte[] destination = new byte[alg.BlockSize / 8];
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptCbc(ciphertext, IV, paddingMode));
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptCbc(ciphertext, IV, destination, paddingMode));
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptCbc(new ReadOnlySpan<byte>(ciphertext), IV, paddingMode));
+                Assert.ThrowsAny<CryptographicException>(() =>
+                    alg.TryDecryptCbc(new ReadOnlySpan<byte>(ciphertext), IV, destination, out _, paddingMode));
+            }
+        }
+
+        [Theory]
+        [InlineData(PaddingMode.PKCS7)]
+        [InlineData(PaddingMode.ANSIX923)]
+        [InlineData(PaddingMode.ISO10126)]
+        public void DecryptOneShot_Ecb_IncompleteBlock(PaddingMode paddingMode)
+        {
+            using (SymmetricAlgorithm alg = CreateAlgorithm())
+            {
+                alg.Key = Key;
+                byte[] ciphertext = new byte[alg.BlockSize / 8 - 1];
+                byte[] destination = new byte[alg.BlockSize / 8];
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptEcb(ciphertext, paddingMode));
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptEcb(ciphertext, destination, paddingMode));
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptEcb(new ReadOnlySpan<byte>(ciphertext), paddingMode));
+                Assert.ThrowsAny<CryptographicException>(() => alg.TryDecryptEcb(ciphertext, destination, paddingMode, out _));
+            }
+        }
+
+        [Theory]
+        [InlineData(PaddingMode.PKCS7)]
+        [InlineData(PaddingMode.ANSIX923)]
+        [InlineData(PaddingMode.ISO10126)]
+        public void DecryptOneShot_Ecb_EmptyBlock(PaddingMode paddingMode)
+        {
+            using (SymmetricAlgorithm alg = CreateAlgorithm())
+            {
+                alg.Key = Key;
+                byte[] ciphertext = [];
+                byte[] destination = new byte[alg.BlockSize / 8];
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptEcb(ciphertext, paddingMode));
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptEcb(ciphertext, destination, paddingMode));
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptEcb(new ReadOnlySpan<byte>(ciphertext), paddingMode));
+                Assert.ThrowsAny<CryptographicException>(() => alg.TryDecryptEcb(ciphertext, destination, paddingMode, out _));
+            }
+        }
+
+        [Theory]
+        [InlineData(PaddingMode.PKCS7)]
+        [InlineData(PaddingMode.ANSIX923)]
+        [InlineData(PaddingMode.ISO10126)]
+        public void DecryptOneShot_Cfb_IncompleteBlock(PaddingMode paddingMode)
+        {
+            using (SymmetricAlgorithm alg = CreateAlgorithm())
+            {
+                int feedbackSize = alg.FeedbackSize;
+                alg.Key = Key;
+                byte[] ciphertext = new byte[feedbackSize / 8 - 1];
+                byte[] destination = new byte[feedbackSize / 8];
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptCfb(ciphertext, IV, paddingMode, feedbackSize));
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptCfb(ciphertext, IV, destination, paddingMode, feedbackSize));
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptCfb(new ReadOnlySpan<byte>(ciphertext), IV, paddingMode, feedbackSize));
+                Assert.ThrowsAny<CryptographicException>(() =>
+                    alg.TryDecryptCfb(ciphertext, IV, destination, out _, paddingMode, feedbackSize));
+            }
+        }
+
+        [Theory]
+        [InlineData(PaddingMode.PKCS7)]
+        [InlineData(PaddingMode.ANSIX923)]
+        [InlineData(PaddingMode.ISO10126)]
+        public void DecryptOneShot_Cfb_EmptyBlock(PaddingMode paddingMode)
+        {
+            using (SymmetricAlgorithm alg = CreateAlgorithm())
+            {
+                int feedbackSize = alg.FeedbackSize;
+                alg.Key = Key;
+                byte[] ciphertext = [];
+                byte[] destination = new byte[feedbackSize / 8];
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptCfb(ciphertext, IV, paddingMode, feedbackSize));
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptCfb(ciphertext, IV, destination, paddingMode, feedbackSize));
+                Assert.ThrowsAny<CryptographicException>(() => alg.DecryptCfb(new ReadOnlySpan<byte>(ciphertext), IV, paddingMode, feedbackSize));
+                Assert.ThrowsAny<CryptographicException>(() =>
+                    alg.TryDecryptCfb(ciphertext, IV, destination, out _, paddingMode, feedbackSize));
+            }
+        }
+
         private static void AssertPlaintexts(ReadOnlySpan<byte> expected, ReadOnlySpan<byte> actual, PaddingMode padding)
         {
             if (padding == PaddingMode.Zeros)
@@ -432,6 +720,13 @@ namespace System.Security.Cryptography.Tests
             {
                 AssertExtensions.SequenceEqual(expected, actual);
             }
+        }
+
+        protected static byte[] ByteArrayFilledWith(byte contents, int length)
+        {
+            byte[] ret = new byte[length];
+            ret.AsSpan().Fill(contents);
+            return ret;
         }
     }
 }

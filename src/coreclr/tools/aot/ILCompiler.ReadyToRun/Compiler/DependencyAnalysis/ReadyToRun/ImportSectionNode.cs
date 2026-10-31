@@ -4,7 +4,8 @@
 using System;
 using System.Collections.Generic;
 
-using Internal.CorConstants;
+using Internal.ReadyToRunConstants;
+using ILCompiler.DependencyAnalysisFramework;
 
 namespace ILCompiler.DependencyAnalysis.ReadyToRun
 {
@@ -12,11 +13,21 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
     {
         private class ImportTable : ArrayOfEmbeddedDataNode<Import>
         {
-            public ImportTable(string startSymbol, string endSymbol) : base(startSymbol, endSymbol, nodeSorter: new EmbeddedObjectNodeComparer(new CompilerComparer())) {}
+            private byte _alignment;
+
+            public ImportTable(string symbol, byte alignment) : base(symbol, nodeSorter: new EmbeddedObjectNodeComparer(CompilerComparer.Instance))
+            {
+                _alignment = alignment;
+            }
 
             public override bool ShouldSkipEmittingObjectNode(NodeFactory factory) => false;
 
             public override int ClassCode => (int)ObjectNodeOrder.ImportSectionNode;
+
+            protected override int GetAlignmentRequirement(NodeFactory factory)
+            {
+                return _alignment;
+            }
         }
 
         private readonly ImportTable _imports;
@@ -24,36 +35,34 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         private readonly ArrayOfEmbeddedPointersNode<Signature> _signatures;
         // TODO: annoying - cannot enumerate the ArrayOfEmbeddedPointersNode so we must keep a copy.
         private readonly List<Signature> _signatureList;
-        private readonly GCRefMapNode _gcRefMap;
 
-        private readonly CorCompileImportType _type;
-        private readonly CorCompileImportFlags _flags;
+        private readonly ReadyToRunImportSectionType _type;
+        private readonly ReadyToRunImportSectionFlags _flags;
         private readonly byte _entrySize;
         private readonly string _name;
         private readonly bool _emitPrecode;
-        private readonly bool _emitGCRefMap;
 
         private bool _materializedSignature;
 
-        public ImportSectionNode(string name, CorCompileImportType importType, CorCompileImportFlags flags, byte entrySize, bool emitPrecode, bool emitGCRefMap)
+        public ImportSectionNode(string name, ReadyToRunImportSectionType importType, ReadyToRunImportSectionFlags flags, byte entrySize, bool emitPrecode, bool emitGCRefMap)
         {
             _name = name;
             _type = importType;
-            _flags = flags;
+            _flags = flags | (emitGCRefMap ? ReadyToRunImportSectionFlags.GCRefMap : ReadyToRunImportSectionFlags.None);
             _entrySize = entrySize;
             _emitPrecode = emitPrecode;
-            _emitGCRefMap = emitGCRefMap;
 
-            _imports = new ImportTable(_name + "_ImportBegin", _name + "_ImportEnd");
-            _signatures = new ArrayOfEmbeddedPointersNode<Signature>(_name + "_SigBegin", _name + "_SigEnd", new EmbeddedObjectNodeComparer(new CompilerComparer()));
+            _imports = new ImportTable(_name + "_ImportBegin", entrySize);
+            _signatures = new ArrayOfEmbeddedPointersNode<Signature>(_name + "_SigBegin", new EmbeddedObjectNodeComparer(CompilerComparer.Instance));
             _signatureList = new List<Signature>();
-            _gcRefMap = _emitGCRefMap ? new GCRefMapNode(this) : null;
         }
 
         public void MaterializeSignature(NodeFactory r2rFactory)
         {
             if (!_materializedSignature)
             {
+                _signatureList.MergeSortAllowDuplicates(new SortableDependencyNode.ObjectNodeComparer(CompilerComparer.Instance));
+
                 foreach (Signature signature in _signatureList)
                 {
                     signature.GetData(r2rFactory, relocsOnly: false);
@@ -77,9 +86,9 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                 _signatureList.Add(import.ImportSignature.Target);
             }
 
-            if (_emitGCRefMap)
+            if (EmitGCRefMap)
             {
-                _gcRefMap.AddImport(import);
+                ((MethodFixupSignature)import.Signature).EmitGCRefMap = true;
             }
         }
 
@@ -87,7 +96,9 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
         public bool EmitPrecode => _emitPrecode;
 
-        public bool IsEager => (_flags & CorCompileImportFlags.CORCOMPILE_IMPORT_FLAGS_EAGER) != 0;
+        public bool EmitGCRefMap => (_flags & ReadyToRunImportSectionFlags.GCRefMap) != 0;
+
+        public bool IsEager => (_flags & ReadyToRunImportSectionFlags.Eager) != 0;
 
         public override bool StaticDependenciesAreComputed => true;
 
@@ -99,7 +110,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         {
             if (!_imports.ShouldSkipEmittingObjectNode(factory))
             {
-                dataBuilder.EmitReloc(_imports.StartSymbol, RelocType.IMAGE_REL_BASED_ADDR32NB, 0);
+                dataBuilder.EmitReloc(_imports, RelocType.IMAGE_REL_BASED_ADDR32NB, 0);
             }
             else
             {
@@ -108,7 +119,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
             if (!relocsOnly)
             {
-                dataBuilder.EmitReloc(_imports.StartSymbol, RelocType.IMAGE_REL_SYMBOL_SIZE);
+                dataBuilder.EmitReloc(_imports, RelocType.IMAGE_REL_SYMBOL_SIZE);
                 dataBuilder.EmitShort((short)_flags);
                 dataBuilder.EmitByte((byte)_type);
                 dataBuilder.EmitByte(_entrySize);
@@ -116,31 +127,20 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
             if (!_signatures.ShouldSkipEmittingObjectNode(factory))
             {
-                dataBuilder.EmitReloc(_signatures.StartSymbol, RelocType.IMAGE_REL_BASED_ADDR32NB, 0);
+                dataBuilder.EmitReloc(_signatures, RelocType.IMAGE_REL_BASED_ADDR32NB, 0);
             }
             else
             {
                 dataBuilder.EmitUInt(0);
             }
 
-            if (_emitGCRefMap)
-            {
-                dataBuilder.EmitReloc(_gcRefMap, RelocType.IMAGE_REL_BASED_ADDR32NB, 0);
-            }
-            else
-            {
-                dataBuilder.EmitUInt(0);
-            }
+            dataBuilder.EmitUInt(0);
         }
 
-        public override IEnumerable<DependencyListEntry> GetStaticDependencies(NodeFactory context)
+        public override void AddStaticDependencies(DependencySink sink, NodeFactory context)
         {
-            yield return new DependencyListEntry(_imports, "Import section fixup data");
-            yield return new DependencyListEntry(_signatures, "Import section signatures");
-            if (_emitGCRefMap)
-            {
-                yield return new DependencyListEntry(_gcRefMap, "GC ref map");
-            }
+            sink.Add(_imports, "Import section fixup data");
+            sink.Add(_signatures, "Import section signatures");
         }
 
         protected override string GetName(NodeFactory context)
@@ -152,5 +152,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
         {
             return _name.CompareTo(((ImportSectionNode)other)._name);
         }
+
+        public int EntrySize => _entrySize;
     }
 }

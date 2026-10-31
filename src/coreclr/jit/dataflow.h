@@ -5,7 +5,7 @@
 //   This class is used to perform data flow optimizations.
 //   An example usage would be:
 //
-//     DataFlow flow(m_pCompiler);
+//     DataFlow flow(m_compiler);
 //     flow.ForwardAnalysis(callback);
 //
 //  The "callback" object needs to implement the following member
@@ -17,6 +17,7 @@
 //  public:
 //      void StartMerge(BasicBlock* block);
 //      void Merge(BasicBlock* block, BasicBlock* pred, unsigned dupCount);
+//      void MergeHandler(BasicBlock* block, BasicBlock* tryBeg, BasicBlock* tryLast);
 //      bool EndMerge(BasicBlock* block);
 //  };
 #pragma once
@@ -36,41 +37,41 @@ public:
     void ForwardAnalysis(TCallback& callback);
 
 private:
-    Compiler* m_pCompiler;
+    Compiler* m_compiler;
 };
 
 template <typename TCallback>
 void DataFlow::ForwardAnalysis(TCallback& callback)
 {
-    jitstd::list<BasicBlock*> worklist(jitstd::allocator<void>(m_pCompiler->getAllocator()));
-
-    worklist.insert(worklist.begin(), m_pCompiler->fgFirstBB);
-    while (!worklist.empty())
+    assert(m_compiler->fgTrysContiguous());
+    if (m_compiler->m_dfsTree == nullptr)
     {
-        BasicBlock* block = *(worklist.begin());
-        worklist.erase(worklist.begin());
-
-        callback.StartMerge(block);
-        if (m_pCompiler->bbIsHandlerBeg(block))
-        {
-            EHblkDsc* ehDsc = m_pCompiler->ehGetBlockHndDsc(block);
-            callback.MergeHandler(block, ehDsc->ebdTryBeg, ehDsc->ebdTryLast);
-        }
-        else
-        {
-            flowList* preds = m_pCompiler->BlockPredsWithEH(block);
-            for (flowList* pred = preds; pred; pred = pred->flNext)
-            {
-                callback.Merge(block, pred->getBlock(), pred->flDupCount);
-            }
-        }
-
-        if (callback.EndMerge(block))
-        {
-            for (BasicBlock* succ : block->GetAllSuccs(m_pCompiler))
-            {
-                worklist.insert(worklist.end(), succ);
-            }
-        }
+        m_compiler->m_dfsTree = m_compiler->fgComputeDfs();
     }
+
+    bool changed;
+    do
+    {
+        changed = false;
+        for (unsigned i = m_compiler->m_dfsTree->GetPostOrderCount(); i > 0; i--)
+        {
+            BasicBlock* block = m_compiler->m_dfsTree->GetPostOrder(i - 1);
+
+            callback.StartMerge(block);
+            if (m_compiler->bbIsHandlerBeg(block))
+            {
+                EHblkDsc* ehDsc = m_compiler->ehGetBlockHndDsc(block);
+                callback.MergeHandler(block, ehDsc->ebdTryBeg, ehDsc->ebdTryLast);
+            }
+            else
+            {
+                for (FlowEdge* pred : block->PredEdges())
+                {
+                    callback.Merge(block, pred->getSourceBlock(), pred->getDupCount());
+                }
+            }
+
+            changed |= callback.EndMerge(block);
+        }
+    } while (changed && m_compiler->m_dfsTree->HasCycle());
 }

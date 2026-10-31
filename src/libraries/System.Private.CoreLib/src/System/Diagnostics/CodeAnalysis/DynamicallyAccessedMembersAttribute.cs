@@ -1,11 +1,13 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Runtime.CompilerServices;
+
 namespace System.Diagnostics.CodeAnalysis
 {
     /// <summary>
     /// Indicates that certain members on a specified <see cref="Type"/> are accessed dynamically,
-    /// for example through <see cref="System.Reflection"/>.
+    /// for example through <see cref="Reflection"/>.
     /// </summary>
     /// <remarks>
     /// This allows tools to understand which members are being accessed during the execution
@@ -25,6 +27,7 @@ namespace System.Diagnostics.CodeAnalysis
     /// should only be used on instance methods of types assignable to System.Type (or string, but no methods
     /// will use it there).
     /// </remarks>
+    [CompilerLoweringPreserve]
     [AttributeUsage(
         AttributeTargets.Field | AttributeTargets.ReturnValue | AttributeTargets.GenericParameter |
         AttributeTargets.Parameter | AttributeTargets.Property | AttributeTargets.Method |

@@ -3,23 +3,49 @@
 
 using System.Diagnostics;
 using System.Text.Json.Nodes;
-using System.Text.Json.Serialization.Metadata;
+using System.Text.Json.Schema;
 
 namespace System.Text.Json.Serialization.Converters
 {
-    internal sealed class JsonValueConverter : JsonConverter<JsonValue>
+    internal sealed class JsonValueConverter : JsonConverter<JsonValue?>
     {
-        public override void Write(Utf8JsonWriter writer, JsonValue value, JsonSerializerOptions options)
+        public override void Write(Utf8JsonWriter writer, JsonValue? value, JsonSerializerOptions options)
         {
-            Debug.Assert(value != null);
+            if (value is null)
+            {
+                writer.WriteNullValue();
+                return;
+            }
+
             value.WriteTo(writer, options);
         }
 
-        public override JsonValue Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        public override JsonValue? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
         {
-            JsonElement element = JsonElement.ParseValue(ref reader);
-            JsonValue value = new JsonValueTrimmable<JsonElement>(element, JsonMetadataServices.JsonElementConverter, options.GetNodeOptions());
-            return value;
+            if (reader.TokenType is JsonTokenType.Null)
+            {
+                return null;
+            }
+
+            switch (reader.TokenType)
+            {
+                case JsonTokenType.String:
+                case JsonTokenType.False:
+                case JsonTokenType.True:
+                case JsonTokenType.Number:
+                    return ReadNonNullPrimitiveValue(ref reader, options.GetNodeOptions());
+                default:
+                    JsonElement element = JsonElement.ParseValue(ref reader, options.AllowDuplicateProperties);
+                    return JsonValue.CreateFromElement(ref element, options.GetNodeOptions());
+            }
         }
+
+        internal static JsonValue ReadNonNullPrimitiveValue(ref Utf8JsonReader reader, JsonNodeOptions options)
+        {
+            Debug.Assert(reader.TokenType is JsonTokenType.String or JsonTokenType.False or JsonTokenType.True or JsonTokenType.Number);
+            return JsonValueOfJsonPrimitive.CreatePrimitiveValue(ref reader, options);
+        }
+
+        internal override JsonSchema? GetSchema(JsonNumberHandling _) => JsonSchema.CreateTrueSchema();
     }
 }

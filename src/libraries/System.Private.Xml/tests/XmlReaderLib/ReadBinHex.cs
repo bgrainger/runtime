@@ -1,9 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using OLEDB.Test.ModuleCore;
 using System.IO;
 using System.Text;
+using OLEDB.Test.ModuleCore;
 using XmlCoreTest.Common;
 
 namespace System.Xml.Tests
@@ -970,7 +970,17 @@ namespace System.Xml.Tests
                 DataReader.ReadElementContentAsBinHex(base64, 0, 4096);
                 return TEST_FAIL;
             }
-            catch (XmlException) { DataReader.Close(); return TEST_PASS; }
+            catch (XmlException ex)
+            {
+                // The exception message should not contain the entire input.
+                if (ex.Message.Length > 100)
+                {
+                    CError.WriteLine("Exception message is unexpectedly large: " + ex.Message.Length + " chars");
+                    return TEST_FAIL;
+                }
+                DataReader.Close();
+                return TEST_PASS;
+            }
             finally { DataReader.Close(); }
         }
 

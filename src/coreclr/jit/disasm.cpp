@@ -1,16 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 /***********************************************************************
-*
-* File: dis.cpp
-*
-
-*
-* File Comments:
-*
-*  This file handles disassembly. It is adapted from the MS linker.
-*
-***********************************************************************/
+ *
+ * File: disasm.cpp
+ *
+ *  This file handles disassembly for the "late disassembler".
+ *
+ ***********************************************************************/
 
 #include "jitpch.h"
 #ifdef _MSC_VER
@@ -21,8 +17,13 @@
 #ifdef LATE_DISASM
 /*****************************************************************************/
 
+#ifdef USE_COREDISTOOLS
+// The loggers have no way to pass a context variable, so this is a global.
+FILE* g_disAsmFileCorDisTools;
+#endif // USE_COREDISTOOLS
+
 // Define DISASM_DEBUG to get verbose output of late disassembler inner workings.
-//#define DISASM_DEBUG
+// #define DISASM_DEBUG
 #ifdef DISASM_DEBUG
 #ifdef DEBUG
 #define DISASM_DUMP(...)                                                                                               \
@@ -36,6 +37,8 @@
 #endif // !DISASM_DEBUG
 
 /*****************************************************************************/
+
+#ifdef USE_MSVCDIS
 
 #define MAX_CLASSNAME_LENGTH 1024
 
@@ -75,7 +78,9 @@
     linker,                                                                                                            \
     "/ALTERNATENAME:__imp_?PfncchfixupSet@DIS@@QAEP6GIPBV1@_KIPAGIPA_K@ZP6GI01I2I3@Z@Z=__imp_?PfncchfixupSet@DIS@@QAEP6GIPBV1@_KIPA_WIPA_K@ZP6GI01I2I3@Z@Z")
 
-#endif
+#endif // HOST_*
+
+#endif // USE_MSVCDIS
 
 /*****************************************************************************
  * Given an absolute address from the beginning of the code
@@ -91,12 +96,14 @@ typedef struct codeFix
 {
     codeFix* cfNext;
     unsigned cfFixup;
-} * codeFixPtr;
+}* codeFixPtr;
 
 typedef struct codeBlk
 {
     codeFix* cbFixupLst;
-} * codeBlkPtr;
+}* codeBlkPtr;
+
+#ifdef USE_MSVCDIS
 
 /*****************************************************************************
  * The following is the callback for jump label and direct function calls fixups.
@@ -108,7 +115,7 @@ typedef struct codeBlk
 
 /* static */
 size_t __stdcall DisAssembler::disCchAddr(
-    const DIS* pdis, DIS::ADDR addr, __in_ecount(cchMax) wchar_t* wz, size_t cchMax, DWORDLONG* pdwDisp)
+    const DIS* pdis, DIS::ADDR addr, _In_reads_(cchMax) wchar_t* wz, size_t cchMax, DWORDLONG* pdwDisp)
 {
     DisAssembler* pDisAsm = (DisAssembler*)pdis->PvClient();
     assert(pDisAsm);
@@ -116,7 +123,7 @@ size_t __stdcall DisAssembler::disCchAddr(
 }
 
 size_t DisAssembler::disCchAddrMember(
-    const DIS* pdis, DIS::ADDR addr, __in_ecount(cchMax) wchar_t* wz, size_t cchMax, DWORDLONG* pdwDisp)
+    const DIS* pdis, DIS::ADDR addr, _In_reads_(cchMax) wchar_t* wz, size_t cchMax, DWORDLONG* pdwDisp)
 {
     /* First check the termination type of the instruction
      * because this might be a helper or static function call
@@ -132,7 +139,7 @@ size_t DisAssembler::disCchAddrMember(
 
     switch (terminationType)
     {
-        // int disCallSize;
+            // int disCallSize;
 
         case DISX86::trmtaJmpShort:
         case DISX86::trmtaJmpCcShort:
@@ -221,7 +228,7 @@ size_t DisAssembler::disCchAddrMember(
 
     switch (terminationType)
     {
-        // int disCallSize;
+            // int disCallSize;
 
         case DISARM64::TRMTA::trmtaBra:
         case DISARM64::TRMTA::trmtaBraCase:
@@ -348,7 +355,7 @@ size_t DisAssembler::disCchAddrMember(
 
 /* static */
 size_t __stdcall DisAssembler::disCchFixup(
-    const DIS* pdis, DIS::ADDR addr, size_t size, __in_ecount(cchMax) wchar_t* wz, size_t cchMax, DWORDLONG* pdwDisp)
+    const DIS* pdis, DIS::ADDR addr, size_t size, _In_reads_(cchMax) wchar_t* wz, size_t cchMax, DWORDLONG* pdwDisp)
 {
     DisAssembler* pDisAsm = (DisAssembler*)pdis->PvClient();
     assert(pDisAsm);
@@ -357,7 +364,7 @@ size_t __stdcall DisAssembler::disCchFixup(
 }
 
 size_t DisAssembler::disCchFixupMember(
-    const DIS* pdis, DIS::ADDR addr, size_t size, __in_ecount(cchMax) wchar_t* wz, size_t cchMax, DWORDLONG* pdwDisp)
+    const DIS* pdis, DIS::ADDR addr, size_t size, _In_reads_(cchMax) wchar_t* wz, size_t cchMax, DWORDLONG* pdwDisp)
 {
 #if defined(TARGET_XARCH)
 
@@ -389,7 +396,7 @@ size_t DisAssembler::disCchFixupMember(
             if (anyReloc)
             {
                 // Make instructions like "mov rcx, 7FE8247A638h" diffable.
-                swprintf_s(wz, cchMax, W("%IXh"), dspAddr(targetAddr));
+                swprintf_s(wz, cchMax, W("%zXh"), dspAddr(targetAddr));
                 break;
             }
 
@@ -494,7 +501,7 @@ size_t DisAssembler::disCchFixupMember(
                  * "addr" is the address of the immediate */
 
                 // Make instructions like "mov rcx, 7FE8247A638h" diffable.
-                swprintf_s(wz, cchMax, W("%IXh"), dspAddr(targetAddr));
+                swprintf_s(wz, cchMax, W("%zXh"), dspAddr(targetAddr));
                 break;
             }
 
@@ -588,7 +595,7 @@ size_t DisAssembler::disCchFixupMember(
 
 /* static */
 size_t __stdcall DisAssembler::disCchRegRel(
-    const DIS* pdis, DIS::REGA reg, DWORD disp, __in_ecount(cchMax) wchar_t* wz, size_t cchMax, DWORD* pdwDisp)
+    const DIS* pdis, DIS::REGA reg, DWORD disp, _In_reads_(cchMax) wchar_t* wz, size_t cchMax, DWORD* pdwDisp)
 {
     DisAssembler* pDisAsm = (DisAssembler*)pdis->PvClient();
     assert(pDisAsm);
@@ -597,7 +604,7 @@ size_t __stdcall DisAssembler::disCchRegRel(
 }
 
 size_t DisAssembler::disCchRegRelMember(
-    const DIS* pdis, DIS::REGA reg, DWORD disp, __in_ecount(cchMax) wchar_t* wz, size_t cchMax, DWORD* pdwDisp)
+    const DIS* pdis, DIS::REGA reg, DWORD disp, _In_reads_(cchMax) wchar_t* wz, size_t cchMax, DWORD* pdwDisp)
 {
 #if defined(TARGET_XARCH)
 
@@ -613,12 +620,12 @@ size_t DisAssembler::disCchRegRelMember(
 
         case DISX86::trmtaFallThrough:
 
-        /* some instructions like division have a TRAP termination type - ignore it */
+            /* some instructions like division have a TRAP termination type - ignore it */
 
         case DISX86::trmtaTrap:
         case DISX86::trmtaTrapCc:
 
-            var = disComp->codeGen->siStackVarName((size_t)(pdis->Addr() - disStartAddr), pdis->Cb(), reg, disp);
+            var = m_compiler->codeGen->siStackVarName((size_t)(pdis->Addr() - disStartAddr), pdis->Cb(), reg, disp);
             if (var)
             {
                 swprintf_s(wz, cchMax, W("%hs+%Xh '%hs'"), getRegName(reg), disp, var);
@@ -630,7 +637,7 @@ size_t DisAssembler::disCchRegRelMember(
             /* This case consists of non-static members */
 
             /* find the emitter block and the offset for the fixup
-             * fixup is emited after the coding of the instruction - size = word (2 bytes)
+             * fixup is emitted after the coding of the instruction - size = word (2 bytes)
              * GRRRR!!! - for the 16 bit case we have to check for the address size prefix = 0x66
              */
 
@@ -708,12 +715,12 @@ size_t DisAssembler::disCchRegRelMember(
 
         case DISARM64::TRMTA::trmtaFallThrough:
 
-        /* some instructions like division have a TRAP termination type - ignore it */
+            /* some instructions like division have a TRAP termination type - ignore it */
 
         case DISARM64::TRMTA::trmtaTrap:
         case DISARM64::TRMTA::trmtaTrapCc:
 
-            var = disComp->codeGen->siStackVarName((size_t)(pdis->Addr() - disStartAddr), pdis->Cb(), reg, disp);
+            var = m_compiler->codeGen->siStackVarName((size_t)(pdis->Addr() - disStartAddr), pdis->Cb(), reg, disp);
             if (var)
             {
                 swprintf_s(wz, cchMax, W("%hs+%Xh '%hs'"), getRegName(reg), disp, var);
@@ -800,7 +807,7 @@ size_t DisAssembler::disCchRegRelMember(
  */
 
 /* static */
-size_t __stdcall DisAssembler::disCchReg(const DIS* pdis, DIS::REGA reg, __in_ecount(cchMax) wchar_t* wz, size_t cchMax)
+size_t __stdcall DisAssembler::disCchReg(const DIS* pdis, DIS::REGA reg, _In_reads_(cchMax) wchar_t* wz, size_t cchMax)
 {
     DisAssembler* pDisAsm = (DisAssembler*)pdis->PvClient();
     assert(pDisAsm);
@@ -808,7 +815,7 @@ size_t __stdcall DisAssembler::disCchReg(const DIS* pdis, DIS::REGA reg, __in_ec
     return pDisAsm->disCchRegMember(pdis, reg, wz, cchMax);
 }
 
-size_t DisAssembler::disCchRegMember(const DIS* pdis, DIS::REGA reg, __in_ecount(cchMax) wchar_t* wz, size_t cchMax)
+size_t DisAssembler::disCchRegMember(const DIS* pdis, DIS::REGA reg, _In_reads_(cchMax) wchar_t* wz, size_t cchMax)
 {
     // TODO-Review: DIS::REGA does not directly map to our regNumber! E.g., look at DISARM64::REGA --
     // the Wt registers come first (and do map to our regNumber), but the Xt registers follow.
@@ -817,7 +824,7 @@ size_t DisAssembler::disCchRegMember(const DIS* pdis, DIS::REGA reg, __in_ecount
     return 0;
 
 #if 0
-    const char * var = disComp->codeGen->siRegVarName(
+    const char * var = m_compiler->codeGen->siRegVarName(
                                             (size_t)(pdis->Addr() - disStartAddr),
                                             pdis->Cb(),
                                             reg);
@@ -856,6 +863,8 @@ size_t DisAssembler::disCchRegMember(const DIS* pdis, DIS::REGA reg, __in_ecount
 #endif // 0
 }
 
+#endif // USE_MSVCDIS
+
 /*****************************************************************************
  * Helper function to lazily create a map from code address to CORINFO_METHOD_HANDLE.
  */
@@ -863,7 +872,7 @@ AddrToMethodHandleMap* DisAssembler::GetAddrToMethodHandleMap()
 {
     if (disAddrToMethodHandleMap == nullptr)
     {
-        disAddrToMethodHandleMap = new (disComp->getAllocator()) AddrToMethodHandleMap(disComp->getAllocator());
+        disAddrToMethodHandleMap = new (m_compiler->getAllocator()) AddrToMethodHandleMap(m_compiler->getAllocator());
     }
     return disAddrToMethodHandleMap;
 }
@@ -875,7 +884,8 @@ AddrToMethodHandleMap* DisAssembler::GetHelperAddrToMethodHandleMap()
 {
     if (disHelperAddrToMethodHandleMap == nullptr)
     {
-        disHelperAddrToMethodHandleMap = new (disComp->getAllocator()) AddrToMethodHandleMap(disComp->getAllocator());
+        disHelperAddrToMethodHandleMap =
+            new (m_compiler->getAllocator()) AddrToMethodHandleMap(m_compiler->getAllocator());
     }
     return disHelperAddrToMethodHandleMap;
 }
@@ -887,10 +897,12 @@ AddrToAddrMap* DisAssembler::GetRelocationMap()
 {
     if (disRelocationMap == nullptr)
     {
-        disRelocationMap = new (disComp->getAllocator()) AddrToAddrMap(disComp->getAllocator());
+        disRelocationMap = new (m_compiler->getAllocator()) AddrToAddrMap(m_compiler->getAllocator());
     }
     return disRelocationMap;
 }
+
+#ifdef USE_MSVCDIS
 
 /*****************************************************************************
  * Return the count of bytes disassembled.
@@ -913,9 +925,9 @@ size_t DisAssembler::CbDisassemble(DIS*        pdis,
 
     if (cb == 0)
     {
-        DISASM_DUMP("CbDisassemble offs %Iu addr %I64u\n", offs, addr);
+        DISASM_DUMP("CbDisassemble offs %zu addr %llu\n", offs, addr);
         // assert(!"can't disassemble instruction!!!");
-        fprintf(pfile, "MSVCDIS can't disassemble instruction @ offset %Iu (0x%02x)!!!\n", offs, offs);
+        fprintf(pfile, "MSVCDIS can't disassemble instruction @ offset %zu (0x%02zx)!!!\n", offs, offs);
 #if defined(TARGET_ARM64)
         fprintf(pfile, "%08Xh\n", *(unsigned int*)pb);
         return 4;
@@ -1139,21 +1151,21 @@ size_t DisAssembler::CbDisassemble(DIS*        pdis,
             {
                 // Truncate the bytes if they are too long
 
-                static const wchar_t* elipses    = W("...\0");
-                const size_t          cchElipses = 4;
+                static const wchar_t* ellipses    = W("...\0");
+                const size_t          cchEllipses = 4;
 
-                memcpy(&wzBytes[CCH_INDENT - cchElipses], elipses, cchElipses * sizeof(wchar_t));
+                memcpy(&wzBytes[CCH_INDENT - cchEllipses], ellipses, cchEllipses * sizeof(wchar_t));
 
                 cchBytes = CCH_INDENT;
             }
 
-            fprintf(pfile, "  %ls", wzBytes);
+            fprintf(pfile, "  %S", wzBytes);
             cchIndent = CCH_INDENT - cchBytes;
         }
 
         // print the dis-assembled instruction
 
-        fprintf(pfile, "%*c %ls\n", cchIndent, ' ', wz);
+        fprintf(pfile, "%*c %S\n", cchIndent, ' ', wz);
     }
 
     return cb;
@@ -1170,7 +1182,7 @@ size_t CbDisassembleWithBytes(DIS* pdis, DIS::ADDR addr, const BYTE* pb, size_t 
 
     pdis->CchFormatAddr(addr, wz, ArrLen(wz));
 
-    size_t cchIndent = (size_t)fprintf(pfile, "  %ls: ", wz);
+    size_t cchIndent = (size_t)fprintf(pfile, "  %S: ", wz);
 
     size_t cb = pdis->CbDisassemble(addr, pb, cbMax);
 
@@ -1199,7 +1211,7 @@ size_t CbDisassembleWithBytes(DIS* pdis, DIS::ADDR addr, const BYTE* pb, size_t 
     {
         bool fFirst = (pwzBytes == wzBytes);
 
-        cchBytes = wcslen(pwzBytes);
+        cchBytes = u16_strlen(pwzBytes);
 
         if (cchBytes <= cchBytesMax)
         {
@@ -1218,7 +1230,7 @@ size_t CbDisassembleWithBytes(DIS* pdis, DIS::ADDR addr, const BYTE* pb, size_t 
 
             else
             {
-                pwzNext = wcsrchr(pwzBytes, W(' '));
+                pwzNext = (WCHAR*)u16_strrchr(pwzBytes, W(' '));
                 assert(pwzNext);
 
                 pwzBytes[cchBytesMax] = ch;
@@ -1229,12 +1241,12 @@ size_t CbDisassembleWithBytes(DIS* pdis, DIS::ADDR addr, const BYTE* pb, size_t 
         if (fFirst)
         {
             pdis->CchFormatInstr(wz, ArrLen(wz));
-            fprintf(pfile, "%-*ls %ls\n", cchBytesMax, pwzBytes, wz);
+            fprintf(pfile, "%-*S %S\n", cchBytesMax, pwzBytes, wz);
         }
 
         else
         {
-            fprintf(pfile, "%*c%ls\n", cchIndent, ' ', pwzBytes);
+            fprintf(pfile, "%*c%S\n", cchIndent, ' ', pwzBytes);
         }
     }
 
@@ -1329,13 +1341,15 @@ void DisAssembler::DisasmBuffer(FILE* pfile, bool printit)
 #else
                            false // Display code bytes?
 #endif
-                           );
+        );
 
         ibCur += (unsigned)cb;
     }
 
     delete pdis;
 }
+
+#endif // USE_MSVCDIS
 
 /*****************************************************************************
  * Given a linear offset into the code, find a pointer to the actual code (either in the hot or cold section)
@@ -1388,13 +1402,13 @@ const char* DisAssembler::disGetMethodFullName(size_t addr)
     // First check the JIT helper table: they're very common.
     if (GetHelperAddrToMethodHandleMap()->Lookup(addr, &res))
     {
-        return disComp->eeGetMethodFullName(res);
+        return m_compiler->eeGetMethodFullName(res);
     }
 
     // Next check the "normal" registered call targets
     if (GetAddrToMethodHandleMap()->Lookup(addr, &res))
     {
-        return disComp->eeGetMethodFullName(res);
+        return m_compiler->eeGetMethodFullName(res);
     }
 
     return nullptr;
@@ -1410,20 +1424,20 @@ const char* DisAssembler::disGetMethodFullName(size_t addr)
 
 void DisAssembler::disSetMethod(size_t addr, CORINFO_METHOD_HANDLE methHnd)
 {
-    if (!disComp->opts.doLateDisasm)
+    if (!m_compiler->opts.doLateDisasm)
     {
         return;
     }
 
-    if (disComp->eeGetHelperNum(methHnd))
+    if (m_compiler->eeGetHelperNum(methHnd))
     {
         DISASM_DUMP("Helper function: %p => %p\n", addr, methHnd);
-        GetHelperAddrToMethodHandleMap()->Set(addr, methHnd);
+        GetHelperAddrToMethodHandleMap()->Set(addr, methHnd, AddrToMethodHandleMap::SetKind::Overwrite);
     }
     else
     {
         DISASM_DUMP("Function: %p => %p\n", addr, methHnd);
-        GetAddrToMethodHandleMap()->Set(addr, methHnd);
+        GetAddrToMethodHandleMap()->Set(addr, methHnd, AddrToMethodHandleMap::SetKind::Overwrite);
     }
 }
 
@@ -1437,7 +1451,7 @@ void DisAssembler::disSetMethod(size_t addr, CORINFO_METHOD_HANDLE methHnd)
 
 void DisAssembler::disRecordRelocation(size_t relocAddr, size_t targetAddr)
 {
-    if (!disComp->opts.doLateDisasm)
+    if (!m_compiler->opts.doLateDisasm)
     {
         return;
     }
@@ -1451,39 +1465,44 @@ void DisAssembler::disRecordRelocation(size_t relocAddr, size_t targetAddr)
  * Disassemble the code which has been generated
  */
 
-void DisAssembler::disAsmCode(BYTE* hotCodePtr, size_t hotCodeSize, BYTE* coldCodePtr, size_t coldCodeSize)
+void DisAssembler::disAsmCode(BYTE*  hotCodePtr,
+                              BYTE*  hotCodePtrRW,
+                              size_t hotCodeSize,
+                              BYTE*  coldCodePtr,
+                              BYTE*  coldCodePtrRW,
+                              size_t coldCodeSize)
 {
-    if (!disComp->opts.doLateDisasm)
+    if (!m_compiler->opts.doLateDisasm)
     {
         return;
     }
 
+#ifdef USE_COREDISTOOLS
+    InitCoredistoolsDisasm();
+#endif // USE_COREDISTOOLS
+
 #ifdef DEBUG
     // Should we make it diffable?
-    disDiffable = disComp->opts.dspDiffable;
+    disDiffable = m_compiler->opts.dspDiffable;
 #else  // !DEBUG
     // NOTE: non-debug builds are always diffable!
     disDiffable = true;
 #endif // !DEBUG
 
 #ifdef DEBUG
-    const wchar_t* fileName = JitConfig.JitLateDisasmTo();
+    const char* fileName = JitConfig.JitLateDisasmTo();
     if (fileName != nullptr)
     {
-        errno_t ec = _wfopen_s(&disAsmFile, fileName, W("a+"));
-        if (ec != 0)
-        {
-            disAsmFile = nullptr;
-        }
+        disAsmFile = fopen_utf8(fileName, "a+");
     }
 #else  // !DEBUG
     // NOTE: non-DEBUG builds always use jitstdout currently!
-    disAsmFile = jitstdout;
+    disAsmFile = jitstdout();
 #endif // !DEBUG
 
     if (disAsmFile == nullptr)
     {
-        disAsmFile = jitstdout;
+        disAsmFile = jitstdout();
     }
 
     // As this writes to a common file, this is not reentrant.
@@ -1491,35 +1510,36 @@ void DisAssembler::disAsmCode(BYTE* hotCodePtr, size_t hotCodeSize, BYTE* coldCo
     assert(hotCodeSize > 0);
     if (coldCodeSize == 0)
     {
-        fprintf(disAsmFile, "************************** %hs:%hs size 0x%04IX **************************\n\n",
+        fprintf(disAsmFile, "************************** %s:%s size 0x%04zX **************************\n\n",
                 disCurClassName, disCurMethodName, hotCodeSize);
 
-        fprintf(disAsmFile, "Base address : %ph\n", dspAddr(hotCodePtr));
+        fprintf(disAsmFile, "Base address : %ph (RW: %ph)\n", dspAddr(hotCodePtr), dspAddr(hotCodePtrRW));
     }
     else
     {
         fprintf(disAsmFile,
-                "************************** %hs:%hs hot size 0x%04IX cold size 0x%04IX **************************\n\n",
+                "************************** %s:%s hot size 0x%04zX cold size 0x%04zX **************************\n\n",
                 disCurClassName, disCurMethodName, hotCodeSize, coldCodeSize);
 
-        fprintf(disAsmFile, "Hot  address : %ph\n", dspAddr(hotCodePtr));
-        fprintf(disAsmFile, "Cold address : %ph\n", dspAddr(coldCodePtr));
+        fprintf(disAsmFile, "Hot  address : %ph (RW: %ph)\n", dspAddr(hotCodePtr), dspAddr(hotCodePtrRW));
+        fprintf(disAsmFile, "Cold address : %ph (RW: %ph)\n", dspAddr(coldCodePtr), dspAddr(coldCodePtrRW));
     }
 
     disStartAddr     = 0;
-    disHotCodeBlock  = (size_t)hotCodePtr;
+    disHotCodeBlock  = (size_t)hotCodePtrRW;
     disHotCodeSize   = hotCodeSize;
-    disColdCodeBlock = (size_t)coldCodePtr;
+    disColdCodeBlock = (size_t)coldCodePtrRW;
     disColdCodeSize  = coldCodeSize;
 
     disTotalCodeSize = disHotCodeSize + disColdCodeSize;
 
-    disLabels = new (disComp, CMK_DebugOnly) BYTE[disTotalCodeSize]();
+    disLabels = new (m_compiler, CMK_DebugOnly) BYTE[disTotalCodeSize]();
 
     DisasmBuffer(disAsmFile, /* printIt */ true);
+
     fprintf(disAsmFile, "\n");
 
-    if (disAsmFile != jitstdout)
+    if (disAsmFile != jitstdout())
     {
         fclose(disAsmFile);
     }
@@ -1535,7 +1555,7 @@ void DisAssembler::disAsmCode(BYTE* hotCodePtr, size_t hotCodeSize, BYTE* coldCo
 
 void DisAssembler::disOpenForLateDisAsm(const char* curMethodName, const char* curClassName, PCCOR_SIGNATURE sig)
 {
-    if (!disComp->opts.doLateDisasm)
+    if (!m_compiler->opts.doLateDisasm)
     {
         return;
     }
@@ -1544,12 +1564,232 @@ void DisAssembler::disOpenForLateDisAsm(const char* curMethodName, const char* c
     disCurClassName  = curClassName;
 }
 
+#ifdef USE_COREDISTOOLS
+
+// Helper functions to print messages from CoreDisTools Library
+// The file/linenumber information is from this helper itself,
+// since we are only linking with the CoreDisTools library.
+
+// Currently all loggers are the same
+#define LOGGER(L)                                                                                                      \
+    static void __cdecl CorDisToolsLog##L(const char* msg, ...)                                                        \
+    {                                                                                                                  \
+        va_list argList;                                                                                               \
+        va_start(argList, msg);                                                                                        \
+        vflogf(g_disAsmFileCorDisTools, msg, argList);                                                                 \
+        va_end(argList);                                                                                               \
+        fprintf(g_disAsmFileCorDisTools, "\n");                                                                        \
+    }
+
+LOGGER(VERBOSE)
+LOGGER(ERROR)
+LOGGER(WARNING)
+
+const PrintControl CorPrinter = {CorDisToolsLogERROR, CorDisToolsLogWARNING, CorDisToolsLogVERBOSE,
+                                 CorDisToolsLogVERBOSE};
+
+LONG               DisAssembler::s_disCoreDisToolsLibraryInitializing   = 0; // 0 = not initializing; 1 = initializing
+bool               DisAssembler::s_disCoreDisToolsLibraryInitialized    = false;
+bool               DisAssembler::s_disCoreDisToolsLibraryLoadSuccessful = false;
+NewDisasm_t*       DisAssembler::s_PtrNewDisasm                         = nullptr;
+DumpInstruction_t* DisAssembler::s_PtrDumpInstruction                   = nullptr;
+FinishDisasm_t*    DisAssembler::s_PtrFinishDisasm                      = nullptr;
+
+// Load coredistools library and find the entrypoints.
+//
+// Returns true on success, false on failure.
+//
+bool DisAssembler::InitCoredistoolsLibrary()
+{
+    while (InterlockedCompareExchange(&s_disCoreDisToolsLibraryInitializing, 1, 0) != 0)
+    {
+        // Wait for initialization to be complete
+    }
+
+    if (s_disCoreDisToolsLibraryInitialized)
+    {
+        // We've already loaded the library. Was it successful?
+        InterlockedExchange(&s_disCoreDisToolsLibraryInitializing, 0); // unlock initialization
+        return s_disCoreDisToolsLibraryLoadSuccessful;
+    }
+
+    s_disCoreDisToolsLibraryInitialized    = true;  // we only initialize once, even if it fails.
+    s_disCoreDisToolsLibraryLoadSuccessful = false; // assume the worst
+
+    const WCHAR* coreDisToolsLibraryNameW = MAKEDLLNAME_W("coredistools");
+    const CHAR*  coreDisToolsLibraryNameA = MAKEDLLNAME_A("coredistools");
+
+    HMODULE hCoreDisToolsLib = NULL;
+
+#ifdef TARGET_UNIX
+    // Unix will require the full path to coredistools. Assume that the
+    // location is next to the full path to the JIT.
+
+    WCHAR coreCLRLoadedPath[MAX_LONGPATH];
+    int   returnVal = ::GetModuleFileNameW(NULL, coreCLRLoadedPath, MAX_LONGPATH);
+
+    WCHAR* ptr;
+    WCHAR* coreDisToolsLibrary;
+
+    if (returnVal == 0)
+    {
+        printf("GetModuleFileNameW failed (0x%08x)", ::GetLastError());
+        goto FinishedInitializing;
+    }
+
+    ptr = (WCHAR*)u16_strrchr(coreCLRLoadedPath, '/');
+
+    // Move past the / character.
+    ptr = ptr + 1;
+
+    ::wcscpy_s(ptr, &coreCLRLoadedPath[MAX_LONGPATH] - ptr, coreDisToolsLibraryNameW);
+    coreDisToolsLibrary = coreCLRLoadedPath;
+#else  // TARGET_UNIX
+    const WCHAR* coreDisToolsLibrary = coreDisToolsLibraryNameW;
+#endif // !TARGET_UNIX
+
+    // We never call FreeLibrary because we don't unload it until the JIT itself is unloaded.
+    hCoreDisToolsLib = ::LoadLibraryExW(coreDisToolsLibrary, NULL, 0);
+    if (hCoreDisToolsLib == 0)
+    {
+        printf("LoadLibrary(%s) failed (0x%08x)", coreDisToolsLibraryNameA, ::GetLastError());
+        goto FinishedInitializing;
+    }
+
+    s_PtrNewDisasm = (NewDisasm_t*)::GetProcAddress(hCoreDisToolsLib, "NewDisasm");
+    if (s_PtrNewDisasm == nullptr)
+    {
+        printf("GetProcAddress 'NewDisasm' failed (0x%08x)", ::GetLastError());
+        goto FinishedInitializing;
+    }
+    s_PtrDumpInstruction = (DumpInstruction_t*)::GetProcAddress(hCoreDisToolsLib, "DumpInstruction");
+    if (s_PtrDumpInstruction == nullptr)
+    {
+        printf("GetProcAddress 'DumpInstruction' failed (0x%08x)", ::GetLastError());
+        goto FinishedInitializing;
+    }
+    s_PtrFinishDisasm = (FinishDisasm_t*)::GetProcAddress(hCoreDisToolsLib, "FinishDisasm");
+    if (s_PtrFinishDisasm == nullptr)
+    {
+        printf("GetProcAddress 'FinishDisasm' failed (0x%08x)", ::GetLastError());
+        goto FinishedInitializing;
+    }
+
+    s_disCoreDisToolsLibraryLoadSuccessful = true; // We made it!
+
+    // done initializing
+
+FinishedInitializing:
+    InterlockedExchange(&s_disCoreDisToolsLibraryInitializing, 0); // unlock initialization
+    return s_disCoreDisToolsLibraryLoadSuccessful;
+}
+
+// Coredistools disassembler initialization.
+//
+// Returns true on success, false on failure.
+//
+bool DisAssembler::InitCoredistoolsDisasm()
+{
+    if (!InitCoredistoolsLibrary())
+    {
+        return false;
+    }
+
+    TargetArch coreDisTargetArchitecture = Target_Host;
+
+#if defined(TARGET_ARM64)
+    coreDisTargetArchitecture = Target_Arm64;
+#elif defined(TARGET_ARM)
+    coreDisTargetArchitecture = Target_Thumb;
+#elif defined(TARGET_X86)
+    coreDisTargetArchitecture = Target_X86;
+#elif defined(TARGET_AMD64)
+    coreDisTargetArchitecture = Target_X64;
+#elif defined(TARGET_LOONGARCH64)
+    coreDisTargetArchitecture = Target_LoongArch64;
+#elif defined(TARGET_RISCV64)
+    coreDisTargetArchitecture = Target_RiscV64;
+#else
+#error Unsupported target for LATE_DISASM with USE_COREDISTOOLS
+#endif
+
+    corDisasm = (*s_PtrNewDisasm)(coreDisTargetArchitecture, &CorPrinter);
+
+    return true;
+}
+
+// Coredistools disassembler shutdown
+//
+void DisAssembler::DoneCoredistoolsDisasm()
+{
+    if (corDisasm == nullptr)
+    {
+        return;
+    }
+
+    (*s_PtrFinishDisasm)(corDisasm);
+    corDisasm = nullptr;
+}
+
+void DisAssembler::DisasmBuffer(FILE* pfile, bool printit)
+{
+    g_disAsmFileCorDisTools = pfile;
+
+    unsigned              errorCount    = 0;
+    static const unsigned maxErrorCount = 50;
+
+    auto disasmRegion = [&](size_t executionAddress, size_t blockAddress, size_t blockSize) {
+        uint8_t* address       = (uint8_t*)executionAddress;
+        uint8_t* codeBytes     = (uint8_t*)blockAddress;
+        size_t   codeSizeBytes = blockSize;
+        while (codeSizeBytes > 0)
+        {
+            size_t instrLen = (*s_PtrDumpInstruction)(corDisasm, address, codeBytes, codeSizeBytes);
+            if (instrLen == 0)
+            {
+                // error
+                ++errorCount;
+#ifdef TARGET_ARM64
+                // For arm64, with fixed-size instructions, try to recover by skipping one
+                // instruction and continuing.
+                if (codeSizeBytes >= 4)
+                {
+                    CorDisToolsLogERROR("%x: %02x %02x %02x %02x", address, codeBytes[0], codeBytes[1], codeBytes[2],
+                                        codeBytes[3]);
+                    address += 4;
+                    codeBytes += 4;
+                    codeSizeBytes -= 4;
+                }
+                if (errorCount < maxErrorCount)
+                {
+                    continue;
+                }
+                else
+                {
+                    CorDisToolsLogERROR("Too many failures");
+                }
+#endif // TARGET_ARM64
+                break;
+            }
+            assert(instrLen <= codeSizeBytes);
+            address += instrLen;
+            codeBytes += instrLen;
+            codeSizeBytes -= instrLen;
+        }
+    };
+
+    disasmRegion(0, disHotCodeBlock, disHotCodeSize);
+    disasmRegion(disHotCodeSize, disColdCodeBlock, disColdCodeSize);
+}
+
+#endif // USE_COREDISTOOLS
+
 /*****************************************************************************/
 
 void DisAssembler::disInit(Compiler* pComp)
 {
     assert(pComp);
-    disComp                        = pComp;
+    m_compiler                     = pComp;
     disHasName                     = false;
     disLabels                      = nullptr;
     disAddrToMethodHandleMap       = nullptr;
@@ -1557,6 +1797,18 @@ void DisAssembler::disInit(Compiler* pComp)
     disRelocationMap               = nullptr;
     disDiffable                    = false;
     disAsmFile                     = nullptr;
+
+#ifdef USE_COREDISTOOLS
+    g_disAsmFileCorDisTools = nullptr;
+    corDisasm               = nullptr;
+#endif // USE_COREDISTOOLS
+}
+
+void DisAssembler::disDone()
+{
+#ifdef USE_COREDISTOOLS
+    DoneCoredistoolsDisasm();
+#endif // USE_COREDISTOOLS
 }
 
 /*****************************************************************************/

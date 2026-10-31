@@ -17,17 +17,68 @@ IGCHandleManager* CreateGCHandleManager()
 
 void GCHandleStore::Uproot()
 {
-    Ref_RemoveHandleTableBucket(&_underlyingBucket);
+    // Dead path. The vtable slot is preserved for GC_INTERFACE_MAJOR_VERSION 5
+    // ABI compatibility with external standalone GC implementations.
+    assert(!"Uproot is not in use");
 }
 
 bool GCHandleStore::ContainsHandle(OBJECTHANDLE handle)
 {
-    return _underlyingBucket.Contains(handle);
+    // Dead path. The vtable slot is preserved for GC_INTERFACE_MAJOR_VERSION 5
+    // ABI compatibility with external standalone GC implementations.
+    assert(!"ContainsHandle is not in use");
+    return false;
+}
+
+// this is the number of handles we allocate in a handle table before we switch to the next table.
+#define HANDLE_THRESHOLD (15)
+static int s_numTableSlots = 0;
+
+HHANDLETABLE GCHandleStore::GetTable()
+{
+    if (!s_numTableSlots)
+    {
+        s_numTableSlots = getNumberOfSlots();
+    }
+
+    if (s_numTableSlots == 1)
+        return _underlyingBucket.pTable[0];
+
+    gc_alloc_context* ctx = GetCurrentThreadAllocContext();
+    if (!ctx)
+        return _underlyingBucket.pTable[0];
+
+    // high 16-bits are for the handle info.
+    int handleInfo = (uint32_t)(ctx->alloc_count) >> 16;
+
+    // high 10 bits store the cpu index.
+    // low 6 bits store the # of handles allocated so far (before the next reset).
+    int numHandles = handleInfo & 0x3f;
+    int cpuIndex = handleInfo >> 6;
+    int savedCpuIndex = cpuIndex;
+    if (numHandles == HANDLE_THRESHOLD)
+    {
+        numHandles = 0;
+        cpuIndex++;
+        cpuIndex = (cpuIndex > (s_numTableSlots - 1)) ? 0 : cpuIndex;
+    }
+    else
+    {
+        numHandles++;
+    }
+
+    int newHandleInfo = numHandles | (cpuIndex << 6);
+
+    int low_16_bits = ctx->alloc_count & 0xffff;
+    ctx->alloc_count = low_16_bits | (newHandleInfo << 16);
+
+    HHANDLETABLE handletable = _underlyingBucket.pTable[cpuIndex];
+    return handletable;
 }
 
 OBJECTHANDLE GCHandleStore::CreateHandleOfType(Object* object, HandleType type)
 {
-    HHANDLETABLE handletable = _underlyingBucket.pTable[GetCurrentThreadHomeHeapNumber()];
+    HHANDLETABLE handletable = GetTable();
     return ::HndCreateHandle(handletable, type, ObjectToOBJECTREF(object));
 }
 
@@ -83,25 +134,10 @@ IGCHandleStore* GCHandleManager::GetGlobalHandleStore()
 
 IGCHandleStore* GCHandleManager::CreateHandleStore()
 {
-#ifndef FEATURE_REDHAWK
-    GCHandleStore* store = new (nothrow) GCHandleStore();
-    if (store == nullptr)
-    {
-        return nullptr;
-    }
-
-    bool success = ::Ref_InitializeHandleTableBucket(&store->_underlyingBucket);
-    if (!success)
-    {
-        delete store;
-        return nullptr;
-    }
-
-    return store;
-#else
-    assert(!"CreateHandleStore is not implemented when FEATURE_REDHAWK is defined!");
+    // Dead path. The vtable slot is preserved for GC_INTERFACE_MAJOR_VERSION 5
+    // ABI compatibility with external standalone GC implementations.
+    assert(!"CreateHandleStore is not in use");
     return nullptr;
-#endif
 }
 
 void GCHandleManager::DestroyHandleStore(IGCHandleStore* store)
@@ -167,7 +203,7 @@ Object* GCHandleManager::InterlockedCompareExchangeObjectInHandle(OBJECTHANDLE h
 HandleType GCHandleManager::HandleFetchType(OBJECTHANDLE handle)
 {
     uint32_t type = ::HandleFetchType(handle);
-    assert(type >= HNDTYPE_WEAK_SHORT && type <= HNDTYPE_WEAK_NATIVE_COM);
+    assert(type >= HNDTYPE_WEAK_SHORT && type <= HNDTYPE_CROSSREFERENCE);
     return static_cast<HandleType>(type);
 }
 
@@ -175,4 +211,3 @@ void GCHandleManager::TraceRefCountedHandles(HANDLESCANPROC callback, uintptr_t 
 {
     ::Ref_TraceRefCountHandles(callback, param1, param2);
 }
-

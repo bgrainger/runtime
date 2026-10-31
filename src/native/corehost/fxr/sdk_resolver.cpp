@@ -26,49 +26,70 @@ namespace
         _X("latestMinor"),
         _X("latestMajor"),
     };
+
+    int get_feature_band(const fx_ver_t& version)
+    {
+        // SDK versions encode both the feature band and patch version in the SemVer patch version.
+        // They have the form x.y.znn, where z is the feature band and nn is the patch version.
+        // To get the feature band, we divide the SemVer patch by 100
+        return version.get_patch() / 100;
+    }
 }
 
-sdk_resolver::sdk_resolver(bool allow_prerelease) :
-    sdk_resolver({}, sdk_roll_forward_policy::latest_major, allow_prerelease)
+sdk_resolver::sdk_resolver(bool allow_prerelease)
+    : roll_forward{sdk_roll_forward_policy::latest_major}
+    , allow_prerelease{allow_prerelease}
+    , has_custom_paths{false}
+{ }
+
+const fx_ver_t& sdk_resolver::get_requested_version() const
 {
+    return requested_version;
 }
 
-sdk_resolver::sdk_resolver(fx_ver_t version, sdk_roll_forward_policy roll_forward, bool allow_prerelease) :
-    version(move(version)),
-    roll_forward(roll_forward),
-    allow_prerelease(allow_prerelease)
-{
-}
-
-pal::string_t const& sdk_resolver::global_file_path() const
-{
-    return global_file;
-}
-
-pal::string_t sdk_resolver::resolve(const pal::string_t& dotnet_root, bool print_errors) const
+pal::string_t sdk_resolver::resolve(const pal::string_t& dotnet_root, bool print_errors, pal::string_t* out_resolved_root) const
 {
     if (trace::is_enabled())
     {
-        auto requested = version.is_empty() ? pal::string_t{} : version.as_str();
+        auto requested = requested_version.is_empty() ? pal::string_t{} : requested_version.as_str();
         trace::verbose(
             _X("Resolving SDKs with version = '%s', rollForward = '%s', allowPrerelease = %s"),
             requested.empty() ? _X("latest") : requested.c_str(),
             to_policy_name(roll_forward),
             allow_prerelease ? _X("true") : _X("false"));
+        if (has_custom_paths)
+        {
+            trace::verbose(_X("  paths = ["));
+            for (const pal::string_t& path : paths)
+            {
+                trace::verbose(_X("    %s"), path.c_str());
+            }
+            trace::verbose(_X("  ]"));
+        }
     }
 
     pal::string_t resolved_sdk_path;
     fx_ver_t resolved_version;
 
-    vector<pal::string_t> locations;
-    get_framework_and_sdk_locations(dotnet_root, &locations);
-
+    std::vector<pal::string_t> locations = get_search_paths(dotnet_root);
     for (auto&& dir : locations)
     {
         append_path(&dir, _X("sdk"));
+        if (!pal::fullpath(&dir, true))
+        {
+            trace::verbose(_X("SDK path [%s] does not exist"), dir.c_str());
+            continue;
+        }
 
+        // Search paths are in priority order. We take the first match and do not
+        // look in any remaining locations.
         if (resolve_sdk_path_and_version(dir, resolved_sdk_path, resolved_version))
         {
+            if (out_resolved_root != nullptr)
+            {
+                out_resolved_root->assign(get_directory(dir));
+            }
+
             break;
         }
     }
@@ -85,38 +106,112 @@ pal::string_t sdk_resolver::resolve(const pal::string_t& dotnet_root, bool print
     return {};
 }
 
-void sdk_resolver::print_resolution_error(const pal::string_t& dotnet_root, const pal::char_t *prefix) const
+std::vector<pal::string_t> sdk_resolver::get_search_paths(const pal::string_t& dotnet_root) const
 {
-    bool sdk_exists = false;
-    const pal::char_t *no_sdk_message = _X("It was not possible to find any installed .NET SDKs.");
-    if (!version.is_empty())
+    std::vector<pal::string_t> locations;
+    if (!has_custom_paths)
     {
-        pal::string_t requested = version.as_str();
-        if (!global_file.empty())
-        {
-            trace::error(_X("%sA compatible installed .NET SDK for global.json version [%s] from [%s] was not found."), prefix, requested.c_str(), global_file.c_str());
-            trace::error(_X("%sInstall the [%s] .NET SDK or update [%s] with an installed .NET SDK:"), prefix, requested.c_str(), global_file.c_str());
-        }
-        else
-        {
-            trace::error(_X("%sA compatible installed .NET SDK version [%s] was not found."), prefix, requested.c_str());
-            trace::error(_X("%sInstall the [%s] .NET SDK or create a global.json file with an installed .NET SDK:"), prefix, requested.c_str());
-        }
-
-        sdk_exists = sdk_info::print_all_sdks(dotnet_root, pal::string_t{prefix}.append(_X("  ")));
-        if (!sdk_exists)
-            trace::error(_X("%s  %s"), prefix, no_sdk_message);
+        if (!dotnet_root.empty())
+            locations.push_back(dotnet_root);
     }
     else
     {
-        trace::error(_X("%s%s"), prefix, no_sdk_message);
+        // Use custom paths specified in the global.json
+        pal::string_t json_dir = get_directory(global_json.path);
+        for (const pal::string_t& path : paths)
+        {
+            if (path == _X("$host$"))
+            {
+                locations.push_back(dotnet_root);
+            }
+            else if (pal::is_path_fully_qualified(path))
+            {
+                locations.push_back(path);
+            }
+            else
+            {
+                // Path is relative to the global.json
+                pal::string_t full_path = json_dir;
+                append_path(&full_path, path.c_str());
+                locations.push_back(full_path);
+            }
+        }
+    }
+
+    return locations;
+}
+
+void sdk_resolver::print_resolution_error(const pal::string_t& dotnet_root, const pal::char_t *main_error_prefix) const
+{
+    if (!error_message.empty())
+    {
+        // Custom error message specified in the global.json
+        trace::error(_X("%s%s"), main_error_prefix, error_message.c_str());
+        return;
+    }
+
+    bool sdk_exists = false;
+    const pal::char_t *no_sdk_message = _X("No .NET SDKs were found.");
+    if (!requested_version.is_empty())
+    {
+        pal::string_t requested = requested_version.as_str();
+        trace::error(
+            _X("%sA compatible .NET SDK was not found.\n")
+            _X("\n")
+            _X("Requested SDK version: %s"),
+            main_error_prefix,
+            requested.c_str());
+
+        bool has_global_file = global_json.is_data_used();
+        if (has_global_file)
+        {
+            trace::error(_X("global.json file: %s"), global_json.path.c_str());
+            if (has_custom_paths)
+            {
+                trace::error(_X("  Search paths:"));
+                for (const pal::string_t& path : paths)
+                {
+                    trace::error(_X("    %s"), path.c_str());
+                }
+            }
+        }
+
+        trace::error(_X("\nInstalled SDKs:"));
+        sdk_exists = sdk_info::print_all_sdks(dotnet_root, _X(""));
+        if (!sdk_exists)
+            trace::error(_X("%s"), no_sdk_message);
+
+        trace::error(_X("%s"), _X(""));
+        if (has_global_file)
+        {
+            trace::error(_X("Install the [%s] .NET SDK or update [%s] to match an installed SDK."), requested.c_str(), global_json.path.c_str());
+        }
+        else
+        {
+            trace::error(_X("Install the [%s] .NET SDK or create a global.json file matching an installed SDK."), requested.c_str());
+        }
+    }
+    else
+    {
+        trace::error(_X("%s%s"), main_error_prefix, no_sdk_message);
+        if (has_custom_paths && paths.empty())
+        {
+            trace::error(_X("%sEmpty search paths specified in global.json file: %s"), main_error_prefix, global_json.path.c_str());
+        }
     }
 
     if (!sdk_exists)
     {
-        trace::error(_X("%sInstall a .NET SDK from:"), prefix);
-        trace::error(_X("%s  %s"), prefix, DOTNET_CORE_DOWNLOAD_URL);
+        trace::error(
+            _X("\n")
+            _X("Download a .NET SDK:\n")
+            DOTNET_CORE_DOWNLOAD_URL);
     }
+
+    trace::error(
+        _X("\n")
+        _X("Learn about SDK resolution:\n")
+        DOTNET_SDK_NOT_FOUND_URL);
 }
 
 sdk_resolver sdk_resolver::from_nearest_global_file(bool allow_prerelease)
@@ -138,18 +233,31 @@ sdk_resolver sdk_resolver::from_nearest_global_file(const pal::string_t& cwd, bo
 {
     sdk_resolver resolver{ allow_prerelease };
 
-    if (!resolver.parse_global_file(find_nearest_global_file(cwd)))
-    {
-        // Fall back to a default SDK resolver
-        resolver = sdk_resolver{ allow_prerelease };
+    pal::string_t global_file_path = find_nearest_global_file(cwd);
 
-        trace::warning(
-            _X("Ignoring SDK settings in global.json: the latest installed .NET SDK (%s prereleases) will be used"),
-            resolver.allow_prerelease ? _X("including") : _X("excluding"));
+    if (global_file_path.empty())
+    {
+        resolver.global_json.state = global_file_info::state::not_found;
+    }
+    else
+    {
+        global_file_info global_file = resolver.parse_global_file(global_file_path);
+        if (!global_file.is_data_used())
+        {
+            // Fall back to a default SDK resolver
+            resolver = sdk_resolver{ allow_prerelease };
+
+            trace::verbose(_X("Invalid global.json [%s]:\n  %s"), global_file.path.c_str(), global_file.error_message.c_str());
+            trace::warning(
+                _X("Ignoring SDK settings in global.json: the latest installed .NET SDK (%s prereleases) will be used"),
+                resolver.allow_prerelease ? _X("including") : _X("excluding"));
+        }
+
+        resolver.global_json = std::move(global_file);
     }
 
     // If the requested version is a prerelease, always allow prerelease versions
-    if (resolver.version.is_prerelease())
+    if (resolver.requested_version.is_prerelease())
     {
         resolver.allow_prerelease = true;
     }
@@ -213,22 +321,27 @@ pal::string_t sdk_resolver::find_nearest_global_file(const pal::string_t& cwd)
     return {};
 }
 
-bool sdk_resolver::parse_global_file(pal::string_t global_file_path)
+sdk_resolver::global_file_info sdk_resolver::parse_global_file(const pal::string_t& global_file_path)
 {
+    global_file_info ret;
     if (global_file_path.empty())
     {
         // Missing global.json is treated as success (use default resolver)
-        return true;
+        ret.state = global_file_info::state::not_found;
+        return ret;
     }
 
     trace::verbose(_X("--- Resolving SDK information from global.json [%s]"), global_file_path.c_str());
+    ret.path = global_file_path;
 
     // After we're done parsing `global_file_path`, none of its contents will be referenced
     // from the data private to json_parser_t; it's safe to declare it on the stack.
     json_parser_t json;
-    if (!json.parse_file(global_file_path))
+    if (!json.parse_fully_trusted_file(global_file_path))
     {
-        return false;
+        ret.error_message = json.get_error_message();
+        ret.state = global_file_info::state::invalid_json;
+        return ret;
     }
 
     const auto& sdk = json.document().FindMember(_X("sdk"));
@@ -236,13 +349,16 @@ bool sdk_resolver::parse_global_file(pal::string_t global_file_path)
     {
         // Missing SDK is treated as success (use default resolver)
         trace::verbose(_X("Value 'sdk' is missing or null in [%s]"), global_file_path.c_str());
-        return true;
+        ret.state = global_file_info::state::valid;
+        return ret;
     }
+
+    ret.state = global_file_info::state::invalid_data;
 
     if (!sdk->value.IsObject())
     {
-        trace::warning(_X("Expected a JSON object for the 'sdk' value in [%s]"), global_file_path.c_str());
-        return false;
+        ret.error_message = _X("Expected a JSON object for the 'sdk' value");
+        return ret;
     }
 
     const auto& version_value = sdk->value.FindMember(_X("version"));
@@ -254,18 +370,14 @@ bool sdk_resolver::parse_global_file(pal::string_t global_file_path)
     {
         if (!version_value->value.IsString())
         {
-            trace::warning(_X("Expected a string for the 'sdk/version' value in [%s]"), global_file_path.c_str());
-            return false;
+            ret.error_message = _X("Expected a string for the 'sdk/version' value");
+            return ret;
         }
 
-        if (!fx_ver_t::parse(version_value->value.GetString(), &version, false))
+        if (!fx_ver_t::parse(version_value->value.GetString(), &requested_version))
         {
-            trace::warning(
-                _X("Version '%s' is not valid for the 'sdk/version' value in [%s]"),
-                version_value->value.GetString(),
-                global_file_path.c_str()
-            );
-            return false;
+            ret.error_message = utils::format_string(_X("Version '%s' is not valid for the 'sdk/version' value"), version_value->value.GetString());
+            return ret;
         }
 
         // The default policy when a version is specified is 'patch'
@@ -281,30 +393,22 @@ bool sdk_resolver::parse_global_file(pal::string_t global_file_path)
     {
         if (!roll_forward_value->value.IsString())
         {
-            trace::warning(_X("Expected a string for the 'sdk/rollForward' value in [%s]"), global_file_path.c_str());
-            return false;
+            ret.error_message = _X("Expected a string for the 'sdk/rollForward' value");
+            return ret;
         }
 
         roll_forward = to_policy(roll_forward_value->value.GetString());
         if (roll_forward == sdk_roll_forward_policy::unsupported)
         {
-            trace::warning(
-                _X("The roll-forward policy '%s' is not supported for the 'sdk/rollForward' value in [%s]"),
-                roll_forward_value->value.GetString(),
-                global_file_path.c_str()
-            );
-            return false;
+            ret.error_message = utils::format_string(_X("The roll-forward policy '%s' is not supported for the 'sdk/rollForward' value"), roll_forward_value->value.GetString());
+            return ret;
         }
 
         // All policies other than 'latestMajor' require a version to operate
-        if (roll_forward != sdk_roll_forward_policy::latest_major && version.is_empty())
+        if (roll_forward != sdk_roll_forward_policy::latest_major && requested_version.is_empty())
         {
-            trace::warning(
-                _X("The roll-forward policy '%s' requires a 'sdk/version' value in [%s]"),
-                roll_forward_value->value.GetString(),
-                global_file_path.c_str()
-            );
-            return false;
+            ret.error_message = utils::format_string(_X("The roll-forward policy '%s' requires a 'sdk/version' value"), roll_forward_value->value.GetString());
+            return ret;
         }
     }
 
@@ -317,21 +421,68 @@ bool sdk_resolver::parse_global_file(pal::string_t global_file_path)
     {
         if (!allow_prerelease_value->value.IsBool())
         {
-            trace::warning(_X("Expected a boolean for the 'sdk/allowPrerelease' value in [%s]"), global_file_path.c_str());
-            return false;
+            ret.error_message = _X("Expected a boolean for the 'sdk/allowPrerelease' value");
+            return ret;
         }
 
         allow_prerelease = allow_prerelease_value->value.GetBool();
 
-        if (!allow_prerelease && version.is_prerelease())
+        if (!allow_prerelease && requested_version.is_prerelease())
         {
             trace::warning(_X("Ignoring the 'sdk/allowPrerelease' value in [%s] because a prerelease version was specified"), global_file_path.c_str());
             allow_prerelease = true;
         }
     }
 
-    global_file = move(global_file_path);
-    return true;
+    const auto& paths_value = sdk->value.FindMember(_X("paths"));
+    if (paths_value != sdk->value.MemberEnd() && !paths_value->value.IsNull())
+    {
+        if (!paths_value->value.IsArray())
+        {
+            ret.error_message = _X("Expected an array for 'sdk/paths' value");
+            return ret;
+        }
+
+        has_custom_paths = true;
+        const auto& paths_array = paths_value->value.GetArray();
+        paths.reserve(paths_array.Size());
+        for (uint32_t i = 0; i < paths_array.Size(); ++i)
+        {
+            const auto& path = paths_array[i];
+            if (!path.IsString())
+            {
+                trace::warning(_X("Ignoring non-string 'sdk/paths[%u]' value in [%s]"), i, global_file_path.c_str());
+                continue;
+            }
+
+            paths.push_back(path.GetString());
+        }
+    }
+
+    const auto& error_message_value = sdk->value.FindMember(_X("errorMessage"));
+    if (error_message_value != sdk->value.MemberEnd() && !error_message_value->value.IsNull())
+    {
+        if (!error_message_value->value.IsString())
+        {
+            ret.error_message = _X("Expected a string for the 'sdk/errorMessage' value");
+            return ret;
+        }
+
+        error_message = error_message_value->value.GetString();
+    }
+
+    // SDK feature bands start at 1, so a version with a feature band < 1 is not a valid version.
+    // We want to provide an error message, but we should still use the settings in the global.json
+    // and not fall back to the default resolver.
+    if (!requested_version.is_empty() && get_feature_band(requested_version) < 1)
+    {
+        ret.error_message = utils::format_string(_X("Version '%s' is not valid for the 'sdk/version' value. SDK feature bands start at 1 - for example, %d.%d.100"), requested_version.as_str().c_str(), requested_version.get_major(), requested_version.get_minor());
+        ret.state = global_file_info::state::__invalid_data_no_fallback;
+        return ret;
+    }
+
+    ret.state = global_file_info::state::valid;
+    return ret;
 }
 
 bool sdk_resolver::matches_policy(const fx_ver_t& current) const
@@ -346,18 +497,18 @@ bool sdk_resolver::matches_policy(const fx_ver_t& current) const
     }
 
     // If no version was requested, then all versions match
-    if (version.is_empty())
+    if (requested_version.is_empty())
     {
         return true;
     }
 
-    int requested_feature = version.get_patch() / 100;
-    int current_feature = current.get_patch() / 100;
+    int requested_feature = get_feature_band(requested_version);
+    int current_feature = get_feature_band(current);
 
-    int requested_minor = version.get_minor();
+    int requested_minor = requested_version.get_minor();
     int current_minor = current.get_minor();
 
-    int requested_major = version.get_major();
+    int requested_major = requested_version.get_major();
     int current_major = current.get_major();
 
     // Rolling forward on patch requires the same major/minor/feature
@@ -388,7 +539,7 @@ bool sdk_resolver::matches_policy(const fx_ver_t& current) const
     }
 
     // The version must be at least what was requested
-    return current >= version;
+    return current >= requested_version;
 }
 
 bool sdk_resolver::is_better_match(const fx_ver_t& current, const fx_ver_t& previous) const
@@ -403,11 +554,11 @@ bool sdk_resolver::is_better_match(const fx_ver_t& current, const fx_ver_t& prev
 
     // Use the later of the two if there is no requested version, the policy requires it,
     // or if everything is equal up to the feature level (latest patch always wins)
-    if (version.is_empty() ||
+    if (requested_version.is_empty() ||
         is_policy_use_latest() ||
         (current.get_major() == previous.get_major() &&
          current.get_minor() == previous.get_minor() &&
-         (current.get_patch() / 100) == (previous.get_patch() / 100)))
+         (get_feature_band(current) == get_feature_band(previous))))
     {
         // Accept the later of the versions
         // This will also handle stable and prerelease comparisons
@@ -436,75 +587,74 @@ bool sdk_resolver::resolve_sdk_path_and_version(const pal::string_t& dir, pal::s
     trace::verbose(_X("Searching for SDK versions in [%s]"), dir.c_str());
 
     // If an exact match is preferred, check for the existence of the version
-    if (exact_match_preferred() && !version.is_empty())
+    if (exact_match_preferred() && !requested_version.is_empty())
     {
         auto probe_path = dir;
-        append_path(&probe_path, version.as_str().c_str());
+        append_path(&probe_path, requested_version.as_str().c_str());
 
-        if (pal::directory_exists(probe_path))
+        pal::string_t sdk_dll_maybe = probe_path;
+        append_path(&sdk_dll_maybe, SDK_DOTNET_DLL);
+        if (pal::file_exists(sdk_dll_maybe))
         {
-            trace::verbose(_X("Found requested SDK directory [%s]"), probe_path.c_str());
-            sdk_path = move(probe_path);
-            resolved_version = version;
+            trace::verbose(_X("Found requested SDK [%s]"), probe_path.c_str());
+            sdk_path = std::move(probe_path);
+            resolved_version = requested_version;
 
             // The SDK path has been resolved
             return true;
         }
+        else if (trace::is_enabled() && pal::directory_exists(probe_path))
+        {
+            trace::verbose(_X("Ignoring version [%s] without ") SDK_DOTNET_DLL, requested_version.as_str().c_str());
+        }
     }
 
+    // No match - we did not find an exact match and roll forward is disabled
     if (roll_forward == sdk_roll_forward_policy::disable)
-    {
-        // Not yet fully resolved
         return false;
-    }
 
-    vector<pal::string_t> versions;
-    pal::readdir_onlydirectories(dir, &versions);
-
-    bool changed = false;
+    bool found = false;
     pal::string_t resolved_version_str = resolved_version.is_empty() ? pal::string_t{} : resolved_version.as_str();
-    for (auto&& version : versions)
-    {
-        fx_ver_t ver;
-        if (!fx_ver_t::parse(version, &ver, false))
+    sdk_info::enumerate_sdk_paths(
+        dir,
+        [&](const fx_ver_t& version, const pal::string_t& version_str)
         {
-            trace::verbose(_X("Ignoring invalid version [%s]"), version.c_str());
-            continue;
-        }
+            if (!matches_policy(version))
+            {
+                trace::verbose(_X("Ignoring version [%s] because it does not match the roll-forward policy"), version_str.c_str());
+                return true;
+            }
 
-        if (!matches_policy(ver))
-        {
-            trace::verbose(_X("Ignoring version [%s] because it does not match the roll-forward policy"), version.c_str());
-            continue;
-        }
+            if (!is_better_match(version, resolved_version))
+            {
+                trace::verbose(
+                    _X("Ignoring version [%s] because it is not a better match than [%s]"),
+                    version_str.c_str(),
+                    resolved_version_str.empty() ? _X("none") : resolved_version_str.c_str()
+                );
+                return true;
+            }
 
-        if (!is_better_match(ver, resolved_version))
+            return false;
+        },
+        [&](const fx_ver_t& version, const pal::string_t& version_str, const pal::string_t& full_path)
         {
             trace::verbose(
-                _X("Ignoring version [%s] because it is not a better match than [%s]"),
-                version.c_str(),
+                _X("Version [%s] is a better match than [%s]"),
+                version_str.c_str(),
                 resolved_version_str.empty() ? _X("none") : resolved_version_str.c_str()
             );
-            continue;
-        }
 
-        trace::verbose(
-            _X("Version [%s] is a better match than [%s]"),
-            version.c_str(),
-            resolved_version_str.empty() ? _X("none") : resolved_version_str.c_str()
-        );
+            found = true;
+            resolved_version = version;
+            resolved_version_str = std::move(version_str);
+        });
 
-        changed = true;
-        resolved_version = ver;
-        resolved_version_str = move(version);
-    }
-
-    if (changed)
+    if (found)
     {
         sdk_path = dir;
         append_path(&sdk_path, resolved_version_str.c_str());
     }
 
-    // Not yet fully resolved
-    return false;
+    return found;
 }

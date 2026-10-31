@@ -1,8 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Xml;
 using System.Collections;
+using System.Xml;
 
 namespace System.Security.Cryptography.Xml
 {
@@ -19,10 +19,9 @@ namespace System.Security.Cryptography.Xml
 
         private bool HasNonRedundantInclusivePrefix(XmlAttribute attr)
         {
-            int tmp;
             string nsPrefix = Utils.GetNamespacePrefix(attr);
             return _inclusivePrefixSet.ContainsKey(nsPrefix) &&
-                Utils.IsNonRedundantNamespaceDecl(attr, GetNearestRenderedNamespaceWithMatchingPrefix(nsPrefix, out tmp));
+                Utils.IsNonRedundantNamespaceDecl(attr, GetNearestRenderedNamespaceWithMatchingPrefix(nsPrefix, out _));
         }
 
         private void GatherNamespaceToRender(string nsPrefix, SortedList nsListToRender, Hashtable nsLocallyDeclared)
@@ -34,24 +33,24 @@ namespace System.Security.Cryptography.Xml
             }
 
             int rDepth;
-            XmlAttribute local = (XmlAttribute)nsLocallyDeclared[nsPrefix];
-            XmlAttribute rAncestral = GetNearestRenderedNamespaceWithMatchingPrefix(nsPrefix, out rDepth);
+            XmlAttribute? local = (XmlAttribute?)nsLocallyDeclared[nsPrefix];
+            XmlAttribute? rAncestral = GetNearestRenderedNamespaceWithMatchingPrefix(nsPrefix, out rDepth);
 
             if (local != null)
             {
                 if (Utils.IsNonRedundantNamespaceDecl(local, rAncestral))
                 {
                     nsLocallyDeclared.Remove(nsPrefix);
-                    nsListToRender.Add(local, null);
+                    Utils.AddToRenderList(nsListToRender, local);
                 }
             }
             else
             {
                 int uDepth;
-                XmlAttribute uAncestral = GetNearestUnrenderedNamespaceWithMatchingPrefix(nsPrefix, out uDepth);
+                XmlAttribute? uAncestral = GetNearestUnrenderedNamespaceWithMatchingPrefix(nsPrefix, out uDepth);
                 if (uAncestral != null && uDepth > rDepth && Utils.IsNonRedundantNamespaceDecl(uAncestral, rAncestral))
                 {
-                    nsListToRender.Add(uAncestral, null);
+                    Utils.AddToRenderList(nsListToRender, uAncestral);
                 }
             }
         }
@@ -69,19 +68,16 @@ namespace System.Security.Cryptography.Xml
 
         internal override void TrackNamespaceNode(XmlAttribute attr, SortedList nsListToRender, Hashtable nsLocallyDeclared)
         {
-            if (!Utils.IsXmlPrefixDefinitionNode(attr))
-            {
-                if (HasNonRedundantInclusivePrefix(attr))
-                    nsListToRender.Add(attr, null);
-                else
-                    nsLocallyDeclared.Add(Utils.GetNamespacePrefix(attr), attr);
-            }
+            if (HasNonRedundantInclusivePrefix(attr))
+                Utils.AddToRenderList(nsListToRender, attr);
+            else
+                nsLocallyDeclared.Add(Utils.GetNamespacePrefix(attr), attr);
         }
 
         internal override void TrackXmlNamespaceNode(XmlAttribute attr, SortedList nsListToRender, SortedList attrListToRender, Hashtable nsLocallyDeclared)
         {
             // exclusive canonicalization treats Xml namespaces as simple attributes. They are not propagated.
-            attrListToRender.Add(attr, null);
+            Utils.AddToRenderList(attrListToRender, attr);
         }
     }
 }

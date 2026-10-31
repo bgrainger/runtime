@@ -3,8 +3,10 @@
 
 .assembly extern mscorlib {}
 .assembly extern xunit.core {}
-.assembly badldslfd { }
-.class Test_badldsfld extends [mscorlib]System.Object
+.assembly ASSEMBLY_NAME { }
+.assembly extern Microsoft.DotNet.XUnitExtensions { .publickeytoken = (31 BF 38 56 AD 36 4E 35 ) }
+.assembly extern TestLibrary { .ver 0:0:0:0 }
+.class public Test_badldsfld extends [mscorlib]System.Object
 {
 .field int32 i
 .method static int32 f()
@@ -14,9 +16,11 @@ ret
 }
 .method public static int32 Main()
 {
-.custom instance void [xunit.core]Xunit.FactAttribute::.ctor() = (
-    01 00 00 00
-)
+.custom instance void [xunit.core]Xunit.FactAttribute::.ctor() = {}
+.custom instance void [Microsoft.DotNet.XUnitExtensions]Xunit.ActiveIssueAttribute::.ctor(string, valuetype [Microsoft.DotNet.XUnitExtensions]Xunit.TestRuntimes) = {
+    string('https://github.com/dotnet/runtime/issues/91923')
+    int32(0x2) // Mono
+}
 .entrypoint
 .try
 {

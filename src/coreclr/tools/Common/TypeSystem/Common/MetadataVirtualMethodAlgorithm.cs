@@ -5,11 +5,13 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 
+using Internal.Text;
+
 namespace Internal.TypeSystem
 {
     public class MetadataVirtualMethodAlgorithm : VirtualMethodAlgorithm
     {
-        private class MethodDescHashtable : LockFreeReaderHashtable<MethodDesc, MethodDesc>
+        private sealed class MethodDescHashtable : LockFreeReaderHashtable<MethodDesc, MethodDesc>
         {
             protected override int GetKeyHashCode(MethodDesc key)
             {
@@ -24,13 +26,13 @@ namespace Internal.TypeSystem
             protected override bool CompareKeyToValue(MethodDesc key, MethodDesc value)
             {
                 Debug.Assert(key.Context == value.Context);
-                return object.ReferenceEquals(key, value);
+                return ReferenceEquals(key, value);
             }
 
             protected override bool CompareValueToValue(MethodDesc value1, MethodDesc value2)
             {
                 Debug.Assert(value1.Context == value2.Context);
-                return object.ReferenceEquals(value1, value2);
+                return ReferenceEquals(value1, value2);
             }
 
             protected override MethodDesc CreateValueFromKey(MethodDesc key)
@@ -39,7 +41,7 @@ namespace Internal.TypeSystem
             }
         }
 
-        private class UnificationGroup
+        private sealed class UnificationGroup
         {
             private MethodDesc[] _members = MethodDesc.EmptyMethods;
             private int _memberCount;
@@ -237,6 +239,7 @@ namespace Internal.TypeSystem
 
             // Step 2, convert targetMethod to method in type hierarchy of uninstantiated form
             targetMethod = targetMethod.GetMethodDefinition();
+            MethodDesc initialTargetMethodDefinition = targetMethod;
             if (uninstantiatedType != objectType)
             {
                 targetMethod = uninstantiatedType.FindMethodOnTypeWithMatchingTypicalMethod(targetMethod);
@@ -257,7 +260,7 @@ namespace Internal.TypeSystem
             {
                 resolutionTarget = objectType.FindMethodOnTypeWithMatchingTypicalMethod(resolutionTarget);
             }
-            if (initialTargetMethod.HasInstantiation)
+            if (initialTargetMethod != initialTargetMethodDefinition)
             {
                 resolutionTarget = resolutionTarget.MakeInstantiatedMethod(initialTargetMethod.Instantiation);
             }
@@ -277,22 +280,22 @@ namespace Internal.TypeSystem
 
         private static MethodDesc FindImplFromDeclFromMethodImpls(MetadataType type, MethodDesc decl)
         {
+            if (decl.OwningType.IsInterface)
+                return FindInterfaceImplFromDeclFromMethodImpls(type, decl);
+
             MethodImplRecord[] foundMethodImpls = type.FindMethodsImplWithMatchingDeclName(decl.Name);
 
             if (foundMethodImpls == null)
                 return null;
 
-            bool interfaceDecl = decl.OwningType.IsInterface;
-
             foreach (MethodImplRecord record in foundMethodImpls)
             {
                 MethodDesc recordDecl = record.Decl;
 
-                if (interfaceDecl != recordDecl.OwningType.IsInterface)
+                if (recordDecl.OwningType.IsInterface)
                     continue;
 
-                if (!interfaceDecl)
-                    recordDecl = FindSlotDefiningMethodForVirtualMethod(recordDecl);
+                recordDecl = FindSlotDefiningMethodForVirtualMethod(recordDecl);
 
                 if (recordDecl == decl)
                 {
@@ -301,6 +304,56 @@ namespace Internal.TypeSystem
             }
 
             return null;
+        }
+
+        private static MethodDesc FindInterfaceImplFromDeclFromMethodImpls(MetadataType type, MethodDesc decl)
+        {
+            Debug.Assert(decl.OwningType.IsInterface);
+
+            MethodImplRecord[] foundMethodImpls = type.FindMethodsImplWithMatchingDeclName(decl.Name);
+
+            if (foundMethodImpls == null)
+                return null;
+
+            // We might find more than one result due to generic parameter folding
+            var results = new ArrayBuilder<int>(1);
+            for (int i = 0; i < foundMethodImpls.Length; i++)
+            {
+                MethodDesc recordDecl = foundMethodImpls[i].Decl;
+                if (recordDecl == decl)
+                {
+                    results.Add(i);
+                }
+            }
+
+            if (results.Count == 0)
+                return null;
+
+            int resultIndex = results[0];
+
+            // If we found multiple MethodImpls, need to do a tie break using type declaration order
+            if (results.Count > 1)
+            {
+                MetadataType typeDefinition = (MetadataType)type.GetTypeDefinition();
+                DefType[] interfacesOnDefinition = typeDefinition.RuntimeInterfaces;
+                MethodImplRecord[] foundMethodImplsOnDefinition = typeDefinition.FindMethodsImplWithMatchingDeclName(decl.Name);
+                Debug.Assert(foundMethodImplsOnDefinition.Length == foundMethodImpls.Length);
+
+                int bestInterfaceIndex = int.MaxValue;
+
+                for (int i = 0; i < results.Count; i++)
+                {
+                    int index = Array.IndexOf(interfacesOnDefinition, foundMethodImplsOnDefinition[results[i]].Decl.OwningType);
+                    Debug.Assert(index >= 0);
+                    if (index < bestInterfaceIndex)
+                    {
+                        bestInterfaceIndex = index;
+                        resultIndex = i;
+                    }
+                }
+            }
+
+            return FindSlotDefiningMethodForVirtualMethod(foundMethodImpls[resultIndex].Body);
         }
 
         private static bool IsInterfaceExplicitlyImplementedOnType(MetadataType type, MetadataType interfaceType)
@@ -315,39 +368,47 @@ namespace Internal.TypeSystem
 
         /// <summary>
         /// Find matching a matching method by name and sig on a type. (Restricted to virtual methods only)
+        /// This will find both exact and equivalent matches, but will prefer exact matches.
         /// </summary>
         /// <param name="targetMethod"></param>
         /// <param name="currentType"></param>
         /// <param name="reverseMethodSearch">Used to control the order of the search. For historical purposes to
         /// match .NET Framework behavior, this is typically true, but not always. There is no particular rationale
         /// for the particular orders other than to attempt to be consistent in virtual method override behavior
-        /// betweeen runtimes.</param>
+        /// between runtimes.</param>
         /// <param name="nameSigMatchMethodIsValidCandidate"></param>
         /// <returns></returns>
         private static MethodDesc FindMatchingVirtualMethodOnTypeByNameAndSig(MethodDesc targetMethod, DefType currentType, bool reverseMethodSearch, Func<MethodDesc, MethodDesc, bool> nameSigMatchMethodIsValidCandidate)
         {
-            string name = targetMethod.Name;
+            Utf8Span name = targetMethod.Name;
             MethodSignature sig = targetMethod.Signature;
 
             MethodDesc implMethod = null;
+            MethodDesc implMethodEquivalent = null;
             foreach (MethodDesc candidate in currentType.GetAllVirtualMethods())
             {
                 if (candidate.Name == name)
                 {
-                    if (candidate.Signature.Equals(sig))
+                    if (candidate.Signature.EquivalentTo(sig))
                     {
                         if (nameSigMatchMethodIsValidCandidate == null || nameSigMatchMethodIsValidCandidate(targetMethod, candidate))
                         {
-                            implMethod = candidate;
+                            implMethodEquivalent = candidate;
+
+                            if (candidate.Signature.Equals(sig))
+                                implMethod = candidate;
 
                             // If reverseMethodSearch is enabled, we want to find the last match on this type, not the first
                             // (reverseMethodSearch is used for most matches except for searches for name/sig method matches for interface methods on the most derived type)
-                            if (!reverseMethodSearch)
+                            if (!reverseMethodSearch && implMethod != null)
                                 return implMethod;
                         }
                     }
                 }
             }
+
+            if (implMethod == null)
+                return implMethodEquivalent;
 
             return implMethod;
         }
@@ -367,7 +428,7 @@ namespace Internal.TypeSystem
                     return nameSigOverride;
                 }
 
-                currentType = currentType.MetadataBaseType;
+                currentType = currentType.BaseType;
             }
 
             return null;
@@ -380,6 +441,8 @@ namespace Internal.TypeSystem
         {
             if (method == null)
                 return method;
+
+            Debug.Assert(method.GetMethodDefinition() == method);
 
             DefType currentType = method.OwningType.BaseType;
 
@@ -408,20 +471,28 @@ namespace Internal.TypeSystem
         /// <param name="reverseMethodSearch">Used to control the order of the search. For historical purposes to
         /// match .NET Framework behavior, this is typically true, but not always. There is no particular rationale
         /// for the particular orders other than to attempt to be consistent in virtual method override behavior
-        /// betweeen runtimes.</param>
+        /// between runtimes.</param>
         /// <returns></returns>
         private static MethodDesc FindMatchingVirtualMethodOnTypeByNameAndSigWithSlotCheck(MethodDesc method, DefType currentType, bool reverseMethodSearch)
         {
             return FindMatchingVirtualMethodOnTypeByNameAndSig(method, currentType, reverseMethodSearch, nameSigMatchMethodIsValidCandidate: s_VerifyMethodsHaveTheSameVirtualSlot);
         }
 
-        private static Func<MethodDesc, MethodDesc, bool> s_VerifyMethodsHaveTheSameVirtualSlot = VerifyMethodsHaveTheSameVirtualSlot;
+        private static readonly Func<MethodDesc, MethodDesc, bool> s_VerifyMethodsHaveTheSameVirtualSlot = VerifyMethodsHaveTheSameVirtualSlot;
 
         // Return true if the slot that defines methodToVerify matches slotDefiningMethod
         private static bool VerifyMethodsHaveTheSameVirtualSlot(MethodDesc slotDefiningMethod, MethodDesc methodToVerify)
         {
             MethodDesc slotDefiningMethodOfMethodToVerify = FindSlotDefiningMethodForVirtualMethod(methodToVerify);
             return slotDefiningMethodOfMethodToVerify == slotDefiningMethod;
+        }
+
+        private static readonly Func<MethodDesc, MethodDesc, bool> s_VerifyMethodIsPublic = VerifyMethodIsPublic;
+
+        // Return true if the method to verify is public
+        private static bool VerifyMethodIsPublic(MethodDesc slotDefiningMethod, MethodDesc methodToVerify)
+        {
+            return methodToVerify.IsPublic;
         }
 
         private static void FindBaseUnificationGroup(MetadataType currentType, UnificationGroup unificationGroup)
@@ -440,12 +511,31 @@ namespace Internal.TypeSystem
             }
 
             MethodDesc nameSigMatchMethod = FindMatchingVirtualMethodOnTypeByNameAndSigWithSlotCheck(unificationGroup.DefiningMethod, currentType, reverseMethodSearch: true);
-            MetadataType baseType = currentType.MetadataBaseType;
+            MetadataType baseType = currentType.BaseType;
 
             // Unless the current type has a name/sig match for the group, look to the base type to define the unification group further
             if ((nameSigMatchMethod == null) && (baseType != null))
             {
+                // TODO! Consider if we should do this check even if the virtual name/sig match finds something.
+                // We may want to build up a unification group for the base just to check the further MethodImpl case here.
                 FindBaseUnificationGroup(baseType, unificationGroup);
+
+                // We should check to see if a the DefiningMethod on the base unification group is overridden via MethodImpl
+                // TODO! check to see if we need to check for MethodImpls affecting other members of the unification group
+                // other than the defining method
+                if (unificationGroup.DefiningMethod != null)
+                {
+                    methodImpl = FindImplFromDeclFromMethodImpls(currentType, unificationGroup.DefiningMethod);
+                    if (methodImpl != null)
+                    {
+                        if (methodImpl.RequiresSlotUnification())
+                        {
+                            unificationGroup.AddMethodRequiringSlotUnification(unificationGroup.DefiningMethod);
+                            unificationGroup.AddMethodRequiringSlotUnification(methodImpl);
+                        }
+                        unificationGroup.SetDefiningMethod(methodImpl);
+                    }
+                }
             }
 
             Debug.Assert(unificationGroup.IsInGroupOrIsDefiningSlot(originalDefiningMethod));
@@ -459,16 +549,15 @@ namespace Internal.TypeSystem
 
             foreach (MethodDesc memberMethod in unificationGroup.Members)
             {
-                // If a method is both overriden via MethodImpl and name/sig, we don't remove it from the unification list
-                // as the local MethodImpl takes priority over the name/sig match, and prevents the slot disunificaiton
+                // If a method is both overridden via MethodImpl and name/sig, we don't remove it from the unification list
+                // as the local MethodImpl takes priority over the name/sig match, and prevents the slot disunification.
                 if (FindSlotDefiningMethodForVirtualMethod(memberMethod) == FindSlotDefiningMethodForVirtualMethod(originalDefiningMethod))
                     continue;
 
                 MethodDesc nameSigMatchMemberMethod = FindMatchingVirtualMethodOnTypeByNameAndSigWithSlotCheck(memberMethod, currentType, reverseMethodSearch: true);
                 if (nameSigMatchMemberMethod != null && nameSigMatchMemberMethod != memberMethod)
                 {
-                    if (separatedMethods == null)
-                        separatedMethods = new MethodDescHashtable();
+                    separatedMethods ??= new MethodDescHashtable();
                     separatedMethods.AddOrGetExisting(memberMethod);
                 }
             }
@@ -491,13 +580,12 @@ namespace Internal.TypeSystem
                 {
                     unificationGroup.RemoveFromGroup(declSlot);
 
-                    if (separatedMethods == null)
-                        separatedMethods = new MethodDescHashtable();
+                    separatedMethods ??= new MethodDescHashtable();
                     separatedMethods.AddOrGetExisting(declSlot);
 
                     if (unificationGroup.RequiresSlotUnification(declSlot) || implSlot.RequiresSlotUnification())
                     {
-                        if (implSlot.Signature.EqualsWithCovariantReturnType(unificationGroup.DefiningMethod.Signature))
+                        if (implSlot.Signature.EquivalentWithCovariantReturnType(unificationGroup.DefiningMethod.Signature))
                         {
                             unificationGroup.AddMethodRequiringSlotUnification(declSlot);
                             unificationGroup.AddMethodRequiringSlotUnification(implSlot);
@@ -518,14 +606,14 @@ namespace Internal.TypeSystem
                         FindBaseUnificationGroup(baseType, addDeclGroup);
                         Debug.Assert(
                             addDeclGroup.IsInGroupOrIsDefiningSlot(declSlot) ||
-                            (addDeclGroup.RequiresSlotUnification(declSlot) && addDeclGroup.DefiningMethod.Signature.EqualsWithCovariantReturnType(declSlot.Signature)));
+                            (addDeclGroup.RequiresSlotUnification(declSlot) && addDeclGroup.DefiningMethod.Signature.EquivalentWithCovariantReturnType(declSlot.Signature)));
 
                         foreach (MethodDesc methodImplRequiredToRemainInEffect in addDeclGroup.MethodsRequiringSlotUnification)
                         {
                             unificationGroup.AddMethodRequiringSlotUnification(methodImplRequiredToRemainInEffect);
                         }
 
-                        // Add all members from the decl's unification group except for ones that have been seperated by name/sig matches
+                        // Add all members from the decl's unification group except for ones that have been separated by name/sig matches
                         // or previously processed methodimpls. NOTE: This implies that method impls are order dependent.
                         if (separatedMethods == null || !separatedMethods.Contains(addDeclGroup.DefiningMethod))
                         {
@@ -552,7 +640,7 @@ namespace Internal.TypeSystem
                     }
                     else if (unificationGroup.RequiresSlotUnification(declSlot))
                     {
-                        if (implSlot.Signature.EqualsWithCovariantReturnType(unificationGroup.DefiningMethod.Signature))
+                        if (implSlot.Signature.EquivalentWithCovariantReturnType(unificationGroup.DefiningMethod.Signature))
                         {
                             unificationGroup.AddMethodRequiringSlotUnification(implSlot);
                             unificationGroup.SetDefiningMethod(implSlot);
@@ -572,6 +660,16 @@ namespace Internal.TypeSystem
             return ResolveVariantInterfaceMethodToVirtualMethodOnType(interfaceMethod, (MetadataType)currentType);
         }
 
+        public override MethodDesc ResolveInterfaceMethodToStaticVirtualMethodOnType(MethodDesc interfaceMethod, TypeDesc currentType)
+        {
+            return ResolveInterfaceMethodToStaticVirtualMethodOnType(interfaceMethod, (MetadataType)currentType);
+        }
+
+        public override MethodDesc ResolveVariantInterfaceMethodToStaticVirtualMethodOnType(MethodDesc interfaceMethod, TypeDesc currentType)
+        {
+            return ResolveVariantInterfaceMethodToStaticVirtualMethodOnType(interfaceMethod, (MetadataType)currentType);
+        }
+
         //////////////////////// INTERFACE RESOLUTION
         //Interface function resolution
         //    Interface function resolution follows the following rules
@@ -586,8 +684,23 @@ namespace Internal.TypeSystem
         //    function returns null if the interface method implementation is not defined by the current type in
         //    the hierarchy.For variance to work correctly, this requires that interfaces be queried in correct order.
         //    See current interface call resolution for details on how that happens.
-        private static MethodDesc ResolveInterfaceMethodToVirtualMethodOnType(MethodDesc interfaceMethod, MetadataType currentType)
+        //
+        //    The returnRecursive parameter is solely intended to optimize the recursion through
+        //    the ResolveInterfaceMethodToVirtualMethodOnTypeRecursive helper method and should not
+        //    be used for anything else. ResolveInterfaceMethodToVirtualMethodOnTypeRecursive walks
+        //    up the type hierarchy, calls ResolveInterfaceMethodToVirtualMethodOnType on each base
+        //    type, and bails out on a first successful match. Since we perform the same expansion in
+        //    the last branch of this method by calling ResolveInterfaceMethodToVirtualMethodOnTypeRecursive
+        //    for the base type, we allow the caller to specify that such computed value should be
+        //    returned instead of discarded. This allows short-circuiting the outer loop over type
+        //    hierarchy and avoids unnecessary exponential algorithmic complexity of the resolution
+        //    algorithm.
+        private static MethodDesc ResolveInterfaceMethodToVirtualMethodOnType(MethodDesc interfaceMethod, MetadataType currentType, bool returnRecursive = false)
         {
+            Debug.Assert(!interfaceMethod.Signature.IsStatic);
+
+            // This would be a default interface method resolution. The algorithm below would sort of work, but doesn't handle
+            // things like diamond cases and it's better not to let it resolve as such.
             if (currentType.IsInterface)
                 return null;
 
@@ -599,13 +712,13 @@ namespace Internal.TypeSystem
 
             // If interface is explicitly defined on a type, search for a name/sig match.
             bool foundExplicitInterface = IsInterfaceExplicitlyImplementedOnType(currentType, interfaceType);
-            MetadataType baseType = currentType.MetadataBaseType;
+            MetadataType baseType = currentType.BaseType;
 
             if (foundExplicitInterface)
             {
                 MethodDesc foundOnCurrentType = FindMatchingVirtualMethodOnTypeByNameAndSig(interfaceMethod, currentType,
                     reverseMethodSearch: false, /* When searching for name/sig overrides on a type that explicitly defines an interface, search through the type in the forward direction*/
-                    nameSigMatchMethodIsValidCandidate :null);
+                    nameSigMatchMethodIsValidCandidate: s_VerifyMethodIsPublic);
                 foundOnCurrentType = FindSlotDefiningMethodForVirtualMethod(foundOnCurrentType);
 
                 if (baseType == null)
@@ -637,13 +750,13 @@ namespace Internal.TypeSystem
                 MethodDesc baseClassImplementationOfInterfaceMethod = ResolveInterfaceMethodToVirtualMethodOnTypeRecursive(interfaceMethod, baseType);
                 if (baseClassImplementationOfInterfaceMethod != null)
                 {
-                    return null;
+                    return returnRecursive ? baseClassImplementationOfInterfaceMethod : null;
                 }
                 else
                 {
                     MethodDesc foundOnCurrentType = FindMatchingVirtualMethodOnTypeByNameAndSig(interfaceMethod, currentType,
                                             reverseMethodSearch: false, /* When searching for name/sig overrides on a type that is the first type in the hierarchy to require the interface, search through the type in the forward direction*/
-                                            nameSigMatchMethodIsValidCandidate: null);
+                                            nameSigMatchMethodIsValidCandidate: s_VerifyMethodIsPublic);
 
                     foundOnCurrentType = FindSlotDefiningMethodForVirtualMethod(foundOnCurrentType);
 
@@ -657,6 +770,8 @@ namespace Internal.TypeSystem
 
         public static MethodDesc ResolveVariantInterfaceMethodToVirtualMethodOnType(MethodDesc interfaceMethod, MetadataType currentType)
         {
+            Debug.Assert(!interfaceMethod.Signature.IsStatic);
+
             MetadataType interfaceType = (MetadataType)interfaceMethod.OwningType;
             bool foundInterface = IsInterfaceImplementedOnType(currentType, interfaceType);
             MethodDesc implMethod;
@@ -699,11 +814,11 @@ namespace Internal.TypeSystem
                     return null;
                 }
 
-                MethodDesc currentTypeInterfaceResolution = ResolveInterfaceMethodToVirtualMethodOnType(interfaceMethod, currentType);
+                MethodDesc currentTypeInterfaceResolution = ResolveInterfaceMethodToVirtualMethodOnType(interfaceMethod, currentType, returnRecursive: true);
                 if (currentTypeInterfaceResolution != null)
                     return currentTypeInterfaceResolution;
 
-                currentType = currentType.MetadataBaseType;
+                currentType = currentType.BaseType;
             }
         }
 
@@ -717,79 +832,86 @@ namespace Internal.TypeSystem
 
                 MethodDesc nameSigOverride = FindMatchingVirtualMethodOnTypeByNameAndSig(interfaceMethod, currentType,
                     reverseMethodSearch: true, /* When searching for a name sig match for an interface on parent types search in reverse order of declaration */
-                    nameSigMatchMethodIsValidCandidate:null);
+                    nameSigMatchMethodIsValidCandidate: s_VerifyMethodIsPublic);
 
                 if (nameSigOverride != null)
                 {
                     return FindSlotDefiningMethodForVirtualMethod(nameSigOverride);
                 }
 
-                currentType = currentType.MetadataBaseType;
+                currentType = currentType.BaseType;
             }
         }
 
         public override DefaultInterfaceMethodResolution ResolveInterfaceMethodToDefaultImplementationOnType(MethodDesc interfaceMethod, TypeDesc currentType, out MethodDesc impl)
         {
-            return ResolveInterfaceMethodToDefaultImplementationOnType(interfaceMethod, (MetadataType)currentType, out impl);
+            return FindDefaultInterfaceImplementation(interfaceMethod, (MetadataType)currentType, allowVariance: false, out impl);
         }
 
-        private static DefaultInterfaceMethodResolution ResolveInterfaceMethodToDefaultImplementationOnType(MethodDesc interfaceMethod, MetadataType currentType, out MethodDesc impl)
+        public override DefaultInterfaceMethodResolution ResolveVariantInterfaceMethodToDefaultImplementationOnType(MethodDesc interfaceMethod, TypeDesc currentType, out MethodDesc impl)
         {
-            TypeDesc interfaceMethodOwningType = interfaceMethod.OwningType;
-            MetadataType mostSpecificInterface = null;
-            bool diamondCase = false;
-            impl = null;
+            return ResolveVariantInterfaceMethodToDefaultImplementationOnType(interfaceMethod, (MetadataType)currentType, out impl);
+        }
 
-            DefType[] consideredInterfaces;
-            if (!currentType.IsInterface)
-            {
-                // If this is not an interface, only things on the interface list could provide
-                // default implementations.
-                consideredInterfaces = currentType.RuntimeInterfaces;
-            }
-            else
-            {
-                // If we're asking about an interface, include the interface in the list.
-                consideredInterfaces = new DefType[currentType.RuntimeInterfaces.Length + 1];
-                Array.Copy(currentType.RuntimeInterfaces, consideredInterfaces, currentType.RuntimeInterfaces.Length);
-                consideredInterfaces[consideredInterfaces.Length - 1] = (DefType)currentType.InstantiateAsOpen();
-            }
+        public static DefaultInterfaceMethodResolution ResolveVariantInterfaceMethodToDefaultImplementationOnType(MethodDesc interfaceMethod, MetadataType currentType, out MethodDesc impl)
+        {
+            DefaultInterfaceMethodResolution resolution = FindDefaultInterfaceImplementation(interfaceMethod, currentType, allowVariance: false, out impl);
+            if (resolution != DefaultInterfaceMethodResolution.None)
+                return resolution;
 
-            foreach (MetadataType runtimeInterface in consideredInterfaces)
+            return FindDefaultInterfaceImplementation(interfaceMethod, currentType, allowVariance: true, out impl);
+        }
+
+        private static bool TryGetCandidateImplementation(
+            MetadataType currentMT,
+            MethodDesc interfaceMethod,
+            TypeDesc interfaceMT,
+            bool allowVariance,
+            out MethodDesc candidateMD)
+        {
+            candidateMD = null;
+            MethodDesc interfaceMethodDefinition = interfaceMethod.GetMethodDefinition();
+
+            if (currentMT == interfaceMT)
             {
-                if (runtimeInterface == interfaceMethodOwningType)
+                // exact match
+                if (!interfaceMethod.IsAbstract)
                 {
-                    // Also consider the default interface method implementation on the interface itself
-                    // if we don't have anything else yet
-                    if (mostSpecificInterface == null && !interfaceMethod.IsAbstract)
+                    candidateMD = interfaceMethodDefinition;
+                }
+            }
+            else if (currentMT.CanCastTo(interfaceMT))
+            {
+                if (currentMT.HasSameTypeDefinition(interfaceMT))
+                {
+                    // Generic variance match - we'll instantiate pCurMD with the right type arguments later
+                    if (allowVariance && !interfaceMethod.IsAbstract)
                     {
-                        mostSpecificInterface = runtimeInterface;
-                        impl = interfaceMethod;
+                        candidateMD = currentMT.FindMethodOnTypeWithMatchingTypicalMethod(interfaceMethodDefinition);
                     }
                 }
-                else if (Array.IndexOf(runtimeInterface.RuntimeInterfaces, interfaceMethodOwningType) != -1)
+                else
                 {
-                    // This interface might provide a default implementation
-                    MethodImplRecord[] possibleImpls = runtimeInterface.FindMethodsImplWithMatchingDeclName(interfaceMethod.Name);
+                    //
+                    // A more specific interface - search for an methodimpl for explicit override
+                    // Implicit override in default interface methods are not allowed
+                    //
+                    MethodImplRecord[] possibleImpls = currentMT.FindMethodsImplWithMatchingDeclName(interfaceMethod.Name);
                     if (possibleImpls != null)
                     {
                         foreach (MethodImplRecord implRecord in possibleImpls)
                         {
-                            if (implRecord.Decl == interfaceMethod)
-                            {
-                                // This interface provides a default implementation.
-                                // Is it also most specific?
-                                if (mostSpecificInterface == null || Array.IndexOf(runtimeInterface.RuntimeInterfaces, mostSpecificInterface) != -1)
-                                {
-                                    mostSpecificInterface = runtimeInterface;
-                                    impl = implRecord.Body;
-                                    diamondCase = false;
-                                }
-                                else if (Array.IndexOf(mostSpecificInterface.RuntimeInterfaces, runtimeInterface) == -1)
-                                {
-                                    diamondCase = true;
-                                }
+                            if (implRecord.Decl.GetTypicalMethodDefinition() != interfaceMethodDefinition.GetTypicalMethodDefinition())
+                                continue;
 
+                            // We do CanCastTo to also cover variance.
+                            // We already know this is a method on the same type definition as the (generic)
+                            // interface but we need to make sure the instantiations match.
+                            if (!interfaceMT.HasInstantiation
+                                || implRecord.Decl.OwningType == interfaceMT
+                                || (allowVariance && implRecord.Decl.OwningType.CanCastTo(interfaceMT)))
+                            {
+                                candidateMD = implRecord.Body;
                                 break;
                             }
                         }
@@ -797,19 +919,163 @@ namespace Internal.TypeSystem
                 }
             }
 
-            if (diamondCase)
+            return candidateMD is not null;
+        }
+
+        // Find the default interface implementation method for interface dispatch
+        // It is either the interface method with default interface method implementation,
+        // or an most specific interface with an explicit methodimpl overriding the method
+        private static DefaultInterfaceMethodResolution FindDefaultInterfaceImplementation(
+            MethodDesc interfaceMethod,
+            MetadataType currentType,
+            bool allowVariance,
+            out MethodDesc impl)
+        {
+            TypeDesc interfaceMT = interfaceMethod.OwningType;
+            MethodDesc interfaceMethodDefinition = interfaceMethod.GetMethodDefinition();
+            impl = null;
+
+            DefType[] consideredInterfaces;
+            if (!currentType.IsInterface)
             {
-                impl = null;
-                return DefaultInterfaceMethodResolution.Diamond;
+                consideredInterfaces = currentType.RuntimeInterfaces;
             }
-            else if (impl == null)
+            else
+            {
+                consideredInterfaces = new DefType[currentType.RuntimeInterfaces.Length + 1];
+                Array.Copy(currentType.RuntimeInterfaces, consideredInterfaces, currentType.RuntimeInterfaces.Length);
+                consideredInterfaces[consideredInterfaces.Length - 1] = currentType.IsGenericDefinition ? (DefType)currentType.InstantiateAsOpen() : currentType;
+            }
+
+            MetadataType[] candidateInterfaces = new MetadataType[consideredInterfaces.Length];
+            MethodDesc[] candidateMethods = new MethodDesc[consideredInterfaces.Length];
+            int candidatesCount = 0;
+
+            // Walk interface from derived class to parent class
+            // (parent interface are laid out first in interface map)
+            MetadataType pMT = currentType;
+
+            while (pMT != null)
+            {
+                MetadataType pParentMT = pMT.BaseType;
+                int dwParentInterfaces = pParentMT != null ? pParentMT.RuntimeInterfaces.Length : 0;
+
+                // Scanning only current class only if the current class have more interface than parent
+                int totalInterfaces = currentType.IsInterface && pMT == currentType
+                    ? consideredInterfaces.Length
+                    : pMT.RuntimeInterfaces.Length;
+
+                for (int index = dwParentInterfaces; index < totalInterfaces; index++)
+                {
+                    MetadataType currentMT = (MetadataType)consideredInterfaces[index];
+                    if (!TryGetCandidateImplementation(currentMT, interfaceMethod, interfaceMT, allowVariance, out MethodDesc currentMD))
+                        continue;
+
+                    //
+                    // Found a match. But is it a more specific match (we want most specific interfaces)
+                    //
+                    bool needToInsert = true;
+                    bool seenMoreSpecific = false;
+
+                    // We need to maintain the invariant that the candidates are always the most specific
+                    // in all path scaned so far. There might be multiple incompatible candidates
+                    for (int i = 0; i < candidatesCount; i++)
+                    {
+                        MetadataType candidateMT = candidateInterfaces[i];
+                        if (candidateMT is null)
+                            continue;
+
+                        if (candidateMT == currentMT)
+                        {
+                            // A dup - we are done
+                            needToInsert = false;
+                            break;
+                        }
+
+                        if (allowVariance && candidateMT.HasSameTypeDefinition(currentMT))
+                        {
+                            // Variant match on the same type - this is a tie
+                        }
+                        else if (currentMT.CanCastTo(candidateMT))
+                        {
+                            // pCurMT is a more specific choice than IFoo/IBar both overrides IBlah :
+                            if (!seenMoreSpecific)
+                            {
+                                seenMoreSpecific = true;
+                                candidateInterfaces[i] = currentMT;
+                                candidateMethods[i] = currentMD;
+                            }
+                            else
+                            {
+                                candidateInterfaces[i] = null;
+                                candidateMethods[i] = null;
+                            }
+                            needToInsert = false;
+                        }
+                        else if (candidateMT.CanCastTo(currentMT))
+                        {
+                            // pCurMT is less specific - we don't need to scan more entries as this entry can
+                            // represent pCurMT (other entries are incompatible with pCurMT)
+                            needToInsert = false;
+                            break;
+                        }
+                        else
+                        {
+                            // pCurMT is incompatible - keep scanning
+                        }
+                    }
+
+                    if (needToInsert)
+                    {
+                        Debug.Assert(candidatesCount < candidateInterfaces.Length);
+                        candidateInterfaces[candidatesCount] = currentMT;
+                        candidateMethods[candidatesCount] = currentMD;
+                        candidatesCount++;
+                    }
+                }
+
+                pMT = pParentMT;
+            }
+
+            // scan to see if there are any conflicts
+            // If we are doing second pass (allowing variance), we know don't actually look for
+            // a conflict anymore, but pick the first match.
+            MetadataType bestCandidateMT = null;
+            MethodDesc bestCandidateMD = null;
+            for (int i = 0; i < candidatesCount; i++)
+            {
+                if (candidateInterfaces[i] is null)
+                    continue;
+
+                if (bestCandidateMT is null)
+                {
+                    bestCandidateMT = candidateInterfaces[i];
+                    bestCandidateMD = candidateMethods[i];
+
+                    // If this is a second pass lookup, we know this is a variant match. As such
+                    // we pick the first result as the winner
+                    if (allowVariance)
+                        break;
+                }
+                else if (bestCandidateMT != candidateInterfaces[i])
+                {
+                    return DefaultInterfaceMethodResolution.Diamond;
+                }
+            }
+
+            if (bestCandidateMD is null)
             {
                 return DefaultInterfaceMethodResolution.None;
             }
-            else if (impl.IsAbstract)
+
+            if (bestCandidateMD.IsAbstract)
             {
                 return DefaultInterfaceMethodResolution.Reabstraction;
             }
+
+            impl = bestCandidateMD;
+            if (interfaceMethod != interfaceMethodDefinition)
+                impl = impl.MakeInstantiatedMethod(interfaceMethod.Instantiation);
 
             return DefaultInterfaceMethodResolution.DefaultImplementation;
         }
@@ -822,24 +1088,131 @@ namespace Internal.TypeSystem
         // Enumerate all possible virtual slots of a type
         public static IEnumerable<MethodDesc> EnumAllVirtualSlots(MetadataType type)
         {
+            return type.IsInterface ? type.GetAllVirtualMethods() : EnumAllVirtualSlotsOnClass(type);
+        }
+        private static IEnumerable<MethodDesc> EnumAllVirtualSlotsOnClass(MetadataType type)
+        {
             MethodDescHashtable alreadyEnumerated = new MethodDescHashtable();
-            if (!type.IsInterface)
+            do
             {
-                do
+                foreach (MethodDesc m in type.GetAllVirtualMethods())
                 {
-                    foreach (MethodDesc m in type.GetAllVirtualMethods())
+                    MethodDesc possibleVirtual = FindSlotDefiningMethodForVirtualMethod(m);
+                    if (!alreadyEnumerated.Contains(possibleVirtual))
                     {
-                        MethodDesc possibleVirtual = FindSlotDefiningMethodForVirtualMethod(m);
-                        if (!alreadyEnumerated.Contains(possibleVirtual))
-                        {
-                            alreadyEnumerated.AddOrGetExisting(possibleVirtual);
-                            yield return possibleVirtual;
-                        }
+                        alreadyEnumerated.AddOrGetExisting(possibleVirtual);
+                        yield return possibleVirtual;
+                    }
+                }
+
+                type = type.BaseType;
+            } while (type != null);
+        }
+
+        /// <summary>
+        /// Try to resolve a given virtual static interface method on a given constrained type and its base types.
+        /// </summary>
+        /// <param name="interfaceMethod">Interface method to resolve</param>
+        /// <param name="currentType">Type to attempt virtual static method resolution on</param>
+        /// <returns>MethodDesc of the resolved virtual static method, null when not found (runtime lookup must be used)</returns>
+        public static MethodDesc ResolveInterfaceMethodToStaticVirtualMethodOnType(MethodDesc interfaceMethod, MetadataType currentType)
+        {
+            // This would be a default interface method resolution. The algorithm below would sort of work, but doesn't handle
+            // things like diamond cases and it's better not to let it resolve as such.
+            if (currentType.IsInterface)
+                return null;
+
+            // Search for match on a per-level in the type hierarchy
+            for (MetadataType typeToCheck = currentType; typeToCheck != null; typeToCheck = typeToCheck.BaseType)
+            {
+                MethodDesc resolvedMethodOnType = TryResolveVirtualStaticMethodOnThisType(typeToCheck, interfaceMethod);
+                if (resolvedMethodOnType != null)
+                {
+                    return resolvedMethodOnType;
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Try to resolve a given virtual static interface method on a given constrained type and its base types.
+        /// </summary>
+        /// <param name="interfaceMethod">Interface method to resolve</param>
+        /// <param name="currentType">Type to attempt virtual static method resolution on</param>
+        /// <returns>MethodDesc of the resolved virtual static method, null when not found (runtime lookup must be used)</returns>
+        public static MethodDesc ResolveVariantInterfaceMethodToStaticVirtualMethodOnType(MethodDesc interfaceMethod, MetadataType currentType)
+        {
+            TypeDesc interfaceType = interfaceMethod.OwningType;
+
+            // Search for match on a per-level in the type hierarchy
+            for (MetadataType typeToCheck = currentType; typeToCheck != null; typeToCheck = typeToCheck.BaseType)
+            {
+                MethodDesc resolvedMethodOnType = TryResolveVirtualStaticMethodOnThisType(typeToCheck, interfaceMethod);
+                if (resolvedMethodOnType != null)
+                {
+                    return resolvedMethodOnType;
+                }
+
+                // Variant interface dispatch
+                foreach (DefType runtimeInterfaceType in typeToCheck.RuntimeInterfaces)
+                {
+                    if (runtimeInterfaceType == interfaceType)
+                    {
+                        // This is the variant interface check logic, skip this
+                        continue;
                     }
 
-                    type = type.MetadataBaseType;
-                } while (type != null);
+                    if (!runtimeInterfaceType.HasSameTypeDefinition(interfaceType))
+                    {
+                        // Variance matches require a typedef match
+                        // Equivalence isn't sufficient, and is uninteresting as equivalent interfaces cannot have static virtuals.
+                        continue;
+                    }
+
+                    if (runtimeInterfaceType.CanCastTo(interfaceType))
+                    {
+                        // Attempt to resolve on variance matched interface
+                        MethodDesc runtimeInterfaceMethod = runtimeInterfaceType.FindMethodOnExactTypeWithMatchingTypicalMethod(interfaceMethod);
+                        resolvedMethodOnType = TryResolveVirtualStaticMethodOnThisType(typeToCheck, runtimeInterfaceMethod);
+                        if (resolvedMethodOnType != null)
+                        {
+                            return resolvedMethodOnType;
+                        }
+                    }
+                }
             }
+            return null;
+        }
+
+        /// <summary>
+        /// Try to resolve a given virtual static interface method on a given constrained type and return the resolved method or null when not found.
+        /// </summary>
+        /// <param name="constrainedType">Type to attempt method resolution on</param>
+        /// <param name="interfaceMethod">Method to resolve</param>
+        /// <returns>MethodDesc of the resolved method or null when not found (runtime lookup must be used)</returns>
+        private static MethodDesc TryResolveVirtualStaticMethodOnThisType(MetadataType constrainedType, MethodDesc interfaceMethod)
+        {
+            Debug.Assert(interfaceMethod.Signature.IsStatic);
+
+            MethodImplRecord[] possibleImpls = constrainedType.FindMethodsImplWithMatchingDeclName(interfaceMethod.Name);
+            if (possibleImpls == null)
+                return null;
+
+            MethodDesc interfaceMethodDefinition = interfaceMethod.GetMethodDefinition();
+            foreach (MethodImplRecord methodImpl in possibleImpls)
+            {
+                if (methodImpl.Decl == interfaceMethodDefinition)
+                {
+                    MethodDesc resolvedMethodImpl = methodImpl.Body;
+                    if (interfaceMethod != interfaceMethodDefinition)
+                    {
+                        resolvedMethodImpl = resolvedMethodImpl.MakeInstantiatedMethod(interfaceMethod.Instantiation);
+                    }
+                    return resolvedMethodImpl;
+                }
+            }
+
+            return null;
         }
     }
 }

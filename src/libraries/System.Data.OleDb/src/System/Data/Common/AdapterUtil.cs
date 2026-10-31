@@ -209,26 +209,18 @@ namespace System.Data.Common
             }
         }
 
-        // only StackOverflowException & ThreadAbortException are sealed classes
-        private static readonly Type StackOverflowType = typeof(StackOverflowException);
-        private static readonly Type OutOfMemoryType = typeof(OutOfMemoryException);
-        private static readonly Type ThreadAbortType = typeof(ThreadAbortException);
-        private static readonly Type NullReferenceType = typeof(NullReferenceException);
-        private static readonly Type AccessViolationType = typeof(AccessViolationException);
-        private static readonly Type SecurityType = typeof(SecurityException);
-
         internal static bool IsCatchableExceptionType(Exception e)
         {
             // a 'catchable' exception is defined by what it is not.
             Debug.Assert(e != null, "Unexpected null exception!");
             Type type = e.GetType();
 
-            return ((type != StackOverflowType) &&
-                     (type != OutOfMemoryType) &&
-                     (type != ThreadAbortType) &&
-                     (type != NullReferenceType) &&
-                     (type != AccessViolationType) &&
-                     !SecurityType.IsAssignableFrom(type));
+            return ((type != typeof(StackOverflowException)) &&
+                     (type != typeof(OutOfMemoryException)) &&
+                     (type != typeof(ThreadAbortException)) &&
+                     (type != typeof(NullReferenceException)) &&
+                     (type != typeof(AccessViolationException)) &&
+                     !typeof(SecurityException).IsAssignableFrom(type));
         }
 
         internal static bool IsCatchableOrSecurityExceptionType(Exception e)
@@ -243,11 +235,11 @@ namespace System.Data.Common
             Debug.Assert(e != null, "Unexpected null exception!");
             Type type = e.GetType();
 
-            return ((type != StackOverflowType) &&
-                     (type != OutOfMemoryType) &&
-                     (type != ThreadAbortType) &&
-                     (type != NullReferenceType) &&
-                     (type != AccessViolationType));
+            return ((type != typeof(StackOverflowException)) &&
+                     (type != typeof(OutOfMemoryException)) &&
+                     (type != typeof(ThreadAbortException)) &&
+                     (type != typeof(NullReferenceException)) &&
+                     (type != typeof(AccessViolationException)));
         }
 
         // Invalid Enumeration
@@ -266,7 +258,7 @@ namespace System.Data.Common
                 case CommandType.Text:
                 case CommandType.StoredProcedure:
                 case CommandType.TableDirect:
-                    Debug.Assert(false, $"valid CommandType {value}");
+                    Debug.Fail($"valid CommandType {value}");
                     break;
             }
 #endif
@@ -283,7 +275,7 @@ namespace System.Data.Common
                 case DataRowVersion.Current:
                 case DataRowVersion.Original:
                 case DataRowVersion.Proposed:
-                    Debug.Assert(false, $"valid DataRowVersion {value}");
+                    Debug.Fail($"valid DataRowVersion {value}");
                     break;
             }
 #endif
@@ -303,7 +295,7 @@ namespace System.Data.Common
                 case IsolationLevel.RepeatableRead:
                 case IsolationLevel.Serializable:
                 case IsolationLevel.Snapshot:
-                    Debug.Assert(false, $"valid IsolationLevel {value}");
+                    Debug.Fail($"valid IsolationLevel {value}");
                     break;
             }
 #endif
@@ -320,7 +312,7 @@ namespace System.Data.Common
                 case ParameterDirection.Output:
                 case ParameterDirection.InputOutput:
                 case ParameterDirection.ReturnValue:
-                    Debug.Assert(false, $"valid ParameterDirection {value}");
+                    Debug.Fail($"valid ParameterDirection {value}");
                     break;
             }
 #endif
@@ -337,7 +329,7 @@ namespace System.Data.Common
                 case UpdateRowSource.OutputParameters:
                 case UpdateRowSource.FirstReturnedRecord:
                 case UpdateRowSource.Both:
-                    Debug.Assert(false, $"valid UpdateRowSource {value}");
+                    Debug.Fail($"valid UpdateRowSource {value}");
                     break;
             }
 #endif
@@ -776,9 +768,9 @@ namespace System.Data.Common
         // : DbMetaDataFactory
         //
 
-        internal static Exception AmbigousCollectionName(string collectionName)
+        internal static Exception AmbiguousCollectionName(string collectionName)
         {
-            return Argument(SR.GetString(SR.MDF_AmbigousCollectionName, collectionName));
+            return Argument(SR.GetString(SR.MDF_AmbiguousCollectionName, collectionName));
         }
 
         internal static Exception CollectionNameIsNotUnique(string collectionName)
@@ -899,8 +891,6 @@ namespace System.Data.Common
         internal const int DefaultCommandTimeout = 30;
         internal const int DefaultConnectionTimeout = DbConnectionStringDefaults.ConnectTimeout;
 
-        internal static readonly IntPtr PtrZero = new IntPtr(0); // IntPtr.Zero
-        internal static readonly int PtrSize = IntPtr.Size;
         internal static readonly IntPtr RecordsUnaffected = new IntPtr(-1);
 
         internal const int CharSize = System.Text.UnicodeEncoding.CharSize;
@@ -988,13 +978,13 @@ namespace System.Data.Common
         internal static string BuildQuotedString(string quotePrefix, string quoteSuffix, string unQuotedString)
         {
             StringBuilder resultString = new StringBuilder();
-            if (ADP.IsEmpty(quotePrefix) == false)
+            if (!ADP.IsEmpty(quotePrefix))
             {
                 resultString.Append(quotePrefix);
             }
 
             // Assuming that the suffix is escaped by doubling it. i.e. foo"bar becomes "foo""bar".
-            if (ADP.IsEmpty(quoteSuffix) == false)
+            if (!ADP.IsEmpty(quoteSuffix))
             {
                 resultString.Append(unQuotedString.Replace(quoteSuffix, quoteSuffix + quoteSuffix));
                 resultString.Append(quoteSuffix);
@@ -1016,7 +1006,7 @@ namespace System.Data.Common
 
             foreach (char currentChar in unescapedString)
             {
-                if (specialCharacters.IndexOf(currentChar) >= 0)
+                if (specialCharacters.Contains(currentChar))
                 {
                     escapedString.Append('\\');
                 }
@@ -1099,7 +1089,7 @@ namespace System.Data.Common
             {
                 using (RegistryKey? key = Registry.ClassesRoot.OpenSubKey(subkey, false))
                 {
-                    return ((null != key) ? key.GetValue(queryvalue) : null);
+                    return key?.GetValue(queryvalue);
                 }
             }
             catch (SecurityException e)
@@ -1117,7 +1107,7 @@ namespace System.Data.Common
             {
                 using (RegistryKey? key = Registry.LocalMachine.OpenSubKey(subkey, false))
                 {
-                    return ((null != key) ? key.GetValue(queryvalue) : null);
+                    return key?.GetValue(queryvalue);
                 }
             }
             catch (SecurityException e)
@@ -1230,7 +1220,7 @@ namespace System.Data.Common
             // is the prefix present?
             if (prefixLength > 0)
             {
-                if (quotedString.StartsWith(quotePrefix!, StringComparison.Ordinal) == false)
+                if (!quotedString.StartsWith(quotePrefix!, StringComparison.Ordinal))
                 {
                     unquotedString = quotedString;
                     return false;
@@ -1240,7 +1230,7 @@ namespace System.Data.Common
             // is the suffix present?
             if (suffixLength > 0)
             {
-                if (quotedString.EndsWith(quoteSuffix!, StringComparison.Ordinal) == false)
+                if (!quotedString.EndsWith(quoteSuffix!, StringComparison.Ordinal))
                 {
                     unquotedString = quotedString;
                     return false;
@@ -1256,17 +1246,12 @@ namespace System.Data.Common
 
         internal static IntPtr IntPtrOffset(IntPtr pbase, int offset)
         {
-            if (4 == ADP.PtrSize)
-            {
-                return (IntPtr)checked(pbase.ToInt32() + offset);
-            }
-            Debug.Assert(8 == ADP.PtrSize, "8 != IntPtr.Size");
-            return (IntPtr)checked(pbase.ToInt64() + offset);
+            return (nint)pbase + offset;
         }
 
-        internal static int IntPtrToInt32(IntPtr value)
+        internal static int IntPtrToInt32(nint value)
         {
-            if (4 == ADP.PtrSize)
+            if (4 == IntPtr.Size)
             {
                 return (int)value;
             }

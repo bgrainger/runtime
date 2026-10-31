@@ -30,7 +30,7 @@ namespace System.Net.Http
         // This is owned by the callback and will be deallocated when the sessionHandle has been closed.
         private GCHandle _operationHandle;
         private WinHttpTransportContext? _transportContext;
-        private volatile bool _disposed; // To detect redundant calls.
+        private int _disposed; // To detect redundant calls.
 
         public WinHttpRequestState()
         {
@@ -130,7 +130,7 @@ namespace System.Net.Http
         [AllowNull]
         public WinHttpTransportContext TransportContext
         {
-            get { return _transportContext ?? (_transportContext = new WinHttpTransportContext()); }
+            get { return _transportContext ??= new WinHttpTransportContext(); }
             set { _transportContext = value; }
         }
 
@@ -150,13 +150,14 @@ namespace System.Net.Http
 
         public RendezvousAwaitable<int> LifecycleAwaitable { get; set; } = new RendezvousAwaitable<int>();
         public TaskCompletionSource<bool>? TcsInternalWriteDataToRequestStream { get; set; }
-        public bool AsyncReadInProgress { get; set; }
+        public volatile int AsyncReadInProgress;
 
         // WinHttpResponseStream state.
         public long? ExpectedBytesToRead { get; set; }
         public long CurrentBytesRead { get; set; }
 
         private GCHandle _cachedReceivePinnedBuffer;
+        private GCHandle _cachedSendPinnedBuffer;
 
         public void PinReceiveBuffer(byte[] buffer)
         {
@@ -171,33 +172,50 @@ namespace System.Net.Http
             }
         }
 
+        public void PinSendBuffer(byte[] buffer)
+        {
+            if (!_cachedSendPinnedBuffer.IsAllocated || _cachedSendPinnedBuffer.Target != buffer)
+            {
+                if (_cachedSendPinnedBuffer.IsAllocated)
+                {
+                    _cachedSendPinnedBuffer.Free();
+                }
+
+                _cachedSendPinnedBuffer = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+            }
+        }
+
         #region IDisposable Members
         private void Dispose(bool disposing)
         {
 #if DEBUG
             Interlocked.Increment(ref s_dbg_callDispose);
 #endif
-            if (NetEventSource.Log.IsEnabled()) NetEventSource.Info(this, $"GCHandle=0x{ToIntPtr():X}, disposed={_disposed}, disposing={disposing}");
+            if (NetEventSource.Log.IsEnabled()) NetEventSource.Info(this, $"GCHandle=0x{ToIntPtr():X}, disposed={_disposed != 0}, disposing={disposing}");
 
             // Since there is no finalizer and this class is sealed, the disposing parameter should be TRUE.
             Debug.Assert(disposing, "WinHttpRequestState.Dispose() should have disposing=TRUE");
 
-            if (_disposed)
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
             {
                 return;
             }
-
-            _disposed = true;
 
             if (_operationHandle.IsAllocated)
             {
                 // This method only gets called when the WinHTTP request handle is fully closed and thus all
                 // async operations are done. So, it is safe at this point to unpin the buffers and release
-                // the strong GCHandle for this object.
+                // the strong GCHandle for the pinned buffers.
                 if (_cachedReceivePinnedBuffer.IsAllocated)
                 {
                     _cachedReceivePinnedBuffer.Free();
                     _cachedReceivePinnedBuffer = default(GCHandle);
+                }
+
+                if (_cachedSendPinnedBuffer.IsAllocated)
+                {
+                    _cachedSendPinnedBuffer.Free();
+                    _cachedSendPinnedBuffer = default(GCHandle);
                 }
 #if DEBUG
                 Interlocked.Increment(ref s_dbg_operationHandleFree);

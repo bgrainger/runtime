@@ -63,8 +63,25 @@ Exception * Exception::GetOOMException()
     return GetOOMException();
 }
 
+#ifdef DACCESS_COMPILE
+
+extern void* AllocDbiMemory(size_t size);
+extern void DeleteDbiMemory(void* p);
+
+void * Exception::operator new(size_t size)
+{
+    return AllocDbiMemory(size);
+}
+
+void Exception::operator delete(void* ptr)
+{
+    DeleteDbiMemory(ptr);
+}
+
+#endif
+
 //------------------------------------------------------------------------------
-void Exception::Delete(Exception* pvMemory)
+void Exception::Delete(Exception* pvMemory) noexcept
 {
     CONTRACTL
     {
@@ -79,7 +96,7 @@ void Exception::Delete(Exception* pvMemory)
         return;
     }
 
-    ::delete((Exception *) pvMemory);
+    delete pvMemory;
 }
 
 void Exception::GetMessage(SString &result)
@@ -103,8 +120,9 @@ Exception *Exception::Clone()
 {
     CONTRACTL
     {
-        GC_NOTRIGGER;
         THROWS;
+        GC_TRIGGERS;
+        MODE_ANY;
     }
     CONTRACTL_END;
 
@@ -127,13 +145,7 @@ Exception *Exception::CloneHelper()
 
 Exception *Exception::DomainBoundClone()
 {
-    CONTRACTL
-    {
-        // Because we may call DomainBoundCloneHelper() of ObjrefException or CLRLastThrownObjectException
-        // this should be GC_TRIGGERS, but we can not include EE contracts in Utilcode.
-        THROWS;
-    }
-    CONTRACTL_END;
+    STANDARD_VM_CONTRACT;
 
     NewHolder<Exception> retExcep(DomainBoundCloneHelper());
     if (m_innerException)
@@ -152,7 +164,7 @@ BOOL Exception::IsTerminal()
         GC_NOTRIGGER;
         NOTHROW;
 
-        // CLRException::GetHR() can eventually call BaseDomain::CreateHandle(),
+        // CLRException::GetHR() can eventually call AppDomain::CreateHandle(),
         // which can indirectly cause a lock if we get a miss in the handle table
         // cache (TableCacheMissOnAlloc).  Since CLRException::GetHR() is virtual,
         // SCAN won't find this for you (though 40 minutes of one of the sql stress
@@ -161,7 +173,16 @@ BOOL Exception::IsTerminal()
     }
     CONTRACTL_END;
 
-    HRESULT hr = GetHR();
+    // IsTerminal is intentionally GC_NOTRIGGER so it can be used by terminal-exception
+    // checks (e.g., RethrowTerminalExceptions) from GC_NOTRIGGER scopes. The virtual
+    // GetHR() resolves to CLRException::GetHR() for CLR exceptions, which is GC_TRIGGERS
+    // because it can materialize the throwable. On terminal-exception paths the throwable
+    // is already materialized, so no GC actually occurs here.
+    HRESULT hr;
+    {
+        CONTRACT_VIOLATION(GCViolation);
+        hr = GetHR();
+    }
     return (COR_E_THREADABORTED == hr);
 }
 
@@ -192,7 +213,7 @@ BOOL Exception::IsTransient(HRESULT hr)
 //------------------------------------------------------------------------------
 // Functions to manage the preallocated exceptions.
 // Virtual
-BOOL Exception::IsPreallocatedException()
+BOOL Exception::IsPreallocatedException() noexcept
 {   // Most exceptions can't be preallocated.  If they can be, their class
     //  should provide a virtual override of this function.
     return FALSE;
@@ -204,10 +225,6 @@ BOOL Exception::IsPreallocatedOOMException()
 }
 
 //------------------------------------------------------------------------------
-#ifdef _PREFAST_
-#pragma warning(push)
-#pragma warning(disable:21000) // Suppress PREFast warning about overly large function
-#endif
 LPCSTR Exception::GetHRSymbolicName(HRESULT hr)
 {
     LIMITED_METHOD_CONTRACT;
@@ -548,21 +565,11 @@ LPCSTR Exception::GetHRSymbolicName(HRESULT hr)
 
 #ifdef _DEBUG  // @todo: do we want to burn strings for this in a free build?
 
-    CASE_HRESULT(CEE_E_CVTRES_NOT_FOUND)
     CASE_HRESULT(COR_E_APPDOMAINUNLOADED)
     CASE_HRESULT(COR_E_CANNOTUNLOADAPPDOMAIN)
     CASE_HRESULT(MSEE_E_ASSEMBLYLOADINPROGRESS)
-    CASE_HRESULT(COR_E_FIXUPSINEXE)
-    CASE_HRESULT(COR_E_MODULE_HASH_CHECK_FAILED)
-    CASE_HRESULT(FUSION_E_LOADFROM_BLOCKED)
-    CASE_HRESULT(FUSION_E_CACHEFILE_FAILED)
     CASE_HRESULT(FUSION_E_REF_DEF_MISMATCH)
-    CASE_HRESULT(FUSION_E_INVALID_PRIVATE_ASM_LOCATION)
-    CASE_HRESULT(FUSION_E_ASM_MODULE_MISSING)
-    CASE_HRESULT(FUSION_E_PRIVATE_ASM_DISALLOWED)
-    CASE_HRESULT(FUSION_E_SIGNATURE_CHECK_FAILED)
     CASE_HRESULT(FUSION_E_INVALID_NAME)
-    CASE_HRESULT(FUSION_E_CODE_DOWNLOAD_DISABLED)
     CASE_HRESULT(CLDB_E_FILE_BADREAD)
     CASE_HRESULT(CLDB_E_FILE_BADWRITE)
     CASE_HRESULT(CLDB_S_TRUNCATION)
@@ -686,20 +693,15 @@ LPCSTR Exception::GetHRSymbolicName(HRESULT hr)
     CASE_HRESULT(CORPROF_E_NOT_MANAGED_THREAD)
     CASE_HRESULT(CORPROF_E_CALL_ONLY_FROM_INIT)
     CASE_HRESULT(CORPROF_E_NOT_YET_AVAILABLE)
-    CASE_HRESULT(SECURITY_E_INCOMPATIBLE_SHARE)
-    CASE_HRESULT(SECURITY_E_UNVERIFIABLE)
-    CASE_HRESULT(SECURITY_E_INCOMPATIBLE_EVIDENCE)
     CASE_HRESULT(CLDB_E_INTERNALERROR)
     CASE_HRESULT(CORSEC_E_POLICY_EXCEPTION)
     CASE_HRESULT(CORSEC_E_MIN_GRANT_FAIL)
     CASE_HRESULT(CORSEC_E_NO_EXEC_PERM)
     CASE_HRESULT(CORSEC_E_XMLSYNTAX)
     CASE_HRESULT(CORSEC_E_INVALID_STRONGNAME)
-    CASE_HRESULT(CORSEC_E_MISSING_STRONGNAME)
     CASE_HRESULT(CORSEC_E_INVALID_IMAGE_FORMAT)
     CASE_HRESULT(CORSEC_E_CRYPTO)
     CASE_HRESULT(CORSEC_E_CRYPTO_UNEX_OPER)
-    CASE_HRESULT(CORSECATTR_E_BAD_ACTION)
     CASE_HRESULT(COR_E_APPLICATION)
     CASE_HRESULT(COR_E_ARGUMENTOUTOFRANGE)
     CASE_HRESULT(COR_E_ARITHMETIC)
@@ -771,10 +773,6 @@ LPCSTR Exception::GetHRSymbolicName(HRESULT hr)
             return NULL;
     }
 }
-#ifdef _PREFAST_
-#pragma warning(pop)
-#endif
-
 
 // ---------------------------------------------------------------------------
 // HRException class.  Implements exception API for exceptions from HRESULTS
@@ -794,6 +792,7 @@ HRESULT HRException::GetHR()
 // SEHException class.  Implements exception API for SEH exception info
 // ---------------------------------------------------------------------------
 
+#ifdef TARGET_WINDOWS
 HRESULT SEHException::GetHR()
 {
     LIMITED_METHOD_DAC_CONTRACT;
@@ -804,11 +803,13 @@ HRESULT SEHException::GetHR()
         return m_exception.ExceptionCode;
 }
 
+#ifdef FEATURE_COMINTEROP
 IErrorInfo *SEHException::GetErrorInfo()
 {
     LIMITED_METHOD_CONTRACT;
     return NULL;
 }
+#endif // FEATURE_COMINTEROP
 
 void SEHException::GetMessage(SString &string)
 {
@@ -832,6 +833,7 @@ void SEHException::GetMessage(SString &string)
         }
     }
 }
+#endif // TARGET_WINDOWS
 
 //==============================================================================
 // DelegatingException class.  Implements exception API for "foreign" exceptions.
@@ -889,6 +891,7 @@ HRESULT DelegatingException::GetHR()
 
 } // HRESULT DelegatingException::GetHR()
 
+#ifdef FEATURE_COMINTEROP
 //------------------------------------------------------------------------------
 IErrorInfo *DelegatingException::GetErrorInfo()
 {
@@ -902,6 +905,7 @@ IErrorInfo *DelegatingException::GetErrorInfo()
     return pDelegate ? pDelegate->GetErrorInfo() : NULL;
 
 } // IErrorInfo *DelegatingException::GetErrorInfo()
+#endif // FEATURE_COMINTEROP
 
 //------------------------------------------------------------------------------
 void DelegatingException::GetMessage(SString &result)
@@ -1002,7 +1006,7 @@ void DECLSPEC_NORETURN ThrowHR(HRESULT hr, UINT uText)
 
     // We won't check the return value here. If it fails, we'll just
     // throw the HR
-    sExceptionText.LoadResource(CCompRC::Error, uText);
+    sExceptionText.LoadResource(uText);
 
     EX_THROW(HRMsgException, (hr, sExceptionText));
 }
@@ -1077,12 +1081,7 @@ void DECLSPEC_NORETURN ThrowOutOfMemory()
 //--------------------------------------------------------------------------------
 Exception *ExThrowWithInnerHelper(Exception *inner)
 {
-    CONTRACTL
-    {
-        THROWS;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END
+    STANDARD_VM_CONTRACT;
 
     // Yes, NULL is a legal case. Makes it easier to author uniform helpers for
     // both wrapped and normal exceptions.
@@ -1146,16 +1145,14 @@ void GetHRMsg(HRESULT hr, SString &result, BOOL bNoGeekStuff/* = FALSE*/)
     }
     CONTRACTL_END;
 
-    result = W("");     // Make sure this routine isn't an inadvertent data-leak exploit!
-
-
+    result.Set(W(""));     // Make sure this routine isn't an inadvertent data-leak exploit!
 
     SString strDescr;
     BOOL    fHaveDescr = FALSE;
 
     if (FAILED(hr) && HRESULT_FACILITY(hr) == FACILITY_URT && HRESULT_CODE(hr) < MAX_URT_HRESULT_CODE)
     {
-        fHaveDescr = strDescr.LoadResource(CCompRC::Error, MSG_FOR_URT_HR(hr));
+        fHaveDescr = strDescr.LoadResource(MSG_FOR_URT_HR(hr));
     }
     else
     {
@@ -1164,8 +1161,6 @@ void GetHRMsg(HRESULT hr, SString &result, BOOL bNoGeekStuff/* = FALSE*/)
 
         fHaveDescr = strDescr.FormatMessage(dwFlags, 0, hr, 0);
     }
-
-    LPCSTR name = Exception::GetHRSymbolicName(hr);
 
     // If we can't get a resource string, print the hresult regardless.
     if (!fHaveDescr)
@@ -1180,21 +1175,26 @@ void GetHRMsg(HRESULT hr, SString &result, BOOL bNoGeekStuff/* = FALSE*/)
 
     if (!bNoGeekStuff)
     {
+        SString geekStuffUtf8;
         if (fHaveDescr)
         {
-            result.Append(W(" ("));
+            geekStuffUtf8.AppendUTF8(" (");
         }
 
-        result.AppendPrintf(W("0x%.8X"), hr);
+        geekStuffUtf8.AppendPrintf("0x%.8X", hr);
+
+        LPCSTR name = Exception::GetHRSymbolicName(hr);
         if (name != NULL)
         {
-            result.AppendPrintf(W(" (%S)"), name);
+            geekStuffUtf8.AppendPrintf(" (%s)", name);
         }
 
         if (fHaveDescr)
         {
-            result.Append(W(")"));
+            geekStuffUtf8.AppendUTF8(")");
         }
+
+        result.Append(geekStuffUtf8);
     }
 }
 
@@ -1211,7 +1211,7 @@ void GenerateTopLevelHRExceptionMessage(HRESULT hresult, SString &result)
     }
     CONTRACTL_END;
 
-    result = W("");     // Make sure this routine isn't an inadvertent data-leak exploit!
+    result.Set(W(""));     // Make sure this routine isn't an inadvertent data-leak exploit!
 
     GetHRMsg(hresult, result);
 }
@@ -1263,7 +1263,6 @@ static DWORD MarkAsThrownByUsWorker(UINT numArgs, /*out*/ ULONG_PTR exceptionArg
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
 
     _ASSERTE(numArgs < INSTANCE_TAGGED_SEH_PARAM_ARRAY_SIZE);
@@ -1282,7 +1281,6 @@ DWORD MarkAsThrownByUs(/*out*/ ULONG_PTR exceptionArgs[INSTANCE_TAGGED_SEH_PARAM
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     return MarkAsThrownByUsWorker(0, exceptionArgs);
 }
@@ -1291,7 +1289,6 @@ DWORD MarkAsThrownByUs(/*out*/ ULONG_PTR exceptionArgs[INSTANCE_TAGGED_SEH_PARAM
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     return MarkAsThrownByUsWorker(1, exceptionArgs, arg0);
 }
@@ -1305,7 +1302,6 @@ BOOL WasThrownByUs(const EXCEPTION_RECORD *pcER, DWORD dwExceptionCode)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
     STATIC_CONTRACT_SUPPORTS_DAC;
 
     _ASSERTE(IsInstanceTaggedSEHCode(dwExceptionCode));
@@ -1346,7 +1342,6 @@ VOID RaiseComPlusException()
 {
     STATIC_CONTRACT_THROWS;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
 
     ULONG_PTR exceptionArgs[INSTANCE_TAGGED_SEH_PARAM_ARRAY_SIZE];

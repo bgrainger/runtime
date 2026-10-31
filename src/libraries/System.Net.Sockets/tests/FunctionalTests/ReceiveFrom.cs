@@ -1,8 +1,6 @@
-// Licensed to the .NET Foundation under one or more agreements.
+ // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -64,6 +62,24 @@ namespace System.Net.Sockets.Tests
             }   
         }
 
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
+        public void NullSocketAddress_Throws_ArgumentException()
+        {
+            using Socket socket = CreateSocket();
+            SocketAddress socketAddress = null;
+
+            Assert.Throws<ArgumentNullException>(() => socket.ReceiveFrom(new byte[1], SocketFlags.None, socketAddress));
+        }
+
+        [Fact]
+        public async Task NullSocketAddress_Throws_ArgumentExceptionAsync()
+        {
+            using Socket socket = CreateSocket();
+            SocketAddress socketAddress = null;
+
+            await Assert.ThrowsAsync<ArgumentNullException>(() => socket.ReceiveFromAsync(new Memory<byte>(new byte[1]), SocketFlags.None, socketAddress).AsTask());
+        }
+
         [Fact]
         public async Task AddressFamilyDoesNotMatch_Throws_ArgumentException()
         {
@@ -86,9 +102,10 @@ namespace System.Net.Sockets.Tests
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
+        [SkipOnPlatform(TestPlatforms.Wasi, "Wasi doesn't support PortBlocker")]
         public async Task ReceiveSent_TCP_Success(bool ipv6)
         {
-            if (ipv6 && PlatformDetection.IsOSXLike)
+            if (ipv6 && PlatformDetection.IsApplePlatform)
             {
                 // [ActiveIssue("https://github.com/dotnet/runtime/issues/47335")]
                 // accept() will create a (seemingly) DualMode socket on Mac,
@@ -143,7 +160,60 @@ namespace System.Net.Sockets.Tests
             for (int i = 0; i < DatagramsToSend; i++)
             {
                 rnd.NextBytes(sendBuffer);
+                await sender.SendToAsync(sendBuffer, receiver.LocalEndPoint);
+
+                SocketReceiveFromResult result = await ReceiveFromAsync(receiver, receiveBuffer, remoteEp);
+
+                Assert.Equal(DatagramSize, result.ReceivedBytes);
+                AssertExtensions.SequenceEqual(emptyBuffer, new ReadOnlySpan<byte>(receiveInternalBuffer, 0, Offset));
+                AssertExtensions.SequenceEqual(sendBuffer, new ReadOnlySpan<byte>(receiveInternalBuffer, Offset, DatagramSize));
+                Assert.Equal(sender.LocalEndPoint, result.RemoteEndPoint);
+                remoteEp = (IPEndPoint)result.RemoteEndPoint;
+                if (i > 0)
+                {
+                    // reference should be same after first round
+                    Assert.True(remoteEp == result.RemoteEndPoint);
+                }
+            }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        [SkipOnPlatform(TestPlatforms.Wasi, "Wasi doesn't support DualMode")]
+        public async Task ReceiveSent_DualMode_Success(bool ipv4)
+        {
+            const int Offset = 10;
+            const int DatagramSize = 256;
+            const int DatagramsToSend = 16;
+
+            IPAddress address = ipv4 ? IPAddress.Loopback : IPAddress.IPv6Loopback;
+            using Socket receiver = new Socket(SocketType.Dgram, ProtocolType.Udp);
+            using Socket sender = new Socket(SocketType.Dgram, ProtocolType.Udp);
+            if (receiver.DualMode != true || sender.DualMode != true)
+            {
+                throw SkipException.ForSkip("DualMode not available");
+            }
+
+            ConfigureNonBlocking(sender);
+            ConfigureNonBlocking(receiver);
+
+            receiver.BindToAnonymousPort(address);
+            sender.BindToAnonymousPort(address);
+
+            byte[] sendBuffer = new byte[DatagramSize];
+            var receiveInternalBuffer = new byte[DatagramSize + Offset];
+            var emptyBuffer = new byte[Offset];
+            ArraySegment<byte> receiveBuffer = new ArraySegment<byte>(receiveInternalBuffer, Offset, DatagramSize);
+
+            Random rnd = new Random(0);
+
+            for (int i = 0; i < DatagramsToSend; i++)
+            {
+                rnd.NextBytes(sendBuffer);
                 sender.SendTo(sendBuffer, receiver.LocalEndPoint);
+
+                IPEndPoint remoteEp = new IPEndPoint(ipv4 ? IPAddress.Any : IPAddress.IPv6Any, 0);
 
                 SocketReceiveFromResult result = await ReceiveFromAsync(receiver, receiveBuffer, remoteEp);
 
@@ -152,6 +222,185 @@ namespace System.Net.Sockets.Tests
                 AssertExtensions.SequenceEqual(sendBuffer, new ReadOnlySpan<byte>(receiveInternalBuffer, Offset, DatagramSize));
                 Assert.Equal(sender.LocalEndPoint, result.RemoteEndPoint);
             }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task ReceiveSent_SocketAddress_Success(bool ipv4)
+        {
+            const int DatagramSize = 256;
+            const int DatagramsToSend = 16;
+
+            IPAddress address = ipv4 ? IPAddress.Loopback : IPAddress.IPv6Loopback;
+            using Socket server = new Socket(address.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+            using Socket client = new Socket(address.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+
+            client.BindToAnonymousPort(address);
+            server.BindToAnonymousPort(address);
+
+            byte[] sendBuffer = new byte[DatagramSize];
+            byte[] receiveBuffer = new byte[DatagramSize];
+
+            SocketAddress serverSA = server.LocalEndPoint.Serialize();
+            SocketAddress clientSA = client.LocalEndPoint.Serialize();
+            SocketAddress sa = new SocketAddress(address.AddressFamily);
+
+            Random rnd = new Random(0);
+
+            for (int i = 0; i < DatagramsToSend; i++)
+            {
+                rnd.NextBytes(sendBuffer);
+                await client.SendToAsync(sendBuffer, SocketFlags.None, serverSA);
+
+                int readBytes = await server.ReceiveFromAsync(receiveBuffer, SocketFlags.None, sa);
+                Assert.Equal(sa, clientSA);
+                Assert.Equal(client.LocalEndPoint, client.LocalEndPoint.Create(sa));
+                Assert.True(new Span<byte>(receiveBuffer, 0, readBytes).SequenceEqual(sendBuffer));
+
+                // and send it back to make sure it works.
+                rnd.NextBytes(sendBuffer);
+                await server.SendToAsync(sendBuffer, SocketFlags.None, sa);
+                readBytes = await client.ReceiveFromAsync(receiveBuffer, SocketFlags.None, sa);
+                Assert.Equal(sa, serverSA);
+                Assert.Equal(server.LocalEndPoint, server.LocalEndPoint.Create(sa));
+                Assert.True(new Span<byte>(receiveBuffer, 0, readBytes).SequenceEqual(sendBuffer));
+            }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task ReceiveSent_SocketAddressAsync_Success(bool ipv4)
+        {
+            const int DatagramSize = 256;
+            const int DatagramsToSend = 16;
+
+            IPAddress address = ipv4 ? IPAddress.Loopback : IPAddress.IPv6Loopback;
+            using Socket server = new Socket(address.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+            using Socket client = new Socket(address.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+
+            client.BindToAnonymousPort(address);
+            server.BindToAnonymousPort(address);
+
+            byte[] sendBuffer = new byte[DatagramSize];
+            byte[] receiveBuffer = new byte[DatagramSize];
+
+            SocketAddress serverSA = server.LocalEndPoint.Serialize();
+            SocketAddress clientSA = client.LocalEndPoint.Serialize();
+            SocketAddress sa = new SocketAddress(address.AddressFamily);
+
+            Random rnd = new Random(0);
+
+            for (int i = 0; i < DatagramsToSend; i++)
+            {
+                rnd.NextBytes(sendBuffer);
+                await client.SendToAsync(sendBuffer, SocketFlags.None, serverSA);
+
+                int readBytes = await server.ReceiveFromAsync(receiveBuffer, SocketFlags.None, sa);
+                Assert.Equal(sa, clientSA);
+                Assert.Equal(client.LocalEndPoint, client.LocalEndPoint.Create(sa));
+                Assert.True(new Span<byte>(receiveBuffer, 0, readBytes).SequenceEqual(sendBuffer));
+
+                // and send it back to make sure it works.
+                rnd.NextBytes(sendBuffer);
+                await server.SendToAsync(sendBuffer, SocketFlags.None, sa);
+                readBytes = await client.ReceiveFromAsync(receiveBuffer, SocketFlags.None, sa);
+                Assert.Equal(sa, serverSA);
+                Assert.Equal(server.LocalEndPoint, server.LocalEndPoint.Create(sa));
+                Assert.True(new Span<byte>(receiveBuffer, 0, readBytes).SequenceEqual(sendBuffer));
+            }
+        }
+
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void ReceiveSent_ReuseEventArgsAcrossAddressFamilies_Success(bool ipv4First)
+        {
+            const int TimeoutMs = 30_000;
+
+            using Socket ipv4Socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            using Socket ipv6Socket = new Socket(AddressFamily.InterNetworkV6, SocketType.Dgram, ProtocolType.Udp);
+            ipv6Socket.DualMode = false;
+            ipv4Socket.BindToAnonymousPort(IPAddress.Loopback);
+            ipv6Socket.BindToAnonymousPort(IPAddress.IPv6Loopback);
+
+            using var saea = new SocketAsyncEventArgs();
+            var completed = new ManualResetEventSlim();
+            saea.Completed += delegate { completed.Set(); };
+            saea.SetBuffer(new byte[1], 0, 1);
+
+            // A single SocketAsyncEventArgs reused across sockets of different address families must grow its
+            // cached native address buffer to fit the larger family, not stay sized for whichever it saw first.
+            (Socket first, Socket second) = ipv4First ? (ipv4Socket, ipv6Socket) : (ipv6Socket, ipv4Socket);
+            ReceiveOnce(first);
+            ReceiveOnce(second);
+
+            void ReceiveOnce(Socket listener)
+            {
+                bool listenerIsIPv4 = listener.AddressFamily == AddressFamily.InterNetwork;
+                IPAddress any = listenerIsIPv4 ? IPAddress.Any : IPAddress.IPv6Any;
+                IPAddress loopback = listenerIsIPv4 ? IPAddress.Loopback : IPAddress.IPv6Loopback;
+                saea.RemoteEndPoint = new IPEndPoint(any, 0);
+
+                using Socket sender = new Socket(listener.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+                sender.Bind(new IPEndPoint(loopback, 0));
+                bool pending = listener.ReceiveFromAsync(saea);
+                sender.SendTo(new byte[] { 1 }, new IPEndPoint(loopback, ((IPEndPoint)listener.LocalEndPoint).Port));
+                if (pending) Assert.True(completed.Wait(TimeoutMs), "Expected operation to complete within timeout");
+                completed.Reset();
+
+                Assert.Equal(SocketError.Success, saea.SocketError);
+                Assert.Equal(1, saea.BytesTransferred);
+                Assert.Equal(sender.LocalEndPoint, saea.RemoteEndPoint);
+            }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task ReceiveSent_SocketAddressFamilyMismatch_Success(bool ipv4)
+        {
+            const int DatagramSize = 256;
+
+            IPAddress address = ipv4 ? IPAddress.Loopback : IPAddress.IPv6Loopback;
+            AddressFamily wrongFamily = ipv4 ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork;
+            using Socket server = new Socket(address.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+            using Socket client = new Socket(address.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+
+            client.BindToAnonymousPort(address);
+            server.BindToAnonymousPort(address);
+
+            byte[] sendBuffer = new byte[DatagramSize];
+            byte[] receiveBuffer = new byte[DatagramSize];
+            new Random(0).NextBytes(sendBuffer);
+
+            // SocketAddress.Family is caller-controlled and is only validated (as .Size) against the socket's
+            // real family, never for .Family itself -- the native receive buffer must still be sized off the
+            // socket's real address family rather than trusting this (deliberately wrong) declared one.
+            SocketAddress sa = new SocketAddress(wrongFamily, SocketAddress.GetMaximumAddressSize(address.AddressFamily));
+
+            await client.SendToAsync(sendBuffer, SocketFlags.None, server.LocalEndPoint.Serialize());
+
+            int readBytes = await server.ReceiveFromAsync(receiveBuffer, SocketFlags.None, sa);
+
+            Assert.Equal(DatagramSize, readBytes);
+            AssertExtensions.SequenceEqual(sendBuffer, receiveBuffer);
+            Assert.Equal(client.LocalEndPoint, client.LocalEndPoint.Create(sa));
+        }
+
+        [Fact]
+        public async Task ReceiveSent_SmallSocketAddress_Throws()
+        {
+            using Socket server = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            server.BindToAnonymousPort(IPAddress.Loopback);
+
+            byte[] receiveBuffer = new byte[1];
+
+            SocketAddress serverSA = server.LocalEndPoint.Serialize();
+
+            SocketAddress sa = new SocketAddress(AddressFamily.InterNetwork, 2);
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () => await server.ReceiveFromAsync(receiveBuffer, SocketFlags.None, sa));
         }
 
         [Theory]
@@ -171,6 +420,7 @@ namespace System.Net.Sockets.Tests
         [InlineData(true)]
         [InlineData(false)]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/52124", TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/107981", TestPlatforms.Wasi)]
         public async Task ClosedDuringOperation_Throws_ObjectDisposedExceptionOrSocketException(bool closeOrDispose)
         {
             if (UsesSync && PlatformDetection.IsOSX)
@@ -204,18 +454,10 @@ namespace System.Net.Sockets.Tests
                 if (closeOrDispose) socket.Close();
                 else socket.Dispose();
 
-                if (DisposeDuringOperationResultsInDisposedException)
-                {
-                    await Assert.ThrowsAsync<ObjectDisposedException>(() => receiveTask)
+                SocketException ex = await Assert.ThrowsAsync<SocketException>(() => receiveTask)
                         .WaitAsync(CancellationTestTimeout);
-                }
-                else
-                {
-                    SocketException ex = await Assert.ThrowsAsync<SocketException>(() => receiveTask)
-                        .WaitAsync(CancellationTestTimeout);
-                    SocketError expectedError = UsesSync ? SocketError.Interrupted : SocketError.OperationAborted;
-                    Assert.Equal(expectedError, ex.SocketErrorCode);
-                }
+                SocketError expectedError = UsesSync ? SocketError.Interrupted : SocketError.OperationAborted;
+                Assert.Equal(expectedError, ex.SocketErrorCode);
             }
         }
 
@@ -249,23 +491,26 @@ namespace System.Net.Sockets.Tests
 
             using var sender = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
             sender.BindToAnonymousPort(IPAddress.Loopback);
-            sender.SendTo(new byte[1], receiver.LocalEndPoint);
+            await sender.SendToAsync(new byte[1], receiver.LocalEndPoint);
 
             var r = await ReceiveFromAsync(receiver, new byte[1], sender.LocalEndPoint);
             Assert.Equal(1, r.ReceivedBytes);
         }
     }
 
+    [ConditionalClass(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
     public sealed class ReceiveFrom_Sync : ReceiveFrom<SocketHelperArraySync>
     {
         public ReceiveFrom_Sync(ITestOutputHelper output) : base(output) { }
     }
 
+    [ConditionalClass(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
     public sealed class ReceiveFrom_SyncForceNonBlocking : ReceiveFrom<SocketHelperSyncForceNonBlocking>
     {
         public ReceiveFrom_SyncForceNonBlocking(ITestOutputHelper output) : base(output) { }
     }
 
+    [ConditionalClass(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
     public sealed class ReceiveFrom_Apm : ReceiveFrom<SocketHelperApm>
     {
         public ReceiveFrom_Apm(ITestOutputHelper output) : base(output) { }
@@ -309,7 +554,7 @@ namespace System.Net.Sockets.Tests
             Assert.Throws<ArgumentException>("endPoint", () => socket.EndReceiveFrom(iar, ref invalidEndPoint));
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/54418", TestPlatforms.MacCatalyst)]
         public void BeginReceiveFrom_RemoteEpIsReturnedWhenCompletedSynchronously()
         {
@@ -378,11 +623,13 @@ namespace System.Net.Sockets.Tests
         }
     }
 
+    [ConditionalClass(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
     public sealed class ReceiveFrom_SpanSync : ReceiveFrom<SocketHelperSpanSync>
     {
         public ReceiveFrom_SpanSync(ITestOutputHelper output) : base(output) { }
     }
 
+    [ConditionalClass(typeof(PlatformDetection), nameof(PlatformDetection.IsMultithreadingSupported))]
     public sealed class ReceiveFrom_SpanSyncForceNonBlocking : ReceiveFrom<SocketHelperSpanSyncForceNonBlocking>
     {
         public ReceiveFrom_SpanSyncForceNonBlocking(ITestOutputHelper output) : base(output) { }

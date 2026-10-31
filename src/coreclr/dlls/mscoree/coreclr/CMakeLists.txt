@@ -21,12 +21,6 @@ if (CLR_CMAKE_HOST_WIN32)
     # invariants (e.g. size of region between Jit_PatchedCodeLast-Jit_PatchCodeStart needs to fit in a page).
     add_linker_flag("/INCREMENTAL:NO")
 
-    # Delay load libraries required for WinRT as that is not supported on all platforms
-    add_linker_flag("/DELAYLOAD:api-ms-win-core-winrt-l1-1-0.dll")
-
-    # Delay load version.dll so that we can specify how to search when loading it as it is not part of Windows' known DLLs
-    add_linker_flag("/DELAYLOAD:version.dll")
-
     # No library groups for Win32
     set(START_LIBRARY_GROUP)
     set(END_LIBRARY_GROUP)
@@ -35,86 +29,86 @@ else(CLR_CMAKE_HOST_WIN32)
     set(EXPORTS_FILE ${CMAKE_CURRENT_BINARY_DIR}/coreclr.exports)
     generate_exports_file(${DEF_SOURCES} ${EXPORTS_FILE})
 
-    if(CLR_CMAKE_TARGET_LINUX OR CLR_CMAKE_TARGET_FREEBSD OR CLR_CMAKE_TARGET_NETBSD OR CLR_CMAKE_TARGET_SUNOS)
+    if(CLR_CMAKE_TARGET_LINUX OR CLR_CMAKE_TARGET_FREEBSD OR CLR_CMAKE_TARGET_NETBSD OR CLR_CMAKE_TARGET_SUNOS OR CLR_CMAKE_HOST_HAIKU)
         # This option is necessary to ensure that the overloaded delete operator defined inside
         # of the utilcode will be used instead of the standard library delete operator.
         add_linker_flag("-Wl,-Bsymbolic")
-
-        # The following linked options can be inserted into the linker libraries list to
-        # ensure proper resolving of circular references between a subset of the libraries.
-        set(START_LIBRARY_GROUP -Wl,--start-group)
-        set(END_LIBRARY_GROUP -Wl,--end-group)
-
-        # These options are used to force every object to be included even if it's unused.
-        set(START_WHOLE_ARCHIVE -Wl,--whole-archive)
-        set(END_WHOLE_ARCHIVE -Wl,--no-whole-archive)
-    endif(CLR_CMAKE_TARGET_LINUX OR CLR_CMAKE_TARGET_FREEBSD OR CLR_CMAKE_TARGET_NETBSD OR CLR_CMAKE_TARGET_SUNOS)
-
-    if(CLR_CMAKE_TARGET_OSX)
-        # These options are used to force every object to be included even if it's unused.
-        set(START_WHOLE_ARCHIVE -force_load)
-        set(END_WHOLE_ARCHIVE )
-    endif(CLR_CMAKE_TARGET_OSX)
+    endif(CLR_CMAKE_TARGET_LINUX OR CLR_CMAKE_TARGET_FREEBSD OR CLR_CMAKE_TARGET_NETBSD OR CLR_CMAKE_TARGET_SUNOS OR CLR_CMAKE_HOST_HAIKU)
 
     set_exports_linker_option(${EXPORTS_FILE})
-
-    if(CLR_CMAKE_TARGET_ANDROID AND CLR_CMAKE_HOST_ARCH_ARM)
-        set(EXPORTS_LINKER_OPTION "${EXPORTS_LINKER_OPTION} -Wl,--no-warn-shared-textrel")
-    endif(CLR_CMAKE_TARGET_ANDROID AND CLR_CMAKE_HOST_ARCH_ARM)
 
 endif (CLR_CMAKE_HOST_WIN32)
 
 add_definitions(-DFX_VER_INTERNALNAME_STR=CoreCLR.dll)
 
-add_library_clr(coreclr
-    SHARED
-    ${CLR_SOURCES}
-)
+if (NOT CLR_CMAKE_HOST_ARCH_WASM)
+    add_library_clr(coreclr
+        SHARED
+        ${CLR_SOURCES}
+    )
 
-add_custom_target(coreclr_exports DEPENDS ${EXPORTS_FILE})
-add_custom_target(coreclr_def DEPENDS ${DEF_FILE})
+    add_custom_target(coreclr_exports DEPENDS ${EXPORTS_FILE})
+    add_custom_target(coreclr_def DEPENDS ${DEF_FILE})
 
-add_dependencies(coreclr coreclr_def)
-add_dependencies(coreclr coreclr_exports)
+    add_dependencies(coreclr coreclr_def)
+    add_dependencies(coreclr coreclr_exports)
 
-set_property(TARGET coreclr APPEND_STRING PROPERTY LINK_FLAGS ${EXPORTS_LINKER_OPTION})
-set_property(TARGET coreclr APPEND_STRING PROPERTY LINK_DEPENDS ${EXPORTS_FILE})
+    set_property(TARGET coreclr APPEND_STRING PROPERTY LINK_FLAGS ${EXPORTS_LINKER_OPTION})
+    set_property(TARGET coreclr APPEND_STRING PROPERTY LINK_DEPENDS ${EXPORTS_FILE})
+    set(LIB_CORDBEE cordbee_wks)
+    set(LIB_INTEROP interop)
+endif(NOT CLR_CMAKE_HOST_ARCH_WASM)
 
-if (CLR_CMAKE_HOST_UNIX)
+if (CLR_CMAKE_HOST_UNIX AND NOT CLR_CMAKE_TARGET_ARCH_WASM)
     set(LIB_UNWINDER unwinder_wks)
-endif (CLR_CMAKE_HOST_UNIX)
+endif (CLR_CMAKE_HOST_UNIX AND NOT CLR_CMAKE_TARGET_ARCH_WASM)
+
+if (CLR_CMAKE_HOST_WIN32 AND CLR_CMAKE_TARGET_ARCH_ARM64)
+    set(LIB_UNWINDER unwinder_wks)
+endif (CLR_CMAKE_HOST_WIN32 AND CLR_CMAKE_TARGET_ARCH_ARM64)
 
 # IMPORTANT! Please do not rearrange the order of the libraries. The linker on Linux is
 # order dependent and changing the order can result in undefined symbols in the shared
 # library.
 set(CORECLR_LIBRARIES
+    mscorrc
     utilcode
-    ${START_LIBRARY_GROUP} # Start group of libraries that have circular references
-    cordbee_wks
+    ${LIB_CORDBEE}
     debug-pal
     ${LIB_UNWINDER}
     v3binder
-    ${END_LIBRARY_GROUP} # End group of libraries that have circular references
     mdcompiler_wks
     mdruntime_wks
     mdruntimerw_wks
-    bcltype
-    ceefgen
-    comfloat_wks
     corguids
-    gcinfo
     utilcode
     v3binder
     System.Globalization.Native-Static
-    interop
+    ${LIB_INTEROP}
     coreclrminipal
+    gc_pal
+    cdac_contract_descriptor
+    gc_wks_descriptor
 )
+
+if (FEATURE_SVR_GC)
+    list(APPEND CORECLR_LIBRARIES
+        gc_svr_descriptor
+    )
+endif(FEATURE_SVR_GC)
+
+if(CLR_CMAKE_TARGET_ARCH_AMD64 OR CLR_CMAKE_TARGET_ARCH_ARM64)
+    list(APPEND CORECLR_LIBRARIES
+        gc_vxsort
+    )
+endif(CLR_CMAKE_TARGET_ARCH_AMD64 OR CLR_CMAKE_TARGET_ARCH_ARM64)
 
 if(CLR_CMAKE_TARGET_WIN32)
     list(APPEND CORECLR_LIBRARIES
         ${STATIC_MT_CRT_LIB}
         ${STATIC_MT_VCRT_LIB}
         kernel32.lib
+        ntdll.lib
         advapi32.lib
         ole32.lib
         oleaut32.lib
@@ -123,28 +117,20 @@ if(CLR_CMAKE_TARGET_WIN32)
         version.lib
         shlwapi.lib
         bcrypt.lib
-        RuntimeObject.lib
-        delayimp.lib
-    )
-else()
-    list(APPEND CORECLR_LIBRARIES
-        ${START_WHOLE_ARCHIVE} # force all PAL objects to be included so all exports are available
-        coreclrpal
-        ${END_WHOLE_ARCHIVE}
-        mscorrc
-        palrt
     )
 endif(CLR_CMAKE_TARGET_WIN32)
 
 if(CLR_CMAKE_TARGET_LINUX)
     list(APPEND CORECLR_LIBRARIES
-        ${START_WHOLE_ARCHIVE}
         tracepointprovider
-        ${END_WHOLE_ARCHIVE}
     )
 elseif(CLR_CMAKE_TARGET_SUNOS)
     list(APPEND CORECLR_LIBRARIES
         socket
+    )
+elseif(CLR_CMAKE_TARGET_HAIKU)
+    list(APPEND CORECLR_LIBRARIES
+        network
     )
 endif(CLR_CMAKE_TARGET_LINUX)
 
@@ -162,93 +148,147 @@ if(FEATURE_EVENT_TRACE)
     endif(CLR_CMAKE_HOST_UNIX)
 endif(FEATURE_EVENT_TRACE)
 
-if(FEATURE_MERGE_JIT_AND_ENGINE)
-    set(CLRJIT_STATIC clrjit_static)
-endif(FEATURE_MERGE_JIT_AND_ENGINE)
+if (FEATURE_STATICALLY_LINKED)
+    if (FEATURE_DYNAMIC_CODE_COMPILED)
+        set(CLRJIT_STATIC clrjit_static gcinfo)
+    endif(FEATURE_DYNAMIC_CODE_COMPILED)
+    if (FEATURE_INTERPRETER)
+        set(CLRINTERPRETER_STATIC clrinterpreter_objects dn-containers gcinfo)
+    endif(FEATURE_INTERPRETER)
+endif(FEATURE_STATICALLY_LINKED)
 
-target_sources(coreclr PUBLIC $<TARGET_OBJECTS:cee_wks_core>)
-target_link_libraries(coreclr PUBLIC ${CORECLR_LIBRARIES} ${CLRJIT_STATIC} cee_wks)
-target_sources(coreclr_static PUBLIC $<TARGET_OBJECTS:cee_wks_core>)
-target_link_libraries(coreclr_static PUBLIC ${CORECLR_LIBRARIES} clrjit_static cee_wks_mergeable)
+if(FEATURE_DYNAMIC_CODE_COMPILED)
+    set(CORECLR_STATIC_CLRJIT_STATIC clrjit_static)
+elseif(FEATURE_INTERPRETER)
+    set(CORECLR_STATIC_CLRINTERPRETER_STATIC clrinterpreter_objects dn-containers gcinfo)
+endif()
+
+if(CLR_CMAKE_HOST_ARCH_WASM)
+    set(CEE_WKS_STATIC cee_wks)
+else()
+    set(CEE_WKS_STATIC cee_wks_mergeable)
+endif()
+
+if (CLR_CMAKE_TARGET_OSX)
+    find_library(FOUNDATION Foundation REQUIRED)
+endif()
+
+if(TARGET coreclr)
+    target_link_libraries(coreclr PUBLIC
+        ${CORECLR_LIBRARIES}
+        $<TARGET_NAME_IF_EXISTS:coreclrpal>
+        ${CLRJIT_STATIC}
+        ${CLRINTERPRETER_STATIC}
+        vm_gc_wks
+        $<TARGET_NAME_IF_EXISTS:vm_gc_svr>
+        cee_wks_core
+        cee_wks
+        ${FOUNDATION})
+endif()
+
+target_link_libraries(coreclr_static PUBLIC ${CORECLR_LIBRARIES} ${CORECLR_STATIC_CLRJIT_STATIC} ${CORECLR_STATIC_CLRINTERPRETER_STATIC} vm_gc_wks $<TARGET_NAME_IF_EXISTS:vm_gc_svr> cee_wks_core ${CEE_WKS_STATIC} ${FOUNDATION})
 target_compile_definitions(coreclr_static PUBLIC CORECLR_EMBEDDED)
 
+if(FEATURE_INPROC_CRASHREPORT AND NOT CLR_CROSS_COMPONENTS_BUILD)
+    target_sources(coreclr_static PRIVATE $<TARGET_OBJECTS:inproccrashreport>)
+endif()
+
+if (TARGET cee_wks_gen)
+    add_library_clr(coreclr_gen_static
+        STATIC
+        $<TARGET_OBJECTS:cee_wks_gen>
+    )
+endif()
+
+if (CLR_CMAKE_HOST_ANDROID)
+    target_link_libraries(coreclr PUBLIC log)
+endif()
+
+if (CLR_CMAKE_HOST_ANDROID OR CLR_CMAKE_HOST_IOS OR CLR_CMAKE_HOST_TVOS OR CLR_CMAKE_HOST_MACCATALYST)
+    target_link_libraries(coreclr_static
+        PRIVATE
+        coreclrminipal_objects
+        coreclrpal_objects
+        eventprovider_objects
+        gcinfo
+        libunwind
+        log
+        minipal_objects
+        nativeresourcestring_objects
+    )
+elseif (TARGET coreclrpal)
+    # If we aren't linking in the PAL directly into coreclr_static, we need to propagate it up to targets
+    # that link to coreclr_static
+    target_link_libraries(coreclr_static
+        PUBLIC
+        coreclrpal
+    )
+endif()
+
 if(CLR_CMAKE_TARGET_WIN32)
-    # Add dac table & debug resource to coreclr
-    get_include_directories(INC_DIR)
-    get_compile_definitions(PREPROCESS_DEFINITIONS)
-    list(APPEND INC_DIR -I${CLR_DIR}/vm -I${CLR_DIR}/vm/${ARCH_SOURCES_DIR} -I${CLR_DIR}/debug/ee -I${CLR_DIR}/gc)
-    list(APPEND PREPROCESS_DEFINITIONS -DDACCESS_COMPILE)
+    set(CLRDEBUGINFO_RESOURCE_PATH ${CMAKE_CURRENT_BINARY_DIR}/clr_debug_resource.bin)
 
-    if (CLR_CMAKE_HOST_ARCH_AMD64)
-        list(APPEND PREPROCESS_DEFINITIONS -DTARGET_AMD64)
-    elseif (CLR_CMAKE_HOST_ARCH_ARM64)
-        list(APPEND PREPROCESS_DEFINITIONS -DTARGET_ARM64)
-    elseif (CLR_CMAKE_HOST_ARCH_ARM)
-        list(APPEND PREPROCESS_DEFINITIONS -DTARGET_ARM)
-    elseif (CLR_CMAKE_HOST_ARCH_I386)
-        list(APPEND PREPROCESS_DEFINITIONS -DTARGET_X86)
+    if(CLR_CMAKE_TARGET_ARCH_AMD64)
+        set(CLRDEBUGINFO_RESOURCE_NAME CLRDEBUGINFOWINDOWSAMD64)
+    elseif(CLR_CMAKE_TARGET_ARCH_I386)
+        set(CLRDEBUGINFO_RESOURCE_NAME CLRDEBUGINFOWINDOWSX86)
+    elseif(CLR_CMAKE_TARGET_ARCH_ARM64)
+        set(CLRDEBUGINFO_RESOURCE_NAME CLRDEBUGINFOWINDOWSARM64)
+    endif(CLR_CMAKE_TARGET_ARCH_AMD64)
+
+    if(NOT CLR_DUMP_ENUMERATOR_PATH)
+        set(CLRDEBUGINFO_DEPENDENCIES mscordaccore mscordbi)
+        set(CLRDEBUGINFO_ARGUMENTS -dac $<TARGET_FILE:mscordaccore> -dbi $<TARGET_FILE:mscordbi>)
+
+        set(MINIDUMP_AUXILIARY_PROVIDER_PATH $<TARGET_FILE:mscordaccore>)
+        set(MINIDUMP_AUXILIARY_PROVIDER_NAME "mscordaccore.dll")
     else()
-        clr_unknown_arch()
+        set(CLRDEBUGINFO_ARGUMENTS -noNativeDacDbi)
+        file(TO_CMAKE_PATH "${CLR_DUMP_ENUMERATOR_PATH}" MINIDUMP_AUXILIARY_PROVIDER_PATH)
+        get_filename_component(MINIDUMP_AUXILIARY_PROVIDER_NAME "${CLR_DUMP_ENUMERATOR_PATH}" NAME)
     endif()
 
-
-    if (CLR_CMAKE_CROSS_ARCH)
-        include(${CMAKE_INSTALL_PREFIX}/${CLR_CMAKE_CROSS_HOST_ARCH}/dactabletools/dactabletools.cmake)
-    endif()
-
-    add_custom_command(
-        DEPENDS coreclr mscordaccore mscordbi ${CLR_DIR}/debug/daccess/daccess.cpp
-        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/inject_debug_resources_coreclr.timestamp
-        COMMAND ${CMAKE_CXX_COMPILER} /P /EP /TP ${PREPROCESS_DEFINITIONS} ${INC_DIR} /Fi${CMAKE_CURRENT_BINARY_DIR}/daccess.i  ${CLR_DIR}/debug/daccess/daccess.cpp
-
-        # make and inject dactable for coreclr
-        COMMAND cmd /c ${CLR_REPO_ROOT_DIR}/dotnet.cmd exec ${CMAKE_INSTALL_PREFIX}/DacTableGen/DacTableGen.dll /dac:${CMAKE_CURRENT_BINARY_DIR}/daccess.i /pdb:$<TARGET_PDB_FILE:coreclr> /dll:$<TARGET_FILE:coreclr> /bin:${CMAKE_CURRENT_BINARY_DIR}/wks.bin
-        COMMAND InjectResource /bin:${CMAKE_CURRENT_BINARY_DIR}/wks.bin /dll:$<TARGET_FILE:coreclr>
-
-        # make CLRDEBUGINFO resource and inject into coreclr
-        COMMAND GenClrDebugResource /dac:$<TARGET_FILE:mscordaccore> /dbi:$<TARGET_FILE:mscordbi> /sku:onecoreclr /out:${CMAKE_CURRENT_BINARY_DIR}/clrDebugResource.bin
-        COMMAND InjectResource /bin:${CMAKE_CURRENT_BINARY_DIR}/clrDebugResource.bin /dll:$<TARGET_FILE:coreclr> /name:CLRDEBUGINFO
-
-        # inject MINIDUMP_AUXILIARY_PROVIDER into coreclr
-        COMMAND InjectResource /bin:${CMAKE_CURRENT_SOURCE_DIR}/dump_helper_resource.bin /dll:$<TARGET_FILE:coreclr> /name:MINIDUMP_AUXILIARY_PROVIDER
-
-        COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/inject_debug_resources_coreclr.timestamp
-        COMMENT Add dactable, debug resources, and dump helper resources to coreclr
+    add_custom_target(
+        clr_debug_resources
+        DEPENDS ${CLRDEBUGINFO_DEPENDENCIES}
+        BYPRODUCTS ${CLRDEBUGINFO_RESOURCE_PATH}
+        COMMAND powershell -NoProfile -ExecutionPolicy ByPass -File "${CMAKE_CURRENT_SOURCE_DIR}/GenClrDebugResource.ps1" ${CLRDEBUGINFO_ARGUMENTS} -out ${CLRDEBUGINFO_RESOURCE_PATH}
     )
+    add_dependencies(coreclr clr_debug_resources)
+    add_dependencies(coreclr_static clr_debug_resources)
 
-    if(NOT DEFINED CLR_CROSS_COMPONENTS_BUILD)
-        add_custom_target(inject_debug_resources_coreclr ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/inject_debug_resources_coreclr.timestamp)
-        add_dependencies(runtime inject_debug_resources_coreclr)
-    endif()
+    configure_file(dump_helper_resource.rc.in ${CMAKE_CURRENT_BINARY_DIR}/dump_helper_resource.rc)
 
-    add_custom_command(
-        DEPENDS singlefilehost mscordaccore mscordbi ${CLR_DIR}/debug/daccess/daccess.cpp
-        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/inject_debug_resources_singlefilehost.timestamp
-        COMMAND ${CMAKE_CXX_COMPILER} /P /EP /TP ${PREPROCESS_DEFINITIONS} ${INC_DIR} /Fi${CMAKE_CURRENT_BINARY_DIR}/daccess.i  ${CLR_DIR}/debug/daccess/daccess.cpp
+    set(EMBEDDED_MINIDUMP_AUXILIARY_PROVIDER "${MINIDUMP_AUXILIARY_PROVIDER_PATH}")
+    configure_file(dump_helper_resource.rc.in ${CMAKE_CURRENT_BINARY_DIR}/dump_helper_resource_embedded_minidump_provider.rc.gen)
+    file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/dump_helper_resource_embedded_minidump_provider.rc INPUT ${CMAKE_CURRENT_BINARY_DIR}/dump_helper_resource_embedded_minidump_provider.rc.gen)
 
-        # make and inject dactable for singlefilehost
-        COMMAND cmd /c ${CLR_REPO_ROOT_DIR}/dotnet.cmd exec ${CMAKE_INSTALL_PREFIX}/DacTableGen/DacTableGen.dll /dac:${CMAKE_CURRENT_BINARY_DIR}/daccess.i /pdb:$<TARGET_PDB_FILE:singlefilehost> /dll:$<TARGET_FILE:singlefilehost> /bin:${CMAKE_CURRENT_BINARY_DIR}/sfh.bin
-        COMMAND InjectResource /bin:${CMAKE_CURRENT_BINARY_DIR}/sfh.bin /dll:$<TARGET_FILE:singlefilehost>
+    set(CLRDEBUGINFO_RESOURCE_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/dump_helper_resource.rc)
+    foreach(CONFIGURATION IN LISTS CMAKE_CONFIGURATION_TYPES CMAKE_BUILD_TYPE)
+        list(APPEND CLRDEBUGINFO_RESOURCE_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/${CONFIGURATION}/dump_helper_resource_embedded_minidump_provider.rc)
+    endforeach()
+    set_source_files_properties(${CLRDEBUGINFO_RESOURCE_SOURCES} PROPERTIES OBJECT_DEPENDS ${CLRDEBUGINFO_RESOURCE_PATH})
 
-        # make CLRDEBUGINFO resource and inject into singlefilehost
-        COMMAND GenClrDebugResource /dac:$<TARGET_FILE:mscordaccore> /dbi:$<TARGET_FILE:mscordbi> /sku:onecoreclr /out:${CMAKE_CURRENT_BINARY_DIR}/clrDebugResource.bin
-        COMMAND InjectResource /bin:${CMAKE_CURRENT_BINARY_DIR}/clrDebugResource.bin /dll:$<TARGET_FILE:singlefilehost> /name:CLRDEBUGINFO
-
-        COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/inject_debug_resources_singlefilehost.timestamp
-        COMMENT Add dactable, debug resources, and dump helper resources to singlefilehost
-    )
-
-    if(NOT DEFINED CLR_CROSS_COMPONENTS_BUILD)
-        add_custom_target(inject_debug_resources_singlefilehost ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/inject_debug_resources_singlefilehost.timestamp)
-        add_dependencies(runtime inject_debug_resources_singlefilehost)
-    endif()
-else()
-    add_custom_target(inject_debug_resources_coreclr DEPENDS coreclr)
-    add_custom_target(inject_debug_resources_singlefilehost DEPENDS singlefilehost)
+    target_sources(coreclr PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/dump_helper_resource.rc)
+    target_sources(coreclr_static PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/dump_helper_resource_embedded_minidump_provider.rc)
 endif(CLR_CMAKE_TARGET_WIN32)
 
 # add the install targets
-install_clr(TARGETS coreclr DESTINATIONS . sharedFramework COMPONENT runtime)
+if(NOT CLR_CMAKE_HOST_ARCH_WASM)
+    install_clr(TARGETS coreclr DESTINATIONS . sharedFramework COMPONENT runtime)
+else()
+    install_clr(TARGETS coreclr_static DESTINATIONS . sharedFramework COMPONENT runtime)
+    if (TARGET coreclr_gen_static)
+        install_clr(TARGETS coreclr_gen_static DESTINATIONS . sharedFramework COMPONENT runtime)
+    endif()
+endif(NOT CLR_CMAKE_HOST_ARCH_WASM)
+
+if(CLR_CMAKE_HOST_MACCATALYST OR CLR_CMAKE_HOST_IOS OR CLR_CMAKE_HOST_TVOS OR CLR_CMAKE_HOST_ANDROID OR CLR_CMAKE_HOST_ARCH_WASM)
+    install_clr(TARGETS coreclr_static DESTINATIONS . COMPONENT runtime)
+    if (TARGET coreclr_gen_static)
+        install_clr(TARGETS coreclr_gen_static DESTINATIONS . COMPONENT runtime)
+    endif()
+endif(CLR_CMAKE_HOST_MACCATALYST OR CLR_CMAKE_HOST_IOS OR CLR_CMAKE_HOST_TVOS OR CLR_CMAKE_HOST_ANDROID OR CLR_CMAKE_HOST_ARCH_WASM)
 
 # Enable profile guided optimization
 add_pgo(coreclr)

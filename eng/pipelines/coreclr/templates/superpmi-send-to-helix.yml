@@ -19,10 +19,16 @@ parameters:
   condition: succeeded()                 # optional -- condition for step to execute; defaults to succeeded()
   continueOnError: false                 # optional -- determines whether to continue the build if the step errors; defaults to false
   BuildConfig: 'checked'                 # optional -- Mostly, superpmi will be run on checked builds
+  osGroup: ''                            # required -- the OS group to run the tests on; defaults to the OS group of the build
+  archType: ''                           # required -- the architecture to run the tests on; defaults to the architecture of the build
   InputArtifacts: ''
   CollectionType: ''
   CollectionName: ''
+  Crossgen2ReferenceDirName: ''         # optional -- name of the crossgen2 reference assembly folder in the correlation payload (cross-target crossgen2 collections)
+  Crossgen2Composite: ''                # optional -- 'true' to run crossgen2 in composite mode (whole reference set in the version bubble)
   ProjectFile: ''
+  targetOS: ''                           # optional -- override target OS for cross-target collections (e.g. browser/wasm). Defaults to osGroup.
+  targetArch: ''                         # optional -- override target architecture. Defaults to archType.
 
 steps:
 - template: /eng/pipelines/common/templates/runtimes/send-to-helix-inner-step.yml
@@ -33,11 +39,22 @@ steps:
     condition: ${{ parameters.condition }}
     shouldContinueOnError: ${{ parameters.continueOnError }}
     environment:
+      _Creator: ${{ parameters.Creator }}
+      ${{ if ne(parameters.targetOS, '') }}:
+        TargetOS: ${{ parameters.targetOS }}
+      ${{ if eq(parameters.targetOS, '') }}:
+        TargetOS: ${{ parameters.osGroup }}
+      ${{ if ne(parameters.targetArch, '') }}:
+        TargetArchitecture: ${{ parameters.targetArch }}
+      ${{ if eq(parameters.targetArch, '') }}:
+        TargetArchitecture: ${{ parameters.archType }}
       MchFileTag: $(MchFileTag)
       BuildConfig:  ${{ parameters.BuildConfig }}
       InputArtifacts: ${{ parameters.InputArtifacts }}
       CollectionType: ${{ parameters.CollectionType }}
       CollectionName: ${{ parameters.CollectionName }}
+      Crossgen2ReferenceDirName: ${{ parameters.Crossgen2ReferenceDirName }}
+      Crossgen2Composite: ${{ parameters.Crossgen2Composite }}
       HelixSource: ${{ parameters.HelixSource }}
       HelixType: ${{ parameters.HelixType }}
       HelixBuild: ${{ parameters.HelixBuild }}
@@ -52,5 +69,4 @@ steps:
       DotNetCliVersion: ${{ parameters.DotNetCliVersion }}
       EnableXUnitReporter: ${{ parameters.EnableXUnitReporter }}
       WaitForWorkItemCompletion: ${{ parameters.WaitForWorkItemCompletion }}
-      Creator: ${{ parameters.Creator }}
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)

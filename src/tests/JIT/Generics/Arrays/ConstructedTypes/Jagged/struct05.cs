@@ -2,7 +2,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 //
 
+namespace JitTest_Generics_Arrays_ConstructedTypes_Jagged_struct05;
+
 using System;
+using Xunit;
 
 
 public struct ValX1<T>
@@ -49,7 +52,9 @@ public class Test_struct05
 
     }
 
-    public static int Main()
+    [OuterLoop]
+    [Fact]
+    public static int TestEntryPoint()
     {
         int size = 10;
         int i, j, k, l, m;

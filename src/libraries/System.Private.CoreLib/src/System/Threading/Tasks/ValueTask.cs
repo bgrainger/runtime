@@ -7,7 +7,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks.Sources;
-using Internal.Runtime.CompilerServices;
 
 namespace System.Threading.Tasks
 {
@@ -72,6 +71,7 @@ namespace System.Threading.Tasks
         /// <summary>Initialize the <see cref="ValueTask"/> with a <see cref="Task"/> that represents the operation.</summary>
         /// <param name="task">The task.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        [Intrinsic]
         public ValueTask(Task task)
         {
             if (task == null)
@@ -111,12 +111,17 @@ namespace System.Threading.Tasks
         }
 
         /// <summary>Gets a task that has already completed successfully.</summary>
-        public static ValueTask CompletedTask => default;
+        public static ValueTask CompletedTask
+        {
+            [Intrinsic]
+            get => default;
+        }
 
         /// <summary>Creates a <see cref="ValueTask{TResult}"/> that's completed successfully with the specified result.</summary>
         /// <typeparam name="TResult">The type of the result returned by the task.</typeparam>
         /// <param name="result">The result to store into the completed task.</param>
         /// <returns>The successfully completed task.</returns>
+        [Intrinsic]
         public static ValueTask<TResult> FromResult<TResult>(TResult result) =>
             new ValueTask<TResult>(result);
 
@@ -170,6 +175,7 @@ namespace System.Threading.Tasks
         /// It will either return the wrapped task object if one exists, or it'll
         /// manufacture a new task object to represent the result.
         /// </remarks>
+        [Intrinsic]
         public Task AsTask()
         {
             object? obj = _obj;
@@ -234,14 +240,22 @@ namespace System.Threading.Tasks
         {
             private static readonly Action<object?> s_completionAction = static state =>
             {
-                if (!(state is ValueTaskSourceAsTask vtst) ||
-                    !(vtst._source is IValueTaskSource source))
+                if (state is not ValueTaskSourceAsTask vtst ||
+                    vtst._source is not IValueTaskSource source)
                 {
                     // This could only happen if the IValueTaskSource passed the wrong state
                     // or if this callback were invoked multiple times such that the state
                     // was previously nulled out.
-                    ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument.state);
+                    ThrowUnexpectedStateForKnownCallback(state);
                     return;
+
+                    static void ThrowUnexpectedStateForKnownCallback(object? state) =>
+                        throw new ArgumentOutOfRangeException(
+                            nameof(state),
+                            state is ValueTaskSourceAsTask vsts ?
+                                $"{nameof(ValueTaskSourceAsTask)}.{nameof(_source)} : {vsts._source}" :
+                                $"{nameof(state)} : {state}",
+                            SR.Argument_UnexpectedStateForKnownCallback);
                 }
 
                 vtst._source = null;
@@ -399,6 +413,18 @@ namespace System.Threading.Tasks
             }
         }
 
+        /// <summary>
+        /// Transfers the <see cref="ValueTask{TResult}"/> to a <see cref="ValueTask"/> instance.
+        ///
+        /// The <see cref="ValueTask{TResult}"/> should not be used after calling this method.
+        /// </summary>
+        internal static ValueTask DangerousCreateFromTypedValueTask<TResult>(ValueTask<TResult> valueTask)
+        {
+            Debug.Assert(valueTask._obj is null or Task or IValueTaskSource, "If the ValueTask<>'s backing object is an IValueTaskSource<TResult>, it must also be IValueTaskSource.");
+
+            return new ValueTask(valueTask._obj, valueTask._token, valueTask._continueOnCapturedContext);
+        }
+
         /// <summary>Gets an awaiter for this <see cref="ValueTask"/>.</summary>
         public ValueTaskAwaiter GetAwaiter() => new ValueTaskAwaiter(in this);
 
@@ -406,6 +432,7 @@ namespace System.Threading.Tasks
         /// <param name="continueOnCapturedContext">
         /// true to attempt to marshal the continuation back to the captured context; otherwise, false.
         /// </param>
+        [Intrinsic]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ConfiguredValueTaskAwaitable ConfigureAwait(bool continueOnCapturedContext) =>
             new ConfiguredValueTaskAwaitable(new ValueTask(_obj, _token, continueOnCapturedContext));
@@ -459,6 +486,7 @@ namespace System.Threading.Tasks
         /// <summary>Initialize the <see cref="ValueTask{TResult}"/> with a <typeparamref name="TResult"/> result value.</summary>
         /// <param name="result">The result.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        [Intrinsic]
         public ValueTask(TResult result)
         {
             _result = result;
@@ -471,6 +499,7 @@ namespace System.Threading.Tasks
         /// <summary>Initialize the <see cref="ValueTask{TResult}"/> with a <see cref="Task{TResult}"/> that represents the operation.</summary>
         /// <param name="task">The task.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        [Intrinsic]
         public ValueTask(Task<TResult> task)
         {
             if (task == null)
@@ -550,6 +579,7 @@ namespace System.Threading.Tasks
         /// It will either return the wrapped task object if one exists, or it'll
         /// manufacture a new task object to represent the result.
         /// </remarks>
+        [Intrinsic]
         public Task<TResult> AsTask()
         {
             object? obj = _obj;
@@ -621,14 +651,22 @@ namespace System.Threading.Tasks
         {
             private static readonly Action<object?> s_completionAction = static state =>
             {
-                if (!(state is ValueTaskSourceAsTask vtst) ||
-                    !(vtst._source is IValueTaskSource<TResult> source))
+                if (state is not ValueTaskSourceAsTask vtst ||
+                    vtst._source is not IValueTaskSource<TResult> source)
                 {
                     // This could only happen if the IValueTaskSource<TResult> passed the wrong state
                     // or if this callback were invoked multiple times such that the state
                     // was previously nulled out.
-                    ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument.state);
+                    ThrowUnexpectedStateForKnownCallback(state);
                     return;
+
+                    static void ThrowUnexpectedStateForKnownCallback(object? state) =>
+                        throw new ArgumentOutOfRangeException(
+                            nameof(state),
+                            state is ValueTaskSourceAsTask vsts ?
+                                $"{nameof(ValueTaskSourceAsTask)}.{nameof(_source)} : {vsts._source}" :
+                                $"{nameof(state)} : {state}",
+                            SR.Argument_UnexpectedStateForKnownCallback);
                 }
 
                 vtst._source = null;
@@ -798,6 +836,7 @@ namespace System.Threading.Tasks
         /// <param name="continueOnCapturedContext">
         /// true to attempt to marshal the continuation back to the captured context; otherwise, false.
         /// </param>
+        [Intrinsic]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ConfiguredValueTaskAwaitable<TResult> ConfigureAwait(bool continueOnCapturedContext) =>
             new ConfiguredValueTaskAwaitable<TResult>(new ValueTask<TResult>(_obj, _result, _token, continueOnCapturedContext));

@@ -1,14 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-//
-// writer.cpp
-//
 
 #include "ilasmpch.h"
 
 #include "assembler.h"
 
 #include "ceefilegenwriter.h"
+#include "sha256.h"
 
 #ifndef _MSC_VER
 //cloned definition from ntimage.h that is removed for non MSVC builds
@@ -27,12 +25,19 @@ HRESULT Assembler::InitMetaData()
 
     if(m_fInitialisedMetaData) return S_OK;
 
-    if(bClock) bClock->cMDInitBegin = GetTickCount();
+    if(bClock) bClock->cMDInitBegin = minipal_lowres_ticks();
 
-    hr = MetaDataGetDispenser(CLSID_CorMetaDataDispenser,
-        IID_IMetaDataDispenserEx2, (void **)&m_pDisp);
+    hr = CreateMetaDataDispenser(IID_IMetaDataDispenserEx2, (void **)&m_pDisp);
     if (FAILED(hr))
         goto exit;
+
+    if(m_wzMetadataVersion)
+    {
+        VARIANT optionValue;
+        V_VT(&optionValue) = VT_BSTR;
+        V_BSTR(&optionValue) = m_wzMetadataVersion; // IMetaDataDispenserEx does not require proper BSTR
+        hr = m_pDisp->SetOption(MetaDataRuntimeVersion, &optionValue);
+    }
 
     hr = m_pDisp->DefineScope(CLSID_CorMetaDataRuntime, 0, IID_IMetaDataEmit3,
                         (IUnknown **)&m_pEmitter);
@@ -43,10 +48,39 @@ HRESULT Assembler::InitMetaData()
     if(FAILED(hr = m_pEmitter->QueryInterface(IID_IMetaDataImport2, (void**)&m_pImporter)))
         goto exit;
 
+    if (m_fDeterministic)
+    {
+        //
+        // In deterministic mode, the MVID will need to be stabilized for the metadata scope that
+        // was created above, and the ChangeMvid service that makes this possible is only available
+        // on the IMDInternalEmit interface.
+        //
+        // Any failure is unexpected and catastrophic, so print a noisy message and return an
+        // error (which generally fails the entire ilasm operation) if any failure occurs.
+        //
+
+        hr = m_pEmitter->QueryInterface(IID_IMDInternalEmit, (void**)&m_pInternalEmitForDeterministicMvid);
+
+        if (FAILED(hr) || (m_pInternalEmitForDeterministicMvid == NULL))
+        {
+            fprintf(stderr, "Unexpected: Failed to query the required MVID determinism interface: %X\n",hr);
+            hr = E_FAIL;
+            goto exit;
+        }
+    }
+
     if (m_fGeneratePDB)
     {
         m_pPortablePdbWriter = new PortablePdbWriter();
         if (FAILED(hr = m_pPortablePdbWriter->Init(m_pDisp))) goto exit;
+
+        if (m_fDeterministic)
+        {
+            // When build determinism is enabled, the PDB checksum is computed with these fields set to zero.
+            // The GUID and timestamp will be updated after.
+            m_pPortablePdbWriter->SetGuid(GUID());
+            m_pPortablePdbWriter->SetTimestamp(0);
+        }
     }
 
     //m_Parser = new AsmParse(m_pEmitter);
@@ -55,7 +89,7 @@ HRESULT Assembler::InitMetaData()
     hr = S_OK;
 
 exit:
-    if(bClock) bClock->cMDInitEnd = GetTickCount();
+    if(bClock) bClock->cMDInitEnd = minipal_lowres_ticks();
     return hr;
 }
 /*********************************************************************************/
@@ -82,7 +116,7 @@ HRESULT Assembler::CreateTLSDirectory() {
         DWORD offsetofAddressOfIndex         = (DWORD)offsetof(IMAGE_TLS_DIRECTORY32, AddressOfIndex);
         DWORD offsetofAddressOfCallBacks     = (DWORD)offsetof(IMAGE_TLS_DIRECTORY32, AddressOfCallBacks);
 
-            // Get memory for for the TLS directory block,as well as a spot for callback chain
+            // Get memory for the TLS directory block,as well as a spot for callback chain
         IMAGE_TLS_DIRECTORY32* tlsDir;
         if(FAILED(hr=m_pCeeFileGen->GetSectionBlock(tlsDirSec, sizeofdir + sizeofptr, sizeofptr, (void**) &tlsDir))) return(hr);
         DWORD* callBackChain = (DWORD*) &tlsDir[1];
@@ -131,17 +165,17 @@ HRESULT Assembler::CreateTLSDirectory() {
     }
     else
     {
-        DWORD sizeofptr = (DWORD)sizeof(__int64);
+        DWORD sizeofptr = (DWORD)sizeof(int64_t);
         DWORD sizeofdir = (DWORD)sizeof(IMAGE_TLS_DIRECTORY64);
         DWORD offsetofStartAddressOfRawData  = (DWORD)offsetof(IMAGE_TLS_DIRECTORY64, StartAddressOfRawData);
         DWORD offsetofEndAddressOfRawData    = (DWORD)offsetof(IMAGE_TLS_DIRECTORY64, EndAddressOfRawData);
         DWORD offsetofAddressOfIndex         = (DWORD)offsetof(IMAGE_TLS_DIRECTORY64, AddressOfIndex);
         DWORD offsetofAddressOfCallBacks     = (DWORD)offsetof(IMAGE_TLS_DIRECTORY64, AddressOfCallBacks);
 
-            // Get memory for for the TLS directory block,as well as a spot for callback chain
+            // Get memory for the TLS directory block,as well as a spot for callback chain
         IMAGE_TLS_DIRECTORY64* tlsDir;
         if(FAILED(hr=m_pCeeFileGen->GetSectionBlock(tlsDirSec, sizeofdir + sizeofptr, sizeofptr, (void**) &tlsDir))) return(hr);
-        __int64* callBackChain = (__int64*) &tlsDir[1];
+        int64_t* callBackChain = (int64_t*) &tlsDir[1];
         *callBackChain = 0;
 
             // Find out where the tls directory will end up
@@ -192,128 +226,261 @@ HRESULT Assembler::CreateTLSDirectory() {
     return(hr);
 }
 
-HRESULT Assembler::CreateDebugDirectory()
+HRESULT Assembler::CreateDebugDirectory(BYTE(&pdbChecksum)[32])
 {
-    HRESULT hr = S_OK;
-    HCEESECTION sec = m_pILSection;
-    BYTE *de;
-    ULONG deOffset;
-
     // Only emit this if we're also emitting debug info.
-    if (!m_fGeneratePDB)
-        return S_OK;
+    _ASSERTE(m_fGeneratePDB);
 
-    IMAGE_DEBUG_DIRECTORY  debugDirIDD;
-    struct Param
+    struct DebugDirectoryEntry
     {
-    DWORD                  debugDirDataSize;
-        BYTE              *debugDirData;
-    } param;
-    param.debugDirData = NULL;
+        IMAGE_DEBUG_DIRECTORY debugDirIDD;
+        DWORD                 debugDirDataSize;
+        BYTE*                 debugDirData;
+    };
 
+    // Arbitrary amount; should not need this many.
+    const int maxEntries = 8;
+
+    DebugDirectoryEntry entries[maxEntries];
+    int numEntries = 0;
+
+    auto addEntry = [&](
+                        DWORD characteristics,
+                        DWORD timeDateStamp,
+                        WORD majorVersion,
+                        WORD minorVersion,
+                        DWORD type,
+                        DWORD sizeOfData,
+                        BYTE* data){
+        _ASSERTE(numEntries >= 0);
+        _ASSERTE(numEntries < maxEntries);
+
+        HRESULT hr = S_OK;
+
+        IMAGE_DEBUG_DIRECTORY debugDirIDD;
+        struct Param
+        {
+            DWORD debugDirDataSize;
+            BYTE* debugDirData;
+        } param;
+        param.debugDirData = NULL;
+
+        debugDirIDD.Characteristics = characteristics;
+        debugDirIDD.TimeDateStamp = timeDateStamp;
+        debugDirIDD.MajorVersion = majorVersion;
+        debugDirIDD.MinorVersion = minorVersion;
+        debugDirIDD.Type = type;
+        debugDirIDD.SizeOfData = sizeOfData;
+        debugDirIDD.AddressOfRawData = 0; // will be updated later
+        debugDirIDD.PointerToRawData = 0; // will be updated later
+
+        param.debugDirDataSize = sizeOfData;
+
+        if ((sizeOfData > 0) && (data != NULL))
+        {
+            // Make some room for the data.
+            PAL_TRY(Param*, pParam, &param) {
+                pParam->debugDirData = new BYTE[pParam->debugDirDataSize];
+            } PAL_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+                hr = E_FAIL;
+            } PAL_ENDTRY
+
+            if (FAILED(hr)) return hr;
+        }
+
+        param.debugDirData = data;
+
+        DebugDirectoryEntry entry = {};
+        entry.debugDirIDD = debugDirIDD;
+        entry.debugDirDataSize = param.debugDirDataSize;
+        entry.debugDirData = param.debugDirData;
+        entries[numEntries] = entry;
+
+        numEntries++;
+        return S_OK;
+    };
+
+    HRESULT hr = S_OK;
+
+    /* BEGIN CODEVIEW */
     // get module ID
     DWORD rsds = VAL32(0x53445352);
     DWORD pdbAge = VAL32(0x1);
     GUID pdbGuid = *m_pPortablePdbWriter->GetGuid();
     SwapGuid(&pdbGuid);
-    DWORD len = sizeof(rsds) + sizeof(GUID) + sizeof(pdbAge) + (DWORD)strlen(m_szPdbFileName) + 1;
-    BYTE* dbgDirData = new BYTE[len];
+    DWORD codeViewSize = sizeof(rsds) + sizeof(GUID) + sizeof(pdbAge) + (DWORD)strlen(m_szPdbFileName) + 1;
+    BYTE* codeViewData = new BYTE[codeViewSize];
 
-    DWORD offset = 0;
-    memcpy_s(dbgDirData + offset, len, &rsds, sizeof(rsds));                            // RSDS
-    offset += sizeof(rsds);
-    memcpy_s(dbgDirData + offset, len, &pdbGuid, sizeof(GUID));                         // PDB GUID
-    offset += sizeof(GUID);
-    memcpy_s(dbgDirData + offset, len, &pdbAge, sizeof(pdbAge));                        // PDB AGE
-    offset += sizeof(pdbAge);
-    memcpy_s(dbgDirData + offset, len, m_szPdbFileName, strlen(m_szPdbFileName) + 1);   // PDB PATH
+    DWORD codeViewOffset = 0;
+    memcpy_s(codeViewData + codeViewOffset, codeViewSize, &rsds, sizeof(rsds));                            // RSDS
+    codeViewOffset += sizeof(rsds);
+    memcpy_s(codeViewData + codeViewOffset, codeViewSize, &pdbGuid, sizeof(GUID));                         // PDB GUID
+    codeViewOffset += sizeof(GUID);
+    memcpy_s(codeViewData + codeViewOffset, codeViewSize, &pdbAge, sizeof(pdbAge));                        // PDB AGE
+    codeViewOffset += sizeof(pdbAge);
+    memcpy_s(codeViewData + codeViewOffset, codeViewSize, m_szPdbFileName, strlen(m_szPdbFileName) + 1);   // PDB PATH
+    /* END CODEVIEW */
 
-    debugDirIDD.Characteristics = 0;
-    debugDirIDD.TimeDateStamp = VAL32(m_pPortablePdbWriter->GetTimestamp());
-    debugDirIDD.MajorVersion = VAL16(0x100);
-    debugDirIDD.MinorVersion = VAL16(0x504d);
-    debugDirIDD.Type = VAL32(IMAGE_DEBUG_TYPE_CODEVIEW);
-    debugDirIDD.SizeOfData = VAL32(len);
-    debugDirIDD.AddressOfRawData = 0; // will be updated bellow
-    debugDirIDD.PointerToRawData = 0; // will be updated bellow
+    /* BEGIN PDB CHECKSUM */
+    _ASSERTE(sizeof(pdbChecksum) == 32);
 
-    param.debugDirDataSize = len;
+    // Algorithm name is case sensitive.
+    const char* algoName = "SHA256";
+    const DWORD pdbChecksumOffset = ((DWORD)strlen(algoName)) + 1;
+    const DWORD pdbChecksumSize = pdbChecksumOffset + sizeof(pdbChecksum);
+    BYTE* pdbChecksumData = new BYTE[pdbChecksumSize];
 
-    // Make some room for the data.
-    PAL_TRY(Param*, pParam, &param) {
-        pParam->debugDirData = new BYTE[pParam->debugDirDataSize];
-    } PAL_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        hr = E_FAIL;
-    } PAL_ENDTRY
+    // AlgorithmName (including null terminator)
+    memcpy_s(pdbChecksumData, pdbChecksumSize, algoName, pdbChecksumOffset);
 
-    if (FAILED(hr)) return hr;
+    // Checksum
+    memcpy_s(pdbChecksumData + pdbChecksumOffset, pdbChecksumSize - pdbChecksumOffset, &pdbChecksum, sizeof(pdbChecksum));
+    /* END PDB CHECKSUM */
 
-    param.debugDirData = dbgDirData;
+    auto finish =
+        [&](HRESULT hr) {
+            if (codeViewData)
+            {
+                delete [] codeViewData;
+            }
+            if (pdbChecksumData)
+            {
+                delete [] pdbChecksumData;
+            }
+            return hr;
+        };
+
+    // CodeView Entry
+    hr =
+        addEntry(
+            /* characteristics */ VAL32(0),
+            /* timeDateStamp */   VAL32(m_pPortablePdbWriter->GetTimestamp()),
+            /* majorVersion */    VAL16(0x100),
+            /* minorVersion */    VAL16(0x504d),
+            /* type */            VAL32(IMAGE_DEBUG_TYPE_CODEVIEW),
+            /* sizeOfData */      VAL32(codeViewSize),
+            /* data */            codeViewData
+        );
+    if (FAILED(hr))
+        return finish(hr);
+
+    // Pdb Checksum Entry
+    hr =
+        addEntry(
+            /* characteristics */ VAL32(0),
+            /* timeDateStamp */   VAL32(m_pPortablePdbWriter->GetTimestamp()),
+            /* majorVersion */    VAL16(1),
+            /* minorVersion */    VAL16(0),
+            /* type */            VAL32(/* PDB Checksum Debug Directory Entry */ 19),
+            /* sizeOfData */      VAL32(pdbChecksumSize),
+            /* data */            pdbChecksumData
+        );
+    if (FAILED(hr))
+        return finish(hr);
+
+    if (m_fDeterministic)
+    {
+        // Deterministic Entry
+        hr =
+            addEntry(
+                /* characteristics */ VAL32(0),
+                /* timeDateStamp */   VAL32(0),
+                /* majorVersion */    VAL16(0),
+                /* minorVersion */    VAL16(0),
+                /* type */            VAL32(/* Deterministic Debug Directory Entry */ 16),
+                /* sizeOfData */      VAL32(0),
+                /* data */            NULL
+            );
+        if (FAILED(hr))
+            return finish(hr);
+    }
+
+    HCEESECTION sec = m_pILSection;
+    BYTE *de;
+    ULONG deOffset;
+
+    ULONG totalDataSize = 0;
+    for (int i = 0; i < numEntries; i++)
+    {
+        totalDataSize += entries[i].debugDirDataSize;
+    }
+    ULONG totalEntrySize = (sizeof(IMAGE_DEBUG_DIRECTORY) * numEntries);
+    ULONG totalSize = (totalEntrySize + totalDataSize);
 
     // Grab memory in the section for our stuff.
     // Note that UpdateResource doesn't work correctly if the debug directory is
     // in the data section.  So instead we put it in the text section (same as
     // cs compiler).
     if (FAILED(hr = m_pCeeFileGen->GetSectionBlock(sec,
-                                                   sizeof(debugDirIDD) +
-                                                   param.debugDirDataSize,
+                                                   totalSize,
                                                    4,
                                                    (void**) &de)))
-        goto ErrExit;
+        return finish(hr);
 
     // Where did we get that memory?
     if (FAILED(hr = m_pCeeFileGen->GetSectionDataLen(sec,
                                                      &deOffset)))
-        goto ErrExit;
+        return finish(hr);
 
-    deOffset -= (sizeof(debugDirIDD) + param.debugDirDataSize);
+    deOffset -= totalSize;
 
-    // Setup a reloc so that the address of the raw
-    // data is setup correctly.
-    debugDirIDD.PointerToRawData = VAL32(deOffset + sizeof(debugDirIDD));
-
-    if (FAILED(hr = m_pCeeFileGen->AddSectionReloc(
-                                          sec,
-                                          deOffset +
-                                          offsetof(IMAGE_DEBUG_DIRECTORY,
-                                                   PointerToRawData),
-                                          sec, srRelocFilePos)))
-        goto ErrExit;
-
-    debugDirIDD.AddressOfRawData = VAL32(deOffset + sizeof(debugDirIDD));
-
-    if (FAILED(hr = m_pCeeFileGen->AddSectionReloc(
-                                          sec,
-                                          deOffset +
-                                          offsetof(IMAGE_DEBUG_DIRECTORY,
-                                                   AddressOfRawData),
-                                          sec, srRelocAbsolute)))
-        goto ErrExit;
     // Emit the directory entry.
     if (FAILED(hr = m_pCeeFileGen->SetDirectoryEntry(m_pCeeFile,
                                                      sec,
                                                      IMAGE_DIRECTORY_ENTRY_DEBUG,
-                                                     sizeof(debugDirIDD),
+                                                     totalEntrySize,
                                                      deOffset)))
-        goto ErrExit;
+        return finish(hr);
 
-    // Copy the debug directory into the section.
-    memcpy(de, &debugDirIDD, sizeof(debugDirIDD));
-    memcpy(de + sizeof(debugDirIDD), param.debugDirData,
-           param.debugDirDataSize);
+    ULONG rawDataOffset = deOffset + totalEntrySize;
 
-    if (param.debugDirData)
+    ULONG dataOffset = 0;
+    for (int i = 0; i < numEntries; i++)
     {
-        delete [] param.debugDirData;
-    }
-    return S_OK;
+        DebugDirectoryEntry* entry = &entries[i];
 
-ErrExit:
-    if (param.debugDirData)
-    {
-        delete [] param.debugDirData;
+        ULONG imageOffset = (i * sizeof(IMAGE_DEBUG_DIRECTORY));
+
+        if ((entry->debugDirDataSize > 0) && (entry->debugDirData != NULL))
+        {
+            // Setup a reloc so that the address of the raw
+            // data is setup correctly.
+            entry->debugDirIDD.PointerToRawData = VAL32(rawDataOffset + dataOffset);
+            entry->debugDirIDD.AddressOfRawData = VAL32(rawDataOffset + dataOffset);
+
+            dataOffset += entry->debugDirDataSize;
+
+            if (FAILED(hr = m_pCeeFileGen->AddSectionReloc(
+                                                  sec,
+                                                  deOffset + imageOffset +
+                                                  offsetof(IMAGE_DEBUG_DIRECTORY,
+                                                           PointerToRawData),
+                                                  sec, srRelocFilePos)))
+                return finish(hr);
+
+            if (FAILED(hr = m_pCeeFileGen->AddSectionReloc(
+                                                  sec,
+                                                  deOffset + imageOffset +
+                                                  offsetof(IMAGE_DEBUG_DIRECTORY,
+                                                           AddressOfRawData),
+                                                  sec, srRelocAbsolute)))
+                return finish(hr);
+        }
+
+        // Copy the debug directory into the section.
+        memcpy(de + imageOffset, &entry->debugDirIDD, sizeof(IMAGE_DEBUG_DIRECTORY));
     }
-    return hr;
+
+    dataOffset = 0;
+    for (int i = 0; i < numEntries; i++)
+    {
+        DebugDirectoryEntry entry = entries[i];
+
+        memcpy(de + totalEntrySize + dataOffset, entry.debugDirData, entry.debugDirDataSize);
+        dataOffset += entry.debugDirDataSize;
+    }
+
+    return finish(hr);
 }
 //#ifdef EXPORT_DIR_ENABLED
 HRESULT Assembler::CreateExportDirectory()
@@ -328,10 +495,10 @@ HRESULT Assembler::CreateExportDirectory()
     unsigned                i, L, ordBase = 0xFFFFFFFF, Ldllname;
     // get the DLL name from output file name
     char*                   pszDllName;
-    Ldllname = (unsigned)wcslen(m_wzOutputFileName)*3+3;
+    Ldllname = (unsigned)u16_strlen(m_wzOutputFileName)*3+3;
     NewArrayHolder<char>    szOutputFileName(new char[Ldllname]);
-    memset(szOutputFileName,0,wcslen(m_wzOutputFileName)*3+3);
-    WszWideCharToMultiByte(CP_ACP,0,m_wzOutputFileName,-1,szOutputFileName,Ldllname,NULL,NULL);
+    memset(szOutputFileName,0,u16_strlen(m_wzOutputFileName)*3+3);
+    WideCharToMultiByte(CP_ACP,0,m_wzOutputFileName,-1,szOutputFileName,Ldllname,NULL,NULL);
     pszDllName = strrchr(szOutputFileName,DIRECTORY_SEPARATOR_CHAR_A);
 #ifdef TARGET_WINDOWS
     if(pszDllName == NULL) pszDllName = strrchr(szOutputFileName,':');
@@ -366,7 +533,6 @@ HRESULT Assembler::CreateExportDirectory()
         pAlias[i] = pEATE->szAlias;
     }
     bool swapped = true;
-    unsigned j;
     char*    pch;
     while(swapped)
     {
@@ -379,29 +545,22 @@ HRESULT Assembler::CreateExportDirectory()
                 pch = pAlias[i-1];
                 pAlias[i-1] = pAlias[i];
                 pAlias[i] = pch;
-                j = pOT[i-1];
+                WORD j = pOT[i-1];
                 pOT[i-1] = pOT[i];
                 pOT[i] = j;
             }
         }
     }
     // normalize ordinals
-    for(i = 0; i < Nentries; i++) pOT[i] -= ordBase;
+    for(i = 0; i < Nentries; i++) pOT[i] -= (WORD)ordBase;
     // fill the export address table
-#ifdef _PREFAST_
-#pragma warning(push)
-#pragma warning(disable:22008) // "Suppress PREfast warnings about integer overflow"
-#endif
     for(i = 0; i < Nentries; i++)
     {
         pEATE = m_EATList.PEEK(i);
         pEAT[pEATE->dwOrdinal - ordBase] = pEATE->dwStubRVA;
     }
-#ifdef _PREFAST_
-#pragma warning(pop)
-#endif
     // fill the export names table
-    unsigned l;
+    unsigned l, j;
     for(i = 0, j = 0; i < Nentries; i++)
     {
         pNPT[i] = j; // relative offset in the table
@@ -531,7 +690,7 @@ DWORD   Assembler::EmitExportStub(DWORD dwVTFSlotRVA)
     else
     {
         report->error("Unmanaged exports are not implemented for unknown platform");
-        return NULL;
+        return 0;
     }
     // Addr must be aligned, not the stub!
     if (FAILED(m_pCeeFileGen->GetSectionDataLen (m_pILSection, &PEFileOffset))) return 0;
@@ -562,54 +721,6 @@ DWORD   Assembler::EmitExportStub(DWORD dwVTFSlotRVA)
     return PEFileOffset;
 }
 //#endif
-
-HRESULT Assembler::GetCAName(mdToken tkCA, __out LPWSTR *ppszName)
-{
-    HRESULT hr = S_OK;
-    DWORD cchName;
-    LPWSTR name;
-
-    *ppszName = NULL;
-
-    if (TypeFromToken(tkCA) == mdtMemberRef)
-    {
-        mdToken parent;
-        if (FAILED(hr = m_pImporter->GetMemberRefProps( tkCA, &parent, NULL, 0, NULL, NULL, NULL)))
-            return hr;
-        tkCA = parent;
-    }
-    else if (TypeFromToken(tkCA) == mdtMethodDef)
-    {
-        mdToken parent;
-        if (FAILED(hr = m_pImporter->GetMemberProps( tkCA, &parent, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)))
-            return hr;
-        tkCA = parent;
-    }
-
-    if (TypeFromToken(tkCA) == mdtTypeRef)
-    {
-        // A TypeRef
-        if (FAILED(hr = m_pImporter->GetTypeRefProps(tkCA, NULL, NULL, 0, &cchName)))
-            return hr;
-        if ((name = new WCHAR[cchName + 1]) == NULL)
-            return E_OUTOFMEMORY;
-        hr = m_pImporter->GetTypeRefProps(tkCA, NULL, name, cchName, &cchName);
-    }
-    else
-    {
-        hr = m_pImporter->GetTypeDefProps(tkCA, NULL, 0, &cchName, NULL, NULL);
-        if (hr != S_OK)
-            return hr;
-        if ((name = new WCHAR[cchName + 1]) == NULL)
-            return E_OUTOFMEMORY;
-        hr = m_pImporter->GetTypeDefProps(tkCA, name, cchName, &cchName, NULL, NULL);
-    }
-    if (SUCCEEDED(hr))
-        *ppszName = name;
-    else
-        delete [] name;
-    return hr;
-}
 
 BYTE HexToByte (CHAR wc)
 {
@@ -763,12 +874,12 @@ HRESULT Assembler::ResolveLocalMemberRefs()
                         }
                         if(tkMemberDef && ((*pMRD_pSig & IMAGE_CEE_CS_CALLCONV_MASK)==IMAGE_CEE_CS_CALLCONV_VARARG))
                         {
-                            WszMultiByteToWideChar(g_uCodePage,0,pMRD_szName,-1,wzUniBuf,dwUniBuf);
+                            MultiByteToWideChar(g_uCodePage,0,pMRD_szName,-1,wzUniBuf,dwUniBuf);
 
                             if(IsMdPrivateScope(pListMD->m_Attr))
                             {
-                                WCHAR* p = wcsstr(wzUniBuf,W("$PST06"));
-                                if(p) *p = 0;
+                                WCHAR* p = (WCHAR*)u16_strstr(wzUniBuf,W("$PST06"));
+                                if(p) *p = W('\0');
                             }
 
                             m_pEmitter->DefineMemberRef(tkMemberDef, wzUniBuf,
@@ -806,7 +917,7 @@ HRESULT Assembler::ResolveLocalMemberRefs()
 
                         if(RidFromToken(tkRef))
                         {
-                            WszMultiByteToWideChar(g_uCodePage,0,pMRD_szName,-1,wzUniBuf,dwUniBuf);
+                            MultiByteToWideChar(g_uCodePage,0,pMRD_szName,-1,wzUniBuf,dwUniBuf);
 
                             m_pEmitter->DefineMemberRef(tkRef, wzUniBuf, pMRD_pSig,
                                 pMRD_dwCSig, &tkMemberDef);
@@ -1000,18 +1111,16 @@ HRESULT Assembler::AllocateStrongNameSignature()
     return S_OK;
 }
 
-#ifdef _PREFAST_
-#pragma warning(push)
-#pragma warning(disable:21000) // Suppress PREFast warning about overly large function
-#endif
-HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
+HRESULT Assembler::CreatePEFile(_In_ __nullterminated WCHAR *pwzOutputFilename)
 {
     HRESULT             hr;
     DWORD               mresourceSize = 0;
     BYTE*               mresourceData = NULL;
     WCHAR*              wzScopeName = NULL;
+    GUID                deterministicGuid = GUID();
+    ULONG               deterministicTimestamp = 0;
 
-    if(bClock) bClock->cMDEmitBegin = GetTickCount();
+    if(bClock) bClock->cMDEmitBegin = minipal_lowres_ticks();
     if(m_fReportProgress) printf("Creating PE file\n");
     if (!m_pEmitter)
     {
@@ -1024,7 +1133,7 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
         if(!OnErrGo) return E_FAIL;
     }
 
-    if(bClock) bClock->cMDEmit1 = GetTickCount();
+    if(bClock) bClock->cMDEmit1 = minipal_lowres_ticks();
 
     // Allocate space for a strong name signature if we're delay or full
     // signing the assembly.
@@ -1039,7 +1148,7 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
         m_dwComImageFlags |= COMIMAGE_FLAGS_STRONGNAMESIGNED;
     }
 
-    if(bClock) bClock->cMDEmit2 = GetTickCount();
+    if(bClock) bClock->cMDEmit2 = minipal_lowres_ticks();
 
     if(m_VTFList.COUNT()==0)
     {
@@ -1065,7 +1174,7 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
                 {
                     if(pMD->m_wVTSlot >= 0x8000)
                     {
-                        pMD->m_wVTSlot -= 0x8000 + OrdBase - 1;
+                        pMD->m_wVTSlot -= (WORD)(0x8000 + OrdBase - 1);
                     }
                 }
             }
@@ -1078,7 +1187,7 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
             if(m_dwCeeFileFlags & ICEE_CREATE_FILE_PE64)
             {
                 ULONGLONG *pdw = new ULONGLONG[N];
-                for(i=0; i<N; i++) pdw[i] = UI64(0xdeadbeefdeadbeef);
+                for(i=0; i<N; i++) pdw[i] = 0xdeadbeefdeadbeefULL;
                 EmitData(pdw,sizeof(ULONGLONG)*N);
                 m_VTFList.PUSH(new VTFEntry((USHORT)N,COR_VTABLE_64BIT|COR_VTABLE_FROM_UNMANAGED,sz));
                 delete [] pdw;
@@ -1096,14 +1205,14 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
     wzScopeName=&wzUniBuf[0];
     if(m_szScopeName[0]) // default: scope name = output file name
     {
-        WszMultiByteToWideChar(g_uCodePage,0,m_szScopeName,-1,wzScopeName,MAX_SCOPE_LENGTH);
+        MultiByteToWideChar(g_uCodePage,0,m_szScopeName,-1,wzScopeName,MAX_SCOPE_LENGTH);
     }
     else
     {
         WCHAR* pwc;
-        if ((pwc = wcsrchr(m_wzOutputFileName, DIRECTORY_SEPARATOR_CHAR_A)) != NULL) pwc++;
+        if ((pwc = (WCHAR*)u16_strrchr(m_wzOutputFileName, DIRECTORY_SEPARATOR_CHAR_A)) != NULL) pwc++;
 #ifdef TARGET_WINDOWS
-        else if ((pwc = wcsrchr(m_wzOutputFileName, ':')) != NULL) pwc++;
+        else if ((pwc = (WCHAR*)u16_strrchr(m_wzOutputFileName, ':')) != NULL) pwc++;
 #endif
         else pwc = m_wzOutputFileName;
 
@@ -1166,9 +1275,9 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
     }
 
     // All ref'ed items def'ed in this file are emitted, resolve member refs to member defs:
-    if(bClock) bClock->cRef2DefBegin = GetTickCount();
+    if(bClock) bClock->cRef2DefBegin = minipal_lowres_ticks();
     hr = ResolveLocalMemberRefs();
-    if(bClock) bClock->cRef2DefEnd = GetTickCount();
+    if(bClock) bClock->cRef2DefEnd = minipal_lowres_ticks();
     if(FAILED(hr) &&(!OnErrGo)) goto exit;
 
     // Local member refs resolved, emit events, props and method impls
@@ -1191,7 +1300,7 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
             pSearch->m_fNewMembers = FALSE;
         }
     }
-    if(bClock) bClock->cMDEmit3 = GetTickCount();
+    if(bClock) bClock->cMDEmit3 = minipal_lowres_ticks();
     if(m_MethodImplDList.COUNT())
     {
         if(m_fReportProgress) report->msg("Method Implementations (total): %d\n",m_MethodImplDList.COUNT());
@@ -1201,7 +1310,7 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
         }
     }
     // Emit the rest of the metadata
-    if(bClock) bClock->cMDEmit4 = GetTickCount();
+    if(bClock) bClock->cMDEmit4 = minipal_lowres_ticks();
     hr = S_OK;
     if(m_pManifest)
     {
@@ -1213,7 +1322,7 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
     {
 #define ELEMENT_TYPE_TYPEDEF (ELEMENT_TYPE_MAX+1)
         TypeDefDescr* pTDD;
-        unsigned __int8* pb;
+        uint8_t* pb;
         unsigned namesize;
         while((pTDD = m_TypeDefDList.POP()))
         {
@@ -1239,7 +1348,7 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
             delete pTDD;
         }
     }
-    if(bClock) bClock->cMDEmitEnd = GetTickCount();
+    if(bClock) bClock->cMDEmitEnd = minipal_lowres_ticks();
 
     hr = DoLocalMemberRefFixups();
     if(FAILED(hr) &&(!OnErrGo)) goto exit;
@@ -1268,24 +1377,23 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
 
     if(m_wzResourceFile)
     {
+        MAKE_UTF8PTR_FROMWIDE(szResourceFileUtf8, m_wzResourceFile);
 #ifdef TARGET_UNIX
-        report->msg("Warning: The Win32 resource file '%S' is ignored and not emitted on xPlatform.\n", m_wzResourceFile);
+        report->msg("Warning: The Win32 resource file '%s' is ignored and not emitted on xPlatform.\n", szResourceFileUtf8);
 #else
         if (FAILED(hr=m_pCeeFileGen->SetResourceFileName(m_pCeeFile, m_wzResourceFile)))
         {
-            report->msg("Warning: failed to set Win32 resource file name '%S', hr=0x%8.8X\n         The Win32 resource is not emitted.\n",
-                        m_wzResourceFile, hr);
+            report->msg("Warning: failed to set Win32 resource file name '%s', hr=0x%8.8X\n         The Win32 resource is not emitted.\n",
+                        szResourceFileUtf8, hr);
         }
 #endif
     }
 
     if (FAILED(hr=CreateTLSDirectory())) goto exit;
 
-    if (FAILED(hr=CreateDebugDirectory())) goto exit;
-
     if (FAILED(hr=m_pCeeFileGen->SetOutputFileName(m_pCeeFile, pwzOutputFilename))) goto exit;
 
-        // Reserve a buffer for the meta-data
+    // Reserve a buffer for the meta-data
     DWORD metaDataSize;
     if (FAILED(hr=m_pEmitter->GetSaveSize(cssAccurate, &metaDataSize))) goto exit;
     BYTE* metaData;
@@ -1293,6 +1401,49 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
     ULONG metaDataOffset;
     if (FAILED(hr=m_pCeeFileGen->GetSectionDataLen(m_pILSection, &metaDataOffset))) goto exit;
     metaDataOffset -= metaDataSize;
+
+    if (m_fDeterministic)
+    {
+        // Get deterministic GUID and timestamp from the computed hash
+        BYTE hash[32];
+        _ASSERTE(sizeof(GUID) + sizeof(ULONG) <= sizeof(hash));
+        if (FAILED(hr = Sha256Hash(metaData, metaDataSize, hash, sizeof(hash)))) goto exit;
+
+        memcpy_s(&deterministicGuid, sizeof(GUID), hash, sizeof(GUID));
+        memcpy_s(&deterministicTimestamp, sizeof(ULONG), hash + sizeof(GUID), sizeof(ULONG));
+
+        // In deterministic mode, the MVID needs to be stabilized for the metadata scope that was
+        // created in Assembler::InitMetaData, and it is guaranteed that the IMDInternalEmit for
+        // that scope was already acquired immediately after that scope was created.
+        _ASSERTE(m_pInternalEmitForDeterministicMvid != NULL);
+        m_pInternalEmitForDeterministicMvid->ChangeMvid(deterministicGuid);
+
+        if (FAILED(hr = m_pCeeFileGen->SetFileHeaderTimeStamp(m_pCeeFile, deterministicTimestamp))) goto exit;
+    }
+
+    if (m_fGeneratePDB)
+    {
+        mdMethodDef entryPoint;
+
+        if (FAILED(hr = m_pCeeFileGen->GetEntryPoint(m_pCeeFile, &entryPoint))) goto exit;
+        if (FAILED(hr = m_pPortablePdbWriter->BuildPdbStream(m_pEmitter, entryPoint))) goto exit;
+
+        BYTE pdbChecksum[32];
+        if (FAILED(hr = m_pPortablePdbWriter->ComputeSha256PdbStreamChecksum(pdbChecksum))) goto exit;
+
+        if (m_fDeterministic)
+        {
+            // Now that the PDB checksum has been computed, update the GUID and timestamp
+            _ASSERTE(*(m_pPortablePdbWriter->GetGuid()) == GUID());
+            if (FAILED(hr = m_pPortablePdbWriter->ChangePdbStreamGuid(deterministicGuid))) goto exit;
+
+            _ASSERTE(m_pPortablePdbWriter->GetTimestamp() == 0);
+            m_pPortablePdbWriter->SetTimestamp(deterministicTimestamp);
+        }
+
+        if (FAILED(hr=CreateDebugDirectory(pdbChecksum))) goto exit;
+    }
+
     // set managed resource entry, if any
     if(m_pManifest && m_pManifest->m_dwMResSizeTotal)
     {
@@ -1506,7 +1657,7 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
         if (FAILED(hr)) goto exit;
     }
 
-    if(bClock) bClock->cFilegenBegin = GetTickCount();
+    if(bClock) bClock->cFilegenBegin = minipal_lowres_ticks();
     // actually output the meta-data
     if (FAILED(hr=m_pCeeFileGen->EmitMetaDataAt(m_pCeeFile, m_pEmitter, m_pILSection, metaDataOffset, metaData, metaDataSize))) goto exit;
 
@@ -1518,7 +1669,8 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
         pb = (BYTE*)(((size_t)pb + 3) & ~3);
         PSTORAGEHEADER pSHdr = (PSTORAGEHEADER)pb;
         PSTORAGESTREAM pStr = (PSTORAGESTREAM)(pSHdr+1);
-        for(short iStr = 1; iStr <= VAL16(pSHdr->iStreams); iStr++)
+        USHORT streamCount = VAL16(pSHdr->iStreams);
+        for(unsigned int iStr = 1; iStr <= streamCount; iStr++)
         {
             if((strcmp(pStr->rcName,"#-")==0)||(strcmp(pStr->rcName,"#~")==0))
             {
@@ -1553,7 +1705,7 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
         {
             m_pManifest->m_fMResNew[i] = FALSE;
             memset(sz,0,2048);
-            WszWideCharToMultiByte(CP_ACP,0,m_pManifest->m_wzMResName[i],-1,sz,2047,NULL,NULL);
+            WideCharToMultiByte(CP_ACP,0,m_pManifest->m_wzMResName[i],-1,sz,2047,NULL,NULL);
             L = m_pManifest->m_dwMResSize[i];
             sizeread = 0;
             memcpy(ptr,&L,sizeof(DWORD));
@@ -1566,12 +1718,12 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
             }
             else
             {
-                report->msg("Error: failed to open mgd resource file '%ls'\n",m_pManifest->m_wzMResName[i]);
+                report->msg("Error: failed to open mgd resource file '%s'\n",sz);
                 mrfail = TRUE;
             }
             if(sizeread < L)
             {
-                report->msg("Error: failed to read expected %d bytes from mgd resource file '%ls'\n",L,m_pManifest->m_wzMResName[i]);
+                report->msg("Error: failed to read expected %d bytes from mgd resource file '%s'\n",L,sz);
                 mrfail = TRUE;
                 L -= sizeread;
                 memset(ptr,0,L);
@@ -1590,6 +1742,3 @@ HRESULT Assembler::CreatePEFile(__in __nullterminated WCHAR *pwzOutputFilename)
 exit:
     return hr;
 }
-#ifdef _PREFAST_
-#pragma warning(pop)
-#endif

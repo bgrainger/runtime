@@ -31,7 +31,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
         private bool _insertDeterministicEntry;
 
-        public DebugDirectoryNode(EcmaModule sourceModule, string outputFileName, bool shouldAddNiPdb, bool shouldGeneratePerfmap)
+        public DebugDirectoryNode(EcmaModule sourceModule, string outputFileName, bool shouldAddNiPdb, bool shouldGeneratePerfmap, int perfMapFormatVersion)
         {
             _module = sourceModule;
             _insertDeterministicEntry = sourceModule == null; // Mark module as deterministic if generating composite image
@@ -48,17 +48,20 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
             if (shouldGeneratePerfmap)
             {
-                _perfMapEntry = new PerfMapDebugDirectoryEntryNode(pdbNameRoot + ".ni.r2rmap");
+                _perfMapEntry = new PerfMapDebugDirectoryEntryNode(pdbNameRoot + ".ni.r2rmap", perfMapFormatVersion);
             }
         }
 
-        public override ObjectNodeSection Section => ObjectNodeSection.TextSection;
+        public override ObjectNodeSection GetSection(NodeFactory factory)
+        {
+            return ObjectNodeSection.ReadOnlyDataSection;
+        }
 
         public override bool IsShareable => false;
 
         protected internal override int Phase => (int)ObjectNodePhase.Ordered;
 
-        public override int ClassCode => 315358387;
+        public override int ClassCode => (int)ObjectNodeOrder.DebugDirectoryNode;
 
         public override bool StaticDependenciesAreComputed => true;
 
@@ -68,6 +71,10 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             + (_nativeEntry is not null ? 1 : 0)
             + (_perfMapEntry is not null ? 1 : 0)
             + (_insertDeterministicEntry ? 1 : 0)) * ImageDebugDirectorySize;
+
+        public NativeDebugDirectoryEntryNode PdbEntry => _nativeEntry;
+
+        public PerfMapDebugDirectoryEntryNode PerfMapEntry => _perfMapEntry;
 
         public void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
         {
@@ -88,7 +95,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             if (_module == null)
                 return 0;
 
-            ImmutableArray<DebugDirectoryEntry> entries = _module.PEReader.ReadDebugDirectory();
+            ImmutableArray<DebugDirectoryEntry> entries = _module.PEReader.SafeReadDebugDirectory();
             return entries == null ? 0 : entries.Length;
         }
 
@@ -99,8 +106,9 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             builder.AddSymbol(this);
 
             ImmutableArray<DebugDirectoryEntry> entries = ImmutableArray<DebugDirectoryEntry>.Empty;
+
             if (_module != null)
-                entries = _module.PEReader.ReadDebugDirectory();
+                entries = _module.PEReader.SafeReadDebugDirectory();
 
             int numEntries = GetNumDebugDirectoryEntriesInModule();
 

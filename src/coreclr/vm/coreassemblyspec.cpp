@@ -15,13 +15,10 @@
 #include "appdomain.inl"
 #include <peimage.h>
 #include "peimagelayout.inl"
-#include "domainfile.h"
 #include "holder.h"
-#include "bundle.h"
+#include <assemblyprobeextension.h>
 #include "strongnameinternal.h"
-#include "strongnameholders.h"
 
-#include "../binder/inc/textualidentityparser.hpp"
 #include "../binder/inc/assemblyidentity.hpp"
 #include "../binder/inc/assembly.hpp"
 #include "../binder/inc/assemblyname.hpp"
@@ -29,84 +26,57 @@
 #include "../binder/inc/assemblybindercommon.hpp"
 #include "../binder/inc/applicationcontext.hpp"
 
-static VOID ThrowLoadError(AssemblySpec * pSpec, HRESULT hr)
-{
-    CONTRACTL
-    {
-        THROWS;
-        MODE_ANY;
-        GC_TRIGGERS;
-    }
-    CONTRACTL_END;
-
-    StackSString name;
-    pSpec->GetFileOrDisplayName(0, name);
-    EEFileLoadException::Throw(name, hr);
-}
-
-HRESULT  AssemblySpec::Bind(AppDomain *pAppDomain, BINDER_SPACE::Assembly** ppAssembly)
+HRESULT  AssemblySpec::Bind(BINDER_SPACE::Assembly** ppAssembly, SString* pDiagnosticInfo)
 {
     CONTRACTL
     {
         INSTANCE_CHECK;
         STANDARD_VM_CHECK;
         PRECONDITION(CheckPointer(ppAssembly));
-        PRECONDITION(CheckPointer(pAppDomain));
         PRECONDITION(IsCoreLib() == FALSE); // This should never be called for CoreLib (explicit loading)
     }
     CONTRACTL_END;
 
     HRESULT hr=S_OK;
 
-    // Have a default binding context setup
-    AssemblyBinder *pBinder = GetBinderFromParentAssembly(pAppDomain);
+    AssemblyBinder *pBinder = GetInitialBinder();
 
     ReleaseHolder<BINDER_SPACE::Assembly> pPrivAsm;
     _ASSERTE(pBinder != NULL);
 
-    if (m_wszCodeBase == NULL && IsCoreLibSatellite())
+    if (IsCoreLibSatellite())
     {
         StackSString sSystemDirectory(SystemDomain::System()->SystemDirectory());
-        StackSString tmpString;
         StackSString sSimpleName;
-        StackSString sCultureName;
+        SmallStackSString sCultureName;
 
-        tmpString.SetUTF8(m_pAssemblyName);
-        tmpString.ConvertToUnicode(sSimpleName);
-
-        tmpString.Clear();
-        if ((m_context.szLocale != NULL) && (m_context.szLocale[0] != 0))
-        {
-            tmpString.SetUTF8(m_context.szLocale);
-            tmpString.ConvertToUnicode(sCultureName);
-        }
+        SString(SString::Utf8Literal, m_pAssemblyName).ConvertToUnicode(sSimpleName);
+        if (m_context.szLocale != NULL)
+            SString(SString::Utf8Literal, m_context.szLocale).ConvertToUnicode(sCultureName);
 
         hr = BINDER_SPACE::AssemblyBinderCommon::BindToSystemSatellite(sSystemDirectory, sSimpleName, sCultureName, &pPrivAsm);
     }
-    else if (m_wszCodeBase == NULL)
+    else
     {
         AssemblyNameData assemblyNameData = { 0 };
         PopulateAssemblyNameData(assemblyNameData);
-        hr = pBinder->BindAssemblyByName(&assemblyNameData, &pPrivAsm);
-    }
-    else
-    {
-        hr = pAppDomain->GetDefaultBinder()->Bind(m_wszCodeBase, &pPrivAsm);
+        hr = pBinder->BindAssemblyByName(&assemblyNameData, &pPrivAsm, pDiagnosticInfo);
     }
 
     if (SUCCEEDED(hr))
     {
         _ASSERTE(pPrivAsm != nullptr);
-        *ppAssembly = pPrivAsm.Extract();
+        *ppAssembly = pPrivAsm.Detach();
     }
 
     return hr;
 }
 
 
-STDAPI BinderAcquirePEImage(LPCWSTR             wszAssemblyPath,
-                            PEImage           **ppPEImage,
-                            BundleFileLocation  bundleFileLocation)
+STDAPI BinderAcquirePEImage(LPCWSTR                 wszAssemblyPath,
+                            PEImage               **ppPEImage,
+                            ProbeExtensionResult    probeExtensionResult,
+                            SString                *pDiagnosticInfo)
 {
     HRESULT hr = S_OK;
 
@@ -114,19 +84,45 @@ STDAPI BinderAcquirePEImage(LPCWSTR             wszAssemblyPath,
 
     EX_TRY
     {
-        PEImageHolder pImage = PEImage::OpenImage(wszAssemblyPath, MDInternalImport_Default, bundleFileLocation);
+        PEImageHolder pImage(PEImage::OpenImage(wszAssemblyPath, MDInternalImport_Default, probeExtensionResult));
 
         // Make sure that the IL image can be opened.
-        hr=pImage->TryOpenFile();
-        if (FAILED(hr))
+        if (pImage->IsFile())
         {
-            goto Exit;
+            hr = pImage->TryOpenFile(/* takeLock */ true);
+            if (FAILED(hr))
+            {
+                if (pDiagnosticInfo != NULL)
+                {
+                    StackSString format;
+                    format.LoadResource(IDS_BINDING_FAILED_TO_OPEN_FILE);
+                    SString pathStr(wszAssemblyPath);
+                    StackSString hrMsg;
+                    GetHRMsg(hr, hrMsg);
+                    pDiagnosticInfo->Printf(format.GetUTF8(), pathStr.GetUTF8(), hrMsg.GetUTF8());
+                }
+                goto Exit;
+            }
         }
 
         if (pImage)
-            *ppPEImage = pImage.Extract();
+            *ppPEImage = pImage.Detach();
     }
-    EX_CATCH_HRESULT(hr);
+    EX_CATCH
+    {
+        hr = GET_EXCEPTION()->GetHR();
+        _ASSERTE(FAILED(hr));
+        if (pDiagnosticInfo != NULL)
+        {
+            StackSString format;
+            format.LoadResource(IDS_BINDING_EXCEPTION_OPENING_FILE);
+            SString pathStr(wszAssemblyPath);
+            StackSString exMessage;
+            GET_EXCEPTION()->GetMessage(exMessage);
+            pDiagnosticInfo->Printf(format.GetUTF8(), pathStr.GetUTF8(), exMessage.GetUTF8());
+        }
+    }
+    EX_END_CATCH
 
  Exit:
     return hr;
@@ -168,59 +164,73 @@ ErrExit:
     return hr;
 }
 
-HRESULT BaseAssemblySpec::ParseName()
+void BaseAssemblySpec::Init(SString& assemblyDisplayName)
+{
+    CONTRACTL
+    {
+        INSTANCE_CHECK;
+        GC_TRIGGERS;
+        THROWS;
+        MODE_ANY;
+    }
+    CONTRACTL_END;
+
+    PCWSTR pAssemblyDisplayName = assemblyDisplayName.GetUnicode();
+
+    GCX_COOP();
+
+    OVERRIDE_TYPE_LOAD_LEVEL_LIMIT(CLASS_LOADED);
+
+    UnmanagedCallersOnlyCaller parseAsAssemblySpec(METHOD__ASSEMBLY_NAME__PARSE_AS_ASSEMBLYSPEC);
+    parseAsAssemblySpec.InvokeThrowing(pAssemblyDisplayName, (void*)this);
+}
+
+extern "C" void QCALLTYPE AssemblyName_InitializeAssemblySpec(NativeAssemblyNameParts* pAssemblyNameParts, BaseAssemblySpec* pAssemblySpec, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+
+    BEGIN_QCALL;
+
+    StackSString ssName;
+    ssName.SetAndConvertToUTF8(pAssemblyNameParts->_pName);
+
+    AssemblyMetaDataInternal asmInfo;
+
+    asmInfo.usMajorVersion = pAssemblyNameParts->_major;
+    asmInfo.usMinorVersion = pAssemblyNameParts->_minor;
+    asmInfo.usBuildNumber = pAssemblyNameParts->_build;
+    asmInfo.usRevisionNumber = pAssemblyNameParts->_revision;
+
+    SmallStackSString ssLocale;
+    if (pAssemblyNameParts->_pCultureName != NULL)
+        ssLocale.SetAndConvertToUTF8(pAssemblyNameParts->_pCultureName);
+    asmInfo.szLocale = (pAssemblyNameParts->_pCultureName != NULL) ? ssLocale.GetUTF8() : NULL;
+
+    // Initialize spec
+    pAssemblySpec->Init(ssName.GetUTF8(), &asmInfo,
+        pAssemblyNameParts->_pPublicKeyOrToken, pAssemblyNameParts->_cbPublicKeyOrToken, pAssemblyNameParts->_flags);
+
+    // Copy and own any fields we do not own
+    pAssemblySpec->CloneFields();
+
+    END_QCALL;
+}
+
+HRESULT BaseAssemblySpec::InitNoThrow(SString& assemblyDisplayName)
 {
     CONTRACTL
     {
         INSTANCE_CHECK;
         GC_TRIGGERS;
         NOTHROW;
-        INJECT_FAULT(return E_OUTOFMEMORY;);
     }
     CONTRACTL_END;
-
-    if (!m_pAssemblyName)
-        return S_OK;
 
     HRESULT hr = S_OK;
 
     EX_TRY
     {
-        BINDER_SPACE::AssemblyIdentityUTF8* pAssemblyIdentity;
-        AppDomain *pDomain = ::GetAppDomain();
-        _ASSERTE(pDomain);
-
-        BINDER_SPACE::ApplicationContext *pAppContext = NULL;
-        DefaultAssemblyBinder *pBinder = pDomain->GetDefaultBinder();
-
-        hr = pBinder->GetAppContext()->GetAssemblyIdentity(m_pAssemblyName, &pAssemblyIdentity);
-
-        if (FAILED(hr))
-        {
-            m_ownedFlags |= BAD_NAME_OWNED;
-            IfFailThrow(hr);
-        }
-
-        // Name - does not copy the data
-        SetName(pAssemblyIdentity->GetSimpleNameUTF8());
-
-        // Culture - does not copy the data
-        if (pAssemblyIdentity->Have(BINDER_SPACE::AssemblyIdentity::IDENTITY_FLAG_CULTURE))
-        {
-            if (!pAssemblyIdentity->m_cultureOrLanguage.IsEmpty())
-            {
-                SetCulture(pAssemblyIdentity->GetCultureOrLanguageUTF8());
-            }
-            else
-            {
-                SetCulture("");
-            }
-        }
-
-        InitializeWithAssemblyIdentity(pAssemblyIdentity);
-
-        // Copy and own any fields we do not already own
-        CloneFields();
+        Init(assemblyDisplayName);
     }
     EX_CATCH_HRESULT(hr);
 
@@ -299,54 +309,6 @@ void BaseAssemblySpec::InitializeWithAssemblyIdentity(BINDER_SPACE::AssemblyIden
     {
         m_dwFlags |= afRetargetable;
     }
-
-    // Content type
-    if (identity->Have(BINDER_SPACE::AssemblyIdentity::IDENTITY_FLAG_CONTENT_TYPE))
-    {
-        DWORD dwContentType = identity->m_kContentType;
-
-        _ASSERTE((dwContentType == AssemblyContentType_Default) || (dwContentType == AssemblyContentType_WindowsRuntime));
-        if (dwContentType == AssemblyContentType_WindowsRuntime)
-        {
-            m_dwFlags |= afContentType_WindowsRuntime;
-        }
-    }
-}
-
-VOID BaseAssemblySpec::GetFileOrDisplayName(DWORD flags, SString &result) const
-{
-    CONTRACTL
-    {
-        INSTANCE_CHECK;
-        THROWS;
-        INJECT_FAULT(ThrowOutOfMemory());
-        PRECONDITION(CheckValue(result));
-        PRECONDITION(result.IsEmpty());
-    }
-    CONTRACTL_END;
-
-    if (m_wszCodeBase)
-    {
-        result.Set(m_wszCodeBase);
-        return;
-    }
-
-    GetDisplayNameInternal(flags, result);
-}
-
-VOID BaseAssemblySpec::GetDisplayName(DWORD flags, SString &result) const
-{
-    CONTRACTL
-    {
-        INSTANCE_CHECK;
-        THROWS;
-        INJECT_FAULT(ThrowOutOfMemory());
-        PRECONDITION(CheckValue(result));
-        PRECONDITION(result.IsEmpty());
-    }
-    CONTRACTL_END;
-
-    GetDisplayNameInternal(flags, result);
 }
 
 namespace
@@ -372,7 +334,7 @@ namespace
     }
 }
 
-VOID BaseAssemblySpec::GetDisplayNameInternal(DWORD flags, SString &result) const
+VOID BaseAssemblySpec::GetDisplayName(DWORD flags, SString &result) const
 {
     if (flags==0)
         flags=ASM_DISPLAYF_FULL;
@@ -425,16 +387,14 @@ VOID BaseAssemblySpec::GetDisplayNameInternal(DWORD flags, SString &result) cons
             }
             else
             {
-                DWORD cbToken = 0;
-                StrongNameBufferHolder<BYTE> pbToken;
+                StrongNameToken strongNameToken;
 
                 // Try to get the strong name
                 IfFailThrow(StrongNameTokenFromPublicKey(m_pbPublicKeyOrToken,
                     m_cbPublicKeyOrToken,
-                    &pbToken,
-                    &cbToken));
+                    &strongNameToken));
 
-                assemblyIdentity.m_publicKeyOrTokenBLOB.Set(pbToken, cbToken);
+                assemblyIdentity.m_publicKeyOrTokenBLOB.Set(strongNameToken.m_token, StrongNameToken::SIZEOF_TOKEN);
             }
         }
         else
@@ -457,15 +417,9 @@ VOID BaseAssemblySpec::GetDisplayNameInternal(DWORD flags, SString &result) cons
         assemblyIdentity.SetHave(BINDER_SPACE::AssemblyIdentity::IDENTITY_FLAG_RETARGETABLE);
     }
 
-    if ((flags & ASM_DISPLAYF_CONTENT_TYPE) && (m_dwFlags & afContentType_Mask) == afContentType_WindowsRuntime)
-    {
-        assemblyIdentity.SetHave(BINDER_SPACE::AssemblyIdentity::IDENTITY_FLAG_CONTENT_TYPE);
-        assemblyIdentity.m_kContentType = AssemblyContentType_WindowsRuntime;
-    }
-
     IfFailThrow(BINDER_SPACE::TextualIdentityParser::ToString(&assemblyIdentity,
-                                                              assemblyIdentity.m_dwIdentityFlags,
-                                                              result));
+                                                             assemblyIdentity.m_dwIdentityFlags,
+                                                             result));
 }
 
 void BaseAssemblySpec::PopulateAssemblyNameData(AssemblyNameData &data) const
@@ -510,11 +464,5 @@ void BaseAssemblySpec::PopulateAssemblyNameData(AssemblyNameData &data) const
     if ((m_dwFlags & afRetargetable) != 0)
     {
         data.IdentityFlags |= BINDER_SPACE::AssemblyIdentity::IDENTITY_FLAG_RETARGETABLE;
-    }
-
-    if ((m_dwFlags & afContentType_Mask) == afContentType_WindowsRuntime)
-    {
-        data.ContentType = AssemblyContentType_WindowsRuntime;
-        data.IdentityFlags |= BINDER_SPACE::AssemblyIdentity::IDENTITY_FLAG_CONTENT_TYPE;
     }
 }

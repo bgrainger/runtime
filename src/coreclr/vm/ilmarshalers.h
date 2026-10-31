@@ -273,7 +273,7 @@ protected:
     DWORD               m_dwMngdMarshalerLocalNum;
 
 private:
-    NDirectStubLinker* m_pslNDirect;
+    PInvokeStubLinker* m_pslPInvoke;
     ILCodeStream*       m_pcsMarshal;
     ILCodeStream*       m_pcsUnmarshal;
     ILStubMarshalHome   m_nativeHome;
@@ -282,7 +282,7 @@ private:
 public:
 
     ILMarshaler() :
-        m_pslNDirect(NULL)
+        m_pslPInvoke(NULL)
     {
     }
 
@@ -291,11 +291,11 @@ public:
         LIMITED_METHOD_CONTRACT;
     }
 
-    void SetNDirectStubLinker(NDirectStubLinker* pslNDirect)
+    void SetPInvokeStubLinker(PInvokeStubLinker* pslPInvoke)
     {
         LIMITED_METHOD_CONTRACT;
-        CONSISTENCY_CHECK(NULL == m_pslNDirect);
-        m_pslNDirect = pslNDirect;
+        CONSISTENCY_CHECK(NULL == m_pslPInvoke);
+        m_pslPInvoke = pslPInvoke;
     }
 
 private:
@@ -306,7 +306,7 @@ private:
             OverrideProcArgs* pargs)
     {
         LIMITED_METHOD_CONTRACT;
-        CONSISTENCY_CHECK_MSG(m_pslNDirect != NULL, "please call SetNDirectStubLinker() before EmitMarshalArgument or EmitMarshalReturnValue");
+        CONSISTENCY_CHECK_MSG(m_pslPInvoke != NULL, "please call SetPInvokeStubLinker() before EmitMarshalArgument or EmitMarshalReturnValue");
         m_pcsMarshal = pcsMarshal;
         m_pcsUnmarshal = pcsUnmarshal;
         m_pargs = pargs;
@@ -358,6 +358,18 @@ protected:
         return (0 != (dwMarshalFlags & MARSHAL_FLAG_FIELD));
     }
 
+    static inline bool IsNoCleanup(DWORD dwMarshalFlags)
+    {
+        LIMITED_METHOD_CONTRACT;
+        return (0 != (dwMarshalFlags & MARSHAL_FLAG_NO_CLEANUP));
+    }
+
+    static inline bool IsCleanupOnly(DWORD dwMarshalFlags)
+    {
+        LIMITED_METHOD_CONTRACT;
+        return (0 != (dwMarshalFlags & MARSHAL_FLAG_CLEANUP_ONLY));
+    }
+
     static void EmitLoadNativeLocalAddrForByRefDispatch(ILCodeStream* pslILEmit, DWORD local)
     {
         WRAPPER_NO_CONTRACT;
@@ -365,7 +377,7 @@ protected:
 
         // Convert the loaded local containing a native address
         // into a non-GC type for the byref case.
-        pslILEmit->EmitCONV_I();
+        pslILEmit->EmitCONV_U();
     }
 
     void EmitLoadManagedValue(ILCodeStream* pslILEmit)
@@ -399,7 +411,7 @@ protected:
 
         // Convert the loaded value containing a native address
         // into a non-GC type for the byref case.
-        pslILEmit->EmitCONV_I();
+        pslILEmit->EmitCONV_U();
     }
 
     void EmitStoreManagedValue(ILCodeStream* pslILEmit)
@@ -431,7 +443,7 @@ protected:
         WRAPPER_NO_CONTRACT;
         if (g_pConfig->InteropLogArguments())
         {
-            m_pslNDirect->EmitLogNativeArgument(pslILEmit, dwPinnedLocal);
+            m_pslPInvoke->EmitLogNativeArgument(pslILEmit, dwPinnedLocal);
         }
     }
 
@@ -475,21 +487,19 @@ public:
                 UINT            argidx,
                 UINT32          managedOffset,
                 UINT32          nativeOffset,
+                DWORD           dwMarshalFlags,
                 OverrideProcArgs*  pargs)
     {
         STANDARD_VM_CONTRACT;
 
-        // Struct marshaling stubs are always in, and out
-        // since we generate a single stub for all three operations (managed->native, native->managed, cleanup)
-        // we set the clr-to-native flag so the marshal phase is CLR->Native and the unmarshal phase is Native->CLR
-        Init(pcsMarshal, pcsUnmarshal, argidx, MARSHAL_FLAG_IN | MARSHAL_FLAG_OUT | MARSHAL_FLAG_CLR_TO_NATIVE | MARSHAL_FLAG_FIELD, pargs);
+        Init(pcsMarshal, pcsUnmarshal, argidx, dwMarshalFlags | MARSHAL_FLAG_FIELD, pargs);
 
-        EmitCreateMngdMarshaler(m_pslNDirect->GetSetupCodeStream());
+        EmitCreateMngdMarshaler(m_pslPInvoke->GetSetupCodeStream());
 
-        EmitSetupArgumentForMarshalling(m_pslNDirect->GetSetupCodeStream());
+        EmitSetupArgumentForMarshalling(m_pslPInvoke->GetSetupCodeStream());
 
         EmitSetupDefaultHomesForField(
-            m_pslNDirect->GetSetupCodeStream(),
+            m_pslPInvoke->GetSetupCodeStream(),
             managedOffset,
             nativeOffset);
 
@@ -507,6 +517,9 @@ public:
 
         Init(pcsMarshal, pcsUnmarshal, argidx, dwMarshalFlags, pargs);
 
+        _ASSERTE(!IsFieldMarshal(dwMarshalFlags)); // should be using EmitMarshalField for field marshaling
+        _ASSERTE(!IsNoCleanup(dwMarshalFlags) && !IsCleanupOnly(dwMarshalFlags)); // Cleanup-only and no-cleanup modes are for field marshalling only.
+
         // We could create the marshaler in the marshal stream right before it's needed (i.e. within the try block),
         // or in the setup stream (outside of the try block). For managed-to-unmanaged marshaling it does not actually
         // make much difference except that using setup stream saves us from cleaning up already-marshaled arguments
@@ -519,10 +532,10 @@ public:
         // we know that we don't need a managed marshaler since we will just pin.
         if (!CanMarshalViaPinning())
         {
-            EmitCreateMngdMarshaler(m_pslNDirect->GetSetupCodeStream());
+            EmitCreateMngdMarshaler(m_pslPInvoke->GetSetupCodeStream());
         }
 
-        EmitSetupArgumentForMarshalling(m_pslNDirect->GetSetupCodeStream());
+        EmitSetupArgumentForMarshalling(m_pslPInvoke->GetSetupCodeStream());
 
         if (IsCLRToNative(dwMarshalFlags))
         {
@@ -589,6 +602,9 @@ public:
 
         Init(pcsMarshal, pcsUnmarshal, argidx, dwMarshalFlags, pargs);
 
+        _ASSERTE(!IsFieldMarshal(dwMarshalFlags)); // should be using EmitMarshalField for field marshaling
+        _ASSERTE(!IsNoCleanup(dwMarshalFlags) && !IsCleanupOnly(dwMarshalFlags)); // Cleanup-only and no-cleanup modes are for field marshalling only.
+
         LocalDesc nativeType = GetNativeType();
         LocalDesc managedType = GetManagedType();
 
@@ -627,7 +643,7 @@ public:
 
             if (NeedsMarshalCleanupIndex())
             {
-                m_pslNDirect->EmitSetArgMarshalIndex(m_pcsUnmarshal, NDirectStubLinker::CLEANUP_INDEX_ARG0_MARSHAL + m_argidx);
+                m_pslPInvoke->EmitSetArgMarshalIndex(m_pcsUnmarshal, PInvokeStubLinker::CLEANUP_INDEX_ARG0_MARSHAL + m_argidx);
             }
 
             EmitConvertSpaceAndContentsNativeToCLR(m_pcsUnmarshal);
@@ -642,7 +658,7 @@ public:
 
             if (NeedsMarshalCleanupIndex())
             {
-                m_pslNDirect->EmitSetArgMarshalIndex(m_pcsUnmarshal, NDirectStubLinker::CLEANUP_INDEX_ARG0_MARSHAL + m_argidx);
+                m_pslPInvoke->EmitSetArgMarshalIndex(m_pcsUnmarshal, PInvokeStubLinker::CLEANUP_INDEX_ARG0_MARSHAL + m_argidx);
             }
 
             if (IsHresultSwap(dwMarshalFlags))
@@ -665,7 +681,7 @@ public:
             if (NeedsUnmarshalCleanupIndex())
             {
                 // if an exception is thrown after this point, we will clean up the unmarshaled retval
-                m_pslNDirect->EmitSetArgMarshalIndex(m_pcsUnmarshal, NDirectStubLinker::CLEANUP_INDEX_RETVAL_UNMARSHAL);
+                m_pslPInvoke->EmitSetArgMarshalIndex(m_pcsUnmarshal, PInvokeStubLinker::CLEANUP_INDEX_RETVAL_UNMARSHAL);
             }
 
             EmitCleanupNativeToCLR();
@@ -723,12 +739,12 @@ protected:
 
     void EmitLoadCleanupWorkList(ILCodeStream* pslILEmit)
     {
-        m_pslNDirect->LoadCleanupWorkList(pslILEmit);
+        m_pslPInvoke->LoadCleanupWorkList(pslILEmit);
     }
 
     int GetLCIDParamIndex()
     {
-        return m_pslNDirect->GetLCIDParamIdx();
+        return m_pslPInvoke->GetLCIDParamIdx();
     }
 
     void EmitSetupSigAndDefaultHomesCLRToNative()
@@ -756,12 +772,12 @@ protected:
         {
             CONSISTENCY_CHECK(NeedsMarshalCleanupIndex());
 
-            ILCodeStream* pcsCleanup = m_pslNDirect->GetCleanupCodeStream();
+            ILCodeStream* pcsCleanup = m_pslPInvoke->GetCleanupCodeStream();
             ILCodeLabel*  pSkipClearNativeLabel = pcsCleanup->NewCodeLabel();
 
-            m_pslNDirect->EmitCheckForArgCleanup(pcsCleanup,
-                                                 NDirectStubLinker::CLEANUP_INDEX_ARG0_MARSHAL + m_argidx,
-                                                 NDirectStubLinker::BranchIfNotMarshaled,
+            m_pslPInvoke->EmitCheckForArgCleanup(pcsCleanup,
+                                                 PInvokeStubLinker::CLEANUP_INDEX_ARG0_MARSHAL + m_argidx,
+                                                 PInvokeStubLinker::BranchIfNotMarshaled,
                                                  pSkipClearNativeLabel);
 
             EmitClearNativeTemp(pcsCleanup);
@@ -777,12 +793,12 @@ protected:
         {
             CONSISTENCY_CHECK(NeedsMarshalCleanupIndex());
 
-            ILCodeStream* pcsCleanup = m_pslNDirect->GetCleanupCodeStream();
+            ILCodeStream* pcsCleanup = m_pslPInvoke->GetCleanupCodeStream();
             ILCodeLabel*  pSkipClearNativeLabel = pcsCleanup->NewCodeLabel();
 
-            m_pslNDirect->EmitCheckForArgCleanup(pcsCleanup,
-                                                 NDirectStubLinker::CLEANUP_INDEX_ARG0_MARSHAL + m_argidx,
-                                                 NDirectStubLinker::BranchIfNotMarshaled,
+            m_pslPInvoke->EmitCheckForArgCleanup(pcsCleanup,
+                                                 PInvokeStubLinker::CLEANUP_INDEX_ARG0_MARSHAL + m_argidx,
+                                                 PInvokeStubLinker::BranchIfNotMarshaled,
                                                  pSkipClearNativeLabel);
 
             EmitClearNative(pcsCleanup);
@@ -1013,16 +1029,37 @@ protected:
         pcsSetup->EmitNOP("// } field setup");
     }
 
-    virtual void EmitMarshalFieldSpaceAndContents()
+    void EmitMarshalFieldSpaceAndContents()
     {
         STANDARD_VM_CONTRACT;
 
-        EmitConvertSpaceAndContentsCLRToNative(m_pcsMarshal);
-        EmitConvertSpaceAndContentsNativeToCLR(m_pcsUnmarshal);
-        if (NeedsClearNative())
+        _ASSERTE(IsFieldMarshal(m_dwMarshalFlags));
+        // It does not make sense to request only generating cleanup code
+        // and at the same time request to not generate cleanup code.
+        _ASSERTE(!(IsCleanupOnly(m_dwMarshalFlags) && IsNoCleanup(m_dwMarshalFlags)));
+        _ASSERTE(IsCLRToNative(m_dwMarshalFlags)); // currently field marshaling expects to be marked as managed-to-native.
+
+        if (!IsCleanupOnly(m_dwMarshalFlags))
         {
-            ILCodeStream* pcsCleanup = m_pslNDirect->GetCleanupCodeStream();
-            EmitClearNative(pcsCleanup);
+            if (IsCLRToNative(m_dwMarshalFlags) && IsIn(m_dwMarshalFlags))
+            {
+                EmitConvertSpaceAndContentsCLRToNative(m_pslPInvoke->GetMarshalCodeStream());
+            }
+
+            if (IsCLRToNative(m_dwMarshalFlags) && IsOut(m_dwMarshalFlags))
+            {
+                EmitConvertSpaceAndContentsNativeToCLR(m_pslPInvoke->GetUnmarshalCodeStream());
+            }
+        }
+
+        if (NeedsClearNative() && !IsNoCleanup(m_dwMarshalFlags))
+        {
+            EmitClearNative(m_pslPInvoke->GetCleanupCodeStream());
+        }
+
+        if (NeedsClearCLR() && !IsNoCleanup(m_dwMarshalFlags))
+        {
+            EmitClearCLR(m_pslPInvoke->GetCleanupCodeStream());
         }
     }
 
@@ -1034,12 +1071,12 @@ protected:
         {
             CONSISTENCY_CHECK(NeedsMarshalCleanupIndex());
 
-            ILCodeStream* pcsCleanup = m_pslNDirect->GetCleanupCodeStream();
+            ILCodeStream* pcsCleanup = m_pslPInvoke->GetCleanupCodeStream();
             ILCodeLabel*  pSkipClearCLRLabel = pcsCleanup->NewCodeLabel();
 
-            m_pslNDirect->EmitCheckForArgCleanup(pcsCleanup,
-                                                 NDirectStubLinker::CLEANUP_INDEX_ARG0_MARSHAL + m_argidx,
-                                                 NDirectStubLinker::BranchIfNotMarshaled,
+            m_pslPInvoke->EmitCheckForArgCleanup(pcsCleanup,
+                                                 PInvokeStubLinker::CLEANUP_INDEX_ARG0_MARSHAL + m_argidx,
+                                                 PInvokeStubLinker::BranchIfNotMarshaled,
                                                  pSkipClearCLRLabel);
 
             EmitClearCLR(pcsCleanup);
@@ -1071,11 +1108,11 @@ protected:
         _ASSERTE(IsRetval(m_dwMarshalFlags) || IsOut(m_dwMarshalFlags));
 
         LocalDesc nativeType = GetNativeType();
-        ILCodeStream *pcsCleanup = m_pslNDirect->GetExceptionCleanupCodeStream();
+        ILCodeStream *pcsCleanup = m_pslPInvoke->GetExceptionCleanupCodeStream();
 
         if (NeedsClearNative())
         {
-            m_pslNDirect->SetExceptionCleanupNeeded();
+            m_pslPInvoke->SetExceptionCleanupNeeded();
 
             ILCodeLabel *pSkipCleanupLabel = pcsCleanup->NewCodeLabel();
 
@@ -1086,9 +1123,9 @@ protected:
                 ILCodeLabel *pSkipCopyLabel = pcsCleanup->NewCodeLabel();
 
                 CONSISTENCY_CHECK(NeedsMarshalCleanupIndex());
-                m_pslNDirect->EmitCheckForArgCleanup(pcsCleanup,
-                                                     NDirectStubLinker::CLEANUP_INDEX_ARG0_MARSHAL + m_argidx,
-                                                     NDirectStubLinker::BranchIfMarshaled,
+                m_pslPInvoke->EmitCheckForArgCleanup(pcsCleanup,
+                                                     PInvokeStubLinker::CLEANUP_INDEX_ARG0_MARSHAL + m_argidx,
+                                                     PInvokeStubLinker::BranchIfMarshaled,
                                                      pSkipCopyLabel);
 
                 pcsCleanup->EmitLDARG(m_argidx);
@@ -1105,12 +1142,12 @@ protected:
                 CONSISTENCY_CHECK(NeedsUnmarshalCleanupIndex());
 
                 UINT uArgIdx = (IsRetval(m_dwMarshalFlags) ?
-                    NDirectStubLinker::CLEANUP_INDEX_RETVAL_UNMARSHAL :
-                    NDirectStubLinker::CLEANUP_INDEX_ARG0_UNMARSHAL + m_argidx);
+                    PInvokeStubLinker::CLEANUP_INDEX_RETVAL_UNMARSHAL :
+                    PInvokeStubLinker::CLEANUP_INDEX_ARG0_UNMARSHAL + m_argidx);
 
-                m_pslNDirect->EmitCheckForArgCleanup(pcsCleanup,
+                m_pslPInvoke->EmitCheckForArgCleanup(pcsCleanup,
                                                      uArgIdx,
-                                                     NDirectStubLinker::BranchIfNotMarshaled,
+                                                     PInvokeStubLinker::BranchIfNotMarshaled,
                                                      pSkipCleanupLabel);
             }
 
@@ -1132,7 +1169,7 @@ protected:
         // if there is an output buffer, zero it out so the caller does not get pointer to already freed data
         if (IsRetval(m_dwMarshalFlags) || (IsOut(m_dwMarshalFlags) && IsByref(m_dwMarshalFlags)))
         {
-            m_pslNDirect->SetExceptionCleanupNeeded();
+            m_pslPInvoke->SetExceptionCleanupNeeded();
 
             EmitReInitNative(pcsCleanup);
             if (IsHresultSwap(m_dwMarshalFlags) || IsOut(m_dwMarshalFlags))
@@ -1455,13 +1492,8 @@ protected:
         EmitLoadManagedValue(pslILEmit);
     }
 
-    void EmitKeepAliveManagedValue()
+    void EmitKeepAliveManagedValue(ILCodeStream* pslILEmit)
     {
-        // Don't use the cleanup work list to avoid any extra allocations.
-        m_pslNDirect->SetCleanupNeeded();
-
-        ILCodeStream* pslILEmit = m_pslNDirect->GetCleanupCodeStream();
-
         ILCodeLabel* pNoManagedValueLabel = nullptr;
         if (IsFieldMarshal(m_dwMarshalFlags))
         {
@@ -1483,15 +1515,14 @@ public:
 
     // Extension point to allow a marshaler to conditionally override all of the ILMarshaler logic with its own or block marshalling when marshalling an argument.
     // See MarshalInfo::GetArgumentOverrideProc for the implementation.
-    static MarshalerOverrideStatus ArgumentOverride(NDirectStubLinker* psl,
+    static MarshalerOverrideStatus ArgumentOverride(PInvokeStubLinker* psl,
                                                     BOOL               byref,
                                                     BOOL               fin,
                                                     BOOL               fout,
                                                     BOOL               fManagedToNative,
                                                     OverrideProcArgs*  pargs,
                                                     UINT*              pResID,
-                                                    UINT               argidx,
-                                                    UINT               nativeStackOffset)
+                                                    UINT               argidx)
     {
         LIMITED_METHOD_CONTRACT;
         return HANDLEASNORMAL;
@@ -1499,7 +1530,7 @@ public:
 
     // Extension point to allow a marshaler to conditionally override all of the ILMarshaler logic with its own or block marshalling when marshalling a return value.
     // See MarshalInfo::GetReturnOverrideProc for the implementation.
-    static MarshalerOverrideStatus ReturnOverride(NDirectStubLinker*  psl,
+    static MarshalerOverrideStatus ReturnOverride(PInvokeStubLinker*  psl,
                                                   BOOL                fManagedToNative,
                                                   BOOL                fHresultSwap,
                                                   OverrideProcArgs*   pargs,
@@ -1814,6 +1845,40 @@ public:
     }
 };
 
+class ILPointerMarshaler final : public ILCopyMarshalerBase
+{
+public:
+    enum
+    {
+        c_fInOnly               = TRUE,
+        c_nativeSize            = TARGET_POINTER_SIZE,
+    };
+protected:
+    LocalDesc GetManagedType() override
+    {
+        LIMITED_METHOD_CONTRACT;
+        LocalDesc native(m_pargs->m_pMT);
+        native.MakePointer();
+        return native;
+    }
+
+    LocalDesc GetNativeType() override
+    {
+        LIMITED_METHOD_CONTRACT;
+        LocalDesc native(m_pargs->m_pMT);
+        native.MakePointer();
+        return native;
+    }
+
+    virtual void EmitReInitNative(ILCodeStream* pslILEmit) override
+    {
+        STANDARD_VM_CONTRACT;
+
+        pslILEmit->EmitLDC(0);
+        pslILEmit->EmitCONV_U();
+        EmitStoreNativeValue(pslILEmit);
+    }
+};
 
 class ILDelegateMarshaler : public ILMarshaler
 {
@@ -1829,6 +1894,17 @@ protected:
     LocalDesc GetManagedType() override;
     void EmitConvertContentsCLRToNative(ILCodeStream* pslILEmit) override;
     void EmitConvertContentsNativeToCLR(ILCodeStream* pslILEmit) override;
+
+    bool NeedsClearNative() override
+    {
+        LIMITED_METHOD_CONTRACT;
+        return IsCLRToNative(m_dwMarshalFlags) && IsIn(m_dwMarshalFlags);
+    }
+
+    void EmitClearNative(ILCodeStream* pslILEmit) override
+    {
+        EmitKeepAliveManagedValue(pslILEmit);
+    }
 };
 
 class ILReflectionObjectMarshaler : public ILMarshaler
@@ -1848,6 +1924,18 @@ protected:
     virtual BinderFieldID GetStructureFieldID() { LIMITED_METHOD_CONTRACT; return (BinderFieldID)0; }
     virtual BinderFieldID GetObjectFieldID() = 0;
     virtual BinderClassID GetManagedTypeBinderID() = 0;
+
+    bool NeedsClearNative() override
+    {
+        LIMITED_METHOD_CONTRACT;
+        return IsCLRToNative(m_dwMarshalFlags) && IsIn(m_dwMarshalFlags);
+    }
+
+    void EmitClearNative(ILCodeStream* pslILEmit) override
+    {
+        EmitKeepAliveManagedValue(pslILEmit);
+    }
+
     void EmitLoadValueToKeepAlive(ILCodeStream* pslILEmit) override
     {
         BinderFieldID structField = GetStructureFieldID();
@@ -1887,7 +1975,7 @@ class ILRuntimeFieldHandleMarshaler : public ILReflectionObjectMarshaler
 {
 protected:
     BinderFieldID GetStructureFieldID() override { LIMITED_METHOD_CONTRACT; return FIELD__FIELD_HANDLE__M_FIELD; }
-    BinderFieldID GetObjectFieldID() override { LIMITED_METHOD_CONTRACT; return FIELD__RT_FIELD_INFO__HANDLE; }
+    BinderFieldID GetObjectFieldID() override { LIMITED_METHOD_CONTRACT; return FIELD__STUBFIELDINFO__HANDLE; }
     BinderClassID GetManagedTypeBinderID() override { LIMITED_METHOD_CONTRACT; return CLASS__FIELD_HANDLE; }
 };
 
@@ -2016,32 +2104,63 @@ protected:
     DWORD m_dwLocalBuffer;      // localloc'ed temp buffer variable or LOCAL_NUM_UNUSED if not used
 };
 
+class ILCUTF8Marshaler : public ILMarshaler
+{
+public:
+    enum
+    {
+        c_fInOnly = TRUE,
+        c_nativeSize = TARGET_POINTER_SIZE,
+    };
+
+    enum
+    {
+        LOCAL_BUFFER_LENGTH = 0x100
+    };
+
+    ILCUTF8Marshaler() :
+        m_dwInstance(LOCAL_NUM_UNUSED)
+    {
+        LIMITED_METHOD_CONTRACT;
+    }
+
+    LocalDesc GetManagedType() override;
+    LocalDesc GetNativeType() override;
+    bool NeedsClearNative() override;
+    void EmitConvertContentsCLRToNative(ILCodeStream* pslILEmit) override;
+    void EmitConvertContentsNativeToCLR(ILCodeStream* pslILEmit) override;
+    void EmitClearNative(ILCodeStream* pslILEmit) override;
+
+protected:
+    DWORD m_dwInstance;      // local marshaler instance or LOCAL_NUM_UNUSED if not used
+};
+
 class ILUTF8BufferMarshaler : public ILOptimizedAllocMarshaler
 {
 public:
-	enum
-	{
-		c_fInOnly = FALSE,
-		c_nativeSize = TARGET_POINTER_SIZE,
-	};
+    enum
+    {
+        c_fInOnly = FALSE,
+        c_nativeSize = TARGET_POINTER_SIZE,
+    };
 
-	enum
-	{
-		// If required buffer length > MAX_LOCAL_BUFFER_LENGTH, don't optimize by allocating memory on stack
-		MAX_LOCAL_BUFFER_LENGTH = MAX_PATH_FNAME + 1
-	};
+    enum
+    {
+        // If required buffer length > MAX_LOCAL_BUFFER_LENGTH, don't optimize by allocating memory on stack
+        MAX_LOCAL_BUFFER_LENGTH = MAX_PATH_FNAME + 1
+    };
 
-	ILUTF8BufferMarshaler() :
-		ILOptimizedAllocMarshaler(METHOD__MARSHAL__FREE_CO_TASK_MEM)
-	{
-		LIMITED_METHOD_CONTRACT;
-	}
+    ILUTF8BufferMarshaler() :
+        ILOptimizedAllocMarshaler(METHOD__MARSHAL__FREE_CO_TASK_MEM)
+    {
+        LIMITED_METHOD_CONTRACT;
+    }
 
-	LocalDesc GetManagedType() override;
-	void EmitConvertSpaceCLRToNative(ILCodeStream* pslILEmit) override;
-	void EmitConvertContentsCLRToNative(ILCodeStream* pslILEmit) override;
-	void EmitConvertSpaceNativeToCLR(ILCodeStream* pslILEmit) override;
-	void EmitConvertContentsNativeToCLR(ILCodeStream* pslILEmit) override;
+    LocalDesc GetManagedType() override;
+    void EmitConvertSpaceCLRToNative(ILCodeStream* pslILEmit) override;
+    void EmitConvertContentsCLRToNative(ILCodeStream* pslILEmit) override;
+    void EmitConvertSpaceNativeToCLR(ILCodeStream* pslILEmit) override;
+    void EmitConvertContentsNativeToCLR(ILCodeStream* pslILEmit) override;
 };
 
 class ILWSTRBufferMarshaler : public ILOptimizedAllocMarshaler
@@ -2135,17 +2254,16 @@ public:
         return false;
     }
 
-    static MarshalerOverrideStatus ArgumentOverride(NDirectStubLinker* psl,
+    static MarshalerOverrideStatus ArgumentOverride(PInvokeStubLinker* psl,
                                                     BOOL               byref,
                                                     BOOL               fin,
                                                     BOOL               fout,
                                                     BOOL               fManagedToNative,
                                                     OverrideProcArgs*  pargs,
                                                     UINT*              pResID,
-                                                    UINT               argidx,
-                                                    UINT               nativeStackOffset);
+                                                    UINT               argidx);
 
-    static MarshalerOverrideStatus ReturnOverride(NDirectStubLinker* psl,
+    static MarshalerOverrideStatus ReturnOverride(PInvokeStubLinker* psl,
                                                   BOOL               fManagedToNative,
                                                   BOOL               fHresultSwap,
                                                   OverrideProcArgs*  pargs,
@@ -2176,17 +2294,16 @@ public:
     void EmitConvertContentsCLRToNative(ILCodeStream* pslILEmit) override;
     void EmitConvertContentsNativeToCLR(ILCodeStream* pslILEmit) override;
 
-    static MarshalerOverrideStatus ArgumentOverride(NDirectStubLinker* psl,
+    static MarshalerOverrideStatus ArgumentOverride(PInvokeStubLinker* psl,
                                                     BOOL               byref,
                                                     BOOL               fin,
                                                     BOOL               fout,
                                                     BOOL               fManagedToNative,
                                                     OverrideProcArgs*  pargs,
                                                     UINT*              pResID,
-                                                    UINT               argidx,
-                                                    UINT               nativeStackOffset);
+                                                    UINT               argidx);
 
-    static MarshalerOverrideStatus ReturnOverride(NDirectStubLinker *psl,
+    static MarshalerOverrideStatus ReturnOverride(PInvokeStubLinker *psl,
                                                   BOOL        fManagedToNative,
                                                   BOOL        fHresultSwap,
                                                   OverrideProcArgs *pargs,
@@ -2220,17 +2337,16 @@ public:
     void EmitConvertContentsCLRToNative(ILCodeStream* pslILEmit) override;
     void EmitConvertContentsNativeToCLR(ILCodeStream* pslILEmit) override;
 
-    static MarshalerOverrideStatus ArgumentOverride(NDirectStubLinker* psl,
+    static MarshalerOverrideStatus ArgumentOverride(PInvokeStubLinker* psl,
                                                     BOOL               byref,
                                                     BOOL               fin,
                                                     BOOL               fout,
                                                     BOOL               fManagedToNative,
                                                     OverrideProcArgs*  pargs,
                                                     UINT*              pResID,
-                                                    UINT               argidx,
-                                                    UINT               nativeStackOffset);
+                                                    UINT               argidx);
 
-    static MarshalerOverrideStatus ReturnOverride(NDirectStubLinker *psl,
+    static MarshalerOverrideStatus ReturnOverride(PInvokeStubLinker *psl,
                                                   BOOL        fManagedToNative,
                                                   BOOL        fHresultSwap,
                                                   OverrideProcArgs *pargs,
@@ -2472,7 +2588,7 @@ public:
     enum
     {
         c_fInOnly               = TRUE,
-        c_nativeSize            = sizeof(OLE_COLOR),
+        c_nativeSize            = sizeof(uint32_t),
     };
 
 protected:
@@ -2554,33 +2670,6 @@ protected:
 #endif // FEATURE_COMINTEROP
 
 
-class ILCUTF8Marshaler : public ILOptimizedAllocMarshaler
-{
-public:
-	enum
-	{
-		c_fInOnly = TRUE,
-		c_nativeSize = TARGET_POINTER_SIZE,
-	};
-
-	enum
-	{
-		// If required buffer length > MAX_LOCAL_BUFFER_LENGTH, don't optimize by allocating memory on stack
-		MAX_LOCAL_BUFFER_LENGTH = MAX_PATH_FNAME + 1
-	};
-
-	ILCUTF8Marshaler() :
-		ILOptimizedAllocMarshaler(METHOD__CSTRMARSHALER__CLEAR_NATIVE)
-	{
-		LIMITED_METHOD_CONTRACT;
-	}
-
-protected:
-	LocalDesc GetManagedType() override;
-	void EmitConvertContentsCLRToNative(ILCodeStream* pslILEmit) override;
-	void EmitConvertContentsNativeToCLR(ILCodeStream* pslILEmit) override;
-};
-
 class ILWSTRMarshaler : public ILOptimizedAllocMarshaler
 {
 public:
@@ -2653,7 +2742,7 @@ public:
     };
 
     ILCSTRMarshaler() :
-        ILOptimizedAllocMarshaler(METHOD__CSTRMARSHALER__CLEAR_NATIVE)
+        ILOptimizedAllocMarshaler(METHOD__MARSHAL__FREE_CO_TASK_MEM)
     {
         LIMITED_METHOD_CONTRACT;
     }
@@ -2885,6 +2974,7 @@ protected:
     void EmitConvertContentsNativeToCLR(ILCodeStream* pslILEmit) override;
 };
 
+#if defined(FEATURE_IJW)
 class ILBlittableValueClassWithCopyCtorMarshaler : public ILMarshaler
 {
 public:
@@ -2906,19 +2996,20 @@ public:
         return LocalDesc();
     }
 
-    static MarshalerOverrideStatus ArgumentOverride(NDirectStubLinker* psl,
+    static MarshalerOverrideStatus ArgumentOverride(PInvokeStubLinker* psl,
                                             BOOL               byref,
                                             BOOL               fin,
                                             BOOL               fout,
                                             BOOL               fManagedToNative,
                                             OverrideProcArgs*  pargs,
                                             UINT*              pResID,
-                                            UINT               argidx,
-                                            UINT               nativeStackOffset);
+                                            UINT               argidx);
 
 
 };
+#endif // defined(TARGET_WINDOWS)
 
+#ifdef FEATURE_VARARGS
 class ILArgIteratorMarshaler : public ILMarshaler
 {
 public:
@@ -2942,6 +3033,7 @@ protected:
 private:
     DWORD m_dwVaListSizeLocalNum;
 };
+#endif // FEATURE_VARARGS
 
 class ILArrayWithOffsetMarshaler : public ILMarshaler
 {
@@ -3134,39 +3226,13 @@ protected:
     void EmitClearNative(ILCodeStream* pslILEmit) override
     {
         WRAPPER_NO_CONTRACT;
-        ILCodeLabel* pNoManagedValueLabel = nullptr;
-        if (IsFieldMarshal(m_dwMarshalFlags))
-        {
-            pNoManagedValueLabel = pslILEmit->NewCodeLabel();
-            pslILEmit->EmitLDARG(StructMarshalStubs::MANAGED_STRUCT_ARGIDX);
-            pslILEmit->EmitBRFALSE(pNoManagedValueLabel);
-        }
-
         EmitCallMngdMarshalerMethod(pslILEmit, GetClearNativeMethod());
-
-        if (IsFieldMarshal(m_dwMarshalFlags))
-        {
-            pslILEmit->EmitLabel(pNoManagedValueLabel);
-        }
     }
 
     void EmitClearNativeContents(ILCodeStream* pslILEmit) override
     {
         WRAPPER_NO_CONTRACT;
-        ILCodeLabel* pNoManagedValueLabel = nullptr;
-        if (IsFieldMarshal(m_dwMarshalFlags))
-        {
-            pNoManagedValueLabel = pslILEmit->NewCodeLabel();
-            pslILEmit->EmitLDARG(StructMarshalStubs::MANAGED_STRUCT_ARGIDX);
-            pslILEmit->EmitBRFALSE(pNoManagedValueLabel);
-        }
-
         EmitCallMngdMarshalerMethod(pslILEmit, GetClearNativeContentsMethod());
-
-        if (IsFieldMarshal(m_dwMarshalFlags))
-        {
-            pslILEmit->EmitLabel(pNoManagedValueLabel);
-        }
     }
 
     bool NeedsClearCLR() override
@@ -3204,24 +3270,16 @@ protected:
     const BinderMethodID m_idClearManaged;
 };
 
-class ILNativeArrayMarshaler : public ILMngdMarshaler
+class ILNativeArrayMarshaler : public ILMarshaler
 {
 public:
     enum
     {
         c_fInOnly               = FALSE,
+        c_nativeSize            = TARGET_POINTER_SIZE,
     };
 
-    ILNativeArrayMarshaler() :
-        ILMngdMarshaler(
-            METHOD__MNGD_NATIVE_ARRAY_MARSHALER__CONVERT_SPACE_TO_MANAGED,
-            METHOD__MNGD_NATIVE_ARRAY_MARSHALER__CONVERT_CONTENTS_TO_MANAGED,
-            METHOD__MNGD_NATIVE_ARRAY_MARSHALER__CONVERT_SPACE_TO_NATIVE,
-            METHOD__MNGD_NATIVE_ARRAY_MARSHALER__CONVERT_CONTENTS_TO_NATIVE,
-            METHOD__MNGD_NATIVE_ARRAY_MARSHALER__CLEAR_NATIVE,
-            METHOD__MNGD_NATIVE_ARRAY_MARSHALER__CLEAR_NATIVE_CONTENTS,
-            METHOD__NIL
-            )
+    ILNativeArrayMarshaler()
     {
         LIMITED_METHOD_CONTRACT;
         m_dwSavedSizeArg = LOCAL_NUM_UNUSED;
@@ -3233,6 +3291,8 @@ public:
     void EmitSetupArgumentForMarshalling(ILCodeStream* pslILEmit) override;
     void EmitConvertSpaceNativeToCLR(ILCodeStream* pslILEmit) override;
     void EmitConvertSpaceCLRToNative(ILCodeStream* pslILEmit) override;
+    void EmitConvertContentsCLRToNative(ILCodeStream* pslILEmit) override;
+    void EmitConvertContentsNativeToCLR(ILCodeStream* pslILEmit) override;
     void EmitClearNative(ILCodeStream* pslILEmit) override;
     void EmitClearNativeContents(ILCodeStream* pslILEmit) override;
 
@@ -3241,49 +3301,39 @@ public:
         LIMITED_METHOD_CONTRACT;
         return false;
     }
+
 protected:
+
+    LocalDesc GetNativeType() override
+    {
+        LIMITED_METHOD_CONTRACT;
+        return LocalDesc(ELEMENT_TYPE_I);
+    }
+
+    LocalDesc GetManagedType() override
+    {
+        LIMITED_METHOD_CONTRACT;
+        return LocalDesc(ELEMENT_TYPE_OBJECT);
+    }
+
+    bool NeedsClearNative() override
+    {
+        LIMITED_METHOD_CONTRACT;
+        return true;
+    }
 
     BOOL CheckSizeParamIndexArg(const CREATE_MARSHALER_CARRAY_OPERANDS &mops, CorElementType *pElementType);
 
     // Calculate element count and load it on evaluation stack
     void EmitLoadElementCount(ILCodeStream* pslILEmit);
 
-    void EmitCreateMngdMarshaler(ILCodeStream* pslILEmit) override;
-
     void EmitLoadNativeSize(ILCodeStream* pslILEmit);
     void EmitNewSavedSizeArgLocal(ILCodeStream* pslILEmit);
 
-private :
     DWORD m_dwSavedSizeArg;
 };
 
-class MngdNativeArrayMarshaler
-{
-public:
-    static FCDECL4(void, CreateMarshaler,           MngdNativeArrayMarshaler* pThis, MethodTable* pMT, UINT32 dwFlags, PCODE pManagedMarshaler);
-    static FCDECL3(void, ConvertSpaceToNative,      MngdNativeArrayMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome);
-    static FCDECL3(void, ConvertContentsToNative,   MngdNativeArrayMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome);
-    static FCDECL4(void, ConvertSpaceToManaged,     MngdNativeArrayMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome, INT32 cElements);
-    static FCDECL3(void, ConvertContentsToManaged,  MngdNativeArrayMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome);
-    static FCDECL4(void, ClearNative,               MngdNativeArrayMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome, INT32 cElements);
-    static FCDECL4(void, ClearNativeContents,       MngdNativeArrayMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome, INT32 cElements);
-
-    static void DoClearNativeContents(MngdNativeArrayMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome, INT32 cElements);
-    enum
-    {
-        FLAG_NATIVE_DATA_VALID = 0x40000000
-    };
-
-    MethodTable*            m_pElementMT;
-    TypeHandle              m_Array;
-    PCODE                   m_pManagedMarshaler;
-    BOOL                    m_NativeDataValid;
-    BOOL                    m_BestFitMap;
-    BOOL                    m_ThrowOnUnmappableChar;
-    VARTYPE                 m_vt;
-};
-
-class ILFixedArrayMarshaler : public ILMngdMarshaler
+class ILFixedArrayMarshaler : public ILMarshaler
 {
 public:
     enum
@@ -3291,20 +3341,6 @@ public:
         c_nativeSize = VARIABLESIZE,
         c_fInOnly = FALSE
     };
-
-    ILFixedArrayMarshaler() :
-        ILMngdMarshaler(
-            METHOD__MNGD_FIXED_ARRAY_MARSHALER__CONVERT_SPACE_TO_MANAGED,
-            METHOD__MNGD_FIXED_ARRAY_MARSHALER__CONVERT_CONTENTS_TO_MANAGED,
-            METHOD__MNGD_FIXED_ARRAY_MARSHALER__CONVERT_SPACE_TO_NATIVE,
-            METHOD__MNGD_FIXED_ARRAY_MARSHALER__CONVERT_CONTENTS_TO_NATIVE,
-            METHOD__MNGD_FIXED_ARRAY_MARSHALER__CLEAR_NATIVE_CONTENTS,
-            METHOD__MNGD_FIXED_ARRAY_MARSHALER__CLEAR_NATIVE_CONTENTS,
-            METHOD__NIL
-        )
-    {
-        LIMITED_METHOD_CONTRACT;
-    }
 
     bool SupportsArgumentMarshal(DWORD dwMarshalFlags, UINT* pErrorResID) override
     {
@@ -3320,32 +3356,31 @@ public:
 
 protected:
 
-    void EmitCreateMngdMarshaler(ILCodeStream* pslILEmit) override;
-};
-
-class MngdFixedArrayMarshaler
-{
-public:
-    static FCDECL5(void, CreateMarshaler,           MngdFixedArrayMarshaler* pThis, MethodTable* pMT, UINT32 dwFlags, UINT32 cElements, PCODE pManagedElementMarshaler);
-    static FCDECL3(void, ConvertSpaceToNative,      MngdFixedArrayMarshaler* pThis, OBJECTREF* pManagedHome, void* pNativeHome);
-    static FCDECL3(void, ConvertContentsToNative,   MngdFixedArrayMarshaler* pThis, OBJECTREF* pManagedHome, void* pNativeHome);
-    static FCDECL3(void, ConvertSpaceToManaged,     MngdFixedArrayMarshaler* pThis, OBJECTREF* pManagedHome, void* pNativeHome);
-    static FCDECL3(void, ConvertContentsToManaged,  MngdFixedArrayMarshaler* pThis, OBJECTREF* pManagedHome, void* pNativeHome);
-    static FCDECL3(void, ClearNativeContents,       MngdFixedArrayMarshaler* pThis, OBJECTREF* pManagedHome, void* pNativeHome);
-
-    enum
+    LocalDesc GetNativeType() override
     {
-        FLAG_NATIVE_DATA_VALID = 0x40000000
-    };
+        LIMITED_METHOD_CONTRACT;
+        return LocalDesc(ELEMENT_TYPE_I);
+    }
 
-    MethodTable* m_pElementMT;
-    PCODE        m_pManagedElementMarshaler;
-    TypeHandle   m_Array;
-    BOOL         m_NativeDataValid;
-    BOOL         m_BestFitMap;
-    BOOL         m_ThrowOnUnmappableChar;
-    VARTYPE      m_vt;
-    UINT32       m_cElements;
+    LocalDesc GetManagedType() override
+    {
+        LIMITED_METHOD_CONTRACT;
+        return LocalDesc(ELEMENT_TYPE_OBJECT);
+    }
+
+    bool NeedsClearNative() override
+    {
+        LIMITED_METHOD_CONTRACT;
+        return true;
+    }
+
+    void EmitConvertSpaceCLRToNative(ILCodeStream* pslILEmit) override;
+    void EmitConvertSpaceNativeToCLR(ILCodeStream* pslILEmit) override;
+    void EmitConvertContentsCLRToNative(ILCodeStream* pslILEmit) override;
+    void EmitConvertContentsNativeToCLR(ILCodeStream* pslILEmit) override;
+    void EmitLoadNativeSize(ILCodeStream* pslILEmit);
+    void EmitClearNativeContents(ILCodeStream* pslILEmit) override;
+    void EmitClearNative(ILCodeStream* pslILEmit) override;
 };
 
 #ifdef FEATURE_COMINTEROP
@@ -3412,12 +3447,6 @@ protected:
 class MngdSafeArrayMarshaler
 {
 public:
-    static FCDECL5(void, CreateMarshaler,           MngdSafeArrayMarshaler* pThis, MethodTable* pMT, UINT32 iRank, UINT32 dwFlags, PCODE pManagedMarshaler);
-    static FCDECL3(void, ConvertSpaceToNative,      MngdSafeArrayMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome);
-    static FCDECL4(void, ConvertContentsToNative,   MngdSafeArrayMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome, Object* pOriginalManagedUNSAFE);
-    static FCDECL3(void, ConvertSpaceToManaged,     MngdSafeArrayMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome);
-    static FCDECL3(void, ConvertContentsToManaged,  MngdSafeArrayMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome);
-    static FCDECL3(void, ClearNative,               MngdSafeArrayMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome);
 
     enum StaticCheckStateFlags
     {
@@ -3427,12 +3456,20 @@ public:
     };
 
     MethodTable*    m_pElementMT;
-    PCODE           m_pManagedMarshaler;
     int             m_iRank;
     VARTYPE         m_vt;
     BYTE            m_fStatic;     // StaticCheckStateFlags
     BYTE            m_nolowerbounds;
+    PCODE           m_pConvertContentsToNativeCode;
+    PCODE           m_pConvertContentsToManagedCode;
 };
+
+extern "C" void QCALLTYPE MngdSafeArrayMarshaler_CreateMarshaler(MngdSafeArrayMarshaler* pThis, MethodTable* pMT, UINT32 iRank, UINT32 dwFlags, PCODE pConvertToNative, PCODE pConvertToManaged);
+extern "C" void QCALLTYPE MngdSafeArrayMarshaler_ConvertSpaceToNative(MngdSafeArrayMarshaler* pThis, QCall::ObjectHandleOnStack pManagedHome, void** pNativeHome, QCallExceptionStatus* qcallError);
+extern "C" void QCALLTYPE MngdSafeArrayMarshaler_ConvertContentsToNative(MngdSafeArrayMarshaler* pThis, QCall::ObjectHandleOnStack pManagedHome, void** pNativeHome, QCall::ObjectHandleOnStack pOriginalManaged, QCallExceptionStatus* qcallError);
+extern "C" void QCALLTYPE MngdSafeArrayMarshaler_ConvertSpaceToManaged(MngdSafeArrayMarshaler* pThis, QCall::ObjectHandleOnStack pManagedHome, void** pNativeHome, QCallExceptionStatus* qcallError);
+extern "C" void QCALLTYPE MngdSafeArrayMarshaler_ConvertContentsToManaged(MngdSafeArrayMarshaler* pThis, QCall::ObjectHandleOnStack pManagedHome, void** pNativeHome, QCallExceptionStatus* qcallError);
+extern "C" void QCALLTYPE MngdSafeArrayMarshaler_ClearNative(MngdSafeArrayMarshaler* pThis, void** pNativeHome, QCallExceptionStatus* qcallError);
 #endif // FEATURE_COMINTEROP
 
 class ILReferenceCustomMarshaler : public ILMngdMarshaler
@@ -3459,16 +3496,4 @@ public:
 
 protected:
     void EmitCreateMngdMarshaler(ILCodeStream* pslILEmit) override;
-};
-
-class MngdRefCustomMarshaler
-{
-public:
-    static FCDECL2(void, CreateMarshaler,           MngdRefCustomMarshaler* pThis, void* pCMHelper);
-    static FCDECL3(void, ConvertContentsToNative,   MngdRefCustomMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome);
-    static FCDECL3(void, ConvertContentsToManaged,  MngdRefCustomMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome);
-    static FCDECL3(void, ClearNative,               MngdRefCustomMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome);
-    static FCDECL3(void, ClearManaged,              MngdRefCustomMarshaler* pThis, OBJECTREF* pManagedHome, void** pNativeHome);
-
-    CustomMarshalerHelper*  m_pCMHelper;
 };

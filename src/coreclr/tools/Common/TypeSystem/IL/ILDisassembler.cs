@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using System.Buffers.Binary;
 using System.Text;
 
 using Internal.TypeSystem;
@@ -86,7 +87,7 @@ namespace Internal.IL
             sb.Append(' ');
             AppendOwningType(sb, method.OwningType);
             sb.Append("::");
-            sb.Append(method.Name);
+            sb.Append(method.GetName());
 
             if (method.HasInstantiation)
             {
@@ -140,10 +141,10 @@ namespace Internal.IL
             sb.Append(' ');
             AppendOwningType(sb, field.OwningType);
             sb.Append("::");
-            sb.Append(field.Name);
+            sb.Append(field.GetName());
         }
 
-        private void AppendStringLiteral(StringBuilder sb, string s)
+        private static void AppendStringLiteral(StringBuilder sb, string s)
         {
             sb.Append('"');
             for (int i = 0; i < s.Length; i++)
@@ -156,6 +157,8 @@ namespace Internal.IL
                     sb.Append("\\\"");
                 else if (s[i] == '\n')
                     sb.Append("\\n");
+                else if (s[i] == '\r')
+                    sb.Append("\\r");
                 else
                     sb.Append(s[i]);
             }
@@ -187,19 +190,20 @@ namespace Internal.IL
             return _ilBytes[_currentOffset++];
         }
 
-        private UInt16 ReadILUInt16()
+        private ushort ReadILUInt16()
         {
-            UInt16 val = (UInt16)(_ilBytes[_currentOffset] + (_ilBytes[_currentOffset + 1] << 8));
-            _currentOffset += 2;
+            ushort val = BinaryPrimitives.ReadUInt16LittleEndian(_ilBytes.AsSpan(_currentOffset, sizeof(ushort)));
+            _currentOffset += sizeof(ushort);
             return val;
         }
 
-        private UInt32 ReadILUInt32()
+        private uint ReadILUInt32()
         {
-            UInt32 val = (UInt32)(_ilBytes[_currentOffset] + (_ilBytes[_currentOffset + 1] << 8) + (_ilBytes[_currentOffset + 2] << 16) + (_ilBytes[_currentOffset + 3] << 24));
-            _currentOffset += 4;
+            uint val = BinaryPrimitives.ReadUInt32LittleEndian(_ilBytes.AsSpan(_currentOffset, sizeof(uint)));
+            _currentOffset += sizeof(uint);
             return val;
         }
+
 
         private int ReadILToken()
         {
@@ -208,8 +212,8 @@ namespace Internal.IL
 
         private ulong ReadILUInt64()
         {
-            ulong value = ReadILUInt32();
-            value |= (((ulong)ReadILUInt32()) << 32);
+            ulong value = BinaryPrimitives.ReadUInt64LittleEndian(_ilBytes.AsSpan(_currentOffset, sizeof(ulong)));
+            _currentOffset += sizeof(ulong);
             return value;
         }
 
@@ -227,8 +231,7 @@ namespace Internal.IL
 
         public static void AppendOffset(StringBuilder sb, int offset)
         {
-            sb.Append("IL_");
-            sb.AppendFormat("{0:X4}", offset);
+            sb.Append($"IL_{offset:X4}");
         }
 
         private static void PadForInstructionArgument(StringBuilder sb)
@@ -280,7 +283,7 @@ namespace Internal.IL
             // Quick and dirty way to get the opcode name is to convert the enum value to string.
             // We need some adjustments though.
             string opCodeString = opCode.ToString().Replace("_", ".");
-            if (opCodeString.EndsWith("."))
+            if (opCodeString.EndsWith('.'))
                 opCodeString = opCodeString.Substring(0, opCodeString.Length - 1);
 
             decodedInstruction.Append(opCodeString);
@@ -419,7 +422,7 @@ namespace Internal.IL
                             int delta = (int)ReadILUInt32();
                             AppendOffset(decodedInstruction, jmpBase + delta);
                         }
-                        decodedInstruction.Append(")");
+                        decodedInstruction.Append(')');
                         return decodedInstruction.ToString();
                     }
 
@@ -494,7 +497,7 @@ namespace Internal.IL
 
             public override void AppendName(StringBuilder sb, SignatureTypeVariable type)
             {
-                sb.Append("!");
+                sb.Append('!');
                 sb.Append(type.Index.ToStringInvariant());
             }
 
@@ -515,7 +518,7 @@ namespace Internal.IL
                     if (i > 0)
                         sb.Append(", ");
                     AppendNameWithValueClassPrefix(sb, type.Instantiation[i]);
-                }   
+                }
 
                 sb.Append('>');
             }
@@ -611,20 +614,20 @@ namespace Internal.IL
                     sb.Append(']');
                 }
 
-                string ns = type.Namespace;
+                string ns = type.GetNamespace();
                 if (ns.Length > 0)
                 {
                     sb.Append(ns);
                     sb.Append('.');
                 }
-                sb.Append(type.Name);
+                sb.Append(type.GetName());
             }
 
             protected override void AppendNameForNestedType(StringBuilder sb, DefType nestedType, DefType containingType)
             {
                 AppendName(sb, containingType);
                 sb.Append('/');
-                sb.Append(nestedType.Name);
+                sb.Append(nestedType.GetName());
             }
         }
         #endregion

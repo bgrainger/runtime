@@ -6,6 +6,7 @@
 #include <objbase.h>
 #include <crtdbg.h>
 #include <assert.h>
+#include <algorithm>
 
 #include <corpriv.h>
 #include <cor.h>
@@ -16,13 +17,14 @@
 
 #include <cahlpr.h>
 #include <limits.h>
+#include <inttypes.h>
 
 #include "mdinfo.h"
 
 #define ENUM_BUFFER_SIZE 10
 #define TAB_SIZE 8
 
-#define ISFLAG(p,x) if (Is##p##x(flags)) strcat_s(sFlags,STRING_BUFFER_LEN, "["#x "] ");
+#define ISFLAG(p,x) if (Is##p##x(flags)) strcat_s(szTempBuf,STRING_BUFFER_LEN, "["#x "] ");
 
 extern HRESULT  _FillVariant(
     BYTE        bCPlusTypeFlag,
@@ -70,6 +72,7 @@ const char *g_szMapElementType[] =
     "CMOD_REQD",
     "CMOD_OPT",
     "INTERNAL",
+    "CMOD_INTERNAL",
 };
 
 const char *g_szMapUndecorateType[] =
@@ -108,6 +111,7 @@ const char *g_szMapUndecorateType[] =
     "CMOD_REQD",
     "CMOD_OPT",
     "INTERNAL",
+    "CMOD_INTERNAL",
 };
 
 // Provide enough entries for IMAGE_CEE_CS_CALLCONV_MASK (defined in CorHdr.h)
@@ -189,6 +193,16 @@ const char *g_szNativeType[] =
     "NATIVE_TYPE_ERROR", //        = 0x2d, // VT_HRESULT when exporting to a typelib.
 };
 
+// Maximum value needed to convert a UTF16 codepoint to a UTF8 codepoint.
+#define MAX_UTF8_CVT 3
+
+static const char* ConvertToUtf8(LPCWSTR name, _Out_writes_(bufLen) char* buffer, ULONG bufLen)
+{
+    int res = WideCharToMultiByte(CP_UTF8, 0, name, -1, buffer, bufLen, NULL, NULL);
+    if (res == 0)
+        buffer[0] = '\0';
+    return buffer;
+}
 
 size_t g_cbCoffNames = 0;
 
@@ -204,7 +218,7 @@ void MDInfo::InitSigBuffer()
 
 // helper to append a string into the signature buffer. If size of signature buffer is not big enough,
 // we will grow it.
-HRESULT MDInfo::AddToSigBuffer(__in_z __in const char *string)
+HRESULT MDInfo::AddToSigBuffer(_In_z_ const char *string)
 {
     HRESULT     hr;
     size_t LL = strlen((LPSTR)m_sigBuf.Ptr()) + strlen(string) + 1;
@@ -360,7 +374,7 @@ void MDInfo::DisplayMD()
         // WriteLine("Unresolved MemberRefs");
         // DisplayMemberRefs(0x00000001, "\t");
 
-        VWrite("\n\nCoff symbol name overhead:  %d\n", g_cbCoffNames);
+        VWrite("\n\nCoff symbol name overhead:  %zu\n", g_cbCoffNames);
     }
     WriteLine("===========================================================");
     if (m_DumpFilter & dumpUnsat)
@@ -368,7 +382,7 @@ void MDInfo::DisplayMD()
     WriteLine("===========================================================");
 } // MDVEHandlerClass()
 
-int MDInfo::WriteLine(__in_z __in const char *str)
+int MDInfo::WriteLine(_In_z_ const char *str)
 {
     ULONG32 count = (ULONG32) strlen(str);
 
@@ -377,7 +391,7 @@ int MDInfo::WriteLine(__in_z __in const char *str)
     return count;
 } // int MDInfo::WriteLine()
 
-int MDInfo::Write(__in_z __in const char *str)
+int MDInfo::Write(_In_z_ const char *str)
 {
     ULONG32 count = (ULONG32) strlen(str);
 
@@ -385,7 +399,7 @@ int MDInfo::Write(__in_z __in const char *str)
     return count;
 } // int MDInfo::Write()
 
-int MDInfo::VWriteLine(__in_z __in const char *str, ...)
+int MDInfo::VWriteLine(_In_z_ const char *str, ...)
 {
     va_list marker;
     int     count;
@@ -397,7 +411,7 @@ int MDInfo::VWriteLine(__in_z __in const char *str, ...)
     return count;
 } // int MDInfo::VWriteLine()
 
-int MDInfo::VWrite(__in_z __in const char *str, ...)
+int MDInfo::VWrite(_In_z_ const char *str, ...)
 {
     va_list marker;
     int     count;
@@ -408,7 +422,7 @@ int MDInfo::VWrite(__in_z __in const char *str, ...)
     return count;
 } // int MDInfo::VWrite()
 
-int MDInfo::VWriteMarker(__in_z __in const char *str, va_list marker)
+int MDInfo::VWriteMarker(_In_z_ const char *str, va_list marker)
 {
     HRESULT hr;
     int count = -1;
@@ -433,21 +447,23 @@ void MDInfo::Error(const char* szError, HRESULT hr)
     {
         printf("Failed return code: 0x%08x\n", hr);
 
+#ifdef FEATURE_COMINTEROP
         IErrorInfo  *pIErr = NULL;          // Error interface.
         BSTR        bstrDesc = NULL;        // Description text.
-#ifdef FEATURE_COMINTEROP
+
         // Try to get an error info object and display the message.
         if (GetErrorInfo(0, &pIErr) == S_OK &&
             pIErr->GetDescription(&bstrDesc) == S_OK)
         {
-            printf("%ls ", bstrDesc);
+            MAKE_UTF8PTR_FROMWIDE(bstrDescUtf8, bstrDesc);
+            printf("%s ", bstrDescUtf8);
             SysFreeString(bstrDesc);
         }
-#endif
+
         // Free the error interface.
         if (pIErr)
             pIErr->Release();
-
+#endif
     }
     exit(hr);
 } // void MDInfo::Error()
@@ -492,15 +508,19 @@ void MDInfo::DisplayScopeInfo()
     mdModule mdm;
     GUID mvid;
     WCHAR scopeName[STRING_BUFFER_LEN];
-    WCHAR guidString[STRING_BUFFER_LEN];
+    char scopeNameUtf8[ARRAY_SIZE(scopeName) * MAX_UTF8_CVT];
+    char guidString[STRING_BUFFER_LEN];
 
     hr = m_pImport->GetScopeProps( scopeName, STRING_BUFFER_LEN, 0, &mvid);
     if (FAILED(hr)) Error("GetScopeProps failed.", hr);
 
-    VWriteLine("ScopeName : %ls",scopeName);
+    VWriteLine("ScopeName : %s",ConvertToUtf8(scopeName, scopeNameUtf8, ARRAY_SIZE(scopeNameUtf8)));
 
     if (!(m_DumpFilter & MDInfo::dumpNoLogo))
-        VWriteLine("MVID      : %ls",GUIDAsString(mvid, guidString, STRING_BUFFER_LEN));
+    {
+        minipal_guid_as_string(mvid, guidString, STRING_BUFFER_LEN);
+        VWriteLine("MVID      : %s", guidString);
+    }
 
     hr = m_pImport->GetModuleFromScope(&mdm);
     if (FAILED(hr)) Error("GetModuleFromScope failed.", hr);
@@ -561,18 +581,17 @@ const char *MDInfo::TokenTypeName(mdToken inToken)
 // Prints out name of the given memberref
 //
 
-LPCWSTR MDInfo::MemberRefName(mdMemberRef inMemRef, __out_ecount(bufLen) LPWSTR buffer, ULONG bufLen)
+LPCSTR MDInfo::MemberRefName(mdMemberRef inMemRef, _Out_writes_(bufLen) LPSTR buffer, ULONG bufLen)
 {
     HRESULT hr;
 
-
-    hr = m_pImport->GetMemberRefProps( inMemRef, NULL, buffer, bufLen,
+    WCHAR tempBuf[STRING_BUFFER_LEN];
+    hr = m_pImport->GetMemberRefProps( inMemRef, NULL, tempBuf, ARRAY_SIZE(tempBuf),
                                     NULL, NULL, NULL);
     if (FAILED(hr)) Error("GetMemberRefProps failed.", hr);
 
-    return buffer;
-} // LPCWSTR MDInfo::MemberRefName()
-
+    return ConvertToUtf8(tempBuf, buffer, bufLen);
+} // LPCSTR MDInfo::MemberRefName()
 
 // Prints out information about the given memberref
 //
@@ -581,6 +600,7 @@ void MDInfo::DisplayMemberRefInfo(mdMemberRef inMemRef, const char *preFix)
 {
     HRESULT hr;
     WCHAR memRefName[STRING_BUFFER_LEN];
+    char memRefNameUtf8[ARRAY_SIZE(memRefName) * MAX_UTF8_CVT];
     ULONG nameLen;
     mdToken token;
     PCCOR_SIGNATURE pbSigBlob;
@@ -592,7 +612,7 @@ void MDInfo::DisplayMemberRefInfo(mdMemberRef inMemRef, const char *preFix)
                                     &nameLen, &pbSigBlob, &ulSigBlob);
     if (FAILED(hr)) Error("GetMemberRefProps failed.", hr);
 
-    VWriteLine("%s\t\tMember: (%8.8x) %ls: ", preFix, inMemRef, memRefName);
+    VWriteLine("%s\t\tMember: (%8.8x) %s: ", preFix, inMemRef, ConvertToUtf8(memRefName, memRefNameUtf8, ARRAY_SIZE(memRefNameUtf8)));
 
     if (ulSigBlob)
         DisplaySignature(pbSigBlob, ulSigBlob, preFix);
@@ -768,6 +788,7 @@ void MDInfo::DisplayModuleRefInfo(mdModuleRef inModuleRef)
 {
     HRESULT hr;
     WCHAR moduleRefName[STRING_BUFFER_LEN];
+    char moduleRefNameUtf8[ARRAY_SIZE(moduleRefName) * MAX_UTF8_CVT];
     ULONG nameLen;
 
 
@@ -775,7 +796,7 @@ void MDInfo::DisplayModuleRefInfo(mdModuleRef inModuleRef)
                                     &nameLen);
     if (FAILED(hr)) Error("GetModuleRefProps failed.", hr);
 
-    VWriteLine("\t\tModuleRef: (%8.8x) %ls: ", inModuleRef, moduleRefName);
+    VWriteLine("\t\tModuleRef: (%8.8x) %s: ", inModuleRef, ConvertToUtf8(moduleRefName, moduleRefNameUtf8, ARRAY_SIZE(moduleRefNameUtf8)));
     DisplayCustomAttributes(inModuleRef, "\t\t");
 } // void MDInfo::DisplayModuleRefInfo()
 
@@ -829,17 +850,17 @@ void MDInfo::DisplaySignatureInfo(mdSignature inSignature)
 // member in wide characters
 //
 
-LPCWSTR MDInfo::MemberName(mdToken inToken, __out_ecount(bufLen) LPWSTR buffer, ULONG bufLen)
+LPCSTR MDInfo::MemberName(mdToken inToken, _Out_writes_(bufLen) LPSTR buffer, ULONG bufLen)
 {
     HRESULT hr;
 
-
-    hr = m_pImport->GetMemberProps( inToken, NULL, buffer, bufLen,
+    WCHAR tempBuf[STRING_BUFFER_LEN];
+    hr = m_pImport->GetMemberProps( inToken, NULL, tempBuf, ARRAY_SIZE(tempBuf),
                             NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
     if (FAILED(hr)) Error("GetMemberProps failed.", hr);
 
-    return (buffer);
-} // LPCWSTR MDInfo::MemberName()
+    return ConvertToUtf8(tempBuf, buffer, bufLen);
+} // LPCSTR MDInfo::MemberName()
 
 
 // displays information for the given method
@@ -850,6 +871,7 @@ void MDInfo::DisplayMethodInfo(mdMethodDef inMethod, DWORD *pflags)
     HRESULT hr;
     mdTypeDef memTypeDef;
     WCHAR memberName[STRING_BUFFER_LEN];
+    char memberNameUtf8[ARRAY_SIZE(memberName) * MAX_UTF8_CVT];
     ULONG nameLen;
     DWORD flags;
     PCCOR_SIGNATURE pbSigBlob;
@@ -864,11 +886,11 @@ void MDInfo::DisplayMethodInfo(mdMethodDef inMethod, DWORD *pflags)
     if (pflags)
         *pflags = flags;
 
-    VWriteLine("\t\tMethodName: %ls (%8.8X)", memberName, inMethod);
+    VWriteLine("\t\tMethodName: %s (%8.8X)", ConvertToUtf8(memberName, memberNameUtf8, ARRAY_SIZE(memberNameUtf8)), inMethod);
 
-    char sFlags[STRING_BUFFER_LEN];
+    char szTempBuf[STRING_BUFFER_LEN];
 
-    sFlags[0] = 0;
+    szTempBuf[0] = 0;
     ISFLAG(Md, Public);
     ISFLAG(Md, Private);
     ISFLAG(Md, Family);
@@ -887,22 +909,22 @@ void MDInfo::DisplayMethodInfo(mdMethodDef inMethod, DWORD *pflags)
     ISFLAG(Md, RTSpecialName);
     ISFLAG(Md, PinvokeImpl);
     ISFLAG(Md, UnmanagedExport);
-    if (!*sFlags)
-        strcpy_s(sFlags, STRING_BUFFER_LEN, "[none]");
+    if (!*szTempBuf)
+        strcpy_s(szTempBuf, STRING_BUFFER_LEN, "[none]");
 
-    bool result = (((flags) & mdRTSpecialName) && !wcscmp((memberName), W(".ctor")));
-    if (result) strcat_s(sFlags, STRING_BUFFER_LEN, "[.ctor] ");
-    result = (((flags) & mdRTSpecialName) && !wcscmp((memberName), W(".cctor")));
-    if (result) strcat_s(sFlags,STRING_BUFFER_LEN, "[.cctor] ");
+    bool result = (((flags) & mdRTSpecialName) && !u16_strcmp((memberName), W(".ctor")));
+    if (result) strcat_s(szTempBuf, STRING_BUFFER_LEN, "[.ctor] ");
+    result = (((flags) & mdRTSpecialName) && !u16_strcmp((memberName), W(".cctor")));
+    if (result) strcat_s(szTempBuf,STRING_BUFFER_LEN, "[.cctor] ");
     // "Reserved" flags
     ISFLAG(Md, HasSecurity);
     ISFLAG(Md, RequireSecObject);
 
-    VWriteLine("\t\tFlags     : %s (%08x)", sFlags, flags);
+    VWriteLine("\t\tFlags     : %s (%08x)", szTempBuf, flags);
     VWriteLine("\t\tRVA       : 0x%08x", ulCodeRVA);
 
     flags = ulImplFlags;
-    sFlags[0] = 0;
+    szTempBuf[0] = 0;
     ISFLAG(Mi, Native);
     ISFLAG(Mi, IL);
     ISFLAG(Mi, OPTIL);
@@ -914,10 +936,10 @@ void MDInfo::DisplayMethodInfo(mdMethodDef inMethod, DWORD *pflags)
     ISFLAG(Mi, InternalCall);
     ISFLAG(Mi, Synchronized);
     ISFLAG(Mi, NoInlining);
-    if (!*sFlags)
-        strcpy_s(sFlags, STRING_BUFFER_LEN, "[none]");
+    if (!*szTempBuf)
+        strcpy_s(szTempBuf, STRING_BUFFER_LEN, "[none]");
 
-    VWriteLine("\t\tImplFlags : %s (%08x)", sFlags, flags);
+    VWriteLine("\t\tImplFlags : %s (%08x)", szTempBuf, flags);
 
     if (ulSigBlob)
         DisplaySignature(pbSigBlob, ulSigBlob, "");
@@ -936,6 +958,7 @@ void MDInfo::DisplayFieldInfo(mdFieldDef inField, DWORD *pdwFlags)
     HRESULT hr;
     mdTypeDef memTypeDef;
     WCHAR memberName[STRING_BUFFER_LEN];
+    char memberNameUtf8[ARRAY_SIZE(memberName) * MAX_UTF8_CVT];
     ULONG nameLen;
     DWORD flags;
     PCCOR_SIGNATURE pbSigBlob;
@@ -960,9 +983,9 @@ void MDInfo::DisplayFieldInfo(mdFieldDef inField, DWORD *pdwFlags)
     _FillVariant((BYTE)dwCPlusTypeFlag, pValue, cbValue, &defaultValue);
 #endif
 
-    char sFlags[STRING_BUFFER_LEN];
+    char szTempBuf[STRING_BUFFER_LEN];
 
-    sFlags[0] = 0;
+    szTempBuf[0] = 0;
     ISFLAG(Fd, Public);
     ISFLAG(Fd, Private);
     ISFLAG(Fd, Family);
@@ -979,14 +1002,14 @@ void MDInfo::DisplayFieldInfo(mdFieldDef inField, DWORD *pdwFlags)
     ISFLAG(Fd, PinvokeImpl);
     // "Reserved" flags
     ISFLAG(Fd, HasDefault);
-    if (!*sFlags)
-        strcpy_s(sFlags, STRING_BUFFER_LEN, "[none]");
+    if (!*szTempBuf)
+        strcpy_s(szTempBuf, STRING_BUFFER_LEN, "[none]");
 
-    VWriteLine("\t\tField Name: %ls (%8.8X)", memberName, inField);
-    VWriteLine("\t\tFlags     : %s (%08x)", sFlags, flags);
+    VWriteLine("\t\tField Name: %s (%8.8X)", ConvertToUtf8(memberName, memberNameUtf8, ARRAY_SIZE(memberNameUtf8)), inField);
+    VWriteLine("\t\tFlags     : %s (%08x)", szTempBuf, flags);
 #ifdef FEATURE_COMINTEROP
     if (IsFdHasDefault(flags))
-        VWriteLine("\tDefltValue: (%s) %ls", g_szMapElementType[dwCPlusTypeFlag], VariantAsString(&defaultValue));
+        VWriteLine("\tDefltValue: (%s) %s", g_szMapElementType[dwCPlusTypeFlag], VariantAsString(&defaultValue, szTempBuf, ARRAY_SIZE(szTempBuf)));
 #endif
     if (!ulSigBlob) // Signature size should be non-zero for fields
         VWriteLine("\t\tERROR: no valid signature ");
@@ -1165,6 +1188,7 @@ void MDInfo::DisplayParamInfo(mdParamDef inParamDef)
     mdMethodDef md;
     ULONG num;
     WCHAR paramName[STRING_BUFFER_LEN];
+    char paramNameUtf8[ARRAY_SIZE(paramName) * MAX_UTF8_CVT];
     ULONG nameLen;
     DWORD flags;
     VARIANT defValue;
@@ -1179,23 +1203,26 @@ void MDInfo::DisplayParamInfo(mdParamDef inParamDef)
                             &nameLen, &flags, &dwCPlusFlags, &pValue, &cbValue);
     if (FAILED(hr)) Error("GetParamProps failed.", hr);
 
+#ifdef FEATURE_COMINTEROP
     _FillVariant((BYTE)dwCPlusFlags, pValue, cbValue, &defValue);
+#endif
 
-    char sFlags[STRING_BUFFER_LEN];
-    sFlags[0] = 0;
+    char szTempBuf[STRING_BUFFER_LEN];
+    szTempBuf[0] = 0;
     ISFLAG(Pd, In);
     ISFLAG(Pd, Out);
     ISFLAG(Pd, Optional);
     // "Reserved" flags.
     ISFLAG(Pd, HasDefault);
     ISFLAG(Pd, HasFieldMarshal);
-    if (!*sFlags)
-        strcpy_s(sFlags,STRING_BUFFER_LEN, "[none]");
+    if (!*szTempBuf)
+        strcpy_s(szTempBuf,STRING_BUFFER_LEN, "[none]");
 
-    VWrite("\t\t\t(%ld) ParamToken : (%08x) Name : %ls flags: %s (%08x)", num, inParamDef, paramName, sFlags, flags);
+    VWrite("\t\t\t(%ld) ParamToken : (%08x) Name : %s flags: %s (%08x)",
+        num, inParamDef, ConvertToUtf8(paramName, paramNameUtf8, ARRAY_SIZE(paramNameUtf8)), szTempBuf, flags);
 #ifdef FEATURE_COMINTEROP
     if (IsPdHasDefault(flags))
-        VWriteLine(" Default: (%s) %ls", g_szMapElementType[dwCPlusFlags], VariantAsString(&defValue));
+        VWriteLine(" Default: (%s) %s", g_szMapElementType[dwCPlusFlags], VariantAsString(&defValue, szTempBuf, ARRAY_SIZE(szTempBuf)));
     else
 #endif
         VWriteLine("");
@@ -1269,6 +1296,7 @@ void MDInfo::DisplayGenericParamInfo(mdGenericParam tkParam, const char *prefix)
 {
     ULONG ulSeq;
     WCHAR paramName[STRING_BUFFER_LEN];
+    char paramNameUtf8[ARRAY_SIZE(paramName) * MAX_UTF8_CVT];
     ULONG nameLen;
     DWORD flags;
     mdToken tkOwner;
@@ -1283,7 +1311,8 @@ void MDInfo::DisplayGenericParamInfo(mdGenericParam tkParam, const char *prefix)
     HRESULT hr = m_pImport->GetGenericParamProps(tkParam, &ulSeq, &flags, &tkOwner, NULL, paramName, ARRAY_SIZE(paramName), &nameLen);
     if (FAILED(hr)) Error("GetGenericParamProps failed.", hr);
 
-    VWriteLine("%s\t(%ld) GenericParamToken : (%08x) Name : %ls flags: %08x Owner: %08x", prefix, ulSeq, tkParam, paramName, flags, tkOwner);
+    VWriteLine("%s\t(%ld) GenericParamToken : (%08x) Name : %s flags: %08x Owner: %08x",
+        prefix, ulSeq, tkParam, ConvertToUtf8(paramName, paramNameUtf8, ARRAY_SIZE(paramNameUtf8)), flags, tkOwner);
 
     // Any constraints for the GenericParam
     while (SUCCEEDED(hr = m_pImport->EnumGenericParamConstraints(&constraintEnum, tkParam,
@@ -1312,24 +1341,10 @@ void MDInfo::DisplayGenericParamInfo(mdGenericParam tkParam, const char *prefix)
     DisplayCustomAttributes(tkParam, newprefix);
 }
 
-LPCWSTR MDInfo::TokenName(mdToken inToken, __out_ecount(bufLen) LPWSTR buffer, ULONG bufLen)
-{
-    LPCUTF8     pName;                  // Token name in UTF8.
-
-    if (IsNilToken(inToken))
-        return W("");
-
-    m_pImport->GetNameFromToken(inToken, &pName);
-
-    WszMultiByteToWideChar(CP_UTF8,0, pName,-1, buffer,bufLen);
-
-    return buffer;
-} // LPCWSTR MDInfo::TokenName()
-
 // prints out name of typeref or typedef
 //
 
-LPCWSTR MDInfo::TypeDeforRefName(mdToken inToken, __out_ecount(bufLen) LPWSTR buffer, ULONG bufLen)
+LPCSTR MDInfo::TypeDeforRefName(mdToken inToken, _Out_writes_(bufLen) LPSTR buffer, ULONG bufLen)
 {
     if (RidFromToken(inToken))
     {
@@ -1338,15 +1353,15 @@ LPCWSTR MDInfo::TypeDeforRefName(mdToken inToken, __out_ecount(bufLen) LPWSTR bu
         else if (TypeFromToken(inToken) == mdtTypeRef)
             return (TypeRefName((mdTypeRef) inToken, buffer, bufLen));
         else if (TypeFromToken(inToken) == mdtTypeSpec)
-            return W("[TypeSpec]");
+            return "[TypeSpec]";
         else
-            return W("[InvalidReference]");
+            return "[InvalidReference]";
     }
     else
-        return W("");
-} // LPCWSTR MDInfo::TypeDeforRefName()
+        return "";
+} // LPCSTR MDInfo::TypeDeforRefName()
 
-LPCWSTR MDInfo::MemberDeforRefName(mdToken inToken, __out_ecount(bufLen) LPWSTR buffer, ULONG bufLen)
+LPCSTR MDInfo::MemberDeforRefName(mdToken inToken, _Out_writes_(bufLen) LPSTR buffer, ULONG bufLen)
 {
     if (RidFromToken(inToken))
     {
@@ -1355,35 +1370,39 @@ LPCWSTR MDInfo::MemberDeforRefName(mdToken inToken, __out_ecount(bufLen) LPWSTR 
         else if (TypeFromToken(inToken) == mdtMemberRef)
             return (MemberRefName((mdMemberRef) inToken, buffer, bufLen));
         else
-            return W("[InvalidReference]");
+            return "[InvalidReference]";
     }
     else
-        return W("");
-} // LPCWSTR MDInfo::MemberDeforRefName()
+        return "";
+} // LPCSTR MDInfo::MemberDeforRefName()
 
 // prints out only the name of the given typedef
 //
 //
-
-LPCWSTR MDInfo::TypeDefName(mdTypeDef inTypeDef, __out_ecount(bufLen) LPWSTR buffer, ULONG bufLen)
+LPCSTR MDInfo::TypeDefName(mdTypeDef inTypeDef, _Out_writes_(bufLen) LPSTR buffer, ULONG bufLen)
 {
     HRESULT hr;
 
+    WCHAR tempBuf[STRING_BUFFER_LEN];
     hr = m_pImport->GetTypeDefProps(
                             // [IN] The import scope.
         inTypeDef,              // [IN] TypeDef token for inquiry.
-        buffer,                 // [OUT] Put name here.
-        bufLen,                 // [IN] size of name buffer in wide chars.
+        tempBuf,                // [OUT] Put name here.
+        ARRAY_SIZE(tempBuf),    // [IN] size of name buffer in wide chars.
         NULL,                   // [OUT] put size of name (wide chars) here.
         NULL,                   // [OUT] Put flags here.
         NULL);                  // [OUT] Put base class TypeDef/TypeRef here.
     if (FAILED(hr))
     {
-        swprintf_s(buffer, bufLen, W("[Invalid TypeDef]"));
+        strcpy_s(buffer, bufLen, "[Invalid TypeDef]");
+    }
+    else
+    {
+        (void)ConvertToUtf8(tempBuf, buffer, bufLen);
     }
 
     return buffer;
-} // LPCWSTR MDInfo::TypeDefName()
+} // LPCSTR MDInfo::TypeDefName()
 
 // prints out all the properties of a given typedef
 //
@@ -1392,6 +1411,7 @@ void MDInfo::DisplayTypeDefProps(mdTypeDef inTypeDef)
 {
     HRESULT hr;
     WCHAR typeDefName[STRING_BUFFER_LEN];
+    char typeDefNameUtf8[ARRAY_SIZE(typeDefName) * MAX_UTF8_CVT];
     ULONG nameLen;
     DWORD flags;
     mdToken extends;
@@ -1407,12 +1427,11 @@ void MDInfo::DisplayTypeDefProps(mdTypeDef inTypeDef)
         &extends);              // [OUT] Put base class TypeDef/TypeRef here.
     if (FAILED(hr)) Error("GetTypeDefProps failed.", hr);
 
-    char sFlags[STRING_BUFFER_LEN];
-    WCHAR szTempBuf[STRING_BUFFER_LEN];
+    char szTempBuf[STRING_BUFFER_LEN];
 
-    VWriteLine("\tTypDefName: %ls  (%8.8X)",typeDefName,inTypeDef);
-    VWriteLine("\tFlags     : %s (%08x)",ClassFlags(flags, sFlags), flags);
-    VWriteLine("\tExtends   : %8.8X [%s] %ls",extends,TokenTypeName(extends),
+    VWriteLine("\tTypDefName: %s  (%8.8X)",ConvertToUtf8(typeDefName, typeDefNameUtf8, ARRAY_SIZE(typeDefNameUtf8)),inTypeDef);
+    VWriteLine("\tFlags     : %s (%08x)",ClassFlags(flags, szTempBuf), flags);
+    VWriteLine("\tExtends   : %8.8X [%s] %s",extends,TokenTypeName(extends),
                                  TypeDeforRefName(extends, szTempBuf, ARRAY_SIZE(szTempBuf)));
 
     hr = m_pImport->GetClassLayout(inTypeDef, &dwPacking, 0,0,0, &dwSize);
@@ -1426,7 +1445,7 @@ void MDInfo::DisplayTypeDefProps(mdTypeDef inTypeDef)
         hr = m_pImport->GetNestedClassProps(inTypeDef, &tkEnclosingClass);
         if (hr == S_OK)
         {
-            VWriteLine("\tEnclosingClass : %ls (%8.8X)", TypeDeforRefName(tkEnclosingClass,
+            VWriteLine("\tEnclosingClass : %s (%8.8X)", TypeDeforRefName(tkEnclosingClass,
                                             szTempBuf, ARRAY_SIZE(szTempBuf)), tkEnclosingClass);
         }
         else if (hr == CLDB_E_RECORD_NOTFOUND)
@@ -1439,23 +1458,28 @@ void MDInfo::DisplayTypeDefProps(mdTypeDef inTypeDef)
 //  Prints out the name of the given TypeRef
 //
 
-LPCWSTR MDInfo::TypeRefName(mdTypeRef tr, __out_ecount(bufLen) LPWSTR buffer, ULONG bufLen)
+LPCSTR MDInfo::TypeRefName(mdTypeRef tr, _Out_writes_(bufLen) LPSTR buffer, ULONG bufLen)
 {
     HRESULT hr;
 
+    WCHAR tempBuf[STRING_BUFFER_LEN];
     hr = m_pImport->GetTypeRefProps(
         tr,                 // The class ref token.
         NULL,               // Resolution scope.
-        buffer,             // Put the name here.
-        bufLen,             // Size of the name buffer, wide chars.
+        tempBuf,            // Put the name here.
+        ARRAY_SIZE(tempBuf), // Size of the name buffer, wide chars.
         NULL);              // Put actual size of name here.
     if (FAILED(hr))
     {
-        swprintf_s(buffer, bufLen, W("[Invalid TypeRef]"));
+        strcpy_s(buffer, bufLen, "[Invalid TypeRef]");
+    }
+    else
+    {
+        (void)ConvertToUtf8(tempBuf, buffer, bufLen);
     }
 
-    return (buffer);
-} // LPCWSTR MDInfo::TypeRefName()
+    return buffer;
+} // LPCSTR MDInfo::TypeRefName()
 
 // Prints out all the info of the given TypeRef
 //
@@ -1465,20 +1489,21 @@ void MDInfo::DisplayTypeRefInfo(mdTypeRef tr)
     HRESULT hr;
     mdToken tkResolutionScope;
     WCHAR typeRefName[STRING_BUFFER_LEN];
+    char typeRefNameUtf8[ARRAY_SIZE(typeRefName) * MAX_UTF8_CVT];
     ULONG nameLen;
 
     hr = m_pImport->GetTypeRefProps(
         tr,                 // The class ref token.
         &tkResolutionScope, // ResolutionScope.
         typeRefName,        // Put the name here.
-        STRING_BUFFER_LEN,  // Size of the name buffer, wide chars.
+        ARRAY_SIZE(typeRefName),  // Size of the name buffer, wide chars.
         &nameLen);          // Put actual size of name here.
 
     if (FAILED(hr)) Error("GetTypeRefProps failed.", hr);
 
     VWriteLine("Token:             0x%08x", tr);
     VWriteLine("ResolutionScope:   0x%08x", tkResolutionScope);
-    VWriteLine("TypeRefName:       %ls",typeRefName);
+    VWriteLine("TypeRefName:       %s", ConvertToUtf8(typeRefName, typeRefNameUtf8, ARRAY_SIZE(typeRefNameUtf8)));
 
     DisplayCustomAttributes(tr, "\t");
 } // void MDInfo::DisplayTypeRefInfo()
@@ -1543,9 +1568,9 @@ void MDInfo::DisplayMethodSpecInfo(mdMethodSpec ms, const char *preFix)
 // associated with the class.
 //
 
-char *MDInfo::ClassFlags(DWORD flags, __out_ecount(STRING_BUFFER_LEN) char *sFlags)
+char *MDInfo::ClassFlags(DWORD flags, _Out_writes_(STRING_BUFFER_LEN) char *szTempBuf)
 {
-    sFlags[0] = 0;
+    szTempBuf[0] = 0;
     ISFLAG(Td, NotPublic);
     ISFLAG(Td, Public);
     ISFLAG(Td, NestedPublic);
@@ -1573,10 +1598,10 @@ char *MDInfo::ClassFlags(DWORD flags, __out_ecount(STRING_BUFFER_LEN) char *sFla
     ISFLAG(Td, RTSpecialName);
     ISFLAG(Td, HasSecurity);
     ISFLAG(Td, WindowsRuntime);
-    if (!*sFlags)
-        strcpy_s(sFlags, STRING_BUFFER_LEN, "[none]");
+    if (!*szTempBuf)
+        strcpy_s(szTempBuf, STRING_BUFFER_LEN, "[none]");
 
-    return sFlags;
+    return szTempBuf;
 } // char *MDInfo::ClassFlags()
 
 // prints out all info on the given typeDef, including all information that
@@ -1650,13 +1675,13 @@ void MDInfo::DisplayInterfaceImplInfo(mdInterfaceImpl inImpl)
     mdToken token;
     HRESULT hr;
 
-    WCHAR szTempBuf[STRING_BUFFER_LEN];
+    char szTempBuf[STRING_BUFFER_LEN];
 
     hr = m_pImport->GetInterfaceImplProps( inImpl, &typeDef, &token);
     if (FAILED(hr)) Error("GetInterfaceImplProps failed.", hr);
 
-    VWriteLine("\t\tClass     : %ls",TypeDeforRefName(typeDef, szTempBuf, ARRAY_SIZE(szTempBuf)));
-    VWriteLine("\t\tToken     : %8.8X [%s] %ls",token,TokenTypeName(token), TypeDeforRefName(token, szTempBuf, ARRAY_SIZE(szTempBuf)));
+    VWriteLine("\t\tClass     : %s",TypeDeforRefName(typeDef, szTempBuf, ARRAY_SIZE(szTempBuf)));
+    VWriteLine("\t\tToken     : %8.8X [%s] %s",token,TokenTypeName(token), TypeDeforRefName(token, szTempBuf, ARRAY_SIZE(szTempBuf)));
 
     DisplayCustomAttributes(inImpl, "\t\t");
 } // void MDInfo::DisplayInterfaceImplInfo()
@@ -1669,6 +1694,7 @@ void MDInfo::DisplayPropertyInfo(mdProperty inProp)
     HRESULT     hr;
     mdTypeDef   typeDef;
     WCHAR       propName[STRING_BUFFER_LEN];
+    char        propNameUtf8[ARRAY_SIZE(propName) * MAX_UTF8_CVT];
     DWORD       flags;
 #ifdef FEATURE_COMINTEROP
     VARIANT     defaultValue;
@@ -1711,36 +1737,34 @@ void MDInfo::DisplayPropertyInfo(mdProperty inProp)
 
     if (FAILED(hr)) Error("GetPropertyProps failed.", hr);
 
-    VWriteLine("\t\tProp.Name : %ls (%8.8X)",propName,inProp);
+    VWriteLine("\t\tProp.Name : %s (%8.8X)",ConvertToUtf8(propName, propNameUtf8, ARRAY_SIZE(propNameUtf8)),inProp);
 
-    char sFlags[STRING_BUFFER_LEN];
+    char szTempBuf[STRING_BUFFER_LEN];
 
-    sFlags[0] = 0;
+    szTempBuf[0] = 0;
     ISFLAG(Pr, SpecialName);
     ISFLAG(Pr, RTSpecialName);
     ISFLAG(Pr, HasDefault);
-    if (!*sFlags)
-        strcpy_s(sFlags, STRING_BUFFER_LEN, "[none]");
+    if (!*szTempBuf)
+        strcpy_s(szTempBuf, STRING_BUFFER_LEN, "[none]");
 
-    VWriteLine("\t\tFlags     : %s (%08x)", sFlags, flags);
+    VWriteLine("\t\tFlags     : %s (%08x)", szTempBuf, flags);
 
     if (ulSigBlob)
         DisplaySignature(pbSigBlob, ulSigBlob, "");
     else
         VWriteLine("\t\tERROR: no valid signature ");
 
-    WCHAR szTempBuf[STRING_BUFFER_LEN];
-
 #ifdef FEATURE_COMINTEROP
     _FillVariant((BYTE)dwCPlusTypeFlag, pValue, cbValue, &defaultValue);
-    VWriteLine("\t\tDefltValue: %ls",VariantAsString(&defaultValue));
+    VWriteLine("\t\tDefltValue: %s",VariantAsString(&defaultValue, szTempBuf, ARRAY_SIZE(szTempBuf)));
 #endif
 
-    VWriteLine("\t\tSetter    : (%08x) %ls",setter,MemberDeforRefName(setter, szTempBuf, ARRAY_SIZE(szTempBuf)));
-    VWriteLine("\t\tGetter    : (%08x) %ls",getter,MemberDeforRefName(getter, szTempBuf, ARRAY_SIZE(szTempBuf)));
+    VWriteLine("\t\tSetter    : (%08x) %s",setter,MemberDeforRefName(setter, szTempBuf, ARRAY_SIZE(szTempBuf)));
+    VWriteLine("\t\tGetter    : (%08x) %s",getter,MemberDeforRefName(getter, szTempBuf, ARRAY_SIZE(szTempBuf)));
 
     // do something with others?
-    VWriteLine("\t\t%ld Others",others);
+    VWriteLine("\t\t%u Others",others);
     DisplayCustomAttributes(inProp, "\t\t");
 
 #ifdef FEATURE_COMINTEROP
@@ -1783,6 +1807,7 @@ void MDInfo::DisplayEventInfo(mdEvent inEvent)
     HRESULT hr;
     mdTypeDef typeDef;
     WCHAR eventName[STRING_BUFFER_LEN];
+    char eventNameUtf8[ARRAY_SIZE(eventName) * MAX_UTF8_CVT];
     DWORD flags;
     mdToken eventType;
     mdMethodDef addOn, removeOn, fire, otherMethod[ENUM_BUFFER_SIZE];
@@ -1810,24 +1835,21 @@ void MDInfo::DisplayEventInfo(mdEvent inEvent)
         &totalOther);           // [OUT] total number of other method of this event
     if (FAILED(hr)) Error("GetEventProps failed.", hr);
 
-    VWriteLine("\t\tName      : %ls (%8.8X)",eventName,inEvent);
+    VWriteLine("\t\tName      : %s (%8.8X)",ConvertToUtf8(eventName, eventNameUtf8, ARRAY_SIZE(eventNameUtf8)),inEvent);
 
-    char sFlags[STRING_BUFFER_LEN];
+    char szTempBuf[STRING_BUFFER_LEN];
 
-    sFlags[0] = 0;
+    szTempBuf[0] = 0;
     ISFLAG(Ev, SpecialName);
     ISFLAG(Ev, RTSpecialName);
-    if (!*sFlags)
-        strcpy_s(sFlags, STRING_BUFFER_LEN, "[none]");
+    if (!*szTempBuf)
+        strcpy_s(szTempBuf, STRING_BUFFER_LEN, "[none]");
 
-    VWriteLine("\t\tFlags     : %s (%08x)", sFlags, flags);
-
-    WCHAR szTempBuf[STRING_BUFFER_LEN];
-
+    VWriteLine("\t\tFlags     : %s (%08x)", szTempBuf, flags);
     VWriteLine("\t\tEventType : %8.8X [%s]",eventType,TokenTypeName(eventType));
-    VWriteLine("\t\tAddOnMethd: (%08x) %ls",addOn,MemberDeforRefName(addOn, szTempBuf, ARRAY_SIZE(szTempBuf)));
-    VWriteLine("\t\tRmvOnMethd: (%08x) %ls",removeOn,MemberDeforRefName(removeOn, szTempBuf, ARRAY_SIZE(szTempBuf)));
-    VWriteLine("\t\tFireMethod: (%08x) %ls",fire,MemberDeforRefName(fire, szTempBuf, ARRAY_SIZE(szTempBuf)));
+    VWriteLine("\t\tAddOnMethd: (%08x) %s",addOn,MemberDeforRefName(addOn, szTempBuf, ARRAY_SIZE(szTempBuf)));
+    VWriteLine("\t\tRmvOnMethd: (%08x) %s",removeOn,MemberDeforRefName(removeOn, szTempBuf, ARRAY_SIZE(szTempBuf)));
+    VWriteLine("\t\tFireMethod: (%08x) %s",fire,MemberDeforRefName(fire, szTempBuf, ARRAY_SIZE(szTempBuf)));
 
     VWriteLine("\t\t%ld OtherMethods",totalOther);
 
@@ -1877,9 +1899,10 @@ void MDInfo::DisplayCustomAttributeInfo(mdCustomAttribute inValue, const char *p
     LPCUTF8     pMethName=0;            // Name of custom attribute ctor, if any.
     CQuickBytes qSigName;               // Buffer to pretty-print signature.
     PCCOR_SIGNATURE pSig=0;             // Signature of ctor.
-    ULONG       cbSig;                  // Size of the signature.
+    ULONG       cbSig=0;                // Size of the signature.
     BOOL        bCoffSymbol = false;    // true for coff symbol CA's.
     WCHAR       rcName[MAX_CLASS_NAME]; // Name of the type.
+    char        rcNameUtf8[ARRAY_SIZE(rcName) * MAX_UTF8_CVT]; // Name of the type.
 
     hr = m_pImport->GetCustomAttributeProps( // S_OK or error.
         inValue,                    // The attribute.
@@ -1892,57 +1915,63 @@ void MDInfo::DisplayCustomAttributeInfo(mdCustomAttribute inValue, const char *p
     VWriteLine("%s\tCustomAttribute Type: %08x", preFix, tkType);
 
     // Get the name of the memberref or methoddef.
-        tk = tkType;
-        rcName[0] = L'\0';
-        // Get the member name, and the parent token.
-        switch (TypeFromToken(tk))
-        {
-        case mdtMemberRef:
-            hr = m_pImport->GetNameFromToken(tk, &pMethName);
-            if (FAILED(hr)) Error("GetNameFromToken failed.", hr);
-            hr = m_pImport->GetMemberRefProps( tk, &tk, 0, 0, 0, &pSig, &cbSig);
-            if (FAILED(hr)) Error("GetMemberRefProps failed.", hr);
-            break;
-        case mdtMethodDef:
-            hr = m_pImport->GetNameFromToken(tk, &pMethName);
-            if (FAILED(hr)) Error("GetNameFromToken failed.", hr);
-            hr = m_pImport->GetMethodProps(tk, &tk, 0, 0, 0, 0, &pSig, &cbSig, 0, 0);
-            if (FAILED(hr)) Error("GetMethodProps failed.", hr);
-            break;
-        } // switch
+    tk = tkType;
+    rcName[0] = W('\0');
+    rcNameUtf8[0] = '\0';
+    // Get the member name, and the parent token.
+    switch (TypeFromToken(tk))
+    {
+    case mdtMemberRef:
+        hr = m_pImport->GetNameFromToken(tk, &pMethName);
+        if (FAILED(hr)) Error("GetNameFromToken failed.", hr);
+        hr = m_pImport->GetMemberRefProps( tk, &tk, 0, 0, 0, &pSig, &cbSig);
+        if (FAILED(hr)) Error("GetMemberRefProps failed.", hr);
+        break;
+    case mdtMethodDef:
+        hr = m_pImport->GetNameFromToken(tk, &pMethName);
+        if (FAILED(hr)) Error("GetNameFromToken failed.", hr);
+        hr = m_pImport->GetMethodProps(tk, &tk, 0, 0, 0, 0, &pSig, &cbSig, 0, 0);
+        if (FAILED(hr)) Error("GetMethodProps failed.", hr);
+        break;
+    } // switch
 
-        // Get the type name.
-        switch (TypeFromToken(tk))
-        {
-        case mdtTypeDef:
-            hr = m_pImport->GetTypeDefProps(tk, rcName,MAX_CLASS_NAME,0, 0,0);
-            if (FAILED(hr)) Error("GetTypeDefProps failed.", hr);
-            break;
-        case mdtTypeRef:
-            hr = m_pImport->GetTypeRefProps(tk, 0, rcName,MAX_CLASS_NAME,0);
-            if (FAILED(hr)) Error("GetTypeRefProps failed.", hr);
-            break;
-        } // switch
+    // Get the type name.
+    switch (TypeFromToken(tk))
+    {
+    case mdtTypeDef:
+        hr = m_pImport->GetTypeDefProps(tk, rcName,MAX_CLASS_NAME,0, 0,0);
+        if (FAILED(hr)) Error("GetTypeDefProps failed.", hr);
+        break;
+    case mdtTypeRef:
+        hr = m_pImport->GetTypeRefProps(tk, 0, rcName,MAX_CLASS_NAME,0);
+        if (FAILED(hr)) Error("GetTypeRefProps failed.", hr);
+        break;
+    } // switch
 
 
-        if (pSig && pMethName)
-        {
-            int iLen;
-            LPWSTR pwzName = (LPWSTR)(new WCHAR[iLen= 1+(ULONG32)strlen(pMethName)]);
-            if(pwzName)
-            {
-                WszMultiByteToWideChar(CP_UTF8,0, pMethName,-1, pwzName,iLen);
-                PrettyPrintSigLegacy(pSig, cbSig, pwzName, &qSigName, m_pImport);
-                delete [] pwzName;
-            }
-        }
-
-    VWrite("%s\tCustomAttributeName: %ls", preFix, rcName);
     if (pSig && pMethName)
-        VWrite(" :: %S", qSigName.Ptr());
+    {
+        int iLen= 1 + (ULONG32)strlen(pMethName);
+        LPWSTR pwzName = (LPWSTR)(new WCHAR[iLen]);
+        if(pwzName)
+        {
+            MultiByteToWideChar(CP_UTF8,0, pMethName,-1, pwzName,iLen);
+            PrettyPrintSigLegacy(pSig, cbSig, pwzName, &qSigName, m_pImport);
+            delete [] pwzName;
+        }
+    }
+
+    VWrite("%s\tCustomAttributeName: %s", preFix, ConvertToUtf8(rcName, rcNameUtf8, ARRAY_SIZE(rcNameUtf8)));
+    if (pSig && pMethName)
+    {
+        int iLen = 1 + (ULONG32)qSigName.Size();
+        LPSTR pzSig = (LPSTR)(new char[iLen]);
+        VWrite(" :: %s", ConvertToUtf8((LPWSTR)qSigName.Ptr(), pzSig, iLen));
+        delete [] pzSig;
+    }
 
     // Keep track of coff overhead.
-    if (!wcscmp(W("__DecoratedName"), rcName))
+    if (!u16_strcmp(W("__DecoratedName"), rcName))
     {
         bCoffSymbol = true;
         g_cbCoffNames += cbValue + 6;
@@ -1968,7 +1997,7 @@ void MDInfo::DisplayCustomAttributeInfo(mdCustomAttribute inValue, const char *p
         UINT16 u2 = 0;
         UINT32 u4 = 0;
         UINT64 u8 = 0;
-        unsigned __int64 uI64;
+        uint64_t uI64;
         double dblVal;
         ULONG cbVal;
         LPCUTF8 pStr;
@@ -2039,7 +2068,7 @@ void MDInfo::DisplayCustomAttributeInfo(mdCustomAttribute inValue, const char *p
                 case ELEMENT_TYPE_U8:
                     CA.GetU8(&u8);
                     uI64 = u8;
-                    VWrite("%#lx", uI64);
+                    VWrite("0x%llx", uI64);
                     break;
                 case ELEMENT_TYPE_R4:
                     dblVal = CA.GetR4();
@@ -2166,47 +2195,32 @@ void MDInfo::DisplayPermissionInfo(mdPermission inPermission, const char *preFix
     DisplayCustomAttributes(inPermission, newPreFix);
 } // void MDInfo::DisplayPermissionInfo()
 
-
-// simply prints out the given GUID in standard form
-
-LPWSTR MDInfo::GUIDAsString(GUID inGuid, __out_ecount(bufLen) LPWSTR guidString, ULONG bufLen)
-{
-    StringFromGUID2(inGuid, guidString, bufLen);
-    return guidString;
-} // LPWSTR MDInfo::GUIDAsString()
-
 #ifdef FEATURE_COMINTEROP
-LPCWSTR MDInfo::VariantAsString(VARIANT *pVariant)
+LPCSTR MDInfo::VariantAsString(VARIANT *pVariant, _Out_writes_(bufLen) LPSTR buffer, ULONG bufLen)
 {
     HRESULT hr = S_OK;
     if (V_VT(pVariant) == VT_UNKNOWN)
     {
         _ASSERTE(V_UNKNOWN(pVariant) == NULL);
-        return W("<NULL>");
+        return "<NULL>";
     }
     else if (SUCCEEDED(hr = ::VariantChangeType(pVariant, pVariant, 0, VT_BSTR)))
-        return V_BSTR(pVariant);
+    {
+        return ConvertToUtf8(V_BSTR(pVariant), buffer, bufLen);
+    }
     else if (hr == DISP_E_BADVARTYPE && V_VT(pVariant) == VT_I8)
     {
-        // allocate the bstr.
-        char    szStr[32];
-        WCHAR   wszStr[32];
         // Set variant type to bstr.
         V_VT(pVariant) = VT_BSTR;
-        // Create the ansi string.
-        sprintf_s(szStr, 32, "%I64d", V_CY(pVariant).int64);
-        // Convert to unicode.
-        WszMultiByteToWideChar(CP_ACP, 0, szStr, -1, wszStr, 32);
-        // convert to bstr and set variant value.
-        V_BSTR(pVariant) = ::SysAllocString(wszStr);
-        if (V_BSTR(pVariant) == NULL)
-            Error("SysAllocString() failed.", E_OUTOFMEMORY);
-        return V_BSTR(pVariant);
+        sprintf_s(buffer, bufLen, "%lld", V_CY(pVariant).int64);
+        return buffer;
     }
     else
-        return W("ERROR");
+    {
+        return "ERROR";
+    }
 
-} // LPWSTR MDInfo::VariantAsString()
+} // LPSTR MDInfo::VariantAsString()
 #endif
 
 bool TrySigUncompress(PCCOR_SIGNATURE pData,              // [IN] compressed data
@@ -2475,9 +2489,10 @@ void MDInfo::DisplayPinvokeInfo(mdToken inToken)
     HRESULT hr = NOERROR;
     DWORD flags;
     WCHAR rcImport[512];
+    char rcImportUtf8[ARRAY_SIZE(rcImport) * MAX_UTF8_CVT];
     mdModuleRef tkModuleRef;
 
-    char sFlags[STRING_BUFFER_LEN];
+    char szTempBuf[STRING_BUFFER_LEN];
 
     hr = m_pImport->GetPinvokeMap(inToken, &flags, rcImport,
                                   ARRAY_SIZE(rcImport), 0, &tkModuleRef);
@@ -2489,10 +2504,10 @@ void MDInfo::DisplayPinvokeInfo(mdToken inToken)
     }
 
     WriteLine("\t\tPinvoke Map Data:");
-    VWriteLine("\t\tEntry point:      %S", rcImport);
+    VWriteLine("\t\tEntry point:      %s", ConvertToUtf8(rcImport, rcImportUtf8, ARRAY_SIZE(rcImportUtf8)));
     VWriteLine("\t\tModule ref:       %08x", tkModuleRef);
 
-    sFlags[0] = 0;
+    szTempBuf[0] = 0;
     ISFLAG(Pm, NoMangle);
     ISFLAG(Pm, CharSetNotSpec);
     ISFLAG(Pm, CharSetAnsi);
@@ -2511,23 +2526,23 @@ void MDInfo::DisplayPinvokeInfo(mdToken inToken)
     ISFLAG(Pm, ThrowOnUnmappableCharEnabled);
     ISFLAG(Pm, ThrowOnUnmappableCharDisabled);
     ISFLAG(Pm, ThrowOnUnmappableCharUseAssem);
-    if (!*sFlags)
-        strcpy_s(sFlags, STRING_BUFFER_LEN, "[none]");
+    if (!*szTempBuf)
+        strcpy_s(szTempBuf, STRING_BUFFER_LEN, "[none]");
 
-    VWriteLine("\t\tMapping flags:    %s (%08x)", sFlags, flags);
+    VWriteLine("\t\tMapping flags:    %s (%08x)", szTempBuf, flags);
 }   // void MDInfo::DisplayPinvokeInfo()
 
 
 /////////////////////////////////////////////////////////////////////////
 // void DisplaySignature(PCCOR_SIGNATURE pbSigBlob, ULONG ulSigBlob);
 //
-// Display COM+ signature -- taken from cordump.cpp's DumpSignature
+// Display signature -- taken from cordump.cpp's DumpSignature
 /////////////////////////////////////////////////////////////////////////
 void MDInfo::DisplaySignature(PCCOR_SIGNATURE pbSigBlob, ULONG ulSigBlob, const char *preFix)
 {
     ULONG       cbCur = 0;
     ULONG       cb;
-    // 428793: Prefix complained correctly about unitialized data.
+    // 428793: Prefix complained correctly about uninitialized data.
     ULONG       ulData = (ULONG) IMAGE_CEE_CS_CALLCONV_MAX;
     ULONG       ulArgs;
     HRESULT     hr = NOERROR;
@@ -2606,7 +2621,7 @@ void MDInfo::DisplaySignature(PCCOR_SIGNATURE pbSigBlob, ULONG ulSigBlob, const 
         {
             ULONG       ulDataTemp;
 
-            // Handle the sentinal for varargs because it isn't counted in the args.
+            // Handle the sentinel for varargs because it isn't counted in the args.
             CorSigUncompressData(&pbSigBlob[cbCur], &ulDataTemp);
             ++i;
 
@@ -2740,7 +2755,7 @@ HRESULT MDInfo::GetOneElementType(PCCOR_SIGNATURE pbSigBlob, ULONG ulSigBlob, UL
         // get the name of type ref. Don't care if truncated
         if (TypeFromToken(tk) == mdtTypeDef || TypeFromToken(tk) == mdtTypeRef)
         {
-            sprintf_s(m_tempFormatBuffer, STRING_BUFFER_LEN, " %ls",TypeDeforRefName(tk, m_szTempBuf, ARRAY_SIZE(m_szTempBuf)));
+            sprintf_s(m_tempFormatBuffer, STRING_BUFFER_LEN, " %s",TypeDeforRefName(tk, m_szTempBuf, ARRAY_SIZE(m_szTempBuf)));
             IfFailGo(AddToSigBuffer(m_tempFormatBuffer));
         }
         else
@@ -2900,57 +2915,10 @@ ErrExit:
     return hr;
 } // HRESULT MDInfo::GetOneElementType()
 
-// Display the fields of the N/Direct custom value structure.
-
-void MDInfo::DisplayCorNativeLink(COR_NATIVE_LINK *pCorNLnk, const char *preFix)
-{
-    // Print the LinkType.
-    const char *curField = "\tLink Type : ";
-    switch(pCorNLnk->m_linkType)
-    {
-    case nltNone:
-        VWriteLine("%s%s%s(%02x)", preFix, curField, "nltNone", pCorNLnk->m_linkType);
-        break;
-    case nltAnsi:
-        VWriteLine("%s%s%s(%02x)", preFix, curField, "nltAnsi", pCorNLnk->m_linkType);
-        break;
-    case nltUnicode:
-        VWriteLine("%s%s%s(%02x)", preFix, curField, "nltUnicode", pCorNLnk->m_linkType);
-        break;
-    case nltAuto:
-        VWriteLine("%s%s%s(%02x)", preFix, curField, "nltAuto", pCorNLnk->m_linkType);
-        break;
-    default:
-        _ASSERTE(!"Invalid Native Link Type!");
-    }
-
-    // Print the link flags
-    curField = "\tLink Flags : ";
-    switch(pCorNLnk->m_flags)
-    {
-    case nlfNone:
-        VWriteLine("%s%s%s(%02x)", preFix, curField, "nlfNone", pCorNLnk->m_flags);
-        break;
-    case nlfLastError:
-        VWriteLine("%s%s%s(%02x)", preFix, curField, "nlfLastError", pCorNLnk->m_flags);
-            break;
-    default:
-        _ASSERTE(!"Invalid Native Link Flags!");
-    }
-
-    // Print the entry point.
-    WCHAR memRefName[STRING_BUFFER_LEN];
-    HRESULT hr;
-    hr = m_pImport->GetMemberRefProps( pCorNLnk->m_entryPoint, NULL, memRefName,
-                                    STRING_BUFFER_LEN, NULL, NULL, NULL);
-    if (FAILED(hr)) Error("GetMemberRefProps failed.", hr);
-    VWriteLine("%s\tEntry Point : %ls (0x%08x)", preFix, memRefName, pCorNLnk->m_entryPoint);
-} // void MDInfo::DisplayCorNativeLink()
-
-// Fills given varaint with value given in pValue and of type in bCPlusTypeFlag
+// Fills given variant with value given in pValue and of type in bCPlusTypeFlag
 //
 // Taken from MetaInternal.cpp
-
+#ifdef FEATURE_COMINTEROP
 HRESULT _FillVariant(
     BYTE        bCPlusTypeFlag,
     const void  *pValue,
@@ -2992,14 +2960,14 @@ HRESULT _FillVariant(
     case ELEMENT_TYPE_R4:
         {
             V_VT(pvar) = VT_R4;
-            __int32 Value = GET_UNALIGNED_VAL32(pValue);
+            int32_t Value = GET_UNALIGNED_VAL32(pValue);
             V_R4(pvar) = (float &)Value;
         }
         break;
     case ELEMENT_TYPE_R8:
         {
             V_VT(pvar) = VT_R8;
-            __int64 Value = GET_UNALIGNED_VAL64(pValue);
+            int64_t Value = GET_UNALIGNED_VAL64(pValue);
             V_R8(pvar) = (double &) Value;
         }
 
@@ -3043,6 +3011,7 @@ HRESULT _FillVariant(
 
     return hr;
 } // HRESULT _FillVariant()
+#endif // FEATURE_COMINTEROP
 
 void MDInfo::DisplayAssembly()
 {
@@ -3064,6 +3033,7 @@ void MDInfo::DisplayAssemblyInfo()
     ULONG           cbPublicKey;
     ULONG           ulHashAlgId;
     WCHAR           szName[STRING_BUFFER_LEN];
+    char            szNameUtf8[ARRAY_SIZE(szName) * MAX_UTF8_CVT];
     ASSEMBLYMETADATA MetaData;
     DWORD           dwFlags;
 
@@ -3100,7 +3070,7 @@ void MDInfo::DisplayAssemblyInfo()
     WriteLine("Assembly");
     WriteLine("-------------------------------------------------------");
     VWriteLine("\tToken: 0x%08x", mda);
-    VWriteLine("\tName : %ls", szName);
+    VWriteLine("\tName : %s", ConvertToUtf8(szName, szNameUtf8, ARRAY_SIZE(szNameUtf8)));
     DumpHex("\tPublic Key    ", pbPublicKey, cbPublicKey, false, 24);
     VWriteLine("\tHash Algorithm : 0x%08x", ulHashAlgId);
     DisplayASSEMBLYMETADATA(&MetaData);
@@ -3108,18 +3078,18 @@ void MDInfo::DisplayAssemblyInfo()
     if(MetaData.rProcessor) delete [] MetaData.rProcessor;
     if(MetaData.rOS) delete [] MetaData.rOS;
 
-    char sFlags[STRING_BUFFER_LEN];
+    char szTempBuf[STRING_BUFFER_LEN];
     DWORD flags = dwFlags;
 
-    sFlags[0] = 0;
+    szTempBuf[0] = 0;
     ISFLAG(Af, PublicKey);
     ISFLAG(Af, Retargetable);
     ISFLAG(AfContentType_, WindowsRuntime);
 
-    if (!*sFlags)
-        strcpy_s(sFlags, STRING_BUFFER_LEN, "[none]");
+    if (!*szTempBuf)
+        strcpy_s(szTempBuf, STRING_BUFFER_LEN, "[none]");
 
-    VWriteLine("\tFlags : %s (%08x)", sFlags, dwFlags);
+    VWriteLine("\tFlags : %s (%08x)", szTempBuf, dwFlags);
     DisplayCustomAttributes(mda, "\t");
     DisplayPermissions(mda, "\t");
     WriteLine("");
@@ -3154,6 +3124,7 @@ void MDInfo::DisplayAssemblyRefInfo(mdAssemblyRef inAssemblyRef)
     const BYTE      *pbPublicKeyOrToken;
     ULONG           cbPublicKeyOrToken;
     WCHAR           szName[STRING_BUFFER_LEN];
+    char            szNameUtf8[ARRAY_SIZE(szName) * MAX_UTF8_CVT];
     ASSEMBLYMETADATA MetaData;
     const BYTE      *pbHashValue;
     ULONG           cbHashValue;
@@ -3188,17 +3159,17 @@ void MDInfo::DisplayAssemblyRefInfo(mdAssemblyRef inAssemblyRef)
     if (FAILED(hr)) Error("GetAssemblyRefProps() failed.", hr);
 
     DumpHex("\tPublic Key or Token", pbPublicKeyOrToken, cbPublicKeyOrToken, false, 24);
-    VWriteLine("\tName: %ls", szName);
+    VWriteLine("\tName: %s", ConvertToUtf8(szName, szNameUtf8, ARRAY_SIZE(szNameUtf8)));
     DisplayASSEMBLYMETADATA(&MetaData);
     if(MetaData.szLocale) delete [] MetaData.szLocale;
     if(MetaData.rProcessor) delete [] MetaData.rProcessor;
     if(MetaData.rOS) delete [] MetaData.rOS;
     DumpHex("\tHashValue Blob", pbHashValue, cbHashValue, false, 24);
 
-    char sFlags[STRING_BUFFER_LEN];
+    char szTempBuf[STRING_BUFFER_LEN];
     DWORD flags = dwFlags;
 
-    sFlags[0] = 0;
+    szTempBuf[0] = 0;
     ISFLAG(Af, PublicKey);
     ISFLAG(Af, Retargetable);
     ISFLAG(AfContentType_, WindowsRuntime);
@@ -3208,10 +3179,10 @@ void MDInfo::DisplayAssemblyRefInfo(mdAssemblyRef inAssemblyRef)
     ISFLAG(Af, Library);
     ISFLAG(Af, Platform);
 #endif
-    if (!*sFlags)
-        strcpy_s(sFlags, STRING_BUFFER_LEN, "[none]");
+    if (!*szTempBuf)
+        strcpy_s(szTempBuf, STRING_BUFFER_LEN, "[none]");
 
-    VWriteLine("\tFlags: %s (%08x)", sFlags, dwFlags);
+    VWriteLine("\tFlags: %s (%08x)", szTempBuf, dwFlags);
     DisplayCustomAttributes(inAssemblyRef, "\t");
     WriteLine("");
 }   // void MDInfo::DisplayAssemblyRefInfo()
@@ -3243,6 +3214,7 @@ void MDInfo::DisplayFileInfo(mdFile inFile)
 {
     HRESULT         hr;
     WCHAR           szName[STRING_BUFFER_LEN];
+    char            szNameUtf8[ARRAY_SIZE(szName) * MAX_UTF8_CVT];
     const BYTE      *pbHashValue;
     ULONG           cbHashValue;
     DWORD           dwFlags;
@@ -3254,19 +3226,19 @@ void MDInfo::DisplayFileInfo(mdFile inFile)
                                          (const void **)&pbHashValue, &cbHashValue,
                                          &dwFlags);
     if (FAILED(hr)) Error("GetFileProps() failed.", hr);
-    VWriteLine("\tName : %ls", szName);
+    VWriteLine("\tName : %s", ConvertToUtf8(szName, szNameUtf8, ARRAY_SIZE(szNameUtf8)));
     DumpHex("\tHashValue Blob ", pbHashValue, cbHashValue, false, 24);
 
-    char sFlags[STRING_BUFFER_LEN];
+    char szTempBuf[STRING_BUFFER_LEN];
     DWORD flags = dwFlags;
 
-    sFlags[0] = 0;
+    szTempBuf[0] = 0;
     ISFLAG(Ff, ContainsMetaData);
     ISFLAG(Ff, ContainsNoMetaData);
-    if (!*sFlags)
-        strcpy_s(sFlags, STRING_BUFFER_LEN, "[none]");
+    if (!*szTempBuf)
+        strcpy_s(szTempBuf, STRING_BUFFER_LEN, "[none]");
 
-    VWriteLine("\tFlags : %s (%08x)", sFlags, dwFlags);
+    VWriteLine("\tFlags : %s (%08x)", szTempBuf, dwFlags);
     DisplayCustomAttributes(inFile, "\t");
     WriteLine("");
 
@@ -3299,10 +3271,11 @@ void MDInfo::DisplayExportedTypeInfo(mdExportedType inExportedType)
 {
     HRESULT         hr;
     WCHAR           szName[STRING_BUFFER_LEN];
+    char            szNameUtf8[ARRAY_SIZE(szName) * MAX_UTF8_CVT];
     mdToken         tkImplementation;
     mdTypeDef       tkTypeDef;
     DWORD           dwFlags;
-    char            sFlags[STRING_BUFFER_LEN];
+    char            szTempBuf[STRING_BUFFER_LEN];
 
     VWriteLine("\tToken: 0x%08x", inExportedType);
 
@@ -3312,10 +3285,10 @@ void MDInfo::DisplayExportedTypeInfo(mdExportedType inExportedType)
                                             &tkTypeDef,
                                             &dwFlags);
     if (FAILED(hr)) Error("GetExportedTypeProps() failed.", hr);
-    VWriteLine("\tName: %ls", szName);
+    VWriteLine("\tName: %s", ConvertToUtf8(szName, szNameUtf8, ARRAY_SIZE(szNameUtf8)));
     VWriteLine("\tImplementation token: 0x%08x", tkImplementation);
     VWriteLine("\tTypeDef token: 0x%08x", tkTypeDef);
-    VWriteLine("\tFlags     : %s (%08x)",ClassFlags(dwFlags, sFlags), dwFlags);
+    VWriteLine("\tFlags     : %s (%08x)",ClassFlags(dwFlags, szTempBuf), dwFlags);
     DisplayCustomAttributes(inExportedType, "\t");
     WriteLine("");
 }   // void MDInfo::DisplayExportedTypeInfo()
@@ -3347,6 +3320,7 @@ void MDInfo::DisplayManifestResourceInfo(mdManifestResource inManifestResource)
 {
     HRESULT         hr;
     WCHAR           szName[STRING_BUFFER_LEN];
+    char            szNameUtf8[ARRAY_SIZE(szName) * MAX_UTF8_CVT];
     mdToken         tkImplementation;
     DWORD           dwOffset;
     DWORD           dwFlags;
@@ -3359,20 +3333,20 @@ void MDInfo::DisplayManifestResourceInfo(mdManifestResource inManifestResource)
                                                      &dwOffset,
                                                      &dwFlags);
     if (FAILED(hr)) Error("GetManifestResourceProps() failed.", hr);
-    VWriteLine("Name: %ls", szName);
+    VWriteLine("Name: %s", ConvertToUtf8(szName, szNameUtf8, ARRAY_SIZE(szNameUtf8)));
     VWriteLine("Implementation token: 0x%08x", tkImplementation);
     VWriteLine("Offset: 0x%08x", dwOffset);
 
-    char sFlags[STRING_BUFFER_LEN];
+    char szTempBuf[STRING_BUFFER_LEN];
     DWORD flags = dwFlags;
 
-    sFlags[0] = 0;
+    szTempBuf[0] = 0;
     ISFLAG(Mr, Public);
     ISFLAG(Mr, Private);
-    if (!*sFlags)
-        strcpy_s(sFlags, STRING_BUFFER_LEN, "[none]");
+    if (!*szTempBuf)
+        strcpy_s(szTempBuf, STRING_BUFFER_LEN, "[none]");
 
-    VWriteLine("\tFlags: %s (%08x)", sFlags, dwFlags);
+    VWriteLine("\tFlags: %s (%08x)", szTempBuf, dwFlags);
     DisplayCustomAttributes(inManifestResource, "\t");
     WriteLine("");
 }   // void MDInfo::DisplayManifestResourceInfo()
@@ -3381,12 +3355,13 @@ void MDInfo::DisplayASSEMBLYMETADATA(ASSEMBLYMETADATA *pMetaData)
 {
     ULONG           i;
 
+    char            szLocaleUtf8[STRING_BUFFER_LEN];
     VWriteLine("\tVersion: %d.%d.%d.%d", pMetaData->usMajorVersion, pMetaData->usMinorVersion, pMetaData->usBuildNumber, pMetaData->usRevisionNumber);
     VWriteLine("\tMajor Version: 0x%08x", pMetaData->usMajorVersion);
     VWriteLine("\tMinor Version: 0x%08x", pMetaData->usMinorVersion);
     VWriteLine("\tBuild Number: 0x%08x", pMetaData->usBuildNumber);
     VWriteLine("\tRevision Number: 0x%08x", pMetaData->usRevisionNumber);
-    VWriteLine("\tLocale: %ls", pMetaData->cbLocale ? pMetaData->szLocale : W("<null>"));
+    VWriteLine("\tLocale: %s", pMetaData->cbLocale ? ConvertToUtf8(pMetaData->szLocale, szLocaleUtf8, ARRAY_SIZE(szLocaleUtf8)) : "<null>");
     for (i = 0; i < pMetaData->ulProcessor; i++)
         VWriteLine("\tProcessor #%ld: 0x%08x", i+1, pMetaData->rProcessor[i]);
     for (i = 0; i < pMetaData->ulOS; i++)
@@ -3746,7 +3721,7 @@ int MDInfo::DumpHex(
         ++nLines;
 
         // Calculate spacing.
-        nPrint = min(cbData, nLine);
+        nPrint = std::min(cbData, nLine);
         nSpace = nLine - nPrint;
 
             // dump in hex.
@@ -3920,17 +3895,17 @@ void MDInfo::DumpRaw(int iDump, bool bunused)
                 BYTE        m_minor;
                 BYTE        m_heaps;                // Bits for heap sizes.
                 BYTE        m_rid;                  // log-base-2 of largest rid.
-                unsigned __int64    m_maskvalid;            // Bit mask of present table counts.
-                unsigned __int64    m_sorted;               // Bit mask of sorted tables.            };
+                uint64_t    m_maskvalid;            // Bit mask of present table counts.
+                uint64_t    m_sorted;               // Bit mask of sorted tables.            };
             };
 
             const MD *pMd;
             pMd = (const MD *)pbMd;
 
-            VWriteLine("Metadata header: %d.%d, heaps: 0x%02x, rid: 0x%02x, valid: 0x%016I64x, sorted: 0x%016I64x",
+            VWriteLine("Metadata header: %d.%d, heaps: 0x%02x, rid: 0x%02x, valid: 0x%016" PRIx64 ", sorted: 0x%016" PRIx64,
                        pMd->m_major, pMd->m_minor, pMd->m_heaps, pMd->m_rid,
-                       (ULONGLONG)GET_UNALIGNED_VAL64(&(pMd->m_maskvalid)),
-                       (ULONGLONG)GET_UNALIGNED_VAL64(&(pMd->m_sorted)));
+                       (uint64_t)GET_UNALIGNED_VAL64(&(pMd->m_maskvalid)),
+                       (uint64_t)GET_UNALIGNED_VAL64(&(pMd->m_sorted)));
 
             if (m_DumpFilter & dumpMoreHex)
             {

@@ -1,17 +1,15 @@
 ﻿// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-//#define LAUNCH_DEBUGGER
-using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
-using System.Reflection;
-using System.Text.Json.Reflection;
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
+#if !ROSLYN4_4_OR_GREATER
+using Microsoft.CodeAnalysis.DotnetRuntime.Extensions;
+#endif
 
 namespace System.Text.Json.SourceGeneration
 {
@@ -21,67 +19,126 @@ namespace System.Text.Json.SourceGeneration
     [Generator]
     public sealed partial class JsonSourceGenerator : IIncrementalGenerator
     {
+#if ROSLYN4_4_OR_GREATER
+        public const string SourceGenerationSpecTrackingName = "SourceGenerationSpec";
+#endif
+
         public void Initialize(IncrementalGeneratorInitializationContext context)
         {
-            IncrementalValuesProvider<ClassDeclarationSyntax> classDeclarations = context.SyntaxProvider
-                .CreateSyntaxProvider(static (s, _) => Parser.IsSyntaxTargetForGeneration(s), static (s, _) => Parser.GetSemanticTargetForGeneration(s))
-                .Where(static c => c is not null);
+#if LAUNCH_DEBUGGER
+            System.Diagnostics.Debugger.Launch();
+#endif
+            IncrementalValueProvider<KnownTypeSymbols> knownTypeSymbols = context.CompilationProvider
+                .Select((compilation, _) => new KnownTypeSymbols(compilation));
 
-            IncrementalValueProvider<(Compilation, ImmutableArray<ClassDeclarationSyntax>)> compilationAndClasses =
-                context.CompilationProvider.Combine(classDeclarations.Collect());
+            IncrementalValuesProvider<(ContextGenerationSpec?, ImmutableArray<Diagnostic>)> contextGenerationSpecs = context.SyntaxProvider
+                .ForAttributeWithMetadataName(
+#if !ROSLYN4_4_OR_GREATER
+                    context,
+#endif
+                    Parser.JsonSerializableAttributeFullName,
+                    (node, _) => node is ClassDeclarationSyntax,
+                    (context, _) => (ContextClass: (ClassDeclarationSyntax)context.TargetNode, context.SemanticModel))
+                .Combine(knownTypeSymbols)
+                .Select(static (tuple, cancellationToken) =>
+                {
+                    // Ensure the source generator parses using invariant culture.
+                    // This prevents issues such as locale-specific negative signs (e.g., U+2212 in fi-FI)
+                    // from being written to generated source files.
+#pragma warning disable RS1035 // CultureInfo.CurrentCulture is banned in analyzers
+                    CultureInfo originalCulture = CultureInfo.CurrentCulture;
+                    CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+                    try
+                    {
+#pragma warning restore RS1035
+                        Parser parser = new(tuple.Right);
+                        ContextGenerationSpec? contextGenerationSpec = parser.ParseContextGenerationSpec(tuple.Left.ContextClass, tuple.Left.SemanticModel, cancellationToken);
+                        ImmutableArray<Diagnostic> diagnostics = parser.Diagnostics.ToImmutableArray();
+                        return (contextGenerationSpec, diagnostics);
+#pragma warning disable RS1035
+                    }
+                    finally
+                    {
+                        CultureInfo.CurrentCulture = originalCulture;
+                    }
+#pragma warning restore RS1035
+                })
+#if ROSLYN4_4_OR_GREATER
+                .WithTrackingName(SourceGenerationSpecTrackingName)
+#endif
+                ;
 
-            context.RegisterSourceOutput(compilationAndClasses, (spc, source) => Execute(source.Item1, source.Item2, spc));
+            // Project the combined pipeline result to just the equatable model, discarding diagnostics.
+            // ContextGenerationSpec implements value equality, so Roslyn's Select operator will compare
+            // successive model snapshots and only propagate changes downstream when the model structurally
+            // differs. This ensures source generation is fully incremental: re-emitting code only when
+            // the serialization spec actually changes, not on every keystroke or positional shift.
+            IncrementalValuesProvider<ContextGenerationSpec?> sourceGenerationSpecs =
+                contextGenerationSpecs.Select(static (t, _) => t.Item1);
+
+            context.RegisterSourceOutput(sourceGenerationSpecs, EmitSource);
+
+            // Project to just the diagnostics, discarding the model. ImmutableArray<Diagnostic> does not
+            // implement value equality, so Roslyn's incremental pipeline uses reference equality for these
+            // values — the callback fires on every compilation change. This is by design: diagnostic
+            // emission is cheap, and we need fresh SourceLocation instances that are pragma-suppressible
+            // (cf. https://github.com/dotnet/runtime/issues/92509).
+            // No source code is generated from this pipeline — it exists solely to report diagnostics.
+            IncrementalValuesProvider<ImmutableArray<Diagnostic>> diagnostics =
+                contextGenerationSpecs.Select(static (t, _) => t.Item2);
+
+            context.RegisterSourceOutput(diagnostics, EmitDiagnostics);
         }
 
-        private void Execute(Compilation compilation, ImmutableArray<ClassDeclarationSyntax> contextClasses, SourceProductionContext sourceProductionContext)
+        private void EmitSource(SourceProductionContext sourceProductionContext, ContextGenerationSpec? contextGenerationSpec)
         {
-#if LAUNCH_DEBUGGER
-            if (!Diagnostics.Debugger.IsAttached)
-            {
-                Diagnostics.Debugger.Launch();
-            }
-#endif
-            if (contextClasses.IsDefaultOrEmpty)
+            if (contextGenerationSpec is null)
             {
                 return;
             }
 
-            JsonSourceGenerationContext context = new JsonSourceGenerationContext(sourceProductionContext);
-            Parser parser = new(compilation, context);
-            SourceGenerationSpec? spec = parser.GetGenerationSpec(contextClasses);
-            if (spec != null)
-            {
-                _rootTypes = spec.ContextGenerationSpecList[0].RootSerializableTypes;
+            OnSourceEmitting?.Invoke(ImmutableArray.Create(contextGenerationSpec));
 
-                Emitter emitter = new(context, spec);
-                emitter.Emit();
+            // Ensure the source generator emits number literals using invariant culture.
+            // This prevents issues such as locale-specific negative signs (e.g., U+2212 in fi-FI)
+            // from being written to generated source files.
+#pragma warning disable RS1035 // CultureInfo.CurrentCulture is banned in analyzers
+            CultureInfo originalCulture = CultureInfo.CurrentCulture;
+            CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+            try
+            {
+                Emitter emitter = new(sourceProductionContext);
+                emitter.Emit(contextGenerationSpec);
+            }
+            finally
+            {
+                CultureInfo.CurrentCulture = originalCulture;
+            }
+#pragma warning restore RS1035
+        }
+
+        private static void EmitDiagnostics(SourceProductionContext context, ImmutableArray<Diagnostic> diagnostics)
+        {
+            foreach (Diagnostic diagnostic in diagnostics)
+            {
+                context.ReportDiagnostic(diagnostic);
             }
         }
 
         /// <summary>
-        /// Helper for unit tests.
+        /// Instrumentation helper for unit tests.
         /// </summary>
-        public Dictionary<string, Type>? GetSerializableTypes() => _rootTypes?.ToDictionary(p => p.Type.FullName, p => p.Type);
-        private List<TypeGenerationSpec>? _rootTypes;
-    }
+        public Action<ImmutableArray<ContextGenerationSpec>>? OnSourceEmitting { get; init; }
 
-    internal readonly struct JsonSourceGenerationContext
-    {
-        private readonly SourceProductionContext _context;
-
-        public JsonSourceGenerationContext(SourceProductionContext context)
+        private partial class Emitter
         {
-            _context = context;
-        }
+            private readonly SourceProductionContext _context;
 
-        public void ReportDiagnostic(Diagnostic diagnostic)
-        {
-            _context.ReportDiagnostic(diagnostic);
-        }
+            public Emitter(SourceProductionContext context)
+                => _context = context;
 
-        public void AddSource(string hintName, SourceText sourceText)
-        {
-            _context.AddSource(hintName, sourceText);
+            private partial void AddSource(string hintName, SourceText sourceText)
+                => _context.AddSource(hintName, sourceText);
         }
     }
 }

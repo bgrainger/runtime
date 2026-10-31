@@ -1,7 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using System.Security;
 
 #pragma warning disable 0618 // ComInterfaceType.InterfaceIsDual is obsolete
@@ -117,7 +119,7 @@ namespace System.Data.Common
 
             [PreserveSig]
             System.Data.OleDb.OleDbHResult NextRecordset(
-                [Out]out object RecordsAffected,
+                [Out] out object RecordsAffected,
                 [Out, MarshalAs(UnmanagedType.Interface)] out object ppiRs);
 
             //[ Obsolete("not used", true)] void Supports(/*deleted parameters signature*/);
@@ -298,7 +300,7 @@ namespace System.Data.Common
                 [In] IntPtr pUnkOuter,
                 [In] IntPtr cOptColumns,
                 [In] SafeHandle rgOptColumns,
-                [In] ref Guid riid,
+                [In] in Guid riid,
                 [In] int cPropertySets,
                 [In] IntPtr rgPropertySets,
                 [Out, MarshalAs(UnmanagedType.Interface)] out IRowset ppColRowset);
@@ -366,7 +368,7 @@ namespace System.Data.Common
             [PreserveSig]
             System.Data.OleDb.OleDbHResult Execute(
                 [In] IntPtr pUnkOuter,
-                [In] ref Guid riid,
+                [In] in Guid riid,
                 [In] System.Data.OleDb.tagDBPARAMS? pDBParams,
                 [Out] out IntPtr pcRowsAffected,
                 [Out, MarshalAs(UnmanagedType.Interface)] out object ppRowset);
@@ -382,7 +384,7 @@ namespace System.Data.Common
             );*/
             [PreserveSig]
             System.Data.OleDb.OleDbHResult SetCommandText(
-                [In] ref Guid rguidDialect,
+                [In] in Guid rguidDialect,
                 [In, MarshalAs(UnmanagedType.LPWStr)] string pwszCommand);
         }
 
@@ -485,10 +487,10 @@ namespace System.Data.Common
             [PreserveSig]
             System.Data.OleDb.OleDbHResult GetRowset(
                 [In] IntPtr pUnkOuter,
-                [In] ref Guid rguidSchema,
+                [In] in Guid rguidSchema,
                 [In] int cRestrictions,
                 [In, MarshalAs(UnmanagedType.LPArray)] object?[] rgRestrictions,
-                [In] ref Guid riid,
+                [In] in Guid riid,
                 [In] int cPropertySets,
                 [In] IntPtr rgPropertySets,
                 [Out, MarshalAs(UnmanagedType.Interface)] out IRowset ppRowset);
@@ -506,10 +508,18 @@ namespace System.Data.Common
                 [Out] out IntPtr prgRestrictionSupport);
         }
 
-        [Guid("1CF2B120-547D-101B-8E65-08002B2BD119"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown), ComImport, SuppressUnmanagedCodeSecurity]
-        internal interface IErrorInfo
+        [Guid("0C733A74-2A1C-11CE-ADE5-00AA0044773D"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown), GeneratedComInterface, SuppressUnmanagedCodeSecurity]
+        internal partial interface ISQLErrorInfo
         {
-            [Obsolete("not used", true)] void GetGUID(/*deleted parameter signature*/);
+            [return: MarshalAs(UnmanagedType.I4)]
+            int GetSQLInfo(
+                [MarshalAs(UnmanagedType.BStr)] out string pbstrSQLState);
+        }
+
+        [Guid("1CF2B120-547D-101B-8E65-08002B2BD119"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown), GeneratedComInterface, SuppressUnmanagedCodeSecurity]
+        internal partial interface IErrorInfo
+        {
+            [Obsolete("not used")] void GetGUID(/*deleted parameter signature*/);
 
             [PreserveSig]
             System.Data.OleDb.OleDbHResult GetSource(
@@ -538,25 +548,26 @@ namespace System.Data.Common
                 /* [out] */ DWORD *pdwHelpContext) = 0;
 #endif
 
-        [Guid("0C733A67-2A1C-11CE-ADE5-00AA0044773D"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown), ComImport, SuppressUnmanagedCodeSecurity]
-        internal interface IErrorRecords
+        [Guid("0C733A67-2A1C-11CE-ADE5-00AA0044773D"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown), GeneratedComInterface, SuppressUnmanagedCodeSecurity]
+        internal partial interface IErrorRecords
         {
-            [Obsolete("not used", true)] void AddErrorRecord(/*deleted parameter signature*/);
+            [Obsolete("not used")] void AddErrorRecord(/*deleted parameter signature*/);
 
-            [Obsolete("not used", true)] void GetBasicErrorInfo(/*deleted parameter signature*/);
+            [Obsolete("not used")] void GetBasicErrorInfo(/*deleted parameter signature*/);
 
             [PreserveSig]
             System.Data.OleDb.OleDbHResult GetCustomErrorObject( // may return E_NOINTERFACE when asking for IID_ISQLErrorInfo
-                [In] int ulRecordNum,
-                [In] ref Guid riid,
-                [Out, MarshalAs(UnmanagedType.Interface)] out ISQLErrorInfo ppObject);
+                int ulRecordNum,
+                in Guid riid,
+                [MarshalUsing(typeof(UniqueComInterfaceMarshaller<ISQLErrorInfo>))]
+                out ISQLErrorInfo ppObject);
 
-            [return: MarshalAs(UnmanagedType.Interface)]
+            [return: MarshalUsing(typeof(UniqueComInterfaceMarshaller<IErrorInfo>))]
             IErrorInfo GetErrorInfo(
-                [In] int ulRecordNum,
-                [In] int lcid);
+                int ulRecordNum,
+                int lcid);
 
-            [Obsolete("not used", true)] void GetErrorParameters(/*deleted parameter signature*/);
+            [Obsolete("not used")] void GetErrorParameters(/*deleted parameter signature*/);
 
             int GetRecordCount();
         }
@@ -602,7 +613,7 @@ namespace System.Data.Common
             System.Data.OleDb.OleDbHResult GetResult(
                 [In] IntPtr pUnkOuter,
                 [In] IntPtr lResultFlag,
-                [In] ref Guid riid,
+                [In] in Guid riid,
                 [Out] out IntPtr pcRowsAffected,
                 [Out, MarshalAs(UnmanagedType.Interface)] out object ppRowset);
         }
@@ -630,7 +641,7 @@ namespace System.Data.Common
                 [In] IntPtr pUnkOuter,
                 [In] System.Data.OleDb.tagDBID pTableID,
                 [In] IntPtr pIndexID,
-                [In] ref Guid riid,
+                [In] in Guid riid,
                 [In] int cPropertySets,
                 [In] IntPtr rgPropertySets,
                 [Out, MarshalAs(UnmanagedType.Interface)] out object ppRowset);
@@ -717,19 +728,11 @@ namespace System.Data.Common
             [PreserveSig]
             System.Data.OleDb.OleDbHResult GetReferencedRowset(
                 [In] IntPtr iOrdinal,
-                [In] ref Guid riid,
+                [In] in Guid riid,
                 [Out, MarshalAs(UnmanagedType.Interface)] out IRowset? ppRowset);
 
             //[PreserveSig]
             //int GetSpecification(/*deleted parameter signature*/);
-        }
-
-        [Guid("0C733A74-2A1C-11CE-ADE5-00AA0044773D"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown), ComImport, SuppressUnmanagedCodeSecurity]
-        internal interface ISQLErrorInfo
-        {
-            [return: MarshalAs(UnmanagedType.I4)]
-            int GetSQLInfo(
-                [Out, MarshalAs(UnmanagedType.BStr)] out string pbstrSQLState);
         }
 
         [Guid("0C733A5F-2A1C-11CE-ADE5-00AA0044773D"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown), ComImport, SuppressUnmanagedCodeSecurity]
@@ -772,20 +775,20 @@ namespace System.Data.Common
 
         // dangerous delegate around IUnknown::QueryInterface (0th vtable entry)
         [SuppressUnmanagedCodeSecurity]
-        internal delegate int IUnknownQueryInterface(
+        internal unsafe delegate int IUnknownQueryInterface(
                 IntPtr pThis,
-                ref Guid riid,
-                ref IntPtr ppInterface);
+                Guid* riid,
+                IntPtr* ppInterface);
 
         // dangerous delegate around IDataInitialize::GetDataSource (4th vtable entry)
         [SuppressUnmanagedCodeSecurity]
-        internal delegate System.Data.OleDb.OleDbHResult IDataInitializeGetDataSource(
+        internal unsafe delegate System.Data.OleDb.OleDbHResult IDataInitializeGetDataSource(
                 IntPtr pThis, // first parameter is always the 'this' value, must use use result from QI
                 IntPtr pUnkOuter,
                 int dwClsCtx,
-                [MarshalAs(UnmanagedType.LPWStr)] string pwszInitializationString,
-                ref Guid riid,
-                ref System.Data.OleDb.DataSourceWrapper ppDataSource);
+                char* pwszInitializationString,
+                Guid* riid,
+                IntPtr* ppDataSource);
 
         // dangerous wrapper around IDBInitialize::Initialize (4th vtable entry)
         [SuppressUnmanagedCodeSecurity]
@@ -794,19 +797,19 @@ namespace System.Data.Common
 
         // dangerous wrapper around IDBCreateSession::CreateSession (4th vtable entry)
         [SuppressUnmanagedCodeSecurity]
-        internal delegate System.Data.OleDb.OleDbHResult IDBCreateSessionCreateSession(
+        internal unsafe delegate System.Data.OleDb.OleDbHResult IDBCreateSessionCreateSession(
                 IntPtr pThis, // first parameter is always the 'this' value, must use use result from QI
                 IntPtr pUnkOuter,
-                ref Guid riid,
-                ref System.Data.OleDb.SessionWrapper ppDBSession);
+                Guid* riid,
+                IntPtr* ppDBSession);
 
         // dangerous wrapper around IDBCreateCommand::CreateCommand (4th vtable entry)
         [SuppressUnmanagedCodeSecurity]
-        internal delegate System.Data.OleDb.OleDbHResult IDBCreateCommandCreateCommand(
+        internal unsafe delegate System.Data.OleDb.OleDbHResult IDBCreateCommandCreateCommand(
                 IntPtr pThis, // first parameter is always the 'this' value, must use use result from QI
                 IntPtr pUnkOuter,
-                ref Guid riid,
-                [MarshalAs(UnmanagedType.Interface)] ref object? ppCommand);
+                Guid* riid,
+                IntPtr* ppCommand);
 
         //
         // Advapi32.dll Integrated security functions
@@ -831,12 +834,5 @@ namespace System.Data.Common
                 _name = name;
             }
         }
-
-        [GeneratedDllImport(Interop.Libraries.Advapi32, EntryPoint = "CreateWellKnownSid", SetLastError = true, CharSet = CharSet.Unicode)]
-        internal static partial int CreateWellKnownSid(
-            int sidType,
-            byte[]? domainSid,
-            [MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 3)] out byte[] resultSid,
-            ref uint resultSidLength);
     }
 }

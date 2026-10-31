@@ -110,10 +110,7 @@ namespace System.Data.Odbc
             }
 
             // remove reference to this from the live datareader
-            if (liveReader != null)
-            {
-                liveReader.Command = null;
-            }
+            liveReader?.Command = null;
 
             _transaction = null;
 
@@ -163,8 +160,7 @@ namespace System.Data.Odbc
         {
             get
             {
-                string? value = _commandText;
-                return ((null != value) ? value : string.Empty);
+                return _commandText ?? string.Empty;
             }
             set
             {
@@ -412,10 +408,7 @@ namespace System.Data.Odbc
                 _connection.AddWeakReference(this, OdbcReferenceCollection.CommandTag);
             }
 
-            if (_cmdWrapper._dataReaderBuf == null)
-            {
-                _cmdWrapper._dataReaderBuf = new CNativeBuffer(4096);
-            }
+            _cmdWrapper._dataReaderBuf ??= new CNativeBuffer(4096);
 
             // if there is already a statement handle we need to do some cleanup
             //
@@ -503,10 +496,7 @@ namespace System.Data.Odbc
                 {
                     wrapper.Dispose();
 
-                    if (null != _connection)
-                    {
-                        _connection.RemoveWeakReference(this);
-                    }
+                    _connection?.RemoveWeakReference(this);
                 }
                 finally
                 {
@@ -517,10 +507,7 @@ namespace System.Data.Odbc
 
         internal void CloseFromConnection()
         {
-            if (null != _parameterCollection)
-            {
-                _parameterCollection.RebindCollection = true;
-            }
+            _parameterCollection?.RebindCollection = true;
             DisposeDataReader();
             CloseCommandWrapper();
             _isPrepared = false;
@@ -694,10 +681,7 @@ namespace System.Data.Odbc
 
                         if (null == parameterBuffer || parameterBuffer.Length < parameterBufferSize)
                         {
-                            if (null != parameterBuffer)
-                            {
-                                parameterBuffer.Dispose();
-                            }
+                            parameterBuffer?.Dispose();
                             parameterBuffer = new CNativeBuffer(parameterBufferSize);
                             _cmdWrapper._nativeParameterBuffer = parameterBuffer;
                         }
@@ -839,10 +823,7 @@ namespace System.Data.Odbc
                     if (null != localReader)
                     {
                         // clear bindings so we don't grab output parameters on a failed execute
-                        if (null != _parameterCollection)
-                        {
-                            _parameterCollection.ClearBindings();
-                        }
+                        _parameterCollection?.ClearBindings();
                         ((IDisposable)localReader).Dispose();
                     }
                     if (ConnectionState.Closed != _cmdState)
@@ -857,7 +838,7 @@ namespace System.Data.Odbc
         public override object? ExecuteScalar()
         {
             object? value = null;
-            using (IDataReader reader = ExecuteReaderObject(0, ADP.ExecuteScalar, false))
+            using (OdbcDataReader reader = ExecuteReaderObject(0, ADP.ExecuteScalar, false))
             {
                 if (reader.Read() && (0 < reader.FieldCount))
                 {
@@ -1063,10 +1044,7 @@ namespace System.Data.Odbc
 
             CNativeBuffer? buffer = _nativeParameterBuffer;
             _nativeParameterBuffer = null;
-            if (null != buffer)
-            {
-                buffer.Dispose();
-            }
+            buffer?.Dispose();
             _ssKeyInfoModeOn = false;
             _ssKeyInfoModeOff = false;
         }

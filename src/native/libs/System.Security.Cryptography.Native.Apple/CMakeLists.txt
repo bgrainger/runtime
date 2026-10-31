@@ -6,10 +6,10 @@ set(NATIVE_LIBS_EXTRA)
 append_extra_cryptography_apple_libs(NATIVE_LIBS_EXTRA)
 
 set(NATIVECRYPTO_SOURCES
-    pal_digest.c
     pal_ecc.c
     pal_hmac.c
     pal_keyagree.c
+    pal_keyderivation.c
     pal_random.c
     pal_rsa.c
     pal_sec.c
@@ -19,9 +19,11 @@ set(NATIVECRYPTO_SOURCES
     pal_symmetric.c
     pal_x509.c
     pal_x509chain.c
+    pal_swiftbindings.o
+    pal_networkframework.m
 )
 
-if (CLR_CMAKE_TARGET_MACCATALYST OR CLR_CMAKE_TARGET_IOS OR CLR_CMAKE_TARGET_TVOS)
+if (CLR_CMAKE_TARGET_APPLE_MOBILE)
     set(NATIVECRYPTO_SOURCES
         ${NATIVECRYPTO_SOURCES}
         pal_keychain_ios.c
@@ -31,12 +33,67 @@ else()
     set(NATIVECRYPTO_SOURCES
         ${NATIVECRYPTO_SOURCES}
         pal_keychain_macos.c
-        pal_keyderivation_macos.c
         pal_seckey_macos.c
         pal_trust_macos.c
         pal_x509_macos.c
     )
 endif()
+
+# As of CMake 3.20.2 support for Swift only works with the Ninja and XCode
+# generators so we cannot rely on it. Even with the Ninja generator it doesn't
+# work in combination with other languages within the same library.
+if (NOT SWIFT_COMPILER_TARGET)
+
+    if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+        set(SWIFT_OPTIMIZATION_FLAG "-Onone")
+    elseif (CMAKE_BUILD_TYPE STREQUAL "Release")
+        set(SWIFT_OPTIMIZATION_FLAG "-O")
+    endif()
+
+    if (CLR_CMAKE_TARGET_MACCATALYST)
+        # this is set in configurecompiler.cmake
+        set(SWIFT_COMPILER_TARGET ${CLR_CMAKE_MACCATALYST_COMPILER_TARGET})
+    else()
+        set(SWIFT_DEPLOYMENT_TARGET ${CMAKE_OSX_DEPLOYMENT_TARGET})
+        set(SWIFT_PLATFORM_SUFFIX "")
+
+        if (CLR_CMAKE_TARGET_OSX)
+            set(SWIFT_PLATFORM "macosx")
+        elseif (CLR_CMAKE_TARGET_IOS)
+            set(SWIFT_PLATFORM "ios")
+            if (CMAKE_OSX_SYSROOT MATCHES iPhoneSimulator)
+                set(SWIFT_PLATFORM_SUFFIX "-simulator")
+            endif()
+        elseif (CLR_CMAKE_TARGET_TVOS)
+            set(SWIFT_PLATFORM "tvos")
+            if (CMAKE_OSX_SYSROOT MATCHES AppleTVSimulator)
+                set(SWIFT_PLATFORM_SUFFIX "-simulator")
+            endif()
+        else()
+            message(FATAL_ERROR "Unknown platform")
+        endif()
+
+        set(SWIFT_COMPILER_TARGET "${CMAKE_OSX_ARCHITECTURES}-apple-${SWIFT_PLATFORM}${SWIFT_DEPLOYMENT_TARGET}${SWIFT_PLATFORM_SUFFIX}")
+    endif()
+endif()
+
+set(SWIFT_SDK_FLAG "")
+if (CMAKE_OSX_SYSROOT)
+    set(SWIFT_SDK_FLAG -sdk ${CMAKE_OSX_SYSROOT})
+endif()
+
+set(SWIFT_COMPILER_ERRORS_FLAG "")
+if (PRERELEASE)
+    set(SWIFT_COMPILER_ERRORS_FLAG "-warnings-as-errors")
+endif()
+
+add_custom_command(
+    OUTPUT pal_swiftbindings.o
+    COMMAND xcrun swiftc -emit-object -static -parse-as-library -enable-library-evolution ${SWIFT_COMPILER_ERRORS_FLAG} -gline-tables-only ${SWIFT_OPTIMIZATION_FLAG} -runtime-compatibility-version none ${SWIFT_SDK_FLAG} -target ${SWIFT_COMPILER_TARGET} ${CMAKE_CURRENT_SOURCE_DIR}/pal_swiftbindings.swift -o pal_swiftbindings.o
+    MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/pal_swiftbindings.swift
+    COMMENT "Compiling Swift file pal_swiftbindings.swift"
+)
+set_source_files_properties(pal_swiftbindings.o PROPERTIES EXTERNAL_OBJECT true GENERATED true)
 
 if (CLR_CMAKE_TARGET_MACCATALYST)
     add_definitions(-DTARGET_MACCATALYST)
@@ -58,7 +115,7 @@ if (GEN_SHARED_LIB)
     )
 endif()
 
-if (NOT GEN_SHARED_LIB AND NOT CLR_CMAKE_TARGET_MACCATALYST AND NOT CLR_CMAKE_TARGET_IOS AND NOT CLR_CMAKE_TARGET_TVOS)
+if (NOT GEN_SHARED_LIB AND NOT CLR_CMAKE_TARGET_APPLE_MOBILE)
     set(NATIVECRYPTO_SOURCES ${NATIVECRYPTO_SOURCES} entrypoints.c)
 endif()
 
@@ -71,10 +128,19 @@ set_target_properties(System.Security.Cryptography.Native.Apple-Static PROPERTIE
 
 if (GEN_SHARED_LIB)
     target_link_libraries(System.Security.Cryptography.Native.Apple
+        PRIVATE
         ${NATIVE_LIBS_EXTRA}
     )
 
-    if (NOT CLR_CMAKE_TARGET_MACCATALYST AND NOT CLR_CMAKE_TARGET_IOS AND NOT CLR_CMAKE_TARGET_TVOS)
+    add_custom_command(TARGET System.Security.Cryptography.Native.Apple POST_BUILD
+        COMMENT "Verifying System.Security.Cryptography.Native.Apple has no Swift ObjC classes"
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../verify-no-swift-objc-classes.sh
+            $<TARGET_FILE:System.Security.Cryptography.Native.Apple>
+            ${CMAKE_NM}
+        VERBATIM
+    )
+
+    if (NOT CLR_CMAKE_TARGET_APPLE_MOBILE)
         add_custom_command(TARGET System.Security.Cryptography.Native.Apple POST_BUILD
             COMMENT "Verifying System.Security.Cryptography.Native.Apple points against entrypoints.c "
             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../verify-entrypoints.sh
@@ -85,6 +151,14 @@ if (GEN_SHARED_LIB)
         )
     endif()
 endif()
+
+add_custom_command(TARGET System.Security.Cryptography.Native.Apple-Static POST_BUILD
+    COMMENT "Verifying System.Security.Cryptography.Native.Apple static archive has no Swift ObjC classes"
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../verify-no-swift-objc-classes.sh
+        $<TARGET_FILE:System.Security.Cryptography.Native.Apple-Static>
+        ${CMAKE_NM}
+    VERBATIM
+)
 
 if (GEN_SHARED_LIB)
     install_with_stripped_symbols (System.Security.Cryptography.Native.Apple PROGRAMS .)

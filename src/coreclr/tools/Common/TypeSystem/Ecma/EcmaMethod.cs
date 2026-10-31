@@ -1,11 +1,15 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System;
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
 using System.Reflection;
 using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
+using System.Runtime.CompilerServices;
 using System.Threading;
+
+using Internal.Text;
 
 namespace Internal.TypeSystem.Ecma
 {
@@ -13,6 +17,7 @@ namespace Internal.TypeSystem.Ecma
     {
         private static class MethodFlags
         {
+#pragma warning disable IDE0055 // Disable formatting to keep aligned
             public const int BasicMetadataCache     = 0x00001;
             public const int Virtual                = 0x00002;
             public const int NewSlot                = 0x00004;
@@ -26,31 +31,28 @@ namespace Internal.TypeSystem.Ecma
             public const int AggressiveOptimization = 0x00400;
             public const int NoOptimization         = 0x00800;
             public const int RequireSecObject       = 0x01000;
+            public const int Async                  = 0x02000;
 
-            public const int AttributeMetadataCache = 0x02000;
-            public const int Intrinsic              = 0x04000;
-            public const int UnmanagedCallersOnly   = 0x08000;
-            public const int RuntimeExport          = 0x10000;
+            public const int AttributeMetadataCache = 0x04000;
+            public const int Intrinsic              = 0x08000;
+            public const int UnmanagedCallersOnly   = 0x10000;
+#pragma warning restore IDE0055
         };
 
         private EcmaType _type;
         private MethodDefinitionHandle _handle;
 
         // Cached values
+        private unsafe volatile byte* _namePointer;
+        private int _nameLength;
         private ThreadSafeFlags _methodFlags;
         private MethodSignature _signature;
-        private string _name;
         private TypeDesc[] _genericParameters; // TODO: Optional field?
 
         internal EcmaMethod(EcmaType type, MethodDefinitionHandle handle)
         {
             _type = type;
             _handle = handle;
-
-#if DEBUG
-            // Initialize name eagerly in debug builds for convenience
-            InitializeName();
-#endif
         }
 
         EntityHandle EcmaModule.IEntityHandleObject.Handle
@@ -69,7 +71,7 @@ namespace Internal.TypeSystem.Ecma
             }
         }
 
-        public override TypeDesc OwningType
+        public override EcmaType OwningType
         {
             get
             {
@@ -101,7 +103,7 @@ namespace Internal.TypeSystem.Ecma
         {
             get
             {
-                return _type.EcmaModule;
+                return _type.Module;
             }
         }
 
@@ -170,6 +172,9 @@ namespace Internal.TypeSystem.Ecma
                 if ((methodImplAttributes & MethodImplAttributes.Synchronized) != 0)
                     flags |= MethodFlags.Synchronized;
 
+                if ((methodImplAttributes & MethodImplAttributes.Async) != 0)
+                    flags |= MethodFlags.Async;
+
                 flags |= MethodFlags.BasicMetadataCache;
             }
 
@@ -199,14 +204,6 @@ namespace Internal.TypeSystem.Ecma
                         if (metadataReader.StringComparer.Equals(nameHandle, "UnmanagedCallersOnlyAttribute"))
                         {
                             flags |= MethodFlags.UnmanagedCallersOnly;
-                        }
-                    }
-                    else
-                    if (metadataReader.StringComparer.Equals(namespaceHandle, "System.Runtime"))
-                    {
-                        if (metadataReader.StringComparer.Equals(nameHandle, "RuntimeExportAttribute"))
-                        {
-                            flags |= MethodFlags.RuntimeExport;
                         }
                     }
                 }
@@ -341,14 +338,6 @@ namespace Internal.TypeSystem.Ecma
             }
         }
 
-        public override bool IsRuntimeExport
-        {
-            get
-            {
-                return (GetMethodFlags(MethodFlags.AttributeMetadataCache | MethodFlags.RuntimeExport) & MethodFlags.RuntimeExport) != 0;
-            }
-        }
-
         public override bool IsSpecialName
         {
             get
@@ -362,11 +351,35 @@ namespace Internal.TypeSystem.Ecma
             get
             {
                 MethodAttributes attributes = Attributes;
-                return attributes.IsRuntimeSpecialName() 
+                return attributes.IsRuntimeSpecialName()
                     && attributes.IsPublic()
                     && Signature.Length == 0
-                    && Name == ".ctor"
+                    && Name == ".ctor"u8
                     && !_type.IsAbstract;
+            }
+        }
+
+        public override bool IsPublic
+        {
+            get
+            {
+                return Attributes.IsPublic();
+            }
+        }
+
+        public override bool IsStaticConstructor
+        {
+            get
+            {
+                return Attributes.IsRuntimeSpecialName() && Name == ".cctor"u8;
+            }
+        }
+
+        public override bool IsAsync
+        {
+            get
+            {
+                return (GetMethodFlags(MethodFlags.BasicMetadataCache | MethodFlags.Async) & MethodFlags.Async) != 0;
             }
         }
 
@@ -386,20 +399,24 @@ namespace Internal.TypeSystem.Ecma
             }
         }
 
-        private string InitializeName()
+        public unsafe ReadOnlySpan<byte> InitializeName()
         {
-            var metadataReader = MetadataReader;
-            var name = metadataReader.GetString(metadataReader.GetMethodDefinition(_handle).Name);
-            return (_name = name);
+            StringHandle handle = MetadataReader.GetMethodDefinition(_handle).Name;
+            _nameLength = MetadataReader.GetStringBytes(handle).Length;
+            _namePointer = MetadataReader.MetadataPointer + MetadataReader.GetHeapMetadataOffset(HeapIndex.String) + MetadataReader.GetHeapOffset(handle);
+            return new ReadOnlySpan<byte>(_namePointer, _nameLength);
         }
 
-        public override string Name
+        public override unsafe Utf8Span Name
         {
             get
             {
-                if (_name == null)
-                    return InitializeName();
-                return _name;
+                byte* namePointer = _namePointer;
+                if (namePointer != null)
+                {
+                    return new ReadOnlySpan<byte>(namePointer, _nameLength);
+                }
+                return InitializeName();
             }
         }
 
@@ -516,7 +533,7 @@ namespace Internal.TypeSystem.Ecma
             {
                 CustomAttribute attribute = reader.GetCustomAttribute(attributeHandle);
                 CustomAttributeValue<TypeDesc> decoded = attribute.DecodeValue(
-                    new CustomAttributeTypeProvider(_type.EcmaModule));
+                    new CustomAttributeTypeProvider(_type.Module));
 
                 if (decoded.FixedArguments.Length != 1 || !(decoded.FixedArguments[0].Value is bool))
                     ThrowHelper.ThrowBadImageFormatException();
@@ -546,7 +563,7 @@ namespace Internal.TypeSystem.Ecma
         public override ParameterMetadata[] GetParameterMetadata()
         {
             MetadataReader metadataReader = MetadataReader;
-            
+
             // Spot check the enums match
             Debug.Assert((int)ParameterAttributes.In == (int)ParameterMetadataAttributes.In);
             Debug.Assert((int)ParameterAttributes.Out == (int)ParameterMetadataAttributes.Out);
@@ -580,5 +597,11 @@ namespace Internal.TypeSystem.Ecma
             }
             return null;
         }
+
+        public override EcmaMethod GetMethodDefinition() => this;
+
+        public override EcmaMethod GetTypicalMethodDefinition() => this;
+
+        public override MethodDesc InstantiateSignature(Instantiation typeInstantiation, Instantiation methodInstantiation) => this;
     }
 }

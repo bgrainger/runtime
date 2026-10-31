@@ -12,11 +12,11 @@ StackLevelSetter::StackLevelSetter(Compiler* compiler)
     : Phase(compiler, PHASE_STACK_LEVEL_SETTER)
     , currentStackLevel(0)
     , maxStackLevel(0)
-    , memAllocator(compiler->getAllocator(CMK_fgArgInfoPtrArr))
+    , memAllocator(compiler->getAllocator(CMK_CallArgs))
     , putArgNumSlots(memAllocator)
+    , throwHelperBlocksUsed(m_compiler->fgUseThrowHelperBlocks())
 #if !FEATURE_FIXED_OUT_ARGS
     , framePointerRequired(compiler->codeGen->isFramePointerRequired())
-    , throwHelperBlocksUsed(comp->fgUseThrowHelperBlocks() && comp->compUsesThrowHelper)
 #endif // !FEATURE_FIXED_OUT_ARGS
 {
     // The constructor reads this value to skip iterations that could set it if it is already set.
@@ -24,52 +24,115 @@ StackLevelSetter::StackLevelSetter(Compiler* compiler)
 }
 
 //------------------------------------------------------------------------
-// DoPhase: Calculate stack slots numbers for outgoing args.
+// DoPhase: Calculate stack slots numbers for outgoing args and compute
+// requirements of throw helper blocks.
 //
 // Returns:
 //   PhaseStatus indicating what, if anything, was changed.
 //
-// Notes:
-//   For non-x86 platforms it calculates the max number of slots
-//   that calls inside this method can push on the stack.
-//   This value is used for sanity checks in the emitter.
-//
-//   Stack slots are pointer-sized: 4 bytes for 32-bit platforms, 8 bytes for 64-bit platforms.
-//
-//   For x86 it also sets throw-helper blocks incoming stack depth and set
-//   framePointerRequired when it is necessary. These values are used to pop
-//   pushed args when an exception occurs.
-//
 PhaseStatus StackLevelSetter::DoPhase()
 {
-    for (BasicBlock* const block : comp->Blocks())
-    {
-        ProcessBlock(block);
-    }
+    ProcessBlocks();
 
 #if !FEATURE_FIXED_OUT_ARGS
     if (framePointerRequired)
     {
-        comp->codeGen->setFramePointerRequired(true);
+        m_compiler->codeGen->setFramePointerRequired(true);
     }
 #endif // !FEATURE_FIXED_OUT_ARGS
 
     CheckAdditionalArgs();
 
-    comp->fgSetPtrArgCntMax(maxStackLevel);
     CheckArgCnt();
 
-    // Might want an "other" category for things like this...
-    return PhaseStatus::MODIFIED_NOTHING;
+    // When optimizing, check if there are any unused throw helper blocks,
+    // and if so, remove them.
+    //
+    bool madeChanges = false;
+
+    m_compiler->compUsesThrowHelper = false;
+
+    if (m_compiler->fgHasAddCodeDscMap())
+    {
+        if (m_compiler->opts.OptimizationEnabled())
+        {
+            for (Compiler::AddCodeDsc* const add :
+                 Compiler::AddCodeDscMap::ValueIteration(m_compiler->fgGetAddCodeDscMap()))
+            {
+                if (add->acdUsed)
+                {
+                    // Create the helper call
+                    //
+                    m_compiler->fgCreateThrowHelperBlockCode(add);
+                    m_compiler->compUsesThrowHelper = true;
+                }
+                else
+                {
+                    // Remove the helper call block
+                    //
+                    BasicBlock* const block = add->acdDstBlk;
+                    assert(block->isEmpty());
+                    JITDUMP("Throw help block " FMT_BB " is unused\n", block->bbNum);
+                    block->RemoveFlags(BBF_DONT_REMOVE);
+                    m_compiler->fgRemoveBlock(block, /* unreachable */ true);
+                }
+
+                madeChanges = true;
+            }
+        }
+        else
+        {
+            // Assume all helpers used. Fill in all helper block code.
+            //
+            for (Compiler::AddCodeDsc* const add :
+                 Compiler::AddCodeDscMap::ValueIteration(m_compiler->fgGetAddCodeDscMap()))
+            {
+                m_compiler->compUsesThrowHelper = true;
+                add->acdUsed                    = true;
+                m_compiler->fgCreateThrowHelperBlockCode(add);
+                madeChanges = true;
+            }
+        }
+    }
+
+    // We have added whatever throw helpers are needed, so set this flag
+    m_compiler->fgRngChkThrowAdded = true;
+
+    return madeChanges ? PhaseStatus::MODIFIED_EVERYTHING : PhaseStatus::MODIFIED_NOTHING;
 }
 
 //------------------------------------------------------------------------
-// ProcessBlock: Do stack level calculations for one block.
+// ProcessBlocks: Process all the blocks if necessary.
+//
+void StackLevelSetter::ProcessBlocks()
+{
+#ifndef TARGET_X86
+    // Outside x86 we do not need to compute pushed/popped stack slots.
+    // However, if we are using throw helpers, we also need to process the blocks
+    // to find where the helpers are needed and create the blocks and calls.
+    //
+    if (!throwHelperBlocksUsed)
+    {
+        return;
+    }
+#endif
+
+    for (BasicBlock* const block : m_compiler->Blocks())
+    {
+        ProcessBlock(block);
+    }
+}
+
+//------------------------------------------------------------------------
+// ProcessBlock: Do stack level and throw helper determinations for one block.
 //
 // Notes:
 //   Block starts and ends with an empty outgoing stack.
 //   Nodes in blocks are iterated in the reverse order to memorize GT_PUTARG_STK
-//   and GT_PUTARG_SPLIT stack sizes.
+//   stack sizes.
+//
+//   Also note which (if any) throw helper blocks might end up being used by
+//   codegen.
 //
 // Arguments:
 //   block - the block to process.
@@ -77,11 +140,14 @@ PhaseStatus StackLevelSetter::DoPhase()
 void StackLevelSetter::ProcessBlock(BasicBlock* block)
 {
     assert(currentStackLevel == 0);
+
     LIR::ReadOnlyRange& range = LIR::AsRange(block);
     for (auto i = range.rbegin(); i != range.rend(); ++i)
     {
         GenTree* node = *i;
-        if (node->OperIsPutArgStkOrSplit())
+
+#ifdef TARGET_X86
+        if (node->OperIsPutArgStk())
         {
             GenTreePutArgStk* putArg   = node->AsPutArgStk();
             unsigned          numSlots = putArgNumSlots[putArg];
@@ -89,30 +155,86 @@ void StackLevelSetter::ProcessBlock(BasicBlock* block)
             SubStackLevel(numSlots);
         }
 
-#if !FEATURE_FIXED_OUT_ARGS
-        // Set throw blocks incoming stack depth for x86.
-        if (throwHelperBlocksUsed && !framePointerRequired)
-        {
-            if (node->OperMayThrow(comp))
-            {
-                SetThrowHelperBlocks(node, block);
-            }
-        }
-#endif // !FEATURE_FIXED_OUT_ARGS
-
         if (node->IsCall())
         {
             GenTreeCall* call                = node->AsCall();
             unsigned     usedStackSlotsCount = PopArgumentsFromCall(call);
 #if defined(UNIX_X86_ABI)
-            call->fgArgInfo->SetStkSizeBytes(usedStackSlotsCount * TARGET_POINTER_SIZE);
+            call->gtArgs.SetStkSizeBytes(usedStackSlotsCount * TARGET_POINTER_SIZE);
 #endif // UNIX_X86_ABI
+        }
+#endif
+
+        if (!throwHelperBlocksUsed)
+        {
+            continue;
+        }
+
+        // When optimizing we want to know what throw helpers might be used
+        // so we can remove the ones that aren't needed.
+        //
+        // If we're not optimizing then the helper requests made in
+        // morph are likely still accurate, so we don't bother checking
+        // if helpers are indeed used.
+        //
+        bool checkForHelpers = true;
+
+#if !FEATURE_FIXED_OUT_ARGS
+        // Even if not optimizing, if we have a moving SP frame, a shared helper may
+        // be reached with mixed stack depths and so force this method to use
+        // a frame pointer. Once we see that the method will need a frame
+        // pointer we no longer need to check for this case.
+        //
+        checkForHelpers |= !framePointerRequired;
+#endif
+
+        if (checkForHelpers)
+        {
+            if (MayUseThrowHelperBlock(node))
+            {
+                SetThrowHelperBlocks(node, block);
+            }
         }
     }
     assert(currentStackLevel == 0);
 }
 
-#if !FEATURE_FIXED_OUT_ARGS
+//------------------------------------------------------------------------
+// MayUseThrowHelperBlock: Check whether codegen may branch to a throw helper block.
+//
+// Arguments:
+//   node - The node to process.
+//
+// Return Value:
+//   True if the node may branch to a throw helper block.
+//
+bool StackLevelSetter::MayUseThrowHelperBlock(GenTree* node)
+{
+    if (((node->gtFlags & GTF_EXCEPT) != 0) && node->OperMayThrow(m_compiler))
+    {
+        return true;
+    }
+
+#if defined(TARGET_WASM)
+    switch (node->OperGet())
+    {
+        case GT_NULLCHECK:
+        case GT_IND:
+        case GT_STORE_BLK:
+        case GT_STOREIND:
+            return (node->gtFlags & GTF_IND_NONFAULTING) == 0;
+
+        case GT_CALL:
+            return node->AsCall()->NeedsNullCheck();
+
+        default:
+            break;
+    }
+#endif // defined(TARGET_WASM)
+
+    return false;
+}
+
 //------------------------------------------------------------------------
 // SetThrowHelperBlocks: Set throw helper blocks incoming stack levels targeted
 //                       from the node.
@@ -124,38 +246,114 @@ void StackLevelSetter::ProcessBlock(BasicBlock* block)
 // Arguments:
 //   node - the node to process;
 //   block - the source block for the node.
+//
 void StackLevelSetter::SetThrowHelperBlocks(GenTree* node, BasicBlock* block)
 {
-    assert(node->OperMayThrow(comp));
+    assert(MayUseThrowHelperBlock(node));
 
     // Check that it uses throw block, find its kind, find the block, set level.
     switch (node->OperGet())
     {
-        case GT_ARR_BOUNDS_CHECK:
-#ifdef FEATURE_SIMD
-        case GT_SIMD_CHK:
-#endif // FEATURE_SIMD
-#ifdef FEATURE_HW_INTRINSICS
-        case GT_HW_INTRINSIC_CHK:
-#endif // FEATURE_HW_INTRINSICS
+        case GT_BOUNDS_CHECK:
         {
             GenTreeBoundsChk* bndsChk = node->AsBoundsChk();
             SetThrowHelperBlock(bndsChk->gtThrowKind, block);
         }
         break;
-        case GT_INDEX_ADDR:
-        case GT_ARR_ELEM:
-        case GT_ARR_INDEX:
+
+#if defined(FEATURE_HW_INTRINSICS) && defined(TARGET_XARCH)
+        case GT_HWINTRINSIC:
         {
-            SetThrowHelperBlock(SCK_RNGCHK_FAIL, block);
+
+            NamedIntrinsic intrinsicId = node->AsHWIntrinsic()->GetHWIntrinsicId();
+            if (intrinsicId == NI_Vector_op_Division)
+            {
+                SetThrowHelperBlock(SCK_DIV_BY_ZERO, block);
+                SetThrowHelperBlock(SCK_OVERFLOW, block);
+            }
+        }
+        break;
+#elif defined(FEATURE_HW_INTRINSICS) && defined(TARGET_WASM)
+        case GT_HWINTRINSIC:
+        {
+            HWIntrinsicCategory category = HWIntrinsicInfo::lookupCategory(node->AsHWIntrinsic()->GetHWIntrinsicId());
+            if (category == HW_Category_MemoryLoad || category == HW_Category_MemoryStore)
+            {
+                SetThrowHelperBlock(SCK_NULL_CHECK, block);
+            }
         }
         break;
 
+#endif // defined(FEATURE_HW_INTRINSICS) && (defined(TARGET_XARCH) || defined(TARGET_WASM))
+
+        case GT_INDEX_ADDR:
+            if (node->AsIndexAddr()->IsBoundsChecked())
+            {
+                SetThrowHelperBlock(SCK_RNGCHK_FAIL, block);
+            }
+            break;
+
         case GT_CKFINITE:
-        {
             SetThrowHelperBlock(SCK_ARITH_EXCPN, block);
+            break;
+
+#if defined(TARGET_ARM64) || defined(TARGET_ARM) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64) ||          \
+    defined(TARGET_WASM)
+        case GT_DIV:
+        case GT_UDIV:
+#if defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64) || defined(TARGET_WASM)
+        case GT_MOD:
+        case GT_UMOD:
+#endif
+        {
+            ExceptionSetFlags exSetFlags = node->OperExceptions(m_compiler);
+
+            if ((exSetFlags & ExceptionSetFlags::DivideByZeroException) != ExceptionSetFlags::None)
+            {
+                SetThrowHelperBlock(SCK_DIV_BY_ZERO, block);
+            }
+            else
+            {
+                // Even if we thought it might divide by zero during morph, now we know it never will.
+                node->gtFlags |= GTF_DIV_MOD_NO_BY_ZERO;
+            }
+
+            if ((exSetFlags & ExceptionSetFlags::ArithmeticException) != ExceptionSetFlags::None)
+            {
+                SetThrowHelperBlock(SCK_ARITH_EXCPN, block);
+            }
+            else
+            {
+                // Even if we thought it might overflow during morph, now we know it never will.
+                node->gtFlags |= GTF_DIV_MOD_NO_OVERFLOW;
+            }
         }
         break;
+#endif
+
+#if defined(TARGET_WASM)
+        // TODO-WASM: add other opers that imply null checks
+        case GT_NULLCHECK:
+            SetThrowHelperBlock(SCK_NULL_CHECK, block);
+            break;
+
+        case GT_IND:
+        case GT_STORE_BLK:
+        case GT_STOREIND:
+            if ((node->gtFlags & GTF_IND_NONFAULTING) == 0)
+            {
+                SetThrowHelperBlock(SCK_NULL_CHECK, block);
+            }
+            break;
+
+        case GT_CALL:
+            if (node->AsCall()->NeedsNullCheck())
+            {
+                SetThrowHelperBlock(SCK_NULL_CHECK, block);
+            }
+            break;
+#endif // defined(TARGET_WASM)
+
         default: // Other opers can target throw only due to overflow.
             break;
     }
@@ -176,10 +374,17 @@ void StackLevelSetter::SetThrowHelperBlocks(GenTree* node, BasicBlock* block)
 // Arguments:
 //   kind - the special throw-helper kind;
 //   block - the source block that targets helper.
+//
 void StackLevelSetter::SetThrowHelperBlock(SpecialCodeKind kind, BasicBlock* block)
 {
-    Compiler::AddCodeDsc* add = comp->fgFindExcptnTarget(kind, comp->bbThrowIndex(block));
+    Compiler::AddCodeDsc* add = m_compiler->fgGetExcptnTarget(kind, block, /* createIfNeeded */ true);
     assert(add != nullptr);
+
+    // We expect we'll actually need this helper.
+    add->acdUsed = true;
+
+#if !FEATURE_FIXED_OUT_ARGS
+
     if (add->acdStkLvlInit)
     {
         // If different range checks happen at different stack levels,
@@ -195,16 +400,9 @@ void StackLevelSetter::SetThrowHelperBlock(SpecialCodeKind kind, BasicBlock* blo
         // For Linux/x86, we possibly need to insert stack alignment adjustment
         // before the first stack argument pushed for every call. But we
         // don't know what the stack alignment adjustment will be when
-        // we morph a tree that calls fgAddCodeRef(), so the stack depth
+        // we morph a tree that calls a throw helper, so the stack depth
         // number will be incorrect. For now, simply force all functions with
-        // these helpers to have EBP frames. It might be possible to make
-        // this less conservative. E.g., for top-level (not nested) calls
-        // without stack args, the stack pointer hasn't changed and stack
-        // depth will be known to be zero. Or, figure out a way to update
-        // or generate all required helpers after all stack alignment
-        // has been added, and the stack level at each call to fgAddCodeRef()
-        // is known, or can be recalculated.
-        CLANG_FORMAT_COMMENT_ANCHOR;
+        // these helpers to have EBP frames.
 #if defined(UNIX_X86_ABI)
         framePointerRequired = true;
 #else  // !defined(UNIX_X86_ABI)
@@ -226,9 +424,8 @@ void StackLevelSetter::SetThrowHelperBlock(SpecialCodeKind kind, BasicBlock* blo
 #endif // Debug
         add->acdStkLvl = currentStackLevel;
     }
-}
-
 #endif // !FEATURE_FIXED_OUT_ARGS
+}
 
 //------------------------------------------------------------------------
 // PopArgumentsFromCall: Calculate the number of stack arguments that are used by the call.
@@ -243,23 +440,22 @@ void StackLevelSetter::SetThrowHelperBlock(SpecialCodeKind kind, BasicBlock* blo
 //   the number of stack slots in stack arguments for the call.
 unsigned StackLevelSetter::PopArgumentsFromCall(GenTreeCall* call)
 {
-    unsigned   usedStackSlotsCount = 0;
-    fgArgInfo* argInfo             = call->fgArgInfo;
-    if (argInfo->HasStackArgs())
+    unsigned usedStackSlotsCount = 0;
+    if (call->gtArgs.HasStackArgs())
     {
-        for (unsigned i = 0; i < argInfo->ArgCount(); ++i)
+        for (CallArg& arg : call->gtArgs.Args())
         {
-            const fgArgTabEntry* argTab    = argInfo->ArgTable()[i];
-            const unsigned       slotCount = argTab->GetStackSlotsNumber();
+            unsigned slotCount = (arg.AbiInfo.StackBytesConsumed() + (TARGET_POINTER_SIZE - 1)) / TARGET_POINTER_SIZE;
+
             if (slotCount != 0)
             {
-                GenTree* node = argTab->GetNode();
-                assert(node->OperIsPutArgStkOrSplit());
+                GenTree* node = arg.GetNode();
+                assert(node->OperIsPutArgStk());
 
                 GenTreePutArgStk* putArg = node->AsPutArgStk();
 
 #if !FEATURE_FIXED_OUT_ARGS
-                assert(slotCount == putArg->gtNumSlots);
+                assert((slotCount * TARGET_POINTER_SIZE) == putArg->GetStackByteSize());
 #endif // !FEATURE_FIXED_OUT_ARGS
 
                 putArgNumSlots.Set(putArg, slotCount);
@@ -306,7 +502,7 @@ void StackLevelSetter::SubStackLevel(unsigned value)
 // Notes:
 //    CheckArgCnt records the maximum number of pushed arguments.
 //    Depending upon this value of the maximum number of pushed arguments
-//    we may need to use an EBP frame or be partially interuptible.
+//    we may need to use an EBP frame or be partially interruptible.
 //    This functionality has to be called after maxStackLevel is set.
 //
 // Assumptions:
@@ -315,27 +511,34 @@ void StackLevelSetter::SubStackLevel(unsigned value)
 //
 void StackLevelSetter::CheckArgCnt()
 {
-    if (!comp->compCanEncodePtrArgCntMax())
+#ifdef JIT32_GCENCODER
+    // The GC encoding for fully interruptible methods does not
+    // support more than 1023 pushed arguments, so we have to
+    // use a partially interruptible GC info/encoding.
+    //
+    if (maxStackLevel >= MAX_PTRARG_OFS)
     {
 #ifdef DEBUG
-        if (comp->verbose)
+        if (m_compiler->verbose)
         {
             printf("Too many pushed arguments for fully interruptible encoding, marking method as partially "
                    "interruptible\n");
         }
 #endif
-        comp->SetInterruptible(false);
+        m_compiler->SetInterruptible(false);
     }
+
     if (maxStackLevel >= sizeof(unsigned))
     {
 #ifdef DEBUG
-        if (comp->verbose)
+        if (m_compiler->verbose)
         {
             printf("Too many pushed arguments for an ESP based encoding, forcing an EBP frame\n");
         }
 #endif
-        comp->codeGen->setFramePointerRequired(true);
+        m_compiler->codeGen->setFramePointerRequired(true);
     }
+#endif
 }
 
 //------------------------------------------------------------------------
@@ -347,7 +550,7 @@ void StackLevelSetter::CheckArgCnt()
 void StackLevelSetter::CheckAdditionalArgs()
 {
 #if defined(TARGET_X86)
-    if (comp->compIsProfilerHookNeeded())
+    if (m_compiler->compIsProfilerHookNeeded())
     {
         if (maxStackLevel == 0)
         {

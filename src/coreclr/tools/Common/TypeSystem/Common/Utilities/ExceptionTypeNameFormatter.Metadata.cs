@@ -4,16 +4,16 @@
 namespace Internal.TypeSystem
 {
     // Type name formatting functionality that relies on metadata.
-    partial class ExceptionTypeNameFormatter
+    public partial class ExceptionTypeNameFormatter
     {
-        private string GetTypeName(DefType type)
+        private static string GetTypeName(DefType type)
         {
-            return type.Name;
+            return type.GetName();
         }
 
-        private string GetTypeNamespace(DefType type)
+        private static string GetTypeNamespace(DefType type)
         {
-            return type.Namespace;
+            return type.GetNamespace();
         }
     }
 }

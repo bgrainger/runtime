@@ -1,9 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Net;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Net;
 
 namespace System.Diagnostics
 {
@@ -39,7 +39,7 @@ namespace System.Diagnostics
                 setter(carrier, RequestId, id);
             }
 
-            InjectBaggage(carrier, activity.Baggage, setter);
+            InjectBaggage(carrier, activity, setter);
         }
 
         public override void ExtractTraceIdAndState(object? carrier, PropagatorGetterCallback? getter, out string? traceId, out string? traceState)
@@ -165,10 +165,9 @@ namespace System.Diagnostics
 
                 if (keyStart < keyEnd && valueStart < currentIndex)
                 {
-                    baggageList ??= new();
+                    baggageList ??= new List<KeyValuePair<string, string?>>();
 
-                    // Insert in reverse order for asp.net compatability.
-                    baggageList.Insert(0, new KeyValuePair<string, string?>(
+                    baggageList.Add(new KeyValuePair<string, string?>(
                                                 WebUtility.UrlDecode(baggageString.Substring(keyStart, keyEnd - keyStart)).Trim(s_trimmingSpaceCharacters),
                                                 WebUtility.UrlDecode(baggageString.Substring(valueStart, currentIndex - valueStart)).Trim(s_trimmingSpaceCharacters)));
                 }
@@ -181,6 +180,9 @@ namespace System.Diagnostics
 
                 currentIndex++; // Move to next key-value entry
             } while (currentIndex < baggageString.Length);
+
+            // Reverse order for asp.net compatibility.
+            baggageList?.Reverse();
 
             baggage = baggageList;
             return baggageList != null;

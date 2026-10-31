@@ -3,12 +3,16 @@
 
 using System;
 using System.Linq;
+using Xunit;
+using TestLibrary;
 
 namespace BugInReflection
 {
-    class Program
+    public class Program
     {
-        static int Main(string[] args)
+        [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+        [Fact]
+        public static void TestEntryPoint()
         {
             // This tests the ability to load a type when
             // 1. The type implements an interface
@@ -26,7 +30,6 @@ namespace BugInReflection
             // To workaround the bug in .NET 5, simply make the Post class have enough virtual methods to match
             // the number of virtual methods on the ITitle interface.
             new BlogPost();
-            return 100;
         }
     }
 

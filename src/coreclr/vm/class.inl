@@ -10,7 +10,11 @@
 inline PTR_MethodDescChunk EEClass::GetChunks()
 {
     LIMITED_METHOD_DAC_CONTRACT;
+#ifdef DACCESS_COMPILE
     return m_pChunks;
+#else
+    return VolatileLoad(&m_pChunks);
+#endif
 }
 
 //*******************************************************************************
@@ -28,9 +32,8 @@ inline void EEClassOptionalFields::Init()
     m_pClassFactory = NULL;
 #endif // FEATURE_COMINTEROP_UNMANAGED_ACTIVATION
 #endif // FEATURE_COMINTEROP
-    m_cbModuleDynamicID = MODULE_NON_DYNAMIC_STATICS;
 #if defined(UNIX_AMD64_ABI)
-    m_numberEightBytes = 0;
+    m_eightByteRegistersInfo.InitEmpty();
 #endif // UNIX_AMD64_ABI
 }
 #endif // !DACCESS_COMPILE

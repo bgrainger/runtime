@@ -2,12 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Buffers.Binary;
-using System.Reflection;
-using System.IO;
 using System.Diagnostics;
+using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
-using Microsoft.Win32.SafeHandles;
 using System.Runtime.Serialization;
+using Microsoft.Win32.SafeHandles;
 
 namespace System.Text
 {
@@ -100,9 +100,12 @@ namespace System.Text
             internal short unused1;             // Add an unused WORD so that CodePages is aligned with DWORD boundary.
         }
         private const int CODEPAGE_DATA_FILE_HEADER_SIZE = 44;
-        internal static unsafe void ReadCodePageDataFileHeader(Stream stream, byte[] codePageDataFileHeader)
+        private static unsafe void ReadCodePageDataFileHeader(Stream stream, byte[] codePageDataFileHeader)
         {
-            stream.Read(codePageDataFileHeader, 0, codePageDataFileHeader.Length);
+            Debug.Assert(stream is UnmanagedMemoryStream, "UnmanagedMemoryStream will read a full buffer on one call to Read.");
+            int bytesRead = stream.Read(codePageDataFileHeader, 0, codePageDataFileHeader.Length);
+            Debug.Assert(bytesRead == codePageDataFileHeader.Length);
+
             if (!BitConverter.IsLittleEndian)
             {
                 fixed (byte* pBytes = &codePageDataFileHeader[0])
@@ -124,7 +127,7 @@ namespace System.Text
         }
 
         [StructLayout(LayoutKind.Explicit, Pack = 2)]
-        internal unsafe struct CodePageIndex
+        internal struct CodePageIndex
         {
             [FieldOffset(0)]
             internal char CodePageName;     // WORD[16]
@@ -135,9 +138,12 @@ namespace System.Text
             [FieldOffset(0x24)]
             internal int Offset;            // DWORD
         }
-        internal static unsafe void ReadCodePageIndex(Stream stream, byte[] codePageIndex)
+        private static unsafe void ReadCodePageIndex(Stream stream, byte[] codePageIndex)
         {
-            stream.Read(codePageIndex, 0, codePageIndex.Length);
+            Debug.Assert(stream is UnmanagedMemoryStream, "UnmanagedMemoryStream will read a full buffer on one call to Read.");
+            int bytesRead = stream.Read(codePageIndex, 0, codePageIndex.Length);
+            Debug.Assert(bytesRead == codePageIndex.Length);
+
             if (!BitConverter.IsLittleEndian)
             {
                 fixed (byte* pBytes = &codePageIndex[0])
@@ -146,7 +152,7 @@ namespace System.Text
                     char *pCodePageName = &p->CodePageName;
                     for (int i = 0; i < 16; i++)
                     {
-                            pCodePageName[i] = (char)BinaryPrimitives.ReverseEndianness((ushort)pCodePageName[i]);
+                        pCodePageName[i] = (char)BinaryPrimitives.ReverseEndianness((ushort)pCodePageName[i]);
                     }
                     p->CodePage = BinaryPrimitives.ReverseEndianness(p->CodePage);
                     p->ByteCount = BinaryPrimitives.ReverseEndianness(p->ByteCount);
@@ -156,7 +162,7 @@ namespace System.Text
         }
 
         [StructLayout(LayoutKind.Explicit)]
-        internal unsafe struct CodePageHeader
+        internal struct CodePageHeader
         {
             [FieldOffset(0)]
             internal char CodePageName;     // WORD[16]
@@ -178,9 +184,12 @@ namespace System.Text
             internal ushort ByteReplace;    // WORD     // default replacement bytes
         }
         private const int CODEPAGE_HEADER_SIZE = 48;
-        internal static unsafe void ReadCodePageHeader(Stream stream, byte[] codePageHeader)
+        private static unsafe void ReadCodePageHeader(Stream stream, byte[] codePageHeader)
         {
-            stream.Read(codePageHeader, 0, codePageHeader!.Length);
+            Debug.Assert(stream is UnmanagedMemoryStream, "UnmanagedMemoryStream will read a full buffer on one call to Read.");
+            int bytesRead = stream.Read(codePageHeader, 0, codePageHeader!.Length);
+            Debug.Assert(bytesRead == codePageHeader.Length);
+
             if (!BitConverter.IsLittleEndian)
             {
                 fixed (byte* pBytes = &codePageHeader[0])
@@ -238,7 +247,7 @@ namespace System.Text
         }
 
         // We need to load tables for our code page
-        private unsafe void LoadCodePageTables()
+        private void LoadCodePageTables()
         {
             if (!FindCodePage(dataTableCodePage))
             {
@@ -350,7 +359,7 @@ namespace System.Text
         }
 
         // We have a managed code page entry, so load our tables
-        protected abstract unsafe void LoadManagedCodePage();
+        protected abstract void LoadManagedCodePage();
 
         // Allocate memory to load our code page
         protected unsafe byte* GetNativeMemory(int iSize)
@@ -366,7 +375,7 @@ namespace System.Text
             return (byte*)safeNativeMemoryHandle.DangerousGetHandle();
         }
 
-        protected abstract unsafe void ReadBestFitTable();
+        protected abstract void ReadBestFitTable();
 
         internal char[] GetBestFitUnicodeToBytesData()
         {
@@ -394,7 +403,7 @@ namespace System.Text
         // invalid. We detect that by validating the memory section handle then re-initializing the memory
         // section by calling LoadManagedCodePage() method and eventually the mapped file handle and
         // the memory section pointer will get finalized one more time.
-        internal unsafe void CheckMemorySection()
+        internal void CheckMemorySection()
         {
             if (safeNativeMemoryHandle != null && safeNativeMemoryHandle.DangerousGetHandle() == IntPtr.Zero)
             {

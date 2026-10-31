@@ -1,18 +1,14 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
+
 //
 // File: typedesc.cpp
-//
-
-
 //
 // This file contains definitions for methods in the code:TypeDesc class and its
 // subclasses
 //     code:ParamTypeDesc,
 //     code:TyVarTypeDesc,
 //     code:FnPtrTypeDesc
-//
-
 //
 // ============================================================================
 
@@ -29,12 +25,10 @@ BOOL ParamTypeDesc::Verify() {
 
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
     STATIC_CONTRACT_CANNOT_TAKE_LOCK;
     STATIC_CONTRACT_DEBUG_ONLY;
     STATIC_CONTRACT_SUPPORTS_DAC;
 
-    _ASSERTE((m_TemplateMT == NULL) || GetTemplateMethodTableInternal()->SanityCheck());
     _ASSERTE(!GetTypeParam().IsNull());
     _ASSERTE(CorTypeInfo::IsModifier_NoThrow(GetInternalCorElementType()) ||
                               GetInternalCorElementType() == ELEMENT_TYPE_VALUETYPE);
@@ -66,7 +60,6 @@ PTR_Module TypeDesc::GetLoaderModule()
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
     SUPPORTS_DAC;
 
     if (HasTypeParam())
@@ -79,31 +72,49 @@ PTR_Module TypeDesc::GetLoaderModule()
     }
     else
     {
-        PTR_Module retVal = NULL;
-        BOOL fFail = FALSE;
-
-        _ASSERTE(GetInternalCorElementType() == ELEMENT_TYPE_FNPTR);
-        PTR_FnPtrTypeDesc asFnPtr = dac_cast<PTR_FnPtrTypeDesc>(this);
-        if (!fFail)
-        {
-            retVal = ClassLoader::ComputeLoaderModuleForFunctionPointer(asFnPtr->GetRetAndArgTypesPointer(), asFnPtr->GetNumArgs()+1);
-        }
-        return retVal;
+        return dac_cast<PTR_FnPtrTypeDesc>(this)->GetLoaderModule();
     }
 }
 
-PTR_BaseDomain TypeDesc::GetDomain()
+BOOL TypeDesc::IsSharedByGenericInstantiations()
 {
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        FORBID_FAULT;
-        SUPPORTS_DAC;
-    }
-    CONTRACTL_END
+    LIMITED_METHOD_DAC_CONTRACT;
 
-    return dac_cast<PTR_BaseDomain>(AppDomain::GetCurrentDomain());
+    if (HasTypeParam())
+    {
+        return GetRootTypeParam().IsCanonicalSubtype();
+    }
+
+    if (IsFnPtr())
+    {
+        return dac_cast<PTR_FnPtrTypeDesc>(this)->IsSharedByGenericInstantiations();
+    }
+
+    return FALSE;
+}
+
+BOOL TypeDesc::ContainsGenericVariables(BOOL methodOnly)
+{
+    if (IsGenericVariable())
+    {
+        if (!methodOnly)
+            return TRUE;
+
+        PTR_TypeVarTypeDesc pTyVar = dac_cast<PTR_TypeVarTypeDesc>(this);
+        return TypeFromToken(pTyVar->GetTypeOrMethodDef()) == mdtMethodDef;
+    }
+
+    if (HasTypeParam())
+    {
+        return GetRootTypeParam().ContainsGenericVariables(methodOnly);
+    }
+
+    if (IsFnPtr())
+    {
+        return dac_cast<PTR_FnPtrTypeDesc>(this)->ContainsGenericVariables(methodOnly);
+    }
+
+    return FALSE;
 }
 
 PTR_Module TypeDesc::GetModule() {
@@ -111,7 +122,6 @@ PTR_Module TypeDesc::GetModule() {
     {
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
         SUPPORTS_DAC;
         // Function pointer types belong to no module
         //PRECONDITION(GetInternalCorElementType() != ELEMENT_TYPE_FNPTR);
@@ -137,33 +147,12 @@ PTR_Module TypeDesc::GetModule() {
     return GetLoaderModule();
 }
 
-BOOL ParamTypeDesc::OwnsTemplateMethodTable()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    CorElementType kind = GetInternalCorElementType();
-
-    // The m_TemplateMT for pointer types is UIntPtr
-    if (!CorTypeInfo::IsArray_NoThrow(kind))
-    {
-        return FALSE;
-    }
-
-    return TRUE;
-}
-
 Assembly* TypeDesc::GetAssembly() {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     Module *pModule = GetModule();
-    PREFIX_ASSUME(pModule!=NULL);
+    _ASSERTE(pModule!=NULL);
     return pModule->GetAssembly();
 }
 
@@ -173,7 +162,6 @@ void TypeDesc::GetName(SString &ssBuf)
     {
         THROWS;
         GC_NOTRIGGER;
-        INJECT_FAULT(COMPlusThrowOM(););
     }
     CONTRACTL_END
 
@@ -203,7 +191,6 @@ void TypeDesc::ConstructName(CorElementType kind,
     {
         THROWS;
         GC_NOTRIGGER;
-        INJECT_FAULT(COMPlusThrowOM()); // SString operations can allocate.
     }
     CONTRACTL_END
 
@@ -246,18 +233,24 @@ void TypeDesc::ConstructName(CorElementType kind,
 
     case ELEMENT_TYPE_VAR:
     case ELEMENT_TYPE_MVAR:
+    {
         if (kind == ELEMENT_TYPE_VAR)
         {
-            ssBuff.Printf(W("!%d"), rank);
+            ssBuff.Append(W('!'));
         }
         else
         {
-            ssBuff.Printf(W("!!%d"), rank);
+            ssBuff.Append(W("!!"));
         }
+
+        WCHAR buffer[MaxSigned32BitDecString + 1];
+        FormatInteger(buffer, ARRAY_SIZE(buffer), "%d", rank);
+        ssBuff.Append(buffer);
+    }
         break;
 
     case ELEMENT_TYPE_FNPTR:
-        ssBuff.Printf(W("FNPTR"));
+        ssBuff.Set(W("FNPTR"));
         break;
 
     default:
@@ -310,7 +303,6 @@ BOOL TypeDesc::CanCastTo(TypeHandle toTypeHnd, TypeHandlePairList *pVisited)
         THROWS;
         GC_TRIGGERS;
         MODE_COOPERATIVE;
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END
 
@@ -344,7 +336,7 @@ BOOL TypeDesc::CanCastTo(TypeHandle toTypeHnd, TypeHandlePairList *pVisited)
         else
         {
             DWORD numConstraints;
-            TypeHandle* constraints = tyvar->GetConstraints(&numConstraints, CLASS_DEPENDENCIES_LOADED);
+            TypeHandle* constraints = tyvar->GetConstraints(&numConstraints, CLASS_DEPENDENCIES_LOADED, WhichConstraintsToLoad::All);
 
             if (constraints != NULL)
             {
@@ -390,7 +382,6 @@ BOOL TypeDesc::CanCastParam(TypeHandle fromParam, TypeHandle toParam, TypeHandle
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END
 
@@ -402,7 +393,7 @@ BOOL TypeDesc::CanCastParam(TypeHandle fromParam, TypeHandle toParam, TypeHandle
         return TRUE;
 
         // Object parameters dont need an exact match but only inheritance, check for that
-    CorElementType fromParamCorType = fromParam.GetVerifierCorElementType();
+    CorElementType fromParamCorType = fromParam.GetInternalCorElementType();
     if (CorTypeInfo::IsObjRef(fromParamCorType))
     {
         return fromParam.CanCastTo(toParam, pVisited);
@@ -411,8 +402,8 @@ BOOL TypeDesc::CanCastParam(TypeHandle fromParam, TypeHandle toParam, TypeHandle
     {
         TypeVarTypeDesc* varFromParam = fromParam.AsGenericVariable();
 
-        if (!varFromParam->ConstraintsLoaded())
-            varFromParam->LoadConstraints(CLASS_DEPENDENCIES_LOADED);
+        if (!varFromParam->ConstraintsLoaded(WhichConstraintsToLoad::TypeOrMethodVarsAndNonInterfacesOnly))
+            varFromParam->LoadConstraints(CLASS_DEPENDENCIES_LOADED, WhichConstraintsToLoad::TypeOrMethodVarsAndNonInterfacesOnly);
 
         if (!varFromParam->ConstrainedAsObjRef())
             return FALSE;
@@ -421,7 +412,7 @@ BOOL TypeDesc::CanCastParam(TypeHandle fromParam, TypeHandle toParam, TypeHandle
     }
     else if(CorTypeInfo::IsPrimitiveType(fromParamCorType))
     {
-        CorElementType toParamCorType = toParam.GetVerifierCorElementType();
+        CorElementType toParamCorType = toParam.GetInternalCorElementType();
         if(CorTypeInfo::IsPrimitiveType(toParamCorType))
         {
             if (GetNormalizedIntegralArrayElementType(toParamCorType) == GetNormalizedIntegralArrayElementType(fromParamCorType))
@@ -440,7 +431,6 @@ TypeHandle::CastResult TypeDesc::CanCastToCached(TypeHandle toType)
         NOTHROW;
         GC_NOTRIGGER;
         MODE_COOPERATIVE;
-        FORBID_FAULT;
     }
     CONTRACTL_END
 
@@ -490,7 +480,6 @@ TypeHandle TypeDesc::GetParent() {
 
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     CorElementType kind = GetInternalCorElementType();
 
@@ -501,99 +490,36 @@ TypeHandle TypeDesc::GetParent() {
 
 #ifndef DACCESS_COMPILE
 
-OBJECTREF ParamTypeDesc::GetManagedClassObject()
+OBJECTREF TypeDesc::GetManagedClassObject()
 {
     CONTRACTL {
         THROWS;
         GC_TRIGGERS;
         MODE_COOPERATIVE;
 
-        INJECT_FAULT(COMPlusThrowOM());
-
-        PRECONDITION(GetInternalCorElementType() == ELEMENT_TYPE_ARRAY ||
-                     GetInternalCorElementType() == ELEMENT_TYPE_SZARRAY ||
-                     GetInternalCorElementType() == ELEMENT_TYPE_BYREF ||
-                     GetInternalCorElementType() == ELEMENT_TYPE_PTR);
     }
     CONTRACTL_END;
 
-    if (m_hExposedClassObject == NULL) {
-        REFLECTCLASSBASEREF  refClass = NULL;
-        GCPROTECT_BEGIN(refClass);
-        refClass = (REFLECTCLASSBASEREF) AllocateObject(g_pRuntimeTypeClass);
-
-        LoaderAllocator *pLoaderAllocator = GetLoaderAllocator();
-        TypeHandle th = TypeHandle(this);
-        ((ReflectClassBaseObject*)OBJECTREFToObject(refClass))->SetType(th);
-        ((ReflectClassBaseObject*)OBJECTREFToObject(refClass))->SetKeepAlive(pLoaderAllocator->GetExposedObject());
-
-        // Let all threads fight over who wins using InterlockedCompareExchange.
-        // Only the winner can set m_hExposedClassObject from NULL.
-        LOADERHANDLE hExposedClassObject = pLoaderAllocator->AllocateHandle(refClass);
-
-        if (FastInterlockCompareExchangePointer(&m_hExposedClassObject, hExposedClassObject, static_cast<LOADERHANDLE>(NULL)))
-        {
-            pLoaderAllocator->FreeHandle(hExposedClassObject);
-        }
-
-        if (OwnsTemplateMethodTable())
-        {
-            // Set the handle on template methodtable as well to make Object.GetType for arrays take the fast path
-            GetTemplateMethodTableInternal()->GetWriteableDataForWrite()->m_hExposedClassObject = m_hExposedClassObject;
-        }
-
-        // Log the TypeVarTypeDesc access
-        g_IBCLogger.LogTypeMethodTableWriteableAccess(&th);
-
-        GCPROTECT_END();
+    if (_exposedClassObject == 0)
+    {
+        TypeHandle(this).AllocateManagedClassObject(&_exposedClassObject);
     }
     return GetManagedClassObjectIfExists();
 }
 
 #endif // #ifndef DACCESS_COMPILE
 
-BOOL TypeDesc::IsRestored()
-{
-    STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
-    STATIC_CONTRACT_CANNOT_TAKE_LOCK;
-    SUPPORTS_DAC;
-
-    TypeHandle th = TypeHandle(this);
-    g_IBCLogger.LogTypeMethodTableAccess(&th);
-    return IsRestored_NoLogging();
-}
-
-BOOL TypeDesc::IsRestored_NoLogging()
-{
-    STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
-    STATIC_CONTRACT_CANNOT_TAKE_LOCK;
-    SUPPORTS_DAC;
-
-    return (m_typeAndFlags & TypeDesc::enum_flag_Unrestored) == 0;
-}
-
 ClassLoadLevel TypeDesc::GetLoadLevel()
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
     SUPPORTS_DAC;
 
-    if (m_typeAndFlags & TypeDesc::enum_flag_UnrestoredTypeKey)
+    DWORD dwFlags = VolatileLoad(&_typeAndFlags);
+
+    if (dwFlags & TypeDesc::enum_flag_IsNotFullyLoaded)
     {
-        return CLASS_LOAD_UNRESTOREDTYPEKEY;
-    }
-    else if (m_typeAndFlags & TypeDesc::enum_flag_Unrestored)
-    {
-        return CLASS_LOAD_UNRESTORED;
-    }
-    else if (m_typeAndFlags & TypeDesc::enum_flag_IsNotFullyLoaded)
-    {
-        if (m_typeAndFlags & TypeDesc::enum_flag_DependenciesLoaded)
+        if (dwFlags & TypeDesc::enum_flag_DependenciesLoaded)
         {
             return CLASS_DEPENDENCIES_LOADED;
         }
@@ -630,7 +556,7 @@ ClassLoadLevel TypeDesc::GetLoadLevel()
 //                 dependencies - the root caller must handle this.
 //
 //
-//   pfBailed - if we or one of our depedencies bails early due to cyclic dependencies, we
+//   pfBailed - if we or one of our dependencies bails early due to cyclic dependencies, we
 //              must set *pfBailed to TRUE. Otherwise, we must *leave it unchanged* (thus, the
 //              boolean acts as a cumulative OR.)
 //
@@ -699,20 +625,12 @@ void TypeDesc::DoFullyLoad(Generics::RecursionGraph *pVisited, ClassLoadLevel le
 
         // Fully load the type parameter
         GetTypeParam().DoFullyLoad(&newVisited, level, pPending, &fBailed, pInstContext);
-
-        ParamTypeDesc* pPTD = (ParamTypeDesc*) this;
-
-        // Fully load the template method table
-        if (pPTD->m_TemplateMT != NULL)
-        {
-            pPTD->GetTemplateMethodTableInternal()->DoFullyLoad(&newVisited, level, pPending, &fBailed, pInstContext);
-        }
     }
 
     switch (level)
     {
         case CLASS_DEPENDENCIES_LOADED:
-            FastInterlockOr(&m_typeAndFlags, TypeDesc::enum_flag_DependenciesLoaded);
+            InterlockedOr((LONG*)&_typeAndFlags, TypeDesc::enum_flag_DependenciesLoaded);
             break;
 
         case CLASS_LOADED:
@@ -785,34 +703,46 @@ TypeHandle TypeVarTypeDesc::LoadOwnerType()
     return genericType;
 }
 
-TypeHandle* TypeVarTypeDesc::GetCachedConstraints(DWORD *pNumConstraints)
+TypeHandle* TypeVarTypeDesc::GetCachedConstraints(DWORD *pNumConstraints, WhichConstraintsToLoad which)
 {
     LIMITED_METHOD_CONTRACT;
     PRECONDITION(CheckPointer(pNumConstraints));
-    PRECONDITION(m_numConstraints != (DWORD) -1);
 
-    *pNumConstraints = m_numConstraints;
+    DWORD numConstraints = m_numConstraintsWithFlags;
+    WhichConstraintsToLoad whichCurrent = (WhichConstraintsToLoad)(numConstraints >> WhichConstraintsLoadedShift);
+    bool prevWhichInsufficient = whichCurrent > which;
+    _ASSERTE(!prevWhichInsufficient);
+
+    *pNumConstraints = numConstraints & ~WhichConstraintsLoadedMask;
     return m_constraints;
 }
 
-
-
-
-TypeHandle* TypeVarTypeDesc::GetConstraints(DWORD *pNumConstraints, ClassLoadLevel level /* = CLASS_LOADED */)
+TypeHandle* TypeVarTypeDesc::GetConstraints(DWORD *pNumConstraints, ClassLoadLevel level, WhichConstraintsToLoad which)
 {
-    WRAPPER_NO_CONTRACT;
-    PRECONDITION(CheckPointer(pNumConstraints));
-    PRECONDITION(level == CLASS_DEPENDENCIES_LOADED || level == CLASS_LOADED);
+    CONTRACTL
+    {
+        THROWS;
+        GC_TRIGGERS;
+        MODE_ANY;
+    }
+    CONTRACTL_END;
 
-    if (m_numConstraints == (DWORD) -1)
-        LoadConstraints(level);
+    _ASSERTE(CheckPointer(pNumConstraints));
+    _ASSERTE(level == CLASS_DEPENDENCIES_LOADED || level == CLASS_LOADED);
 
-    *pNumConstraints = m_numConstraints;
+    DWORD numConstraints = m_numConstraintsWithFlags;
+    WhichConstraintsToLoad whichCurrent = (WhichConstraintsToLoad)(numConstraints >> WhichConstraintsLoadedShift);
+    bool prevWhichInsufficient = whichCurrent > which;
+
+    if (prevWhichInsufficient)
+        LoadConstraints(level, which);
+
+    *pNumConstraints = m_numConstraintsWithFlags & ~WhichConstraintsLoadedMask;
     return m_constraints;
 }
 
 
-void TypeVarTypeDesc::LoadConstraints(ClassLoadLevel level /* = CLASS_LOADED */)
+void TypeVarTypeDesc::LoadConstraints(ClassLoadLevel level, WhichConstraintsToLoad which)
 {
     CONTRACTL
     {
@@ -820,19 +750,38 @@ void TypeVarTypeDesc::LoadConstraints(ClassLoadLevel level /* = CLASS_LOADED */)
         GC_TRIGGERS;
         MODE_ANY;
 
-        INJECT_FAULT(COMPlusThrowOM());
 
         PRECONDITION(level == CLASS_DEPENDENCIES_LOADED || level == CLASS_LOADED);
     }
     CONTRACTL_END;
 
     _ASSERTE(((INT_PTR)&m_constraints) % sizeof(m_constraints) == 0);
-    _ASSERTE(((INT_PTR)&m_numConstraints) % sizeof(m_numConstraints) == 0);
+    _ASSERTE(((INT_PTR)&m_numConstraintsWithFlags) % sizeof(m_numConstraintsWithFlags) == 0);
 
-    DWORD numConstraints = m_numConstraints;
+    DWORD numConstraints;
 
-    if (numConstraints == (DWORD) -1)
+    // If we have already loaded the constraints, and the previously loaded constraints are sufficient for the current request, skip the logic to find more constraints.
+    // Otherwise we need to load more constraints, and then possibly actually force them to be loaded to the appropriate load level.
+    // NOTE:
+    // The WhichConstraintsToLoad enum is ordered from most constraints to least constraints, so we can use a simple greater-than comparison to determine
+    // if the previously loaded constraints are sufficient for the current request.
+    // There are 3 possible values for WhichConstraintsToLoad:
+    //   All   - Load all constraints
+    //   TypeOrMethodVarsAndNonInterfacesOnly - Load all constraints except interface constraints that are not type or method variables. The code MAY load other constraints. This is used when loading constraints for the purpose of type safety checks.
+    //   None - Load no constraints. This is the initial state.
+
+    do
     {
+        numConstraints = m_numConstraintsWithFlags;
+        DWORD initialNumConstraints = numConstraints;
+        WhichConstraintsToLoad whichCurrent = (WhichConstraintsToLoad)(numConstraints >> WhichConstraintsLoadedShift);
+        bool prevWhichInsufficient = whichCurrent > which;
+
+        if (!prevWhichInsufficient)
+        {
+            break;
+        }
+
         IMDInternalImport* pInternalImport = GetModule()->GetMDImport();
 
         HENUMInternalHolder hEnum(pInternalImport);
@@ -855,6 +804,14 @@ void TypeVarTypeDesc::LoadConstraints(ClassLoadLevel level /* = CLASS_LOADED */)
         else
         {
             _ASSERTE(TypeFromToken(defToken) == mdtTypeDef);
+
+            bool foundResult = false;
+            if (!GetModule()->m_pTypeGenericInfoMap->HasConstraints(defToken, &foundResult) && foundResult)
+            {
+                m_numConstraintsWithFlags = 0;
+                return;
+            }
+
             TypeHandle genericType = LoadOwnerType();
             _ASSERTE(genericType.IsGenericTypeDefinition());
 
@@ -865,11 +822,35 @@ void TypeVarTypeDesc::LoadConstraints(ClassLoadLevel level /* = CLASS_LOADED */)
         numConstraints = pInternalImport->EnumGetCount(&hEnum);
         if (numConstraints != 0)
         {
-            LoaderAllocator* pAllocator = GetModule()->GetLoaderAllocator();
-            // If there is a single class constraint we put in in element 0 of the array
-            AllocMemHolder<TypeHandle> constraints
-                (pAllocator->GetLowFrequencyHeap()->AllocMem(S_SIZE_T(numConstraints) * S_SIZE_T(sizeof(TypeHandle))));
+            numConstraints = (numConstraints & ~WhichConstraintsLoadedMask) | (((DWORD)which) << WhichConstraintsLoadedShift);
 
+            LoaderAllocator* pAllocator = GetModule()->GetLoaderAllocator();
+            // If there is a single class constraint we place it at index 0 of the array
+            AllocMemHolder<TypeHandle> constraintAlloc;
+            TypeHandle *constraints;
+            
+            if (whichCurrent == WhichConstraintsToLoad::None)
+            {
+                constraintAlloc = (pAllocator->GetLowFrequencyHeap()->AllocMem(S_SIZE_T(numConstraints & ~WhichConstraintsLoadedMask) * S_SIZE_T(sizeof(TypeHandle))));
+                constraints = constraintAlloc.operator->();
+
+                // Publish the array before filling it so concurrent loaders populate the same storage.
+                TypeHandle* existingConstraints = InterlockedCompareExchangeT(&m_constraints, constraints, nullptr);
+                if (existingConstraints == nullptr)
+                {
+                    constraintAlloc.SuppressRelease();
+                }
+                else
+                {
+                    constraints = existingConstraints;
+                }
+            }
+            else
+            {
+                constraints = m_constraints;
+            }
+
+            bool loadedAllConstraints = true;
             DWORD i = 0;
             while (pInternalImport->EnumNext(&hEnum, &tkConstraint))
             {
@@ -880,22 +861,94 @@ void TypeVarTypeDesc::LoadConstraints(ClassLoadLevel level /* = CLASS_LOADED */)
                     GetModule()->GetAssembly()->ThrowTypeLoadException(pInternalImport, pMT->GetCl(), IDS_CLASSLOAD_BADFORMAT);
                 }
                 _ASSERTE(tkParam == GetToken());
-                TypeHandle thConstraint = ClassLoader::LoadTypeDefOrRefOrSpecThrowing(GetModule(), tkConstraintType,
-                                                                                      &typeContext,
-                                                                                      ClassLoader::ThrowIfNotFound,
-                                                                                      ClassLoader::FailIfUninstDefOrRef,
-                                                                                      ClassLoader::LoadTypes,
-                                                                                      level);
+                TypeHandle thConstraint;
+                
+                bool loadConstraint;
+                if (TypeFromToken(tkConstraintType) == mdtTypeSpec && which != WhichConstraintsToLoad::All)
+                {
+                    _ASSERTE(which == WhichConstraintsToLoad::TypeOrMethodVarsAndNonInterfacesOnly);
+                    ULONG cSig;
+                    PCCOR_SIGNATURE pSig;
 
-                constraints[i++] = thConstraint;
+                    if (FAILED(pInternalImport->GetTypeSpecFromToken(tkConstraintType, &pSig, &cSig)))
+                    {
+                        GetModule()->GetAssembly()->ThrowTypeLoadException(pInternalImport, pMT->GetCl(), IDS_CLASSLOAD_BADFORMAT);
+                    }
+
+                    SigPointer investigatePtr(pSig, cSig);
+                    CorElementType elemType;
+                    IfFailThrow(investigatePtr.GetElemType(&elemType));
+                    if (elemType == ELEMENT_TYPE_VAR || elemType == ELEMENT_TYPE_MVAR)
+                    {
+                        // We can always load variable constraints
+                        loadConstraint = true;
+                    }
+                    else
+                    {
+                        if (elemType != ELEMENT_TYPE_GENERICINST)
+                        {
+                            // We don't know if its a class or interface, but it isn't generic, so finding out is the same as loading
+                            // it, so just allow the load to occur.
+                            loadConstraint = true; 
+                        }
+                        else
+                        {
+                            IfFailThrow(investigatePtr.GetElemType(&elemType));
+                            _ASSERTE(elemType == ELEMENT_TYPE_CLASS
+                                || elemType == ELEMENT_TYPE_VALUETYPE);
+                            mdToken tkInvestigate;
+                                
+                            IfFailThrow(investigatePtr.GetToken(&tkInvestigate));
+
+                            TypeHandle thUninstantiated = ClassLoader::LoadTypeDefOrRefOrSpecThrowing(GetModule(), tkInvestigate,
+                                                                                        &typeContext,
+                                                                                        ClassLoader::ThrowIfNotFound,
+                                                                                        ClassLoader::PermitUninstDefOrRef,
+                                                                                        ClassLoader::LoadTypes,
+                                                                                        level);
+
+                            if (thUninstantiated.IsInterface())
+                            {
+                                loadConstraint = false;
+                            }
+                            else
+                            {
+                                loadConstraint = true;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    loadConstraint = true;
+                }
+                
+                if (loadConstraint)
+                {
+                    thConstraint = ClassLoader::LoadTypeDefOrRefOrSpecThrowing(GetModule(), tkConstraintType,
+                                                                                        &typeContext,
+                                                                                        ClassLoader::ThrowIfNotFound,
+                                                                                        ClassLoader::FailIfUninstDefOrRef,
+                                                                                        ClassLoader::LoadTypes,
+                                                                                        level);
+                }
+                else
+                {
+                    loadedAllConstraints = false;
+                }
 
                 // Method type constraints behave contravariantly
                 // (cf Bounded polymorphism e.g. see
                 //     Cardelli & Wegner, On understanding types, data abstraction and polymorphism, Computing Surveys 17(4), Dec 1985)
-                if (pMT != NULL && pMT->HasVariance() && TypeFromToken(tkConstraintType) == mdtTypeSpec)
+                //
+                // This check is NOT conditional on actually loading the constraint, since we want to run EEClass::CheckVarianceInSig
+                // even if we didn't load the constraint, to cause the TypeLoadException to happen at a predictable time.
+                if (pMT != NULL && pMT->HasVariance() && TypeFromToken(tkConstraintType) == mdtTypeSpec
+                        && !GetModule()->SkipTypeValidation())
                 {
                     ULONG cSig;
                     PCCOR_SIGNATURE pSig;
+
                     if (FAILED(pInternalImport->GetTypeSpecFromToken(tkConstraintType, &pSig, &cSig)))
                     {
                         GetModule()->GetAssembly()->ThrowTypeLoadException(pInternalImport, pMT->GetCl(), IDS_CLASSLOAD_BADFORMAT);
@@ -909,20 +962,36 @@ void TypeVarTypeDesc::LoadConstraints(ClassLoadLevel level /* = CLASS_LOADED */)
                         GetModule()->GetAssembly()->ThrowTypeLoadException(pInternalImport, pMT->GetCl(), IDS_CLASSLOAD_VARIANCE_IN_CONSTRAINT);
                     }
                 }
+
+                if (!thConstraint.IsNull())
+                {
+                    VolatileStore((TADDR*)&constraints[i], thConstraint.AsTAddr());
+                }
+
+                i++;
             }
 
-            if (InterlockedCompareExchangeT(&m_constraints, constraints.operator->(), NULL) == NULL)
+            if (loadedAllConstraints)
             {
-                constraints.SuppressRelease();
+                // We loaded all the constraints, so we can update the number we're going to store to indicate that we're storing all of them
+                numConstraints = numConstraints & ~WhichConstraintsLoadedMask;
             }
         }
 
-        m_numConstraints = numConstraints;
-    }
+        if (InterlockedCompareExchangeT(&m_numConstraintsWithFlags, numConstraints, initialNumConstraints) != initialNumConstraints)
+        {
+            // Retry if another thread set the number of constraints while we were working
+            continue;
+        }
+        break;
+    } while (true);
 
-    for (DWORD i = 0; i < numConstraints; i++)
+    for (DWORD i = 0; i < (numConstraints & ~WhichConstraintsLoadedMask); i++)
     {
-        ClassLoader::EnsureLoaded(m_constraints[i], level);
+        TypeHandle constraint = m_constraints[i];
+        if (constraint.IsNull())
+            continue;
+        ClassLoader::EnsureLoaded(constraint, level);
     }
 }
 
@@ -933,7 +1002,7 @@ BOOL TypeVarTypeDesc::ConstrainedAsObjRef()
         NOTHROW;
         GC_NOTRIGGER;
         MODE_ANY;
-        PRECONDITION(ConstraintsLoaded());
+        PRECONDITION(ConstraintsLoaded(WhichConstraintsToLoad::TypeOrMethodVarsAndNonInterfacesOnly));
     }
     CONTRACTL_END;
 
@@ -967,11 +1036,16 @@ BOOL TypeVarTypeDesc::ConstrainedAsObjRefHelper()
     CONTRACTL_END;
 
     DWORD dwNumConstraints = 0;
-    TypeHandle* constraints = GetCachedConstraints(&dwNumConstraints);
+    TypeHandle* constraints = GetCachedConstraints(&dwNumConstraints, WhichConstraintsToLoad::TypeOrMethodVarsAndNonInterfacesOnly);
 
     for (DWORD i = 0; i < dwNumConstraints; i++)
     {
         TypeHandle constraint = constraints[i];
+
+        // This might be null if we didn't load an interface constraint
+        // Interface constraints do not contribute to this calculation, so we didn't need them
+        if (constraint.IsNull())
+            continue;
 
         if (constraint.IsGenericVariable() && constraint.AsGenericVariable()->ConstrainedAsObjRefHelper())
             return TRUE;
@@ -1000,7 +1074,7 @@ BOOL TypeVarTypeDesc::ConstrainedAsValueType()
         NOTHROW;
         GC_NOTRIGGER;
         MODE_ANY;
-        PRECONDITION(ConstraintsLoaded());
+        PRECONDITION(ConstraintsLoaded(WhichConstraintsToLoad::TypeOrMethodVarsAndNonInterfacesOnly));
     }
     CONTRACTL_END;
 
@@ -1017,11 +1091,15 @@ BOOL TypeVarTypeDesc::ConstrainedAsValueType()
         return TRUE;
 
     DWORD dwNumConstraints = 0;
-    TypeHandle* constraints = GetCachedConstraints(&dwNumConstraints);
+    TypeHandle* constraints = GetCachedConstraints(&dwNumConstraints, WhichConstraintsToLoad::TypeOrMethodVarsAndNonInterfacesOnly);
 
     for (DWORD i = 0; i < dwNumConstraints; i++)
     {
         TypeHandle constraint = constraints[i];
+
+        // This might be null if we didn't load an interface constraint
+        if (constraint.IsNull())
+            continue;
 
         if (constraint.IsGenericVariable())
         {
@@ -1052,7 +1130,6 @@ TypeHandle LoadTypeVarConstraint(TypeVarTypeDesc *pTypeVar, mdGenericParamConstr
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM());
         MODE_ANY;
         PRECONDITION(CheckPointer(pTypeVar));
     }
@@ -1173,7 +1250,6 @@ BOOL SatisfiesSpecialConstraintRecursive(TypeVarTypeDesc *pTyArg, DWORD specialC
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM());
         MODE_ANY;
         PRECONDITION(CheckPointer(pTyArg));
     }
@@ -1353,7 +1429,6 @@ void GatherConstraintsRecursive(TypeVarTypeDesc *pTyArg, ArrayList *pArgList, co
     {
         THROWS;
         GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM());
         MODE_ANY;
         PRECONDITION(CheckPointer(pTyArg));
         PRECONDITION(CheckPointer(pArgList));
@@ -1412,7 +1487,6 @@ BOOL TypeVarTypeDesc::SatisfiesConstraints(SigTypeContext *pTypeContextOfConstra
         MODE_ANY;
 
         PRECONDITION(!thArg.IsNull());
-        INJECT_FAULT(COMPlusThrowOM());
     }
     CONTRACTL_END;
 
@@ -1435,7 +1509,7 @@ BOOL TypeVarTypeDesc::SatisfiesConstraints(SigTypeContext *pTypeContextOfConstra
 
     ArrayList argList;
 
-    // First check special constraints (must-be-reference-type, must-be-value-type, and must-have-default-constructor)
+    // First check special constraints
     DWORD flags;
     IfFailThrow(pInternalImport->GetGenericParamProps(genericParamToken, NULL, &flags, NULL, NULL, NULL));
 
@@ -1519,9 +1593,12 @@ BOOL TypeVarTypeDesc::SatisfiesConstraints(SigTypeContext *pTypeContextOfConstra
 
         if ((specialConstraints & gpDefaultConstructorConstraint) != 0)
         {
-            if (thArg.IsTypeDesc() || (!thArg.AsMethodTable()->HasExplicitOrImplicitPublicDefaultConstructor()))
+            if (thArg.IsTypeDesc() || (!thArg.AsMethodTable()->HasExplicitOrImplicitPublicDefaultConstructor() || thArg.IsAbstract()))
                 return FALSE;
         }
+
+        if (thArg.IsByRefLike() && (specialConstraints & gpAllowByRefLike) == 0)
+            return FALSE;
     }
 
     // Complete the list by adding thArg itself. If thArg is not a generic variable this will be the only
@@ -1591,14 +1668,14 @@ BOOL TypeVarTypeDesc::SatisfiesConstraints(SigTypeContext *pTypeContextOfConstra
                 }
                 else
                 {
-                    // if a concrete type can be cast to the constraint, then this constraint will be satisifed
+                    // if a concrete type can be cast to the constraint, then this constraint will be satisfied
                     if (thElem.CanCastTo(thConstraint))
                     {
                         // Static virtual methods need an extra check when an abstract type is used for instantiation
                         // to ensure that the implementation of the constraint is complete
                         //
                         // Do not apply this check when the generic argument is exactly a generic variable, as those
-                        // do not hold the correct detail for checking, and do not need to do so. This constraint rule 
+                        // do not hold the correct detail for checking, and do not need to do so. This constraint rule
                         // is only applicable for generic arguments which have been specialized to some extent
                         if (!thArg.IsGenericVariable() &&
                             !thElem.IsTypeDesc() &&
@@ -1613,7 +1690,10 @@ BOOL TypeVarTypeDesc::SatisfiesConstraints(SigTypeContext *pTypeContextOfConstra
                                 MethodDesc *pMD = it.GetMethodDesc();
                                 if (pMD->IsVirtual() &&
                                     pMD->IsStatic() &&
-                                    !thElem.AsMethodTable()->ResolveVirtualStaticMethod(pInterfaceMT, pMD, /* allowNullResult */ TRUE, /* verifyImplemented */ TRUE))
+                                    (pMD->IsAbstract() && !thElem.AsMethodTable()->ResolveVirtualStaticMethod(
+                                        pInterfaceMT, pMD,
+                                        ResolveVirtualStaticMethodFlags::AllowNullResult | ResolveVirtualStaticMethodFlags::VerifyImplemented | ResolveVirtualStaticMethodFlags::AllowVariantMatches,
+                                        /*uniqueResolution*/ NULL, CLASS_DEPENDENCIES_LOADED)))
                                 {
                                     virtualStaticResolutionCheckFailed = true;
                                     break;
@@ -1636,60 +1716,45 @@ BOOL TypeVarTypeDesc::SatisfiesConstraints(SigTypeContext *pTypeContextOfConstra
     return TRUE;
 }
 
-
-OBJECTREF TypeVarTypeDesc::GetManagedClassObject()
-{
-    CONTRACTL {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-
-        INJECT_FAULT(COMPlusThrowOM());
-
-        PRECONDITION(IsGenericVariable());
-    }
-    CONTRACTL_END;
-
-    if (m_hExposedClassObject == NULL) {
-        REFLECTCLASSBASEREF  refClass = NULL;
-        GCPROTECT_BEGIN(refClass);
-        refClass = (REFLECTCLASSBASEREF) AllocateObject(g_pRuntimeTypeClass);
-
-        LoaderAllocator *pLoaderAllocator = GetLoaderAllocator();
-        TypeHandle th = TypeHandle(this);
-        ((ReflectClassBaseObject*)OBJECTREFToObject(refClass))->SetType(th);
-        ((ReflectClassBaseObject*)OBJECTREFToObject(refClass))->SetKeepAlive(pLoaderAllocator->GetExposedObject());
-
-        // Let all threads fight over who wins using InterlockedCompareExchange.
-        // Only the winner can set m_hExposedClassObject from NULL.
-        LOADERHANDLE hExposedClassObject = pLoaderAllocator->AllocateHandle(refClass);
-
-        if (FastInterlockCompareExchangePointer(&m_hExposedClassObject, hExposedClassObject, static_cast<LOADERHANDLE>(NULL)))
-        {
-            pLoaderAllocator->FreeHandle(hExposedClassObject);
-        }
-
-        GCPROTECT_END();
-    }
-    return GetManagedClassObjectIfExists();
-}
-
 #endif //!DACCESS_COMPILE
 
 TypeHandle *
 FnPtrTypeDesc::GetRetAndArgTypes()
 {
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
+    LIMITED_METHOD_CONTRACT;
 
     return m_RetAndArgTypes;
 } // FnPtrTypeDesc::GetRetAndArgTypes
+
+BOOL
+FnPtrTypeDesc::IsSharedByGenericInstantiations()
+{
+    LIMITED_METHOD_DAC_CONTRACT;
+
+    for (DWORD i = 0; i <= m_NumArgs; i++)
+    {
+        if (m_RetAndArgTypes[i].IsCanonicalSubtype())
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+} // FnPtrTypeDesc::IsSharedByGenericInstantiations
+
+BOOL
+FnPtrTypeDesc::ContainsGenericVariables(BOOL methodOnly)
+{
+    LIMITED_METHOD_DAC_CONTRACT;
+
+    for (DWORD i = 0; i <= m_NumArgs; i++)
+    {
+        if (m_RetAndArgTypes[i].ContainsGenericVariables(methodOnly))
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+} // FnPtrTypeDesc::ContainsGenericVariables
 
 #ifndef DACCESS_COMPILE
 
@@ -1705,10 +1770,9 @@ FnPtrTypeDesc::IsExternallyVisible() const
     }
     CONTRACTL_END;
 
-    const TypeHandle * rgRetAndArgTypes = GetRetAndArgTypes();
     for (DWORD i = 0; i <= m_NumArgs; i++)
     {
-        if (!rgRetAndArgTypes[i].IsExternallyVisible())
+        if (!m_RetAndArgTypes[i].IsExternallyVisible())
         {
             return FALSE;
         }
@@ -1727,12 +1791,6 @@ ParamTypeDesc::EnumMemoryRegions(CLRDataEnumMemoryFlags flags)
     SUPPORTS_DAC;
     DAC_ENUM_DTHIS();
 
-    PTR_MethodTable pTemplateMT = GetTemplateMethodTableInternal();
-    if (pTemplateMT.IsValid())
-    {
-        pTemplateMT->EnumMemoryRegions(flags);
-    }
-
     m_Arg.EnumMemoryRegions(flags);
 }
 
@@ -1749,12 +1807,12 @@ TypeVarTypeDesc::EnumMemoryRegions(CLRDataEnumMemoryFlags flags)
         GetModule()->EnumMemoryRegions(flags, true);
     }
 
-    if (m_numConstraints != (DWORD)-1)
+    if (m_numConstraintsWithFlags != (DWORD)-1)
     {
         PTR_TypeHandle constraint = m_constraints;
-        for (DWORD i = 0; i < m_numConstraints; i++)
+        for (DWORD i = 0; i < (m_numConstraintsWithFlags & ~WhichConstraintsLoadedMask); i++)
         {
-            if (constraint.IsValid())
+            if (constraint.IsValid() && !constraint->IsNull())
             {
                 constraint->EnumMemoryRegions(flags);
             }

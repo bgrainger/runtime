@@ -19,6 +19,11 @@ Abstract:
 #ifndef _PAL_SIGNAL_HPP_
 #define _PAL_SIGNAL_HPP_
 
+#include <signal.h>
+#if defined(TARGET_WASI)
+#include "pal/wasi/pal_wasi_missing.h"
+#endif
+
 #if !HAVE_MACH_EXCEPTIONS
 
 // Return context and status for the signal_handler_worker.
@@ -64,7 +69,7 @@ extern "C" int SignalHandlerWorkerReturnOffset12;
 Function :
     signal_handler_worker
 
-    Handles signal on the original stack where the signal occured.
+    Handles signal on the original stack where the signal occurred.
     Invoked via setcontext.
 
 Parameters :
@@ -93,6 +98,12 @@ void ExecuteHandlerOnCustomStack(int code, siginfo_t *siginfo, void *context, si
 
 #endif // !HAVE_MACH_EXCEPTIONS
 
+namespace CorUnix
+{
+    // Keep this header self-contained without including pal/thread.hpp.
+    class CPalThread;
+}
+
 /*++
 Function :
     SEHInitializeSignals
@@ -112,19 +123,11 @@ Function :
     SEHCleanupSignals
 
     Restore default signal handlers
+Parameters :
+    isChildProcess - indicates that it is called from a child process fork
 
     (no parameters, no return value)
 --*/
-void SEHCleanupSignals();
-
-/*++
-Function :
-    SEHCleanupAbort()
-
-    Restore default SIGABORT signal handlers
-
-    (no parameters, no return value)
---*/
-void SEHCleanupAbort();
+void SEHCleanupSignals(bool isChildProcess);
 
 #endif /* _PAL_SIGNAL_HPP_ */

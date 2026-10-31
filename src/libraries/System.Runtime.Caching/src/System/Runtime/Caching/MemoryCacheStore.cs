@@ -4,11 +4,11 @@
 using System;
 using System.Collections;
 using System.Collections.Specialized;
-using System.Threading;
 using System.Diagnostics;
-using System.Security;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.Versioning;
+using System.Security;
+using System.Threading;
 
 namespace System.Runtime.Caching
 {
@@ -26,9 +26,10 @@ namespace System.Runtime.Caching
         private volatile bool _useInsertBlock;
         private readonly MemoryCache _cache;
         private readonly Counters _perfCounters;
-#if NET5_0_OR_GREATER
+#if NET
+        [UnsupportedOSPlatformGuard("wasi")]
         [UnsupportedOSPlatformGuard("browser")]
-        private static bool _countersSupported => !OperatingSystem.IsBrowser();
+        private static bool _countersSupported => !OperatingSystem.IsBrowser() && !OperatingSystem.IsWasi();
 #else
         private static bool _countersSupported => true;
 #endif
@@ -146,8 +147,6 @@ namespace System.Runtime.Caching
                 if (updatePerfCounters && _perfCounters != null && _countersSupported)
                 {
                     _perfCounters.Increment(CounterName.Hits);
-                    _perfCounters.Increment(CounterName.HitRatio);
-                    _perfCounters.Increment(CounterName.HitRatioBase);
                 }
             }
             else
@@ -155,7 +154,6 @@ namespace System.Runtime.Caching
                 if (updatePerfCounters && _perfCounters != null && _countersSupported)
                 {
                     _perfCounters.Increment(CounterName.Misses);
-                    _perfCounters.Increment(CounterName.HitRatioBase);
                 }
             }
         }
@@ -211,10 +209,7 @@ namespace System.Runtime.Caching
 
             // Call Release after the new entry has been completely added so
             // that the CacheItemRemovedCallback can take a dependency on the newly inserted item.
-            if (toBeReleasedEntry != null)
-            {
-                toBeReleasedEntry.Release(_cache, CacheEntryRemovedReason.Expired);
-            }
+            toBeReleasedEntry?.Release(_cache, CacheEntryRemovedReason.Expired);
             return existingEntry;
         }
 
@@ -281,7 +276,7 @@ namespace System.Runtime.Caching
 
                 // MemoryCacheStatistics has been disposed, and therefore nobody should be using
                 // _insertBlock except for potential threads in WaitInsertBlock (which won't care if we call Close).
-                Debug.Assert(_useInsertBlock == false, "_useInsertBlock == false");
+                Debug.Assert(!_useInsertBlock, "_useInsertBlock == false");
                 _insertBlock.Close();
 
                 // Don't need to call GC.SuppressFinalize(this) for sealed types without finalizers.
@@ -344,10 +339,7 @@ namespace System.Runtime.Caching
                 if (_disposed == 0)
                 {
                     existingEntry = _entries[key] as MemoryCacheEntry;
-                    if (existingEntry != null)
-                    {
-                        existingEntry.State = EntryState.RemovingFromCache;
-                    }
+                    existingEntry?.State = EntryState.RemovingFromCache;
                     entry.State = EntryState.AddingToCache;
                     added = true;
                     _entries[key] = entry;
@@ -370,10 +362,7 @@ namespace System.Runtime.Caching
 
             // Call Release after the new entry has been completely added so
             // that the CacheItemRemovedCallback can take a dependency on the newly inserted item.
-            if (existingEntry != null)
-            {
-                existingEntry.Release(_cache, reason);
-            }
+            existingEntry?.Release(_cache, reason);
         }
 
         internal long TrimInternal(int percent)

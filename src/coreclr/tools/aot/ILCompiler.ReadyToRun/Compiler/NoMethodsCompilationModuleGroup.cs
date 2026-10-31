@@ -15,36 +15,20 @@ namespace ILCompiler
     /// </summary>
     public class NoMethodsCompilationModuleGroup : ReadyToRunCompilationModuleGroupBase
     {
-        public NoMethodsCompilationModuleGroup(
-            CompilerTypeSystemContext context,
-            bool isCompositeBuildMode,
-            bool isInputBubble,
-            IEnumerable<EcmaModule> compilationModuleSet,
-            IEnumerable<ModuleDesc> versionBubbleModuleSet,
-            bool compileGenericDependenciesFromVersionBubbleModuleSet) :
-                base(context,
-                     isCompositeBuildMode,
-                     isInputBubble,
-                     compilationModuleSet,
-                     versionBubbleModuleSet,
-                     compileGenericDependenciesFromVersionBubbleModuleSet)
+        public NoMethodsCompilationModuleGroup(ReadyToRunCompilationModuleGroupConfig config) :
+                base(config)
         {
         }
 
-        public override bool ContainsMethodBody(MethodDesc method, bool unboxingStub)
+        protected override bool ContainsMethodBodyCore(MethodDesc method, bool unboxingStub)
         {
             return false;
-        }
-
-        public override void ApplyProfilerGuidedCompilationRestriction(ProfileDataManager profileGuidedCompileRestriction)
-        {
-            return;
         }
 
         public override ReadyToRunFlags GetReadyToRunFlags()
         {
             // Partial by definition.
-            return ReadyToRunFlags.READYTORUN_FLAG_Partial;
+            return base.GetReadyToRunFlags() | ReadyToRunFlags.READYTORUN_FLAG_Partial;
         }
     }
 }

@@ -14,11 +14,11 @@ namespace System.Formats.Cbor
         /// <summary>Reads the next data item as the start of a map (major type 5).</summary>
         /// <returns>The number of key-value pairs in a definite-length map, or <see langword="null" /> if the map is indefinite-length.</returns>
         /// <exception cref="InvalidOperationException">The next data item does not have the correct major type.</exception>
-        /// <exception cref="CborContentException">The next value has an invalid CBOR encoding.
-        /// -or-
-        /// There was an unexpected end of CBOR encoding data.
-        /// -or-
-        /// The next value uses a CBOR encoding that is not valid under the current conformance mode.</exception>
+        /// <exception cref="CborContentException"><para>The next value has an invalid CBOR encoding.</para>
+        /// <para>-or-</para>
+        /// <para>There was an unexpected end of CBOR encoding data.</para>
+        /// <para>-or-</para>
+        /// <para>The next value uses a CBOR encoding that is not valid under the current conformance mode.</para></exception>
         /// <remarks>
         /// Map contents are consumed as if they were arrays twice the length of the map's declared size.
         /// For instance, a map of size 1 containing a key of type <see cref="int" /> with a value of type <see cref="string" />
@@ -31,6 +31,7 @@ namespace System.Formats.Cbor
         {
             int? length;
             CborInitialByte header = PeekInitialByte(expectedType: CborMajorType.Map);
+            EnsureMaxDepthNotExceeded();
 
             if (header.AdditionalInfo == CborAdditionalInfo.IndefiniteLength)
             {
@@ -47,9 +48,13 @@ namespace System.Formats.Cbor
             {
                 ReadOnlySpan<byte> buffer = GetRemainingBytes();
 
-                int mapSize = DecodeDefiniteLength(header, buffer, out int bytesRead);
+                int mapSize = DecodeCollectionLength(header, buffer, out int bytesRead);
 
-                if (2 * (ulong)mapSize > (ulong)(buffer.Length - bytesRead))
+                // conservative check: each key-value pair is encoded in at least two bytes.
+                // When the current data is not the final block the contents may be supplied later,
+                // but the item count 2 * mapSize must remain representable.
+                if (mapSize > int.MaxValue / 2 ||
+                    (_isFinalBlock && 2 * (ulong)mapSize > (ulong)(buffer.Length - bytesRead)))
                 {
                     throw new CborContentException(SR.Cbor_Reader_DefiniteLengthExceedsBufferSize);
                 }
@@ -64,14 +69,14 @@ namespace System.Formats.Cbor
         }
 
         /// <summary>Reads the end of a map (major type 5).</summary>
-        /// <exception cref="InvalidOperationException">The current context is not a map.
-        /// -or-
-        /// The reader is not at the end of the map.</exception>
-        /// <exception cref="CborContentException">The next value has an invalid CBOR encoding.
-        /// -or-
-        /// There was an unexpected end of CBOR encoding data.
-        /// -or-
-        /// The next value uses a CBOR encoding that is not valid under the current conformance mode.</exception>
+        /// <exception cref="InvalidOperationException"><para>The current context is not a map.</para>
+        /// <para>-or-</para>
+        /// <para>The reader is not at the end of the map.</para></exception>
+        /// <exception cref="CborContentException"><para>The next value has an invalid CBOR encoding.</para>
+        /// <para>-or-</para>
+        /// <para>There was an unexpected end of CBOR encoding data.</para>
+        /// <para>-or-</para>
+        /// <para>The next value uses a CBOR encoding that is not valid under the current conformance mode.</para></exception>
         public void ReadEndMap()
         {
             if (_definiteLength is null)

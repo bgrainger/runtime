@@ -15,8 +15,14 @@ namespace
     bool coreclr_bind(const pal::string_t& libcoreclr_path)
     {
         assert(coreclr_contract.coreclr_initialize == nullptr);
-        coreclr_resolver_t::resolve_coreclr(libcoreclr_path, coreclr_contract);
-        return true;
+        return coreclr_resolver_t::resolve_coreclr(libcoreclr_path, coreclr_contract);
+    }
+
+    void log_error(const char* line)
+    {
+        pal::string_t lineStr;
+        pal::clr_palstring(line, &lineStr);
+        trace::error(_X("%s"), lineStr.c_str());
     }
 }
 
@@ -54,6 +60,14 @@ pal::hresult_t coreclr_t::create(
     };
     properties.enumerate(callback);
 
+    // Can't use propagate_error_writer_t here because of the difference in encoding on Windows
+    // coreclr error writer always gets UTF8 string, but error writers in hostfxr/hostpolicy will use UTF16 on Windows
+    // and UTF8 everywhere else.
+    if (coreclr_contract.coreclr_set_error_writer != nullptr)
+    {
+        coreclr_contract.coreclr_set_error_writer(log_error);
+    }
+
     pal::hresult_t hr;
     hr = coreclr_contract.coreclr_initialize(
         exe_path,
@@ -63,6 +77,11 @@ pal::hresult_t coreclr_t::create(
         values.data(),
         &host_handle,
         &domain_id);
+
+    if (coreclr_contract.coreclr_set_error_writer != nullptr)
+    {
+        coreclr_contract.coreclr_set_error_writer(nullptr);
+    }
 
     if (!SUCCEEDED(hr))
         return hr;
@@ -136,7 +155,6 @@ namespace
 {
     const pal::char_t *PropertyNameMapping[] =
     {
-        _X("TRUSTED_PLATFORM_ASSEMBLIES"),
         _X("NATIVE_DLL_SEARCH_DIRECTORIES"),
         _X("PLATFORM_RESOURCE_ROOTS"),
         _X("APP_CONTEXT_BASE_DIRECTORY"),
@@ -146,9 +164,6 @@ namespace
         _X("STARTUP_HOOKS"),
         _X("APP_PATHS"),
         _X("RUNTIME_IDENTIFIER"),
-        _X("BUNDLE_PROBE"),
-        _X("HOSTPOLICY_EMBEDDED"),
-        _X("PINVOKE_OVERRIDE")
     };
 
     static_assert((sizeof(PropertyNameMapping) / sizeof(*PropertyNameMapping)) == static_cast<size_t>(common_property::Last), "Invalid property count");
@@ -194,6 +209,11 @@ bool coreclr_property_bag_t::add(const pal::char_t *key, const pal::char_t *valu
         _properties[key] = value;
         return false;
     }
+}
+
+bool coreclr_property_bag_t::contains(const pal::char_t *key) const
+{
+    return _properties.find(key) != _properties.cend();
 }
 
 bool coreclr_property_bag_t::try_get(common_property key, const pal::char_t **value) const

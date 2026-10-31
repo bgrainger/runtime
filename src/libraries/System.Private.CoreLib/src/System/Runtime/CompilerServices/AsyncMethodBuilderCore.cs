@@ -5,9 +5,9 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Tracing;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Text;
 
 namespace System.Runtime.CompilerServices
 {
@@ -72,7 +72,7 @@ namespace System.Runtime.CompilerServices
             Debug.Fail("SetStateMachine should not be used.");
         }
 
-#if !CORERT
+#if !NATIVEAOT
         /// <summary>Gets whether we should be tracking async method completions for eventing.</summary>
         internal static bool TrackAsyncMethodCompletion
         {
@@ -102,6 +102,12 @@ namespace System.Runtime.CompilerServices
             return sb.ToString();
         }
 
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        internal static void LogTraceOperationBegin(Task t, Type stateMachineType)
+        {
+            TplEventSource.Log.TraceOperationBegin(t.Id, "Async: " + stateMachineType.Name, 0);
+        }
+
         internal static Action CreateContinuationWrapper(Action continuation, Action<Action, Task> invokeAction, Task innerTask) =>
             new ContinuationWrapper(continuation, invokeAction, innerTask).Invoke;
 
@@ -120,6 +126,20 @@ namespace System.Runtime.CompilerServices
             (continuation.Target is ContinuationWrapper wrapper) ?
                 wrapper._innerTask :           // A wrapped continuation, created by an awaiter
                 continuation.Target as Task;   // The continuation targets a task directly, such as with AsyncStateMachineBox
+
+        internal static IAsyncStateMachineBox? TryGetStateMachineBox(Action continuation)
+        {
+            object? target = continuation.Target;
+            if (target is IAsyncStateMachineBox box)
+            {
+                return box;
+            }
+            if (target is ContinuationWrapper cw)
+            {
+                return TryGetStateMachineBox(cw._continuation);
+            }
+            return null;
+        }
 
         /// <summary>
         /// Logically we pass just an Action (delegate) to a task for its action to 'ContinueWith' when it completes.

@@ -6,13 +6,14 @@ using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using Xunit;
 
 public static class Program
 {
-    private static int Main()
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/134949", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.IsWasi), nameof(TestLibrary.PlatformDetection.IsReadyToRunCompiled))]
+    [Fact]
+    public static void TestEntryPoint()
     {
-        const int Pass = 100, Fail = 1;
-
         PromoteToTier1AndRun(() =>
         {
             CollectibleTestIteration();
@@ -20,8 +21,6 @@ public static class Program
             GC.WaitForPendingFinalizers();
             GC.WaitForPendingFinalizers();
         });
-
-        return Pass;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

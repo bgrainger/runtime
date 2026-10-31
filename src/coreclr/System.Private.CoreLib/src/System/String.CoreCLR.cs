@@ -1,47 +1,47 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
 using System.Text;
-using Internal.Runtime.CompilerServices;
+using System.Diagnostics.CodeAnalysis;
 
 namespace System
 {
     public partial class String
     {
+        [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
-        internal static extern string FastAllocateString(int length);
+        private static extern unsafe string FastAllocateString(MethodTable *pMT, nint length);
 
-        // Set extra byte for odd-sized strings that came from interop as BSTR.
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        internal extern void SetTrailByte(byte data);
-        // Try to retrieve the extra byte - returns false if not present.
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        internal extern bool TryGetTrailByte(out byte data);
+        [DebuggerHidden]
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static unsafe string FastAllocateString(nint length)
+        {
+            return FastAllocateString(TypeHandle.TypeHandleOf<string>().AsMethodTable(), length);
+        }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private extern string Intern();
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private extern string? IsInterned();
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "String_Intern")]
+        private static partial void Intern(StringHandleOnStack src);
 
         public static string Intern(string str)
         {
-            if (str == null)
-            {
-                throw new ArgumentNullException(nameof(str));
-            }
-
-            return str.Intern();
+            ArgumentNullException.ThrowIfNull(str);
+            Intern(new StringHandleOnStack(ref str!));
+            return str;
         }
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "String_IsInterned")]
+        private static partial void IsInterned(StringHandleOnStack src);
 
         public static string? IsInterned(string str)
         {
-            if (str == null)
-            {
-                throw new ArgumentNullException(nameof(str));
-            }
-
-            return str.IsInterned();
+            ArgumentNullException.ThrowIfNull(str);
+            IsInterned(new StringHandleOnStack(ref str!));
+            return str;
         }
 
         // Copies the source String (byte buffer) to the destination IntPtr memory allocated with len bytes.
@@ -50,7 +50,7 @@ namespace System
         {
             if (len != 0)
             {
-                Buffer.Memmove(ref *(byte*)dest, ref Unsafe.As<char, byte>(ref src.GetRawStringData()), (nuint)len);
+                SpanHelpers.Memmove(ref *(byte*)dest, ref src.GetRawStringDataAsUInt8(), (nuint)len);
             }
         }
 

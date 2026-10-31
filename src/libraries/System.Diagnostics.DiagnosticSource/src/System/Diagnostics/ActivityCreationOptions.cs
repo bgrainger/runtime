@@ -13,6 +13,7 @@ namespace System.Diagnostics
     {
         private readonly ActivityTagsCollection? _samplerTags;
         private readonly ActivityContext _context;
+        private readonly string? _traceState;
 
         /// <summary>
         /// Construct a new <see cref="ActivityCreationOptions{T}"/> object.
@@ -40,6 +41,7 @@ namespace System.Diagnostics
             }
 
             _samplerTags = null;
+            _traceState = null;
 
             if (parent is ActivityContext ac && ac != default)
             {
@@ -48,8 +50,10 @@ namespace System.Diagnostics
                 {
                     IdFormat = ActivityIdFormat.W3C;
                 }
+
+                _traceState = ac.TraceState;
             }
-            else if (parent is string p && p != null)
+            else if (parent is string p)
             {
                 if (IdFormat != ActivityIdFormat.Hierarchical)
                 {
@@ -60,7 +64,7 @@ namespace System.Diagnostics
 
                     if (IdFormat == ActivityIdFormat.Unknown)
                     {
-                        IdFormat =ActivityIdFormat.Hierarchical;
+                        IdFormat = ActivityIdFormat.Hierarchical;
                     }
                 }
                 else
@@ -110,9 +114,6 @@ namespace System.Diagnostics
 
         public ActivityTagsCollection SamplingTags
         {
-#if ALLOW_PARTIALLY_TRUSTED_CALLERS
-            [System.Security.SecuritySafeCriticalAttribute]
-#endif
             get
             {
                 if (_samplerTags == null)
@@ -127,23 +128,46 @@ namespace System.Diagnostics
 
         public ActivityTraceId TraceId
         {
-#if ALLOW_PARTIALLY_TRUSTED_CALLERS
-            [System.Security.SecuritySafeCriticalAttribute]
-#endif
             get
             {
                 if (Parent is ActivityContext && IdFormat == ActivityIdFormat.W3C && _context == default)
                 {
                     Func<ActivityTraceId>? traceIdGenerator = Activity.TraceIdGenerator;
-                    ActivityTraceId id = traceIdGenerator == null ? ActivityTraceId.CreateRandom() : traceIdGenerator();
+                    ActivityTraceId id;
+                    ActivityTraceFlags activityTraceFlags = ActivityTraceFlags.None;
+
+                    if (traceIdGenerator is null)
+                    {
+                        id = ActivityTraceId.CreateRandom();
+                        activityTraceFlags = ActivityTraceFlags.RandomTraceId;
+                    }
+                    else
+                    {
+                        id = traceIdGenerator();
+                    }
 
                     // Because the struct is readonly, we cannot directly assign _context. We have to workaround it by calling Unsafe.AsRef
-                    Unsafe.AsRef(in _context) = new ActivityContext(id, default, ActivityTraceFlags.None);
+                    Unsafe.AsRef(in _context) = new ActivityContext(id, default, activityTraceFlags);
                 }
 
                 return _context.TraceId;
             }
         }
+
+        /// <summary>
+        /// Retrieve or initialize the trace state to use for the Activity we may create.
+        /// </summary>
+        public string? TraceState
+        {
+            get => _traceState;
+            init
+            {
+                _traceState = value;
+            }
+        }
+
+        // SetTraceState is to set the _traceState without the need of copying the whole structure.
+        internal void SetTraceState(string? traceState) => Unsafe.AsRef(in _traceState) = traceState;
 
         /// <summary>
         /// Retrieve Id format of to use for the Activity we may create.

@@ -11,8 +11,8 @@ namespace System
         [Serializable]
         public sealed class AdjustmentRule : IEquatable<AdjustmentRule?>, ISerializable, IDeserializationCallback
         {
-            private static readonly TimeSpan DaylightDeltaAdjustment = TimeSpan.FromHours(24.0);
-            private static readonly TimeSpan MaxDaylightDelta = TimeSpan.FromHours(12.0);
+            private static TimeSpan DaylightDeltaAdjustment => new TimeSpan(24 * TimeSpan.TicksPerHour);
+            private static TimeSpan MaxDaylightDelta => new TimeSpan(12 * TimeSpan.TicksPerHour);
             private readonly DateTime _dateStart;
             private readonly DateTime _dateEnd;
             private readonly TimeSpan _daylightDelta;
@@ -55,6 +55,12 @@ namespace System
                 _baseUtcOffsetDelta == other._baseUtcOffsetDelta &&
                 _daylightTransitionEnd.Equals(other._daylightTransitionEnd) &&
                 _daylightTransitionStart.Equals(other._daylightTransitionStart);
+
+            /// <summary>Indicates whether the current instance is equal to another instance.</summary>
+            /// <param name="obj">An instance to compare with this instance.</param>
+            /// <returns>true if the current instance is equal to the other instance; otherwise, false.</returns>
+            public override bool Equals([NotNullWhen(true)] object? obj) =>
+                obj is AdjustmentRule other && Equals(other);
 
             public override int GetHashCode() => _dateStart.GetHashCode();
 
@@ -234,7 +240,7 @@ namespace System
                     baseUtcOffsetDelta -= DaylightDeltaAdjustment;
                 }
 
-                System.Diagnostics.Debug.Assert(daylightDelta <= MaxDaylightDelta && daylightDelta >= -MaxDaylightDelta,
+                Diagnostics.Debug.Assert(daylightDelta <= MaxDaylightDelta && daylightDelta >= -MaxDaylightDelta,
                                                 "DaylightDelta should not ever be more than 24h");
             }
 
@@ -256,10 +262,7 @@ namespace System
 
             void ISerializable.GetObjectData(SerializationInfo info, StreamingContext context)
             {
-                if (info == null)
-                {
-                    throw new ArgumentNullException(nameof(info));
-                }
+                ArgumentNullException.ThrowIfNull(info);
 
                 info.AddValue("DateStart", _dateStart); // Do not rename (binary serialization)
                 info.AddValue("DateEnd", _dateEnd); // Do not rename (binary serialization)
@@ -272,10 +275,7 @@ namespace System
 
             private AdjustmentRule(SerializationInfo info, StreamingContext context)
             {
-                if (info == null)
-                {
-                    throw new ArgumentNullException(nameof(info));
-                }
+                ArgumentNullException.ThrowIfNull(info);
 
                 _dateStart = (DateTime)info.GetValue("DateStart", typeof(DateTime))!; // Do not rename (binary serialization)
                 _dateEnd = (DateTime)info.GetValue("DateEnd", typeof(DateTime))!; // Do not rename (binary serialization)

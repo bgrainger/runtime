@@ -8,15 +8,20 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
     public class RuntimeFunctionsGCInfoNode : ArrayOfEmbeddedDataNode<MethodGCInfoNode>
     {
         public RuntimeFunctionsGCInfoNode()
-            : base("RuntimeFunctionsGCInfo_Begin", "RuntimeFunctionsGCInfo_End", new EmbeddedObjectNodeComparer(new CompilerComparer()))
+            : base("RuntimeFunctionsGCInfo", new EmbeddedObjectNodeComparer(CompilerComparer.Instance))
         {
         }
 
         public HashSet<MethodGCInfoNode> Deduplicator;
 
-        public override int ClassCode => 316678892;
+        protected internal override int Phase => (int)ObjectNodePhase.Ordered;
 
-        public override ObjectNodeSection Section => ObjectNodeSection.ReadOnlyDataSection;
+        public override int ClassCode => (int)ObjectNodeOrder.RuntimeFunctionsGCInfoNode;
+
+        public override ObjectNodeSection GetSection(NodeFactory factory)
+        {
+            return ObjectNodeSection.ReadOnlyDataSection;
+        }
 
         public override bool StaticDependenciesAreComputed => true;
 

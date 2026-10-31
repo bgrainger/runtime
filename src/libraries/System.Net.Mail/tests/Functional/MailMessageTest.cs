@@ -11,8 +11,10 @@
 
 using System.IO;
 using System.Reflection;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using Xunit;
 
 namespace System.Net.Mail.Tests
@@ -149,7 +151,7 @@ namespace System.Net.Mail.Tests
         }
 
         [Fact]
-        [SkipOnPlatform(TestPlatforms.Browser, "Not passing as internal System.Net.Mail.MailWriter stripped from build")]
+        [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.Wasi, "Not passing as internal System.Net.Mail.MailWriter stripped from build")]
         public void SendMailMessageTest()
         {
             string expected = @"X-Sender: from@example.com
@@ -192,7 +194,26 @@ blah blah
 
             string sent = DecodeSentMailMessage(messageWithSubjectAndBody).Raw;
             sent = Regex.Replace(sent, "Date:.*?\r\n", "Date: DATE\r\n");
-            sent = Regex.Replace(sent, @"_.{8}-.{4}-.{4}-.{4}-.{12}", "_GUID");
+
+            // Find outer boundary (in the main Content-Type)
+            var outerBoundaryMatch = Regex.Match(sent, @"Content-Type: multipart/mixed;\s+boundary=(--boundary_\d+_[a-f0-9-]+)");
+            // Find inner boundary (in the nested Content-Type)
+            var innerBoundaryMatch = Regex.Match(sent, @"Content-Type: multipart/alternative;\s+boundary=(--boundary_\d+_[a-f0-9-]+)");
+
+            if (outerBoundaryMatch.Success && innerBoundaryMatch.Success)
+            {
+                string outerBoundary = outerBoundaryMatch.Groups[1].Value;
+                string innerBoundary = innerBoundaryMatch.Groups[1].Value;
+
+                // Replace all occurrences of these boundaries
+                sent = sent.Replace(outerBoundary, "--boundary_1_GUID");
+                sent = sent.Replace(innerBoundary, "--boundary_0_GUID");
+            }
+            else
+            {
+                // unify boundary GUIDs
+                sent = Regex.Replace(sent, @"--boundary_\d+_[a-f0-9-]+", "--boundary_?_GUID");
+            }
 
             // name and charset can appear in different order
             Assert.Contains("; name=AttachmentName", sent);
@@ -202,7 +223,7 @@ blah blah
         }
 
         [Fact]
-        [SkipOnPlatform(TestPlatforms.Browser, "Not passing as internal System.Net.Mail.MailWriter stripped from build")]
+        [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.Wasi, "Not passing as internal System.Net.Mail.MailWriter stripped from build")]
         public void SentSpecialLengthMailAttachment_Base64Decode_Success()
         {
             // The special length follows pattern: (3N - 1) * 0x4400 + 1
@@ -231,7 +252,7 @@ blah blah
         {
             // Create a MIME message that would be sent using System.Net.Mail.
             var stream = new MemoryStream();
-            var mailWriterType = mail.GetType().Assembly.GetType("System.Net.Mail.MailWriter");
+            var mailWriterType = Type.GetType("System.Net.Mail.MailWriter, System.Net.Mail");
             var mailWriter = Activator.CreateInstance(
                                 type: mailWriterType,
                                 bindingAttr: BindingFlags.Instance | BindingFlags.NonPublic,
@@ -240,13 +261,15 @@ blah blah
                                 culture: null,
                                 activationAttributes: null);
 
+            var syncSendAdapterType = Type.GetType("System.SyncReadWriteAdapter, System.Net.Mail");
+
             // Send the message.
-            mail.GetType().InvokeMember(
-                                name: "Send",
-                                invokeAttr: BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.InvokeMethod,
-                                binder: null,
-                                target: mail,
-                                args: new object[] { mailWriter, true, true });
+#pragma warning disable IL3050 // Roslyn analyzer can't see through the private reflection, but publish process can. This is safe.
+            typeof(MailMessage)
+                .GetMethod("SendAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+                .MakeGenericMethod(syncSendAdapterType)
+                .Invoke(mail, new object[] { mailWriter, true, true, CancellationToken.None });
+#pragma warning restore IL3050
 
             // Decode contents.
             string result = Encoding.UTF8.GetString(stream.ToArray());

@@ -1,12 +1,13 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Microsoft.DotNet.CoreSetup.Test
 {
@@ -18,8 +19,6 @@ namespace Microsoft.DotNet.CoreSetup.Test
             public string Version { get; set;  }
 
             public string RollForward { get; set; }
-            public int? RollForwardOnNoCandidateFx { get; set; }
-            public bool? ApplyPatches { get; set; }
 
             public Framework(string name, string version)
             {
@@ -33,21 +32,9 @@ namespace Microsoft.DotNet.CoreSetup.Test
                 return this;
             }
 
-            public Framework WithRollForwardOnNoCandidateFx(int? value)
+            public JsonObject ToJson()
             {
-                RollForwardOnNoCandidateFx = value;
-                return this;
-            }
-
-            public Framework WithApplyPatches(bool? value)
-            {
-                ApplyPatches = value;
-                return this;
-            }
-
-            internal JObject ToJson()
-            {
-                JObject frameworkReference = new JObject();
+                JsonObject frameworkReference = new();
 
                 if (Name != null)
                 {
@@ -66,41 +53,25 @@ namespace Microsoft.DotNet.CoreSetup.Test
                         RollForward);
                 }
 
-                if (RollForwardOnNoCandidateFx.HasValue)
-                {
-                    frameworkReference.Add(
-                        Constants.RollForwardOnNoCandidateFxSetting.RuntimeConfigPropertyName,
-                        RollForwardOnNoCandidateFx.Value);
-                }
-
-                if (ApplyPatches.HasValue)
-                {
-                    frameworkReference.Add(
-                        Constants.ApplyPatchesSetting.RuntimeConfigPropertyName,
-                        ApplyPatches.Value);
-                }
-
                 return frameworkReference;
             }
 
-            internal static Framework FromJson(JObject jobject)
+            internal static Framework FromJson(JsonObject jobject)
             {
-                return new Framework((string)jobject["name"], (string)jobject["version"])
+                return new Framework(jobject["name"].ToString(), jobject["version"].ToString())
                 {
-                    RollForward = (string)jobject[Constants.RollForwardSetting.RuntimeConfigPropertyName],
-                    RollForwardOnNoCandidateFx = (int?)jobject[Constants.RollForwardOnNoCandidateFxSetting.RuntimeConfigPropertyName],
-                    ApplyPatches = (bool?)jobject[Constants.ApplyPatchesSetting.RuntimeConfigPropertyName]
+                    RollForward = (string)jobject[Constants.RollForwardSetting.RuntimeConfigPropertyName]
                 };
             }
         }
 
         private string _rollForward;
-        private int? _rollForwardOnNoCandidateFx;
-        private bool? _applyPatches;
+        private string _tfm;
         private readonly string _path;
         private readonly List<Framework> _frameworks = new List<Framework>();
         private readonly List<Framework> _includedFrameworks = new List<Framework>();
         private readonly List<Tuple<string, string>> _properties = new List<Tuple<string, string>>();
+        private readonly List<string> _additionalProbingPaths = new List<string>();
 
         /// <summary>
         /// Creates new runtime config - overwrites existing file on Save if any.
@@ -116,50 +87,47 @@ namespace Microsoft.DotNet.CoreSetup.Test
         /// </summary>
         public static RuntimeConfig FromFile(string path)
         {
-            RuntimeConfig runtimeConfig = new RuntimeConfig(path);
+            RuntimeConfig runtimeConfig = new(path);
             if (File.Exists(path))
             {
-                using (TextReader textReader = File.OpenText(path))
-                using (JsonTextReader reader = new JsonTextReader(textReader))
+                var reader = new Utf8JsonReader(File.ReadAllBytes(path));
                 {
-                    JObject root = (JObject)JToken.ReadFrom(reader);
-                    JObject runtimeOptions = (JObject)root["runtimeOptions"];
-                    var singleFramework = runtimeOptions["framework"] as JObject;
+                    JsonObject root = (JsonObject)JsonNode.Parse(ref reader);
+                    JsonObject runtimeOptions = (JsonObject)root["runtimeOptions"];
+                    var singleFramework = runtimeOptions["framework"] as JsonObject;
                     if (singleFramework != null)
                     {
                         runtimeConfig.WithFramework(Framework.FromJson(singleFramework));
                     }
 
-                    var frameworks = runtimeOptions["frameworks"];
+                    JsonArray frameworks = runtimeOptions["frameworks"] as JsonArray;
                     if (frameworks != null)
                     {
-                        foreach (JObject framework in frameworks)
+                        foreach (var framework in frameworks)
                         {
-                            runtimeConfig.WithFramework(Framework.FromJson(framework));
+                            runtimeConfig.WithFramework(Framework.FromJson((JsonObject)framework));
                         }
                     }
 
-                    var includedFrameworks = runtimeOptions["includedFrameworks"];
+                    JsonArray includedFrameworks = runtimeOptions["includedFrameworks"] as JsonArray;
                     if (includedFrameworks != null)
                     {
-                        foreach (JObject includedFramework in includedFrameworks)
+                        foreach (var includedFramework in includedFrameworks)
                         {
-                            runtimeConfig.WithFramework(Framework.FromJson(includedFramework));
+                            runtimeConfig.WithIncludedFramework(Framework.FromJson((JsonObject)includedFramework));
                         }
                     }
 
-                    var configProperties = runtimeOptions["configProperties"] as JObject;
+                    JsonObject configProperties = runtimeOptions["configProperties"] as JsonObject;
                     if (configProperties != null)
                     {
-                        foreach (KeyValuePair<string, JToken> property in configProperties)
+                        foreach (var property in configProperties)
                         {
-                            runtimeConfig.WithProperty(property.Key, (string)property.Value);
+                            runtimeConfig.WithProperty(property.Key, property.Value.ToString());
                         }
                     }
 
                     runtimeConfig._rollForward = (string)runtimeOptions[Constants.RollForwardSetting.RuntimeConfigPropertyName];
-                    runtimeConfig._rollForwardOnNoCandidateFx = (int?)runtimeOptions[Constants.RollForwardOnNoCandidateFxSetting.RuntimeConfigPropertyName];
-                    runtimeConfig._applyPatches = (bool?)runtimeOptions[Constants.ApplyPatchesSetting.RuntimeConfigPropertyName];
                 }
             }
 
@@ -170,6 +138,8 @@ namespace Microsoft.DotNet.CoreSetup.Test
         {
             return new RuntimeConfig(path);
         }
+
+        public string Tfm => _tfm;
 
         public Framework GetFramework(string name)
         {
@@ -198,6 +168,11 @@ namespace Microsoft.DotNet.CoreSetup.Test
             return this;
         }
 
+        public Framework GetIncludedFramework(string name)
+        {
+            return _includedFrameworks.FirstOrDefault(f => f.Name == name);
+        }
+
         public RuntimeConfig WithIncludedFramework(Framework framework)
         {
             _includedFrameworks.Add(framework);
@@ -215,15 +190,15 @@ namespace Microsoft.DotNet.CoreSetup.Test
             return this;
         }
 
-        public RuntimeConfig WithRollForwardOnNoCandidateFx(int? value)
+        public RuntimeConfig WithTfm(string tfm)
         {
-            _rollForwardOnNoCandidateFx = value;
+            _tfm = tfm;
             return this;
         }
 
-        public RuntimeConfig WithApplyPatches(bool? value)
+        public RuntimeConfig WithAdditionalProbingPath(string path)
         {
-            _applyPatches = value;
+            _additionalProbingPaths.Add(path);
             return this;
         }
 
@@ -235,19 +210,24 @@ namespace Microsoft.DotNet.CoreSetup.Test
 
         public void Save()
         {
-            JObject runtimeOptions = new JObject();
+            Save(withUtf8Bom: false);
+        }
+
+        public void Save(bool withUtf8Bom)
+        {
+            JsonObject runtimeOptions = new JsonObject();
             if (_frameworks.Any())
             {
                 runtimeOptions.Add(
                     "frameworks",
-                    new JArray(_frameworks.Select(f => f.ToJson()).ToArray()));
+                    new JsonArray(_frameworks.Select(f => f.ToJson()).ToArray()));
             }
 
             if (_includedFrameworks.Any())
             {
                 runtimeOptions.Add(
                     "includedFrameworks",
-                    new JArray(_includedFrameworks.Select(f => f.ToJson()).ToArray()));
+                    new JsonArray(_includedFrameworks.Select(f => f.ToJson()).ToArray()));
             }
 
             if (_rollForward != null)
@@ -257,39 +237,44 @@ namespace Microsoft.DotNet.CoreSetup.Test
                     _rollForward);
             }
 
-            if (_rollForwardOnNoCandidateFx.HasValue)
+            if (_tfm is not null)
             {
-                runtimeOptions.Add(
-                    Constants.RollForwardOnNoCandidateFxSetting.RuntimeConfigPropertyName,
-                    _rollForwardOnNoCandidateFx.Value);
+                runtimeOptions.Add("tfm", _tfm);
             }
 
-            if (_applyPatches.HasValue)
+            if (_additionalProbingPaths.Count > 0)
             {
                 runtimeOptions.Add(
-                    Constants.ApplyPatchesSetting.RuntimeConfigPropertyName,
-                    _applyPatches.Value);
+                    Constants.AdditionalProbingPath.RuntimeConfigPropertyName,
+                    new JsonArray(_additionalProbingPaths.Select(p => JsonValue.Create(p)).ToArray()));
             }
 
             if (_properties.Count > 0)
             {
-                JObject configProperties = new JObject();
+                JsonObject configProperties = new JsonObject();
                 foreach (var property in _properties)
                 {
                     var tokenValue = (property.Item2 == "false" || property.Item2 == "true") ?
-                        JToken.Parse(property.Item2) : property.Item2;
+                        JsonNode.Parse(property.Item2) : property.Item2;
                     configProperties.Add(property.Item1, tokenValue);
                 }
 
                 runtimeOptions.Add("configProperties", configProperties);
             }
 
-            JObject json = new JObject()
-                {
-                    { "runtimeOptions", runtimeOptions }
-                };
+            JsonObject json = new JsonObject
+            {
+                ["runtimeOptions"] = runtimeOptions
+            };
 
-            File.WriteAllText(_path, json.ToString());
+            if (withUtf8Bom)
+            {
+                FileUtils.WriteAllTextWithUtf8Bom(_path, json.ToString());
+            }
+            else
+            {
+                File.WriteAllText(_path, json.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            }
         }
     }
 }

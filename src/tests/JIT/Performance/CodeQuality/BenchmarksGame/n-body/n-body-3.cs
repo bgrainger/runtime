@@ -8,20 +8,31 @@
 // (also best-scoring single-threaded C# .NET Core version as of 2017-09-01)
 
 /* The Computer Language Benchmarks Game
+using TestLibrary;
    http://benchmarksgame.alioth.debian.org/
 
    contributed by Isaac Gouy, optimization and use of more C# idioms by Robert F. Tobler
 */
 
 using System;
+using System.Runtime.CompilerServices;
+using Xunit;
 
 namespace BenchmarksGame
 {
     public class NBody_3
     {
-        public static int Main(String[] args)
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+        [Fact]
+        public static int TestEntryPoint()
         {
-            int n = args.Length > 0 ? Int32.Parse(args[0]) : 10000;
+            return Test(null);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static int Test(int? arg)
+        {
+            int n = arg ?? 10000;
             bool success = Bench(n, true);
             return (success ? 100 : -1);
         }

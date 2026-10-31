@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 /*
+using TestLibrary;
 Test_Struct_ImplicitOverrideVirtualNewslotFinal the following matrix for structs with virtual newslot final methods (implicit override):
 
 Non-Generic virtual methods:
@@ -18,6 +19,8 @@ Generic virtual methods:
 */
 
 using System;
+using Xunit;
+using TestLibrary;
 
 
 public class A<T>
@@ -239,7 +242,9 @@ public class Test_Struct_ImplicitOverrideVirtualNewslotFinal
 
 
 	
-	public static int Main()
+ [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+	[Fact]
+	public static int TestEntryPoint()
 	{
 
 		TestNonGenInterface_NonGenType();

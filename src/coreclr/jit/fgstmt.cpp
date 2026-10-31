@@ -10,17 +10,27 @@
 // Flowgraph Statements
 
 #ifdef DEBUG
-// Check to see if block contains a statement but don't spend more than a certain
-// budget doing this per method compiled.
-// If the budget is exceeded, return 'answerOnBoundExceeded' as the answer.
-/* static */
+//------------------------------------------------------------------------
+// fgBlockContainsStatementBounded: Check if a block contains a statement,
+//    with a budget limit to avoid excessive cost.
+//
+// Arguments:
+//    block                 - the block to search
+//    stmt                  - the statement to look for
+//    answerOnBoundExceeded - value to return if the budget is exceeded
+//
+// Return Value:
+//    true if the block contains the statement, or "answerOnBoundExceeded"
+//    if the budget is exceeded.
+//
+// static
 bool Compiler::fgBlockContainsStatementBounded(BasicBlock* block,
                                                Statement*  stmt,
                                                bool        answerOnBoundExceeded /*= true*/)
 {
-    const __int64 maxLinks = 1000000000;
+    const int64_t maxLinks = 100000000;
 
-    __int64* numTraversed = &JitTls::GetCompiler()->compNumStatementLinksTraversed;
+    int64_t* numTraversed = &JitTls::GetCompiler()->compNumStatementLinksTraversed;
 
     if (*numTraversed > maxLinks)
     {
@@ -49,9 +59,9 @@ bool Compiler::fgBlockContainsStatementBounded(BasicBlock* block,
 //   stmt  - the statement to be inserted.
 //
 // Notes:
-//    We always insert phi statements at the beginning.
-//    In other cases, if there are any phi assignments and/or an assignment of
-//    the GT_CATCH_ARG, we insert after those.
+//    We always insert phi statements at the beginning. In other cases, if
+//    there are any phi stores and/or a store of the GT_CATCH_ARG, we insert
+//    after those.
 //
 void Compiler::fgInsertStmtAtBeg(BasicBlock* block, Statement* stmt)
 {
@@ -60,7 +70,7 @@ void Compiler::fgInsertStmtAtBeg(BasicBlock* block, Statement* stmt)
     if (stmt->IsPhiDefnStmt())
     {
         // The new tree will now be the first one of the block.
-        block->bbStmtList = stmt;
+        block->SetFirstStmt(stmt);
         stmt->SetNextStmt(firstStmt);
 
         // Are there any statements in the block?
@@ -82,7 +92,7 @@ void Compiler::fgInsertStmtAtBeg(BasicBlock* block, Statement* stmt)
     }
     else
     {
-        Statement* insertBeforeStmt = block->FirstNonPhiDefOrCatchArgAsg();
+        Statement* insertBeforeStmt = block->FirstNonPhiDefOrCatchArgStore();
         if (insertBeforeStmt != nullptr)
         {
             fgInsertStmtBefore(block, insertBeforeStmt, stmt);
@@ -143,7 +153,7 @@ void Compiler::fgInsertStmtAtEnd(BasicBlock* block, Statement* stmt)
     else
     {
         // The block is completely empty.
-        block->bbStmtList = stmt;
+        block->SetFirstStmt(stmt);
         stmt->SetPrevStmt(stmt);
     }
 }
@@ -171,7 +181,7 @@ Statement* Compiler::fgNewStmtAtEnd(BasicBlock* block, GenTree* tree, const Debu
 
 //------------------------------------------------------------------------
 // fgInsertStmtNearEnd: Insert the given statement at the end of the given basic block,
-//   but before the GT_JTRUE, if present.
+//   but before the terminating node, if present.
 //
 // Arguments:
 //   block - the block into which 'stmt' will be inserted;
@@ -182,7 +192,7 @@ void Compiler::fgInsertStmtNearEnd(BasicBlock* block, Statement* stmt)
     // This routine can only be used when in tree order.
     assert(fgOrder == FGOrderTree);
 
-    if ((block->bbJumpKind == BBJ_COND) || (block->bbJumpKind == BBJ_SWITCH) || (block->bbJumpKind == BBJ_RETURN))
+    if (block->HasTerminator())
     {
         Statement* firstStmt = block->firstStmt();
         noway_assert(firstStmt != nullptr);
@@ -191,24 +201,28 @@ void Compiler::fgInsertStmtNearEnd(BasicBlock* block, Statement* stmt)
         Statement* insertionPoint = lastStmt->GetPrevStmt();
 
 #if DEBUG
-        if (block->bbJumpKind == BBJ_COND)
+        if (block->KindIs(BBJ_COND))
         {
-            assert(lastStmt->GetRootNode()->gtOper == GT_JTRUE);
+            assert(lastStmt->GetRootNode()->OperIs(GT_JTRUE));
         }
-        else if (block->bbJumpKind == BBJ_RETURN)
+        else if (block->KindIs(BBJ_RETURN))
         {
-            assert((lastStmt->GetRootNode()->gtOper == GT_RETURN) || (lastStmt->GetRootNode()->gtOper == GT_JMP) ||
+            assert((lastStmt->GetRootNode()->OperIs(GT_RETURN, GT_SWIFT_ERROR_RET, GT_JMP)) ||
                    // BBJ_RETURN blocks in functions returning void do not get a GT_RETURN node if they
                    // have a .tail prefix (even if canTailCall returns false for these calls)
                    // code:Compiler::impImportBlockCode (search for the RET: label)
                    // Ditto for real tail calls (all code after them has been removed)
-                   ((lastStmt->GetRootNode()->gtOper == GT_CALL) &&
+                   (lastStmt->GetRootNode()->OperIs(GT_CALL) &&
                     ((info.compRetType == TYP_VOID) || lastStmt->GetRootNode()->AsCall()->IsTailCall())));
+        }
+        else if (block->KindIs(BBJ_EHFINALLYRET, BBJ_EHFAULTRET, BBJ_EHFILTERRET))
+        {
+            assert(lastStmt->GetRootNode()->OperIs(GT_RETFILT));
         }
         else
         {
-            assert(block->bbJumpKind == BBJ_SWITCH);
-            assert(lastStmt->GetRootNode()->gtOper == GT_SWITCH);
+            assert(block->KindIs(BBJ_SWITCH));
+            assert(lastStmt->GetRootNode()->OperIs(GT_SWITCH));
         }
 #endif // DEBUG
 
@@ -219,7 +233,7 @@ void Compiler::fgInsertStmtNearEnd(BasicBlock* block, Statement* stmt)
         if (firstStmt == lastStmt)
         {
             // There is only one stmt in the block.
-            block->bbStmtList = stmt;
+            block->SetFirstStmt(stmt);
             stmt->SetPrevStmt(lastStmt);
         }
         else
@@ -268,7 +282,7 @@ Statement* Compiler::fgNewStmtNearEnd(BasicBlock* block, GenTree* tree, const De
 //
 void Compiler::fgInsertStmtAfter(BasicBlock* block, Statement* insertionPoint, Statement* stmt)
 {
-    assert(block->bbStmtList != nullptr);
+    assert(block->firstStmt() != nullptr);
     assert(fgBlockContainsStatementBounded(block, insertionPoint));
     assert(!fgBlockContainsStatementBounded(block, stmt, false));
 
@@ -282,8 +296,8 @@ void Compiler::fgInsertStmtAfter(BasicBlock* block, Statement* insertionPoint, S
 
         // Update the backward link of the first statement of the block
         // to point to the new last statement.
-        assert(block->bbStmtList->GetPrevStmt() == insertionPoint);
-        block->bbStmtList->SetPrevStmt(stmt);
+        assert(block->firstStmt()->GetPrevStmt() == insertionPoint);
+        block->firstStmt()->SetPrevStmt(stmt);
     }
     else
     {
@@ -308,11 +322,11 @@ void Compiler::fgInsertStmtAfter(BasicBlock* block, Statement* insertionPoint, S
 //
 void Compiler::fgInsertStmtBefore(BasicBlock* block, Statement* insertionPoint, Statement* stmt)
 {
-    assert(block->bbStmtList != nullptr);
+    assert(block->firstStmt() != nullptr);
     assert(fgBlockContainsStatementBounded(block, insertionPoint));
     assert(!fgBlockContainsStatementBounded(block, stmt, false));
 
-    if (insertionPoint == block->bbStmtList)
+    if (insertionPoint == block->firstStmt())
     {
         // We're inserting before the first statement in the block.
         Statement* first = block->firstStmt();
@@ -321,7 +335,7 @@ void Compiler::fgInsertStmtBefore(BasicBlock* block, Statement* insertionPoint, 
         stmt->SetNextStmt(first);
         stmt->SetPrevStmt(last);
 
-        block->bbStmtList = stmt;
+        block->SetFirstStmt(stmt);
         first->SetPrevStmt(stmt);
     }
     else
@@ -362,7 +376,7 @@ Statement* Compiler::fgInsertStmtListAfter(BasicBlock* block, Statement* stmtAft
     {
         stmtAfter->SetNextStmt(stmtList);
         stmtList->SetPrevStmt(stmtAfter);
-        block->bbStmtList->SetPrevStmt(stmtLast);
+        block->firstStmt()->SetPrevStmt(stmtLast);
     }
     else
     {
@@ -373,23 +387,34 @@ Statement* Compiler::fgInsertStmtListAfter(BasicBlock* block, Statement* stmtAft
         stmtNext->SetPrevStmt(stmtLast);
     }
 
-    noway_assert(block->bbStmtList == nullptr || block->bbStmtList->GetPrevStmt()->GetNextStmt() == nullptr);
+    noway_assert(block->firstStmt() == nullptr || block->firstStmt()->GetPrevStmt()->GetNextStmt() == nullptr);
 
     return stmtLast;
 }
 
-/*****************************************************************************
- *
- *  Create a new statement from tree and wire the links up.
- */
+//------------------------------------------------------------------------
+// fgNewStmtFromTree: Create a new statement from a tree and wire the links up.
+//
+// Arguments:
+//    tree  - the root node of the new statement
+//    block - the block to use for debug checks (may be nullptr)
+//    di    - debug info for the new statement
+//
+// Return Value:
+//    The new statement.
+//
 Statement* Compiler::fgNewStmtFromTree(GenTree* tree, BasicBlock* block, const DebugInfo& di)
 {
     Statement* stmt = gtNewStmt(tree, di);
 
-    if (fgStmtListThreaded)
+    if (fgNodeThreading == NodeThreading::AllTrees)
     {
         gtSetStmtInfo(stmt);
         fgSetStmtSeq(stmt);
+    }
+    else if (fgNodeThreading == NodeThreading::AllLocals)
+    {
+        fgSequenceLocals(stmt);
     }
 
 #if DEBUG
@@ -402,16 +427,45 @@ Statement* Compiler::fgNewStmtFromTree(GenTree* tree, BasicBlock* block, const D
     return stmt;
 }
 
+//------------------------------------------------------------------------
+// fgNewStmtFromTree: Create a new statement from a tree with no debug info.
+//
+// Arguments:
+//    tree - the root node of the new statement
+//
+// Return Value:
+//    The new statement.
+//
 Statement* Compiler::fgNewStmtFromTree(GenTree* tree)
 {
     return fgNewStmtFromTree(tree, nullptr, DebugInfo());
 }
 
+//------------------------------------------------------------------------
+// fgNewStmtFromTree: Create a new statement from a tree in the given block.
+//
+// Arguments:
+//    tree  - the root node of the new statement
+//    block - the block to use for debug checks (may be nullptr)
+//
+// Return Value:
+//    The new statement.
+//
 Statement* Compiler::fgNewStmtFromTree(GenTree* tree, BasicBlock* block)
 {
     return fgNewStmtFromTree(tree, block, DebugInfo());
 }
 
+//------------------------------------------------------------------------
+// fgNewStmtFromTree: Create a new statement from a tree with the given debug info.
+//
+// Arguments:
+//    tree - the root node of the new statement
+//    di   - debug info for the new statement
+//
+// Return Value:
+//    The new statement.
+//
 Statement* Compiler::fgNewStmtFromTree(GenTree* tree, const DebugInfo& di)
 {
     return fgNewStmtFromTree(tree, nullptr, di);
@@ -460,8 +514,8 @@ void Compiler::fgRemoveStmt(BasicBlock* block, Statement* stmt DEBUGARG(bool isU
 
     if (opts.compDbgCode && stmt->GetPrevStmt() != stmt && stmt->GetDebugInfo().IsValid())
     {
-        /* TODO: For debuggable code, should we remove significant
-           statement boundaries. Or should we leave a GT_NO_OP in its place? */
+        // TODO: For debuggable code, should we remove significant
+        // statement boundaries. Or should we leave a GT_NO_OP in its place?
     }
 
     Statement* firstStmt = block->firstStmt();
@@ -471,19 +525,19 @@ void Compiler::fgRemoveStmt(BasicBlock* block, Statement* stmt DEBUGARG(bool isU
         {
             assert(firstStmt == block->lastStmt());
 
-            /* this is the only statement - basic block becomes empty */
-            block->bbStmtList = nullptr;
+            // this is the only statement - basic block becomes empty
+            block->SetFirstStmt(nullptr);
         }
         else
         {
-            block->bbStmtList = firstStmt->GetNextStmt();
-            block->bbStmtList->SetPrevStmt(firstStmt->GetPrevStmt());
+            block->SetFirstStmt(firstStmt->GetNextStmt());
+            block->firstStmt()->SetPrevStmt(firstStmt->GetPrevStmt());
         }
     }
     else if (stmt == block->lastStmt()) // Is it the last statement in the list?
     {
         stmt->GetPrevStmt()->SetNextStmt(nullptr);
-        block->bbStmtList->SetPrevStmt(stmt->GetPrevStmt());
+        block->firstStmt()->SetPrevStmt(stmt->GetPrevStmt());
     }
     else // The statement is in the middle.
     {
@@ -502,7 +556,7 @@ void Compiler::fgRemoveStmt(BasicBlock* block, Statement* stmt DEBUGARG(bool isU
 #ifdef DEBUG
     if (verbose)
     {
-        if (block->bbStmtList == nullptr)
+        if (block->firstStmt() == nullptr)
         {
             printf("\n" FMT_BB " becomes empty\n", block->bbNum);
         }
@@ -510,16 +564,24 @@ void Compiler::fgRemoveStmt(BasicBlock* block, Statement* stmt DEBUGARG(bool isU
 #endif // DEBUG
 }
 
-/******************************************************************************/
-// Returns true if the operator is involved in control-flow
-// TODO-Cleanup: Move this into genTreeKinds in genTree.h
-
+//------------------------------------------------------------------------
+// OperIsControlFlow: Returns true if the operator is involved in control-flow.
+//
+// TODO-Cleanup: Make this a GenTreeOperKind.
+//
+// Arguments:
+//    oper - the operator to check
+//
+// Return Value:
+//    true if the operator is a control-flow operator; false otherwise.
+//
 inline bool OperIsControlFlow(genTreeOps oper)
 {
     switch (oper)
     {
         case GT_JTRUE:
         case GT_JCMP:
+        case GT_JTEST:
         case GT_JCC:
         case GT_SWITCH:
         case GT_LABEL:
@@ -529,9 +591,13 @@ inline bool OperIsControlFlow(genTreeOps oper)
 
         case GT_RETURN:
         case GT_RETFILT:
-#if !defined(FEATURE_EH_FUNCLETS)
-        case GT_END_LFIN:
-#endif // !FEATURE_EH_FUNCLETS
+        case GT_SWIFT_ERROR_RET:
+        case GT_RETURN_SUSPEND:
+        case GT_PATCHPOINT:
+        case GT_PATCHPOINT_FORCED:
+        case GT_NONLOCAL_JMP:
+
+        case GT_WASM_JEXCEPT:
             return true;
 
         default:
@@ -539,11 +605,17 @@ inline bool OperIsControlFlow(genTreeOps oper)
     }
 }
 
-/******************************************************************************
- *  Tries to throw away a stmt. The statement can be anywhere in block->bbStmtList.
- *  Returns true if it did remove the statement.
- */
-
+//------------------------------------------------------------------------
+// fgCheckRemoveStmt: Tries to remove a statement if it has no side effects.
+//    The statement can be anywhere in block's statement list.
+//
+// Arguments:
+//    block - the block containing the statement
+//    stmt  - the statement to try to remove
+//
+// Return Value:
+//    true if the statement was removed, false otherwise
+//
 bool Compiler::fgCheckRemoveStmt(BasicBlock* block, Statement* stmt)
 {
     if (opts.compDbgCode)
@@ -554,13 +626,13 @@ bool Compiler::fgCheckRemoveStmt(BasicBlock* block, Statement* stmt)
     GenTree*   tree = stmt->GetRootNode();
     genTreeOps oper = tree->OperGet();
 
-    if (OperIsControlFlow(oper) || GenTree::OperIsHWIntrinsic(oper) || oper == GT_NO_OP)
+    if (OperIsControlFlow(oper) || oper == GT_NO_OP)
     {
         return false;
     }
 
     // TODO: Use a recursive version of gtNodeHasSideEffects()
-    if (tree->gtFlags & GTF_SIDE_EFFECT)
+    if ((tree->gtFlags & GTF_SIDE_EFFECT) != 0)
     {
         return false;
     }

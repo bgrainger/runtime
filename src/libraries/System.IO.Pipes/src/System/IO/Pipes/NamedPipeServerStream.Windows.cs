@@ -62,7 +62,11 @@ namespace System.IO.Pipes
             {
                 if (Interlocked.CompareExchange(ref _reusableConnectionValueTaskSource, connectionSource, null) is not null)
                 {
-                    source._preallocatedOverlapped.Dispose();
+                    source.Dispose();
+                }
+                else if (State == PipeState.Closed)
+                {
+                    Interlocked.Exchange(ref _reusableConnectionValueTaskSource, null)?.Dispose();
                 }
             }
         }
@@ -80,7 +84,7 @@ namespace System.IO.Pipes
                 PipeTransmissionMode transmissionMode, PipeOptions options, int inBufferSize, int outBufferSize,
                 PipeSecurity? pipeSecurity, HandleInheritability inheritability, PipeAccessRights additionalAccessRights)
         {
-            Debug.Assert(pipeName != null && pipeName.Length != 0, "fullPipeName is null or empty");
+            Debug.Assert(!string.IsNullOrEmpty(pipeName), "fullPipeName is null or empty");
             Debug.Assert(direction >= PipeDirection.In && direction <= PipeDirection.InOut, "invalid pipe direction");
             Debug.Assert(inBufferSize >= 0, "inBufferSize is negative");
             Debug.Assert(outBufferSize >= 0, "outBufferSize is negative");
@@ -141,7 +145,9 @@ namespace System.IO.Pipes
 
                 if (handle.IsInvalid)
                 {
-                    throw Win32Marshal.GetExceptionForLastWin32Error();
+                    Exception e = Win32Marshal.GetExceptionForLastWin32Error();
+                    handle.Dispose();
+                    throw e;
                 }
 
                 InitializeHandle(handle, false, (options & PipeOptions.Asynchronous) != 0);
@@ -166,8 +172,7 @@ namespace System.IO.Pipes
 
             if (IsAsync)
             {
-                ValueTask vt = WaitForConnectionCoreAsync(CancellationToken.None);
-                vt.AsTask().GetAwaiter().GetResult();
+                WaitForConnectionCoreAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult();
             }
             else
             {
@@ -181,34 +186,25 @@ namespace System.IO.Pipes
                     }
 
                     // pipe already connected
-                    if (errorCode == Interop.Errors.ERROR_PIPE_CONNECTED && State == PipeState.Connected)
+                    if (State == PipeState.Connected)
                     {
                         throw new InvalidOperationException(SR.InvalidOperation_PipeAlreadyConnected);
                     }
+
                     // If we reach here then a connection has been established.  This can happen if a client
                     // connects in the interval between the call to CreateNamedPipe and the call to ConnectNamedPipe.
                     // In this situation, there is still a good connection between client and server, even though
                     // ConnectNamedPipe returns zero.
                 }
+
                 State = PipeState.Connected;
             }
         }
 
-        public Task WaitForConnectionAsync(CancellationToken cancellationToken)
-        {
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return Task.FromCanceled(cancellationToken);
-            }
-
-            if (!IsAsync)
-            {
-                return Task.Factory.StartNew(s => ((NamedPipeServerStream)s!).WaitForConnection(),
-                    this, cancellationToken, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
-            }
-
-            return WaitForConnectionCoreAsync(cancellationToken).AsTask();
-        }
+        public Task WaitForConnectionAsync(CancellationToken cancellationToken) =>
+            cancellationToken.IsCancellationRequested ? Task.FromCanceled(cancellationToken) :
+            IsAsync ? WaitForConnectionCoreAsync(cancellationToken).AsTask() :
+            AsyncOverSyncWithIoCancellation.InvokeAsync(static s => s.WaitForConnection(), this, cancellationToken).AsTask();
 
         public void Disconnect()
         {
@@ -248,16 +244,14 @@ namespace System.IO.Pipes
         {
             CheckWriteOperations();
             ExecuteHelper execHelper = new ExecuteHelper(impersonationWorker, InternalHandle);
-            bool exceptionThrown = true;
 
             try
             {
                 ImpersonateAndTryCode(execHelper);
-                exceptionThrown = false;
             }
             finally
             {
-                RevertImpersonationOnBackout(execHelper, exceptionThrown);
+                RevertImpersonationOnBackout(execHelper);
             }
 
             // now handle win32 impersonate/revert specific errors by throwing corresponding exceptions
@@ -291,7 +285,7 @@ namespace System.IO.Pipes
             }
         }
 
-        private static void RevertImpersonationOnBackout(object? helper, bool exceptionThrown)
+        private static void RevertImpersonationOnBackout(object? helper)
         {
             ExecuteHelper execHelper = (ExecuteHelper)helper!;
 
@@ -375,6 +369,27 @@ namespace System.IO.Pipes
                 throw new InvalidOperationException(SR.InvalidOperation_PipeHandleNotSet);
             }
             CheckConnectOperationsServer();
+        }
+
+        // Depending on the Windows platform, we will try to reload a potentially missing DLL
+        // and reattempt the retrieval of the impersonation username.
+        private unsafe string HandleGetImpersonationUserNameError(int error, uint userNameMaxLength, char* userName)
+        {
+            // There is a known problem in Win32 64-bit where if sspicli is not loaded, this function fails unexpectedly with ERROR_SUCCESS, so we need to load it and reattempt
+            // If sspicli is already loaded, this is a no-op.
+            // ERROR_CANNOT_IMPERSONATE is thrown in Windows 7.
+            if ((error == Interop.Errors.ERROR_SUCCESS || error == Interop.Errors.ERROR_CANNOT_IMPERSONATE) && Environment.Is64BitProcess)
+            {
+                Interop.Kernel32.LoadLibraryEx("sspicli.dll", IntPtr.Zero, Interop.Kernel32.LOAD_LIBRARY_SEARCH_SYSTEM32);
+
+                if (Interop.Kernel32.GetNamedPipeHandleStateW(InternalHandle!, null, null, null, null, userName, userNameMaxLength))
+                {
+                    return new string(userName);
+                }
+                error = Marshal.GetLastPInvokeError();
+            }
+
+            throw WinIOError(error);
         }
     }
 }

@@ -3,6 +3,7 @@
 
 using System.Buffers;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -15,7 +16,6 @@ namespace System.IO.Pipelines
 
         private CancellationTokenSource? _internalTokenSource;
         private bool _isReaderCompleted;
-        private bool _isStreamCompleted;
 
         private BufferSegment? _readHead;
         private int _readIndex;
@@ -28,7 +28,7 @@ namespace System.IO.Pipelines
         // Mutable struct! Don't make this readonly
         private BufferSegmentStack _bufferSegmentPool;
 
-        private StreamPipeReaderOptions _options;
+        private readonly StreamPipeReaderOptions _options;
 
         /// <summary>
         /// Creates a new StreamPipeReader.
@@ -37,13 +37,16 @@ namespace System.IO.Pipelines
         /// <param name="options">The options to use.</param>
         public StreamPipeReader(Stream readingStream, StreamPipeReaderOptions options)
         {
-            InnerStream = readingStream ?? throw new ArgumentNullException(nameof(readingStream));
-
-            if (options == null)
+            if (readingStream is null)
             {
-                throw new ArgumentNullException(nameof(options));
+                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.readingStream);
+            }
+            if (options is null)
+            {
+                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.options);
             }
 
+            InnerStream = readingStream;
             _options = options;
             _bufferSegmentPool = new BufferSegmentStack(InitialSegmentPoolSize);
         }
@@ -73,11 +76,7 @@ namespace System.IO.Pipelines
             {
                 lock (_lock)
                 {
-                    if (_internalTokenSource == null)
-                    {
-                        _internalTokenSource = new CancellationTokenSource();
-                    }
-                    return _internalTokenSource;
+                    return _internalTokenSource ??= new CancellationTokenSource();
                 }
             }
         }
@@ -107,9 +106,12 @@ namespace System.IO.Pipelines
 
             long consumedBytes = BufferSegment.GetLength(returnStart, _readIndex, consumedSegment, consumedIndex);
 
-            _bufferedBytes -= consumedBytes;
+            if (consumedBytes < 0 || consumedBytes > _bufferedBytes)
+            {
+                ThrowHelper.ThrowInvalidOperationException_AdvanceToInvalidCursor();
+            }
 
-            Debug.Assert(_bufferedBytes >= 0);
+            _bufferedBytes -= consumedBytes;
 
             _examinedEverything = false;
 
@@ -151,7 +153,6 @@ namespace System.IO.Pipelines
             while (returnStart != returnEnd)
             {
                 BufferSegment next = returnStart.NextSegment!;
-                returnStart.ResetMemory();
                 ReturnSegmentUnsynchronized(returnStart);
                 returnStart = next;
             }
@@ -166,9 +167,22 @@ namespace System.IO.Pipelines
         /// <inheritdoc />
         public override void Complete(Exception? exception = null)
         {
+            if (CompleteAndGetNeedsDispose())
+            {
+                InnerStream.Dispose();
+            }
+        }
+
+#if NET
+        public override ValueTask CompleteAsync(Exception? exception = null) =>
+            CompleteAndGetNeedsDispose() ? InnerStream.DisposeAsync() : default;
+#endif
+
+        private bool CompleteAndGetNeedsDispose()
+        {
             if (_isReaderCompleted)
             {
-                return;
+                return false;
             }
 
             _isReaderCompleted = true;
@@ -179,99 +193,24 @@ namespace System.IO.Pipelines
                 BufferSegment returnSegment = segment;
                 segment = segment.NextSegment;
 
-                returnSegment.ResetMemory();
+                returnSegment.Reset();
             }
 
-            if (!LeaveOpen)
-            {
-                InnerStream.Dispose();
-            }
+            return !LeaveOpen;
         }
 
         /// <inheritdoc />
         public override ValueTask<ReadResult> ReadAsync(CancellationToken cancellationToken = default)
         {
-            // TODO ReadyAsync needs to throw if there are overlapping reads.
-            ThrowIfCompleted();
-
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return new ValueTask<ReadResult>(Task.FromCanceled<ReadResult>(cancellationToken));
-            }
-
-            // PERF: store InternalTokenSource locally to avoid querying it twice (which acquires a lock)
-            CancellationTokenSource tokenSource = InternalTokenSource;
-            if (TryReadInternal(tokenSource, out ReadResult readResult))
-            {
-                return new ValueTask<ReadResult>(readResult);
-            }
-
-            if (_isStreamCompleted)
-            {
-                ReadResult completedResult = new ReadResult(buffer: default, isCanceled: false, isCompleted: true);
-                return new ValueTask<ReadResult>(completedResult);
-            }
-
-            return Core(this, tokenSource, cancellationToken);
-
-            static async ValueTask<ReadResult> Core(StreamPipeReader reader, CancellationTokenSource tokenSource, CancellationToken cancellationToken)
-            {
-                CancellationTokenRegistration reg = default;
-                if (cancellationToken.CanBeCanceled)
-                {
-                    reg = cancellationToken.UnsafeRegister(state => ((StreamPipeReader)state!).Cancel(), reader);
-                }
-
-                using (reg)
-                {
-                    var isCanceled = false;
-                    try
-                    {
-                        // This optimization only makes sense if we don't have anything buffered
-                        if (reader.UseZeroByteReads && reader._bufferedBytes == 0)
-                        {
-                            // Wait for data by doing 0 byte read before
-                            await reader.InnerStream.ReadAsync(Memory<byte>.Empty, tokenSource.Token).ConfigureAwait(false);
-                        }
-
-                        reader.AllocateReadTail();
-
-                        Memory<byte> buffer = reader._readTail!.AvailableMemory.Slice(reader._readTail.End);
-
-                        int length = await reader.InnerStream.ReadAsync(buffer, tokenSource.Token).ConfigureAwait(false);
-
-                        Debug.Assert(length + reader._readTail.End <= reader._readTail.AvailableMemory.Length);
-
-                        reader._readTail.End += length;
-                        reader._bufferedBytes += length;
-
-                        if (length == 0)
-                        {
-                            reader._isStreamCompleted = true;
-                        }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        reader.ClearCancellationToken();
-
-                        if (tokenSource.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                        {
-                            // Catch cancellation and translate it into setting isCanceled = true
-                            isCanceled = true;
-                        }
-                        else
-                        {
-                            throw;
-                        }
-
-                    }
-
-                    return new ReadResult(reader.GetCurrentReadOnlySequence(), isCanceled, reader._isStreamCompleted);
-                }
-            }
+            return ReadInternalAsync(null, cancellationToken);
         }
 
         protected override ValueTask<ReadResult> ReadAtLeastAsyncCore(int minimumSize, CancellationToken cancellationToken)
+        {
+            return ReadInternalAsync(minimumSize, cancellationToken);
+        }
+
+        private ValueTask<ReadResult> ReadInternalAsync(int? minimumSize, CancellationToken cancellationToken)
         {
             // TODO ReadyAsync needs to throw if there are overlapping reads.
             ThrowIfCompleted();
@@ -285,21 +224,22 @@ namespace System.IO.Pipelines
             CancellationTokenSource tokenSource = InternalTokenSource;
             if (TryReadInternal(tokenSource, out ReadResult readResult))
             {
-                if (readResult.Buffer.Length >= minimumSize || readResult.IsCompleted || readResult.IsCanceled)
+                if (minimumSize is null
+                    || readResult.Buffer.Length >= minimumSize
+                    || readResult.IsCompleted
+                    || readResult.IsCanceled)
                 {
                     return new ValueTask<ReadResult>(readResult);
                 }
             }
 
-            if (_isStreamCompleted)
-            {
-                ReadResult completedResult = new ReadResult(buffer: default, isCanceled: false, isCompleted: true);
-                return new ValueTask<ReadResult>(completedResult);
-            }
-
             return Core(this, minimumSize, tokenSource, cancellationToken);
 
-            static async ValueTask<ReadResult> Core(StreamPipeReader reader, int minimumSize, CancellationTokenSource tokenSource, CancellationToken cancellationToken)
+#if NET
+            [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+            [RuntimeAsyncMethodGeneration(false)]
+#endif
+            static async ValueTask<ReadResult> Core(StreamPipeReader reader, int? minimumSize, CancellationTokenSource tokenSource, CancellationToken cancellationToken)
             {
                 CancellationTokenRegistration reg = default;
                 if (cancellationToken.CanBeCanceled)
@@ -310,6 +250,7 @@ namespace System.IO.Pipelines
                 using (reg)
                 {
                     var isCanceled = false;
+                    bool isCompleted = false;
                     try
                     {
                         // This optimization only makes sense if we don't have anything buffered
@@ -334,16 +275,21 @@ namespace System.IO.Pipelines
 
                             if (length == 0)
                             {
-                                reader._isStreamCompleted = true;
+                                isCompleted = true;
                                 break;
                             }
-                        } while (reader._bufferedBytes < minimumSize);
+                        } while (minimumSize != null && reader._bufferedBytes < minimumSize);
                     }
-                    catch (OperationCanceledException)
+                    catch (OperationCanceledException ex)
                     {
                         reader.ClearCancellationToken();
 
-                        if (tokenSource.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            // Simulate an OCE triggered directly by the cancellationToken rather than the InternalTokenSource
+                            throw new OperationCanceledException(ex.Message, ex, cancellationToken);
+                        }
+                        else if (tokenSource.IsCancellationRequested)
                         {
                             // Catch cancellation and translate it into setting isCanceled = true
                             isCanceled = true;
@@ -352,10 +298,9 @@ namespace System.IO.Pipelines
                         {
                             throw;
                         }
-
                     }
 
-                    return new ReadResult(reader.GetCurrentReadOnlySequence(), isCanceled, reader._isStreamCompleted);
+                    return new ReadResult(reader.GetCurrentReadOnlySequence(), isCanceled, isCompleted);
                 }
             }
         }
@@ -413,11 +358,11 @@ namespace System.IO.Pipelines
                         {
                             AdvanceTo(segment, segment.End, segment, segment.End);
                         }
-                    }
-
-                    if (_isStreamCompleted)
-                    {
-                        return;
+                        else if (_readTail != null)
+                        {
+                            // All buffered segments were successfully written - advance past them
+                            AdvanceTo(_readTail, _readTail.End, _readTail, _readTail.End);
+                        }
                     }
 
                     await InnerStream.CopyToAsync(destination, tokenSource.Token).ConfigureAwait(false);
@@ -474,11 +419,11 @@ namespace System.IO.Pipelines
                         {
                             AdvanceTo(segment, segment.End, segment, segment.End);
                         }
-                    }
-
-                    if (_isStreamCompleted)
-                    {
-                        return;
+                        else if (_readTail != null)
+                        {
+                            // All buffered segments were successfully written - advance past them
+                            AdvanceTo(_readTail, _readTail.End, _readTail, _readTail.End);
+                        }
                     }
 
                     await InnerStream.CopyToAsync(destination, tokenSource.Token).ConfigureAwait(false);
@@ -518,7 +463,7 @@ namespace System.IO.Pipelines
         private bool TryReadInternal(CancellationTokenSource source, out ReadResult result)
         {
             bool isCancellationRequested = source.IsCancellationRequested;
-            if (isCancellationRequested || _bufferedBytes > 0 && (!_examinedEverything || _isStreamCompleted))
+            if (isCancellationRequested || (_bufferedBytes > 0 && !_examinedEverything))
             {
                 if (isCancellationRequested)
                 {
@@ -527,7 +472,7 @@ namespace System.IO.Pipelines
 
                 ReadOnlySequence<byte> buffer = GetCurrentReadOnlySequence();
 
-                result = new ReadResult(buffer, isCancellationRequested, _isStreamCompleted);
+                result = new ReadResult(buffer, isCancellationRequested, false);
                 return true;
             }
 
@@ -607,6 +552,8 @@ namespace System.IO.Pipelines
         {
             Debug.Assert(segment != _readHead, "Returning _readHead segment that's in use!");
             Debug.Assert(segment != _readTail, "Returning _readTail segment that's in use!");
+
+            segment.Reset();
 
             if (_bufferSegmentPool.Count < MaxSegmentPoolSize)
             {

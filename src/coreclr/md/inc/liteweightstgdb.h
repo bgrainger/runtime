@@ -15,6 +15,7 @@
 #include "metadata.h"
 #include "metamodelro.h"
 #include "metamodelrw.h"
+#include "cdacdata.h"
 
 #include "stgtiggerstorage.h"
 
@@ -25,24 +26,18 @@ class StgIO;
 #include "pdbheap.h"
 #endif
 
-#ifdef _PREFAST_
-#pragma warning(push)
-#pragma warning(disable:28718)    // public header missing SAL annotations
-#endif // _PREFAST_
 class TiggerStorage;
-#ifdef _PREFAST_
-#pragma warning(pop)
-#endif // _PREFAST_
 
 //*****************************************************************************
 // This class provides common definitions for heap segments.  It is both the
 //  base class for the heap, and the class for heap extensions (additional
 //  memory that must be allocated to grow the heap).
 //*****************************************************************************
+class DacDbiInterfaceImpl;
 template <class MiniMd>
 class CLiteWeightStgdb
 {
-    friend class VerifyLayoutsMD;
+    friend class ::DacDbiInterfaceImpl;
 public:
     CLiteWeightStgdb() : m_pvMd(NULL), m_cbMd(0)
     {}
@@ -86,18 +81,13 @@ void CLiteWeightStgdb<MiniMd>::Uninit()
 
 class CLiteWeightStgdbRW : public CLiteWeightStgdb<CMiniMdRW>
 {
-    friend class CImportTlb;
+    friend struct ::cdac_data<CLiteWeightStgdbRW>;
     friend class RegMeta;
-    friend class VerifyLayoutsMD;
     friend HRESULT TranslateSigHelper(
             IMDInternalImport*      pImport,
-            IMDInternalImport*      pAssemImport,
-            const void*             pbHashValue,
-            ULONG                   cbHashValue,
             PCCOR_SIGNATURE         pbSigBlob,
             ULONG                   cbSigBlob,
-            IMetaDataAssemblyEmit*  pAssemEmit,
-            IMetaDataEmit*          emit,
+            IMDInternalEmit*        emit,
             CQuickBytes*            pqkSigEmit,
             ULONG*                  pcbSig);
 public:
@@ -107,8 +97,6 @@ public:
         m_pImage = NULL;
         m_dwImageSize = 0;
         m_dwPEKind = (DWORD)(-1);
-        m_dwDatabaseLFS = 0;
-        m_dwDatabaseLFT = 0;
 #ifdef FEATURE_METADATA_EMIT_PORTABLE_PDB
         m_pPdbHeap = NULL;
 #endif
@@ -129,14 +117,12 @@ public:
     HRESULT GetSaveSize(
         CorSaveSize               fSize,
         UINT32                   *pcbSaveSize,
-        MetaDataReorderingOptions reorderingOptions = NoReordering,
-        CorProfileData           *pProfileData = NULL); // optional IBC profile data for working set optimization
+        MetaDataReorderingOptions reorderingOptions = NoReordering);
 
     __checkReturn
     HRESULT SaveToStream(
         IStream                  *pIStream,                 // Stream to which to write
-        MetaDataReorderingOptions reorderingOptions = NoReordering,
-        CorProfileData           *pProfileData = NULL);     // optional IBC profile data for working set optimization
+        MetaDataReorderingOptions reorderingOptions = NoReordering);
 
     __checkReturn
     HRESULT Save(
@@ -151,26 +137,11 @@ public:
         ULONG       cbData,                 // How big is the data.
         DWORD       dwFlags);               // Flags for the open.
 
-#ifdef FEATURE_METADATA_CUSTOM_DATA_SOURCE
-    // Open a metadata section for read/write
-    __checkReturn
-    HRESULT OpenForRead(
-        IMDCustomDataSource *pDataSource,   // data to open on top of
-        DWORD       dwFlags);               // Flags for the open.
-#endif
-
     __checkReturn
     HRESULT FindImageMetaData(
         PVOID pImage,                       // Pointer to head of a file
         DWORD dwFileLength,                 // length of a flat file
         BOOL  bMappedImage,                 // Is the file mapped
-        PVOID *ppMetaData,                  // [out] pointer to the metadata
-        ULONG *pcbMetaData);                // [out] size of the metadata
-
-    __checkReturn
-    HRESULT FindObjMetaData(
-        PVOID pImage,                       // Pointer to an OBJ file
-        DWORD dwFileLength,                 // Length of the file
         PVOID *ppMetaData,                  // [out] pointer to the metadata
         ULONG *pcbMetaData);                // [out] size of the metadata
 
@@ -213,8 +184,7 @@ protected:
     HRESULT GetTablesSaveSize(
         CorSaveSize               fSave,
         UINT32                   *pcbSaveSize,
-        MetaDataReorderingOptions reorderingOptions,
-        CorProfileData           *pProfileData = NULL); // Add pool data to this value.
+        MetaDataReorderingOptions reorderingOptions);
 
     __checkReturn
     HRESULT AddStreamToList(
@@ -224,8 +194,7 @@ protected:
     __checkReturn
     HRESULT SaveToStorage(
         TiggerStorage            *pStorage,
-        MetaDataReorderingOptions reorderingOptions = NoReordering,
-        CorProfileData            *pProfileData = NULL);
+        MetaDataReorderingOptions reorderingOptions = NoReordering);
 
     __checkReturn
     HRESULT SavePool(LPCWSTR szName, TiggerStorage *pStorage, int iPool);
@@ -250,12 +219,17 @@ public:
 private:
     FILETYPE m_eFileType;
     WCHAR *  m_wszFileName;     // Database file name (NULL or non-empty string)
-    DWORD    m_dwDatabaseLFT;   // Low bytes of the database file's last write time
-    DWORD    m_dwDatabaseLFS;   // Low bytes of the database file's size
     StgIO *  m_pStgIO;          // For file i/o.
 #ifdef FEATURE_METADATA_EMIT_PORTABLE_PDB
     PdbHeap *m_pPdbHeap;
 #endif
 };  // class CLiteWeightStgdbRW
+
+template<>
+struct cdac_data<CLiteWeightStgdbRW>
+{
+    static constexpr size_t MiniMd = offsetof(CLiteWeightStgdbRW, m_MiniMd);
+    static constexpr size_t MetadataAddress = offsetof(CLiteWeightStgdbRW, m_pvMd);
+};
 
 #endif // __LiteWeightStgdb_h__

@@ -66,27 +66,19 @@ namespace System.IO.Pipes
 
             CheckReadOperations();
 
-            if (!_isAsync)
-            {
-                return base.ReadAsync(buffer, offset, count, cancellationToken);
-            }
-
             if (count == 0)
             {
                 UpdateMessageCompletion(false);
                 return Task.FromResult(0);
             }
 
-            return ReadAsyncCore(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask();
+            return _isAsync ?
+                ReadAsyncCore(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask() :
+                AsyncOverSyncRead(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask();
         }
 
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default(CancellationToken))
         {
-            if (!_isAsync)
-            {
-                return base.ReadAsync(buffer, cancellationToken);
-            }
-
             if (!CanRead)
             {
                 throw Error.GetReadNotSupported();
@@ -105,13 +97,19 @@ namespace System.IO.Pipes
                 return new ValueTask<int>(0);
             }
 
-            return ReadAsyncCore(buffer, cancellationToken);
+            return _isAsync ?
+                ReadAsyncCore(buffer, cancellationToken) :
+                AsyncOverSyncRead(buffer, cancellationToken);
         }
+
+        /// <summary>Initiates an async-over-sync read for a pipe opened for non-overlapped I/O.</summary>
+        private ValueTask<int> AsyncOverSyncRead(Memory<byte> buffer, CancellationToken cancellationToken) =>
+            AsyncOverSyncWithIoCancellation.InvokeAsync(static s => s.Stream.ReadCore(s.Buffer.Span), (Stream: this, Buffer: buffer), cancellationToken);
 
         public override IAsyncResult BeginRead(byte[] buffer, int offset, int count, AsyncCallback? callback, object? state)
         {
             if (_isAsync)
-                return TaskToApm.Begin(ReadAsync(buffer, offset, count, CancellationToken.None), callback, state);
+                return TaskToAsyncResult.Begin(ReadAsync(buffer, offset, count, CancellationToken.None), callback, state);
             else
                 return base.BeginRead(buffer, offset, count, callback, state);
         }
@@ -119,7 +117,7 @@ namespace System.IO.Pipes
         public override int EndRead(IAsyncResult asyncResult)
         {
             if (_isAsync)
-                return TaskToApm.End<int>(asyncResult);
+                return TaskToAsyncResult.End<int>(asyncResult);
             else
                 return base.EndRead(asyncResult);
         }
@@ -174,26 +172,14 @@ namespace System.IO.Pipes
 
             CheckWriteOperations();
 
-            if (!_isAsync)
-            {
-                return base.WriteAsync(buffer, offset, count, cancellationToken);
-            }
-
-            if (count == 0)
-            {
-                return Task.CompletedTask;
-            }
-
-            return WriteAsyncCore(new ReadOnlyMemory<byte>(buffer, offset, count), cancellationToken).AsTask();
+            return
+                count == 0 ? Task.CompletedTask :
+                _isAsync ? WriteAsyncCore(new ReadOnlyMemory<byte>(buffer, offset, count), cancellationToken).AsTask() :
+                AsyncOverSyncWrite(new ReadOnlyMemory<byte>(buffer, offset, count), cancellationToken).AsTask();
         }
 
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default(CancellationToken))
         {
-            if (!_isAsync)
-            {
-                return base.WriteAsync(buffer, cancellationToken);
-            }
-
             if (!CanWrite)
             {
                 throw Error.GetWriteNotSupported();
@@ -206,18 +192,20 @@ namespace System.IO.Pipes
 
             CheckWriteOperations();
 
-            if (buffer.Length == 0)
-            {
-                return default;
-            }
-
-            return WriteAsyncCore(buffer, cancellationToken);
+            return
+                buffer.Length == 0 ? default :
+                _isAsync ? WriteAsyncCore(buffer, cancellationToken) :
+                AsyncOverSyncWrite(buffer, cancellationToken);
         }
+
+        /// <summary>Initiates an async-over-sync write for a pipe opened for non-overlapped I/O.</summary>
+        private ValueTask AsyncOverSyncWrite(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken) =>
+            AsyncOverSyncWithIoCancellation.InvokeAsync(static s => s.Stream.WriteCore(s.Buffer.Span), (Stream: this, Buffer: buffer), cancellationToken);
 
         public override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback? callback, object? state)
         {
             if (_isAsync)
-                return TaskToApm.Begin(WriteAsync(buffer, offset, count, CancellationToken.None), callback, state);
+                return TaskToAsyncResult.Begin(WriteAsync(buffer, offset, count, CancellationToken.None), callback, state);
             else
                 return base.BeginWrite(buffer, offset, count, callback, state);
         }
@@ -225,7 +213,7 @@ namespace System.IO.Pipes
         public override void EndWrite(IAsyncResult asyncResult)
         {
             if (_isAsync)
-                TaskToApm.End(asyncResult);
+                TaskToAsyncResult.End(asyncResult);
             else
                 base.EndWrite(asyncResult);
         }
@@ -242,7 +230,7 @@ namespace System.IO.Pipes
 
         /// <summary>Throws an exception if the supplied handle does not represent a valid pipe.</summary>
         /// <param name="safePipeHandle">The handle to validate.</param>
-        internal void ValidateHandleIsPipe(SafePipeHandle safePipeHandle)
+        private protected static void ValidateHandleIsPipe(SafePipeHandle safePipeHandle)
         {
             // Check that this handle is infact a handle to a pipe.
             if (Interop.Kernel32.GetFileType(safePipeHandle) != Interop.Kernel32.FileTypes.FILE_TYPE_PIPE)
@@ -267,9 +255,25 @@ namespace System.IO.Pipes
             if (source is ReadWriteValueTaskSource readWriteSource)
             {
                 ref ReadWriteValueTaskSource? field = ref readWriteSource._isWrite ? ref _reusableWriteValueTaskSource : ref _reusableReadValueTaskSource;
+
+                // Try to return the instance. If there's already something in the field, then there had been concurrent
+                // operations and someone else already returned their instance, so just dispose of this one (the "pool" has
+                // a size of 1). If there's not something there and we're successful in storing our instance, the 99% case is
+                // this is normal operation, there wasn't a concurrent operation, and we just successfully returned the rented
+                // instance. However, it could also be because the stream has been disposed, in which case the disposal process
+                // would have nulled out the field, and since this instance wasn't present when disposal happened, it won't have
+                // been disposed. Further, disposal won't happen again, so just leaving the instance there will result in its
+                // resources being leaked. Instead, _after_ returning the instance we then check whether the stream is now
+                // disposed, and if it is, we then try to re-rent the instance and dispose of it. It's fine if the disposal happens
+                // after we've stored the instance back and before we check the stream's state, as then this code will be racing
+                // with disposal and only one of the two will succeed in exchanging out the instance.
                 if (Interlocked.CompareExchange(ref field, readWriteSource, null) is not null)
                 {
-                    source._preallocatedOverlapped.Dispose();
+                    source.Dispose();
+                }
+                else if (State == PipeState.Closed)
+                {
+                    Interlocked.Exchange(ref field, null)?.Dispose();
                 }
             }
         }
@@ -457,7 +461,7 @@ namespace System.IO.Pipes
 
         // Gets the transmission mode for the pipe.  This is virtual so that subclassing types can
         // override this in cases where only one mode is legal (such as anonymous pipes)
-        public unsafe virtual PipeTransmissionMode TransmissionMode
+        public virtual unsafe PipeTransmissionMode TransmissionMode
         {
             get
             {
@@ -488,7 +492,7 @@ namespace System.IO.Pipes
 
         // Gets the buffer size in the inbound direction for the pipe. This checks if pipe has read
         // access. If that passes, call to GetNamedPipeInfo will succeed.
-        public unsafe virtual int InBufferSize
+        public virtual unsafe int InBufferSize
         {
             get
             {
@@ -512,7 +516,7 @@ namespace System.IO.Pipes
         // if it's an outbound only pipe because GetNamedPipeInfo requires read access to the pipe.
         // However, returning cached is good fallback, especially if user specified a value in
         // the ctor.
-        public unsafe virtual int OutBufferSize
+        public virtual unsafe int OutBufferSize
         {
             get
             {
@@ -577,16 +581,8 @@ namespace System.IO.Pipes
             }
         }
 
-        internal static unsafe Interop.Kernel32.SECURITY_ATTRIBUTES GetSecAttrs(HandleInheritability inheritability)
-        {
-            Interop.Kernel32.SECURITY_ATTRIBUTES secAttrs = new Interop.Kernel32.SECURITY_ATTRIBUTES
-            {
-                nLength = (uint)sizeof(Interop.Kernel32.SECURITY_ATTRIBUTES),
-                bInheritHandle = ((inheritability & HandleInheritability.Inheritable) != 0) ? Interop.BOOL.TRUE : Interop.BOOL.FALSE
-            };
-
-            return secAttrs;
-        }
+        internal static Interop.Kernel32.SECURITY_ATTRIBUTES GetSecAttrs(HandleInheritability inheritability) =>
+            Interop.Kernel32.SECURITY_ATTRIBUTES.Create((inheritability & HandleInheritability.Inheritable) != 0);
 
         internal static unsafe Interop.Kernel32.SECURITY_ATTRIBUTES GetSecAttrs(HandleInheritability inheritability, PipeSecurity? pipeSecurity, ref GCHandle pinningHandle)
         {
@@ -598,7 +594,7 @@ namespace System.IO.Pipes
                 pinningHandle = GCHandle.Alloc(securityDescriptor, GCHandleType.Pinned);
                 fixed (byte* pSecurityDescriptor = securityDescriptor)
                 {
-                    secAttrs.lpSecurityDescriptor = (IntPtr)pSecurityDescriptor;
+                    secAttrs.lpSecurityDescriptor = pSecurityDescriptor;
                 }
             }
 

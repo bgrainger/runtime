@@ -9,7 +9,9 @@ internal static partial class Interop
 {
     internal static partial class Crypt32
     {
-        [GeneratedDllImport(Libraries.Crypt32, CharSet = CharSet.Unicode, SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.Crypt32, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
         internal static unsafe partial bool CryptQueryObject(
             CertQueryObjectType dwObjectType,
             void* pvObject,
@@ -24,7 +26,9 @@ internal static partial class Interop
             out SafeCertContextHandle ppvContext
             );
 
-        [GeneratedDllImport(Libraries.Crypt32, CharSet = CharSet.Unicode, SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.Crypt32, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
         internal static unsafe partial bool CryptQueryObject(
             CertQueryObjectType dwObjectType,
             void* pvObject,
@@ -39,7 +43,9 @@ internal static partial class Interop
             IntPtr ppvContext
             );
 
-        [GeneratedDllImport(Libraries.Crypt32, CharSet = CharSet.Unicode, SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.Crypt32, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
         internal static unsafe partial bool CryptQueryObject(
             CertQueryObjectType dwObjectType,
             void* pvObject,
@@ -53,5 +59,21 @@ internal static partial class Interop
             IntPtr phMsg,
             IntPtr ppvContext
             );
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Libraries.Crypt32, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static unsafe partial bool CryptQueryObject(
+            CertQueryObjectType dwObjectType,
+            void* pvObject,
+            ExpectedContentTypeFlags dwExpectedContentTypeFlags,
+            ExpectedFormatTypeFlags dwExpectedFormatTypeFlags,
+            int dwFlags, // reserved - always pass 0
+            IntPtr pdwMsgAndCertEncodingType,
+            out ContentType pdwContentType,
+            IntPtr pdwFormatType,
+            IntPtr phCertStore,
+            IntPtr phMsg,
+            out SafeCertContextHandle ppvContext);
     }
 }

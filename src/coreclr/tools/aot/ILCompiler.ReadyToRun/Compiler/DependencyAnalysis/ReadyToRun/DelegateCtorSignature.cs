@@ -5,6 +5,7 @@ using Internal.TypeSystem;
 using Internal.JitInterface;
 using Internal.Text;
 using Internal.ReadyToRunConstants;
+using ILCompiler.DependencyAnalysisFramework;
 
 namespace ILCompiler.DependencyAnalysis.ReadyToRun
 {
@@ -35,19 +36,27 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
         public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)
         {
-            ObjectDataSignatureBuilder builder = new ObjectDataSignatureBuilder();
+            ObjectDataSignatureBuilder builder = new ObjectDataSignatureBuilder(factory, relocsOnly);
             builder.AddSymbol(this);
 
             if (!relocsOnly)
             {
                 SignatureContext innerContext = builder.EmitFixup(factory, ReadyToRunFixupKind.DelegateCtor, _methodToken.Token.Module, factory.SignatureContext);
 
+                bool needsInstantiatingStub = _targetMethod.Method.HasInstantiation;
+                if (_targetMethod.Method.IsVirtual && _targetMethod.Method.Signature.IsStatic)
+                {
+                    // For static virtual methods, we always require an instantiating stub as the method may resolve to a canonical representation
+                    // at runtime without us being able to detect that at compile time.
+                    needsInstantiatingStub |= (_targetMethod.Method.OwningType.HasInstantiation || _methodToken.ConstrainedType != null);
+                }
+
                 builder.EmitMethodSignature(
                     _methodToken,
                     enforceDefEncoding: false,
                     enforceOwningType: false,
                     innerContext,
-                    isInstantiatingStub: _targetMethod.Method.HasInstantiation);
+                    isInstantiatingStub: needsInstantiatingStub);
 
                 builder.EmitTypeSignature(_delegateType, innerContext);
             }
@@ -55,14 +64,9 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             return builder.ToObjectData();
         }
 
-        protected override DependencyList ComputeNonRelocationBasedDependencies(NodeFactory factory)
+        protected override void ComputeNonRelocationBasedDependencies(DependencySink sink, NodeFactory factory)
         {
-            return new DependencyList(
-                new DependencyListEntry[]
-                {
-                    new DependencyListEntry(_targetMethod, "Delegate target method")
-                }
-            );
+            sink.Add(_targetMethod, "Delegate target method");
         }
 
         public override void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
@@ -70,11 +74,11 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             sb.Append(nameMangler.CompilationUnitPrefix);
             sb.Append($@"DelegateCtor(");
             sb.Append(nameMangler.GetMangledTypeName(_delegateType));
-            sb.Append(" -> ");
+            sb.Append(" -> "u8);
             _targetMethod.AppendMangledName(nameMangler, sb);
-            sb.Append("; ");
+            sb.Append("; "u8);
             sb.Append(_methodToken.ToString());
-            sb.Append(")");
+            sb.Append(")"u8);
         }
 
         public override int CompareToImpl(ISortableNode other, CompilerComparer comparer)

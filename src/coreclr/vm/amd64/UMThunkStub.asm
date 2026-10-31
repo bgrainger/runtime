@@ -1,12 +1,6 @@
 ; Licensed to the .NET Foundation under one or more agreements.
 ; The .NET Foundation licenses this file to you under the MIT license.
 
-; ==++==
-;
-
-;
-; ==--==
-
 include <AsmMacros.inc>
 include AsmConstants.inc
 
@@ -14,7 +8,7 @@ extern TheUMEntryPrestubWorker:proc
 extern UMEntryPrestubUnwindFrameChainHandler:proc
 
 ;
-; METHODDESC_REGISTER: UMEntryThunk*
+; METHODDESC_REGISTER: UMEntryThunkData*
 ;
 NESTED_ENTRY TheUMEntryPrestub, _TEXT, UMEntryPrestubUnwindFrameChainHandler
 

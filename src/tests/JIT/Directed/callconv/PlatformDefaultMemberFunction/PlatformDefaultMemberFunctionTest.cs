@@ -7,6 +7,7 @@ using System.Text;
 using Xunit;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using TestLibrary;
 
 unsafe class PlatformDefaultMemberFunctionNative
 {
@@ -63,9 +64,11 @@ unsafe class PlatformDefaultMemberFunctionNative
     public static extern CLong GetWidthAsLongFromManaged(C* c);
 }
 
-unsafe class PlatformDefaultMemberFunctionTest
+public unsafe class PlatformDefaultMemberFunctionTest
 {
-    public static int Main(string[] args)
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/50440", TestPlatforms.Windows, runtimes: TestRuntimes.Mono)]
+    [Fact]
+    public static int TestEntryPoint()
     {
         try
         {
@@ -198,7 +201,7 @@ unsafe class PlatformDefaultMemberFunctionTest
         }
     }
 
-    [UnmanagedCallersOnly(CallConvs = new [] {typeof(CallConvMemberFunction)})]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvMemberFunction)])]
     private static PlatformDefaultMemberFunctionNative.SizeF GetSize(PlatformDefaultMemberFunctionNative.C* c, int unused)
     {
         return new PlatformDefaultMemberFunctionNative.SizeF
@@ -208,7 +211,7 @@ unsafe class PlatformDefaultMemberFunctionTest
         };
     }
 
-    [UnmanagedCallersOnly(CallConvs = new [] {typeof(CallConvMemberFunction)})]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvMemberFunction)])]
     private static PlatformDefaultMemberFunctionNative.Width GetWidth(PlatformDefaultMemberFunctionNative.C* c)
     {
         return new PlatformDefaultMemberFunctionNative.Width
@@ -217,7 +220,7 @@ unsafe class PlatformDefaultMemberFunctionTest
         };
     }
 
-    [UnmanagedCallersOnly(CallConvs = new [] {typeof(CallConvMemberFunction)})]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvMemberFunction)])]
     private static PlatformDefaultMemberFunctionNative.IntWrapper GetHeightAsInt(PlatformDefaultMemberFunctionNative.C* c)
     {
         return new PlatformDefaultMemberFunctionNative.IntWrapper
@@ -226,13 +229,13 @@ unsafe class PlatformDefaultMemberFunctionTest
         };
     }
 
-    [UnmanagedCallersOnly(CallConvs = new [] {typeof(CallConvMemberFunction)})]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvMemberFunction)])]
     private static PlatformDefaultMemberFunctionNative.E GetE(PlatformDefaultMemberFunctionNative.C* c)
     {
         return c->dummy;
     }
 
-    [UnmanagedCallersOnly(CallConvs = new [] {typeof(CallConvMemberFunction)})]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvMemberFunction)])]
     private static CLong GetWidthAsLong(PlatformDefaultMemberFunctionNative.C* c)
     {
         return new CLong((nint)c->width);

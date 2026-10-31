@@ -22,7 +22,7 @@
 //
 // * Thread suspend/resume:
 //      static void SuspendEE(SUSPEND_REASON reason);
-//      static void RestartEE(bool bFinishedGC); //resume threads.
+//      static void RestartEE(bool bUnused); //resume threads.
 //
 // * Enumeration of thread-local allocators:
 //      static void GcEnumAllocContexts (enum_alloc_context_func* fn, void* param);
@@ -46,6 +46,12 @@
 #include "objecthandle.h"
 
 #include "gcdesc.h"
+
+#ifdef TARGET_X86
+#define LOCALGC_CALLCONV __cdecl
+#else
+#define LOCALGC_CALLCONV
+#endif
 
 //
 // The fast paths for object allocation and write barriers is performance critical. They are often
@@ -106,7 +112,7 @@ void WriteBarrier(Object ** dst, Object * ref)
     ErectWriteBarrier(dst, ref);
 }
 
-extern "C" HRESULT GC_Initialize(IGCToCLR* clrToGC, IGCHeap** gcHeap, IGCHandleManager** gcHandleManager, GcDacVars* gcDacVars);
+extern "C" HRESULT LOCALGC_CALLCONV GC_Initialize(IGCToCLR* clrToGC, IGCHeap** gcHeap, IGCHandleManager** gcHandleManager, GcDacVars* gcDacVars);
 
 int __cdecl main(int argc, char* argv[])
 {
@@ -170,10 +176,10 @@ int __cdecl main(int argc, char* argv[])
     // GC expects the size of ObjHeader (extra void*) to be included in the size.
     baseSize = baseSize + sizeof(ObjHeader);
     // Add padding as necessary. GC requires the object size to be at least MIN_OBJECT_SIZE.
-    My_MethodTable.m_MT.m_baseSize = max(baseSize, MIN_OBJECT_SIZE);
+    My_MethodTable.m_MT.m_baseSize = max(baseSize, (uint32_t)MIN_OBJECT_SIZE);
 
     My_MethodTable.m_MT.m_componentSize = 0;    // Array component size
-    My_MethodTable.m_MT.m_flags = MTFlag_ContainsPointers;
+    My_MethodTable.m_MT.m_flags = MTFlag_ContainsGCPointers;
 
     My_MethodTable.m_numSeries = 2;
 

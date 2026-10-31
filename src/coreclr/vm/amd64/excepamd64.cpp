@@ -6,8 +6,6 @@
  */
 //
 
-//
-
 #include "common.h"
 
 #include "frames.h"
@@ -26,8 +24,6 @@
 
 #include "exceptionhandling.h"
 #include "virtualcallstub.h"
-
-
 
 #if !defined(DACCESS_COMPILE)
 
@@ -52,12 +48,14 @@ inline PTR_CONTEXT GetCONTEXTFromRedirectedStubStackFrameWorker(UINT_PTR establi
     return *ppContext;
 }
 
+#ifdef TARGET_WINDOWS
 PTR_CONTEXT GetCONTEXTFromRedirectedStubStackFrame(DISPATCHER_CONTEXT * pDispatcherContext)
 {
     LIMITED_METHOD_DAC_CONTRACT;
 
     return GetCONTEXTFromRedirectedStubStackFrameWorker(pDispatcherContext->EstablisherFrame);
 }
+#endif // TARGET_WINDOWS
 
 PTR_CONTEXT GetCONTEXTFromRedirectedStubStackFrame(CONTEXT * pContext)
 {
@@ -67,17 +65,14 @@ PTR_CONTEXT GetCONTEXTFromRedirectedStubStackFrame(CONTEXT * pContext)
 }
 
 #if !defined(DACCESS_COMPILE)
-
+#ifdef TARGET_WINDOWS
 FaultingExceptionFrame *GetFrameFromRedirectedStubStackFrame (DISPATCHER_CONTEXT *pDispatcherContext)
 {
     LIMITED_METHOD_CONTRACT;
 
     return (FaultingExceptionFrame*)(pDispatcherContext->EstablisherFrame + THROWSTUB_ESTABLISHER_OFFSET_FaultingExceptionFrame);
 }
-
-#endif // !DACCESS_COMPILE
-
-#if !defined(DACCESS_COMPILE)
+#endif // TARGET_WINDOWS
 
 #define AMD64_SIZE64_PREFIX 0x48
 #define AMD64_ADD_IMM8_OP 0x83
@@ -199,12 +194,12 @@ RtlVirtualUnwind_Worker (
     // that the debugger is attched when we get here.
     _ASSERTE(CORDebuggerAttached());
 
-    LOG((LF_CORDB, LL_EVERYTHING, "RVU_CBSW: in RtlVitualUnwind_ClrDbgSafeWorker, ControlPc=0x%p\n", ControlPc));
+    LOG((LF_CORDB, LL_EVERYTHING, "RVU_CBSW: in RtlVirtualUnwind_ClrDbgSafeWorker, ControlPc=%p\n", (void*)ControlPc));
 
     BOOL     InEpilogue = FALSE;
     BOOL     HasManagedBreakpoint = FALSE;
     BOOL     HasUnmanagedBreakpoint = FALSE;
-    UCHAR    TempOpcode = NULL;
+    UCHAR    TempOpcode = 0;
     PUCHAR   NextByte;
     ULONG    CurrentOffset;
     ULONG    FrameRegister;
@@ -407,7 +402,7 @@ RtlVirtualUnwind_Worker (
 
     if (InEpilogue && HasUnmanagedBreakpoint)
     {
-        STRESS_LOG1(LF_CORDB, LL_ERROR, "RtlVirtualUnwind is about to fail b/c the ControlPc (0x%p) is in the epilog of a function which has a 0xCC in its epilog.", ControlPc);
+        STRESS_LOG1(LF_CORDB, LL_ERROR, "RtlVirtualUnwind is about to fail b/c the ControlPc (0x%p) is in the epilog of a function which has a 0xCC in its epilog.", (void*)ControlPc);
         _ASSERTE(!"RtlVirtualUnwind is about to fail b/c you are unwinding through\n"
                   "the epilogue of a function and have a 0xCC in the codestream. This is\n"
                   "probably caused by having set that breakpoint yourself in the debugger,\n"
@@ -422,13 +417,9 @@ RtlVirtualUnwind_Worker (
     {
         // InEpilogue && HasManagedBreakpoint, this means we have to make the fake code buffer
 
-        // We explicitly handle the case where the new below can't allocate, but we're still
-        // getting an assert from inside new b/c we can be called within a FAULT_FORBID scope.
-        //
         // If new does fail we will still end up crashing, but the debugger doesn't have to
         // be OOM hardened in Whidbey and this is a debugger only code path so we're ok in
         // that department.
-        FAULT_NOT_FATAL();
 
         LOG((LF_CORDB, LL_EVERYTHING, "RVU_CBSW: Function has >1 managed bp in the epilogue, and we are in the epilogue, need a code buffer for RtlVirtualUnwind\n"));
 
@@ -436,7 +427,7 @@ RtlVirtualUnwind_Worker (
         // It is of note that we are significantly pruning the funtion here in making the fake
         // code buffer, all that we are making room for is 1 byte for the prologue, 1 byte for
         // function code and what is left of the epilogue to be executed. This is _very_ closely
-        // tied to the implmentation of RtlVirtualUnwind and the knowledge that by passing the
+        // tied to the implementation of RtlVirtualUnwind and the knowledge that by passing the
         // the test above and having InEpilogue==TRUE then the code path which will be followed
         // through RtlVirtualUnwind is known.
         //
@@ -520,7 +511,7 @@ RtlVirtualUnwind_Worker (
 
         // The buffer cleaning implementation here just runs through the buffer byte by byte trying
         // to get a real opcode from the patch table for any 0xCC that it finds. There is the
-        // possiblity that the epilogue will contain a 0xCC in an immediate value for which a
+        // possibility that the epilogue will contain a 0xCC in an immediate value for which a
         // patch won't be found and this will report a false positive for HasUnmanagedBreakpoint.
         BYTE* pCleanCodePc = pCodeBuffer + FAKE_PROLOG_SIZE + FAKE_FUNCTION_CODE_SIZE;
         BYTE* pRealCodePc = (BYTE*)ControlPc;
@@ -604,33 +595,49 @@ AdjustContextForVirtualStub(
 
     PCODE f_IP = GetIP(pContext);
 
-    VirtualCallStubManager::StubKind sk;
-    VirtualCallStubManager::FindStubManager(f_IP, &sk);
+    bool isVirtualStubNullCheck = false;
+#ifdef FEATURE_CACHED_INTERFACE_DISPATCH
+    if (VirtualCallStubManager::isCachedInterfaceDispatchStubAVLocation(f_IP))
+    {
+        isVirtualStubNullCheck = true;
+    }
+#endif // FEATURE_CACHED_INTERFACE_DISPATCH
+#ifdef FEATURE_VIRTUAL_STUB_DISPATCH
+    if (!isVirtualStubNullCheck)
+    {
+        StubCodeBlockKind sk = RangeSectionStubManager::GetStubKind(f_IP);
 
-    if (sk == VirtualCallStubManager::SK_DISPATCH)
-    {
-        if ((*PTR_DWORD(f_IP) & 0xffffff) != X64_INSTR_CMP_IND_THIS_REG_RAX) // cmp [THIS_REG], rax
+        if (sk == STUB_CODE_BLOCK_VSD_DISPATCH_STUB)
         {
-            _ASSERTE(!"AV in DispatchStub at unknown instruction");
-            return FALSE;
+            if ((*PTR_DWORD(f_IP) & 0xffffff) != X64_INSTR_CMP_IND_THIS_REG_RAX) // cmp [THIS_REG], rax
+            {
+                _ASSERTE(!"AV in DispatchStub at unknown instruction");
+            }
+            else
+            {
+                isVirtualStubNullCheck = true;
+            }
+        }
+        else
+        if (sk == STUB_CODE_BLOCK_VSD_RESOLVE_STUB)
+        {
+            if ((*PTR_DWORD(f_IP) & 0xffffff) != X64_INSTR_MOV_RAX_IND_THIS_REG) // mov rax, [THIS_REG]
+            {
+                _ASSERTE(!"AV in ResolveStub at unknown instruction");
+            }
+            else
+            {
+                isVirtualStubNullCheck = true;
+            }
         }
     }
-    else
-    if (sk == VirtualCallStubManager::SK_RESOLVE)
-    {
-        if ((*PTR_DWORD(f_IP) & 0xffffff) != X64_INSTR_MOV_RAX_IND_THIS_REG) // mov rax, [THIS_REG]
-        {
-            _ASSERTE(!"AV in ResolveStub at unknown instruction");
-            return FALSE;
-        }
-        SetSP(pContext, dac_cast<PCODE>(dac_cast<PTR_BYTE>(GetSP(pContext)) + sizeof(void*))); // rollback push rdx
-    }
-    else
+#endif // FEATURE_VIRTUAL_STUB_DISPATCH
+    if (!isVirtualStubNullCheck)
     {
         return FALSE;
     }
 
-    PCODE callsite = *dac_cast<PTR_PCODE>(GetSP(pContext)); 
+    PCODE callsite = *dac_cast<PTR_PCODE>(GetSP(pContext));
     if (pExceptionRecord != NULL)
     {
         pExceptionRecord->ExceptionAddress = (PVOID)callsite;
@@ -638,8 +645,15 @@ AdjustContextForVirtualStub(
     SetIP(pContext, callsite);
     SetSP(pContext, dac_cast<PCODE>(dac_cast<PTR_BYTE>(GetSP(pContext)) + sizeof(void*))); // Move SP to where it was at the call site
 
+#if defined(TARGET_WINDOWS)
+    DWORD64 ssp = GetSSP(pContext);
+    if (ssp != 0)
+    {
+        SetSSP(pContext, ssp + sizeof(void*));
+    }
+#endif // TARGET_WINDOWS
+
     return TRUE;
 }
 
 #endif
-

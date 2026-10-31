@@ -1,15 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-//
 
-//
 ////////////////////////////////////////////////////////////////////////////////
 // This module defines a Utility Class used by reflection
-//
-//
-
 ////////////////////////////////////////////////////////////////////////////////
-
 
 #ifndef __INVOKEUTIL_H__
 #define __INVOKEUTIL_H__
@@ -51,22 +45,10 @@ class InvokeUtil
 {
 
 public:
-    static void CopyArg(TypeHandle th, OBJECTREF *obj, ArgDestination *argDest);
-
-    // Given a type, this routine will convert an return value representing that
-    //  type into an ObjectReference.  If the type is a primitive, the
-    //  value is wrapped in one of the Value classes.
-    static OBJECTREF CreateObjectAfterInvoke(TypeHandle th, void * pValue);
-
     // This is a special purpose Exception creation function.  It
-    //  creates the TargetInvocationExeption placing the passed
+    //  creates the TargetInvocationException placing the passed
     //  exception into it.
     static OBJECTREF CreateTargetExcept(OBJECTREF* except);
-
-    // This is a special purpose Exception creation function.  It
-    //  creates the ReflectionClassLoadException placing the passed
-    //  classes array and exception array into it.
-    static OBJECTREF CreateClassLoadExcept(OBJECTREF* classes,OBJECTREF* except);
 
     // Validate that the field can be widened for Set
     static void ValidField(TypeHandle th, OBJECTREF* value);
@@ -113,7 +95,7 @@ public:
     static BOOL IsVoidPtr(TypeHandle th);
 
     // CanPrimitiveWiden
-    // This method determines if the srcType and be widdened without loss to the destType
+    // This method determines if the srcType can be widened without loss to the destType
     //  destType -- The target type
     //  srcType -- The source type.
     inline static DWORD CanPrimitiveWiden(const CorElementType destType, const CorElementType srcType)
@@ -138,9 +120,9 @@ public:
     // SetValidField
     // Given an target object, a value object and a field this method will set the field
     //  on the target object.  The field must be validate before calling this.
-    static void SetValidField(CorElementType fldType, TypeHandle fldTH, FieldDesc* pField, OBJECTREF* target, OBJECTREF* value, TypeHandle declaringType, CLR_BOOL *pDomainInitialized);
+    static void SetValidField(CorElementType fldType, TypeHandle fldTH, FieldDesc* pField, OBJECTREF* target, OBJECTREF* value, TypeHandle declaringType, BOOL *pIsClassInitialized);
 
-    static OBJECTREF GetFieldValue(FieldDesc* pField, TypeHandle fieldType, OBJECTREF* target, TypeHandle declaringType, CLR_BOOL *pDomainInitialized);
+    static OBJECTREF GetFieldValue(FieldDesc* pField, TypeHandle fieldType, OBJECTREF* target, TypeHandle declaringType, BOOL *pIsClassInitialized);
 
     // ValidateObjectTarget
     // This method will validate the Object/Target relationship
@@ -153,9 +135,6 @@ public:
     static TypeHandle GetPointerType(OBJECTREF pObj);
     static void* GetPointerValue(OBJECTREF pObj);
     static void* GetIntPtrValue(OBJECTREF pObj);
-
-private:
-    static void* CreateByRef(TypeHandle dstTh,CorElementType srcType, TypeHandle srcTH,OBJECTREF srcObj, OBJECTREF *pIncomingObj);
 
 private:
     // The Attributes Table

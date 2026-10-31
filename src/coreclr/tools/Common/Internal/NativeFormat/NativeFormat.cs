@@ -40,24 +40,23 @@ namespace Internal.NativeFormat
         ImplementedInterfaces       = 0x02,
 
         DictionaryLayout            = 0x40,
-        TypeFlags                   = 0x41,
+        // unused                   = 0x41,
         NonGcStaticData             = 0x42,
         GcStaticData                = 0x43,
         NonGcStaticDataSize         = 0x44,
-        GcStaticDataSize            = 0x45,
+        // unused                   = 0x45,
         GcStaticDesc                = 0x46,
-        ThreadStaticDataSize        = 0x47,
+        // unused                   = 0x47,
         ThreadStaticDesc            = 0x48,
         ThreadStaticIndex           = 0x49,
         ThreadStaticOffset          = 0x4a,
-        FieldLayout                 = 0x4b,
-        VTableMethodSignatures      = 0x4c,
-        SealedVTableEntries         = 0x4d,
+        // unused                   = 0x4b,
+        // unused                   = 0x4c,
+        // unused                   = 0x4d,
         ClassConstructorPointer     = 0x4e,
-        BaseTypeSize                = 0x4f,
-        GenericVarianceInfo         = 0x50,
-        DelegateInvokeSignature     = 0x51,
-        GcStaticEEType              = 0x52,
+        // unused                   = 0x4f,
+        // unused                   = 0x50,
+        // unused                   = 0x51,
 
         // Add new custom bag elements that don't match to something you'd find in the ECMA metadata here.
     }
@@ -76,7 +75,7 @@ namespace Internal.NativeFormat
         Null                        = 0x00,
         TypeHandle                  = 0x01,
         InterfaceCall               = 0x02,
-        // unused                   = 0x03,
+        GvmDispatchCell             = 0x03,
         MethodDictionary            = 0x04,
         StaticData                  = 0x05,
         UnwrapNullableType          = 0x06,
@@ -87,19 +86,21 @@ namespace Internal.NativeFormat
         ThreadStaticIndex           = 0x0b,
         // unused                   = 0x0c,
         Method                      = 0x0d,
-        IsInst                      = 0x0e,
-        CastClass                   = 0x0f,
-        AllocateArray               = 0x10,
+        // unused                   = 0x0e,
+        // unused                   = 0x0f,
+        // unused                   = 0x10,
         // unused                   = 0x11,
-        TypeSize                    = 0x12,
-        FieldOffset                 = 0x13,
-        CallingConventionConverter  = 0x14,
-        VTableOffset                = 0x15,
-        NonGenericConstrainedMethod = 0x16,
-        GenericConstrainedMethod    = 0x17,
-        NonGenericDirectConstrainedMethod = 0x18,
-        PointerToOtherSlot          = 0x19,
-        IntValue                    = 0x20,
+        // unused                   = 0x12,
+        // unused                   = 0x13,
+        // unused                   = 0x14,
+        // unused                   = 0x15,
+        // unused                   = 0x16,
+        // unused                   = 0x17,
+        // unused                   = 0x18,
+        // unused                   = 0x19,
+        NonGenericInstanceConstrainedMethod = 0x20,
+        NonGenericStaticConstrainedMethod = 0x21,
+        GenericConstrainedMethod = 0x22,
 
         NotYetSupported             = 0xee,
     }
@@ -166,30 +167,6 @@ namespace Internal.NativeFormat
         NeedsUSGContext             = 0x08,
     };
 
-#if NATIVEFORMAT_PUBLICWRITER
-    public
-#else
-    internal
-#endif
-    enum CallingConventionConverterKind : uint
-    {
-        NoInstantiatingParam        = 0x00,   // The calling convention interpreter can assume that the calling convention of the target method has no instantiating parameter
-        HasInstantiatingParam       = 0x01,   // The calling convention interpreter can assume that the calling convention of the target method has an instantiating parameter
-        MaybeInstantiatingParam     = 0x02,   // The calling convention interpreter can assume that the calling convention of the target method may be a fat function pointer
-    }
-
-    [Flags]
-#if NATIVEFORMAT_PUBLICWRITER
-    public
-#else
-    internal
-#endif
-    enum TypeFlags : uint
-    {
-        HasClassConstructor             = 0x1,
-        HasInstantiationDeterminedSize  = 0x2,
-    };
-
     [Flags]
 #if NATIVEFORMAT_PUBLICWRITER
     public
@@ -201,7 +178,8 @@ namespace Internal.NativeFormat
         HasInstantiation            = 0x1,
         IsUnboxingStub              = 0x2,
         HasFunctionPointer          = 0x4,
-        FunctionPointerIsUSG        = 0x8,
+        IsAsyncVariant              = 0x8,
+        IsReturnDroppingAsyncThunk  = 0x10,
     };
 
     [Flags]
@@ -214,18 +192,6 @@ namespace Internal.NativeFormat
     {
         Generic                     = 0x1,
         Static                      = 0x2,
+        Unmanaged                   = 0x4,
     };
-
-#if NATIVEFORMAT_PUBLICWRITER
-    public
-#else
-    internal
-#endif
-    enum FieldStorage : uint
-    {
-        Instance                    = 0x0,
-        NonGCStatic                 = 0x1,
-        GCStatic                    = 0x2,
-        TLSStatic                   = 0x3,
-    }
 }

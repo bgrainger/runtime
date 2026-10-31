@@ -4,6 +4,10 @@
 // TypeDelegator
 //
 // This class wraps a Type object and delegates all methods to that Type.
+//
+// When changes are made here, also consider changing the ModifiedType class
+// in both the runtime and in MetadataLoadContext since those classes also
+// wrap Type.
 
 using System.Diagnostics.CodeAnalysis;
 using CultureInfo = System.Globalization.CultureInfo;
@@ -29,8 +33,7 @@ namespace System.Reflection
         // TypeDelegator. The only purpose of the annotation here is to avoid dataflow warnings _within_ this type.
         public TypeDelegator([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)] Type delegatingType)
         {
-            if (delegatingType is null)
-                throw new ArgumentNullException(nameof(delegatingType));
+            ArgumentNullException.ThrowIfNull(delegatingType);
 
             typeImpl = delegatingType;
         }
@@ -38,7 +41,7 @@ namespace System.Reflection
         public override Guid GUID => typeImpl.GUID;
         public override int MetadataToken => typeImpl.MetadataToken;
 
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)]
+        [DynamicallyAccessedMembers(InvokeMemberMembers)]
         public override object? InvokeMember(string name, BindingFlags invokeAttr, Binder? binder, object? target,
             object?[]? args, ParameterModifier[]? modifiers, CultureInfo? culture, string[]? namedParameters)
         {
@@ -53,6 +56,8 @@ namespace System.Reflection
         public override string? Namespace => typeImpl.Namespace;
         public override string? AssemblyQualifiedName => typeImpl.AssemblyQualifiedName;
         public override Type? BaseType => typeImpl.BaseType;
+
+        public override int GetArrayRank() => typeImpl.GetArrayRank();
 
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors)]
         protected override ConstructorInfo? GetConstructorImpl(BindingFlags bindingAttr, Binder? binder,
@@ -84,6 +89,13 @@ namespace System.Reflection
 
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields | DynamicallyAccessedMemberTypes.NonPublicFields)]
         public override FieldInfo[] GetFields(BindingFlags bindingAttr) => typeImpl.GetFields(bindingAttr);
+
+        public override Type[] GetFunctionPointerCallingConventions() => typeImpl.GetFunctionPointerCallingConventions();
+        public override Type[] GetFunctionPointerParameterTypes() => typeImpl.GetFunctionPointerParameterTypes();
+        public override Type GetFunctionPointerReturnType() => typeImpl.GetFunctionPointerReturnType();
+
+        public override Type[] GetOptionalCustomModifiers() => typeImpl.GetOptionalCustomModifiers();
+        public override Type[] GetRequiredCustomModifiers() => typeImpl.GetRequiredCustomModifiers();
 
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
         [return: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
@@ -143,9 +155,13 @@ namespace System.Reflection
         protected override bool IsValueTypeImpl() => typeImpl.IsValueType;
         protected override bool IsCOMObjectImpl() => typeImpl.IsCOMObject;
         public override bool IsByRefLike => typeImpl.IsByRefLike;
+        public override Type? GetNullableUnderlyingType() => typeImpl.GetNullableUnderlyingType();
         public override bool IsConstructedGenericType => typeImpl.IsConstructedGenericType;
 
         public override bool IsCollectible => typeImpl.IsCollectible;
+
+        public override bool IsFunctionPointer => typeImpl.IsFunctionPointer;
+        public override bool IsUnmanagedFunctionPointer => typeImpl.IsUnmanagedFunctionPointer;
 
         public override Type? GetElementType() => typeImpl.GetElementType();
         protected override bool HasElementTypeImpl() => typeImpl.HasElementType;

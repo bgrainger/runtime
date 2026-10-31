@@ -13,7 +13,8 @@
 //
 class LclVarSet final
 {
-    union {
+    union
+    {
         hashBv*  m_bitVector;
         unsigned m_lclNum;
     };
@@ -72,6 +73,7 @@ public:
         GenTree*  m_node;
         unsigned  m_flags;
         unsigned  m_lclNum;
+        unsigned  m_lclOffs;
 
     public:
         NodeInfo(Compiler* compiler, GenTree* node);
@@ -112,9 +114,36 @@ public:
             return m_lclNum;
         }
 
+        inline unsigned LclOffs() const
+        {
+            assert(IsLclVarRead() || IsLclVarWrite());
+            return m_lclOffs;
+        }
+
         inline bool WritesAnyLocation() const
         {
-            return (m_flags & (ALIAS_WRITES_ADDRESSABLE_LOCATION | ALIAS_WRITES_LCL_VAR)) != 0;
+            if ((m_flags & ALIAS_WRITES_ADDRESSABLE_LOCATION) != 0)
+            {
+                return true;
+            }
+
+            if ((m_flags & ALIAS_WRITES_LCL_VAR) != 0)
+            {
+                // Stores to locals live into handlers cannot be reordered with
+                // exception-throwing nodes so we conservatively consider them
+                // globally visible.
+
+                LclVarDsc* const varDsc = m_compiler->lvaGetDesc(LclNum());
+
+                if (varDsc->lvTracked)
+                {
+                    return varDsc->IsLiveInOutOfHandler();
+                }
+
+                return m_compiler->compHndBBtabCount > 0;
+            }
+
+            return false;
         }
     };
 
@@ -128,6 +157,7 @@ public:
     void AddNode(Compiler* compiler, GenTree* node);
     bool InterferesWith(const AliasSet& other) const;
     bool InterferesWith(const NodeInfo& node) const;
+    bool WritesLocal(unsigned lclNum) const;
     void Clear();
 };
 
@@ -144,11 +174,15 @@ public:
 //
 class SideEffectSet final
 {
-    unsigned m_sideEffectFlags; // A mask of GTF_* flags that represents exceptional and barrier side effects.
-    AliasSet m_aliasSet;        // An AliasSet that represents read and write side effects.
+    unsigned          m_sideEffectFlags; // A mask of GTF_* flags that represents exceptional and barrier side effects.
+    ExceptionSetFlags m_preciseExceptions; // Set representing exceptions that may be thrown
+    AliasSet          m_aliasSet;          // An AliasSet that represents read and write side effects.
 
     template <typename TOtherAliasInfo>
-    bool InterferesWith(unsigned otherSideEffectFlags, const TOtherAliasInfo& otherAliasInfo, bool strict) const;
+    bool InterferesWith(unsigned               otherSideEffectFlags,
+                        ExceptionSetFlags      otherPreciseExceptions,
+                        const TOtherAliasInfo& otherAliasInfo,
+                        bool                   strict) const;
 
 public:
     SideEffectSet();
@@ -158,6 +192,25 @@ public:
     bool InterferesWith(const SideEffectSet& other, bool strict) const;
     bool InterferesWith(Compiler* compiler, GenTree* node, bool strict) const;
     void Clear();
+
+    bool IsLirInvariantInRange(Compiler*    comp,
+                               GenTree*     node,
+                               GenTree*     endExclusive,
+                               GenTreeFlags ignoreFlagsOnNode = GTF_EMPTY);
+
+    bool IsLirInvariantInRange(Compiler*    comp,
+                               GenTree*     node,
+                               GenTree*     endExclusive,
+                               GenTree*     ignoreNode,
+                               GenTreeFlags ignoreFlagsOnNode = GTF_EMPTY);
+
+    bool IsLirRangeInvariantInRange(
+        Compiler* comp, GenTree* rangeStart, GenTree* rangeEnd, GenTree* endExclusive, GenTree* ignoreNode);
+
+    bool WritesLocal(unsigned lclNum) const
+    {
+        return m_aliasSet.WritesLocal(lclNum);
+    }
 };
 
 #endif // _SIDEEFFECTS_H_

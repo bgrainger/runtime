@@ -78,7 +78,6 @@ namespace System.Text.Json.Tests
                 };
 
                 const string CharLabel = "char";
-                byte[] byteUtf8 = Encoding.UTF8.GetBytes("byte");
                 using var writer = new Utf8JsonWriter(buffer, options);
 
                 if (skipValidation)
@@ -89,7 +88,7 @@ namespace System.Text.Json.Tests
                         val.WriteTo(writer);
                         writer.WritePropertyName(CharLabel.AsSpan());
                         val.WriteTo(writer);
-                        writer.WritePropertyName(byteUtf8);
+                        writer.WritePropertyName("byte"u8);
                         val.WriteTo(writer);
                         writer.WritePropertyName(JsonEncodedText.Encode(CharLabel));
                         val.WriteTo(writer);
@@ -111,7 +110,7 @@ namespace System.Text.Json.Tests
                 {
                     Assert.Throws<InvalidOperationException>(() => writer.WritePropertyName(CharLabel));
                     Assert.Throws<InvalidOperationException>(() => writer.WritePropertyName(CharLabel.AsSpan()));
-                    Assert.Throws<InvalidOperationException>(() => writer.WritePropertyName(byteUtf8));
+                    Assert.Throws<InvalidOperationException>(() => writer.WritePropertyName("byte"u8));
                     Assert.Throws<InvalidOperationException>(() => writer.WritePropertyName(JsonEncodedText.Encode(CharLabel)));
 
                     writer.Flush();
@@ -452,18 +451,22 @@ namespace System.Text.Json.Tests
         {
             WriteComplexValue(
                 indented,
-                @"[ 2, 4,
-6                       , 0
+                """
+                    [ 2, 4,
+                    6                       , 0
 
 
-, 1       ]".NormalizeLineEndings(),
-                @"[
-  2,
-  4,
-  6,
-  0,
-  1
-]".NormalizeLineEndings(),
+                    , 1       ]
+                    """.NormalizeLineEndings(),
+                """
+                    [
+                      2,
+                      4,
+                      6,
+                      0,
+                      1
+                    ]
+                    """.NormalizeLineEndings(),
                 "[2,4,6,0,1]");
         }
 
@@ -474,15 +477,19 @@ namespace System.Text.Json.Tests
         {
             WriteComplexValue(
                 indented,
-                @"{ ""r""   : 2,
-// Comments make everything more interesting.
-            ""d"":
-2
-}".NormalizeLineEndings(),
-                @"{
-  ""r"": 2,
-  ""d"": 2
-}".NormalizeLineEndings(),
+                """
+                        { "r"   : 2,
+                        // Comments make everything more interesting.
+                                    "d":
+                        2
+                        }
+                    """.NormalizeLineEndings(),
+                """
+                    {
+                      "r": 2,
+                      "d": 2
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"r\":2,\"d\":2}");
         }
 
@@ -493,14 +500,18 @@ namespace System.Text.Json.Tests
         {
             WriteComplexValue(
                 indented,
-                @"{ ""prop><erty""   : 3,
-            ""> This is one long & unusual property name. <"":
-4
-}",
-                @"{
-  ""prop\u003E\u003Certy"": 3,
-  ""\u003E This is one long \u0026 unusual property name. \u003C"": 4
-}",
+                """
+                        { "prop><erty"   : 3,
+                                    "> This is one long & unusual property name. <":
+                        4
+                        }
+                    """,
+                """
+                    {
+                      "prop\u003E\u003Certy": 3,
+                      "\u003E This is one long \u0026 unusual property name. \u003C": 4
+                    }
+                    """,
                 "{\"prop\\u003E\\u003Certy\":3,\"\\u003E This is one long \\u0026 unusual property name. \\u003C\":4}");
         }
 
@@ -539,45 +550,47 @@ null,
 ], ""more deep"": false },
 12 ], ""second property"": null }]
 ").NormalizeLineEndings(),
-                @"[
-  ""Once upon a midnight dreary"",
-  42,
-  1e400,
-  3.141592653589793238462643383279,
-  false,
-  true,
-  null,
-  ""Escaping is not required"",
-  ""Some things get lost in the m\u00EAl\u00E9e"",
-  [
-    2,
-    3,
-    5,
-    7,
-    11
-  ],
-  {
-    ""obj"": [
-      21,
-      {
-        ""deep obj"": [
-          ""Once upon a midnight dreary"",
-          42,
-          1e400,
-          3.141592653589793238462643383279,
-          false,
-          true,
-          null,
-          ""Escaping is not required"",
-          ""Some things get lost in the m\u00EAl\u00E9e""
-        ],
-        ""more deep"": false
-      },
-      12
-    ],
-    ""second property"": null
-  }
-]".NormalizeLineEndings(),
+                """
+                    [
+                      "Once upon a midnight dreary",
+                      42,
+                      1e400,
+                      3.141592653589793238462643383279,
+                      false,
+                      true,
+                      null,
+                      "Escaping is not required",
+                      "Some things get lost in the m\u00EAl\u00E9e",
+                      [
+                        2,
+                        3,
+                        5,
+                        7,
+                        11
+                      ],
+                      {
+                        "obj": [
+                          21,
+                          {
+                            "deep obj": [
+                              "Once upon a midnight dreary",
+                              42,
+                              1e400,
+                              3.141592653589793238462643383279,
+                              false,
+                              true,
+                              null,
+                              "Escaping is not required",
+                              "Some things get lost in the m\u00EAl\u00E9e"
+                            ],
+                            "more deep": false
+                          },
+                          12
+                        ],
+                        "second property": null
+                      }
+                    ]
+                    """.NormalizeLineEndings(),
                 "[\"Once upon a midnight dreary\",42,1e400,3.141592653589793238462643383279," +
                     "false,true,null,\"Escaping is not required\"," +
                     "\"Some things get lost in the m\\u00EAl\\u00E9e\",[2,3,5,7,11]," +
@@ -607,33 +620,35 @@ null,
                     "\"obj\": {" +
                         "\"arr\": [ 1, 3, 5, 7, /*9,*/ 11] " +
                     "}}",
-                @"{
-  ""int"": 42,
-  ""quadratic googol"": 1e400,
-  ""precisePi"": 3.141592653589793238462643383279,
-  ""lit0"": null,
-  ""lit1"": false,
-  ""lit2"": true,
-  ""ascii"": ""pizza"",
-  ""escaped"": ""pizza"",
-  ""utf8"": ""p\u00CDzza"",
-  ""utf8ExtraEscape"": ""p\u00CDzza"",
-  ""arr"": [
-    ""hello"",
-    ""sailor"",
-    21,
-    ""blackjack!""
-  ],
-  ""obj"": {
-    ""arr"": [
-      1,
-      3,
-      5,
-      7,
-      11
-    ]
-  }
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "int": 42,
+                      "quadratic googol": 1e400,
+                      "precisePi": 3.141592653589793238462643383279,
+                      "lit0": null,
+                      "lit1": false,
+                      "lit2": true,
+                      "ascii": "pizza",
+                      "escaped": "pizza",
+                      "utf8": "p\u00CDzza",
+                      "utf8ExtraEscape": "p\u00CDzza",
+                      "arr": [
+                        "hello",
+                        "sailor",
+                        21,
+                        "blackjack!"
+                      ],
+                      "obj": {
+                        "arr": [
+                          1,
+                          3,
+                          5,
+                          7,
+                          11
+                        ]
+                      }
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"int\":42,\"quadratic googol\":1e400,\"precisePi\":3.141592653589793238462643383279," +
                     "\"lit0\":null,\"lit1\":false,\"lit2\":true,\"ascii\":\"pizza\",\"escaped\":\"pizza\"," +
                     "\"utf8\":\"p\\u00CDzza\",\"utf8ExtraEscape\":\"p\\u00CDzza\"," +
@@ -651,11 +666,13 @@ null,
             WriteComplexValue(
                 indented,
                 jsonIn,
-                @"{
-  ""pizza"": 1,
-  ""hello\u003c\u003e"": 2,
-  ""normal"": 3
-}",
+                """
+                    {
+                      "pizza": 1,
+                      "hello\u003c\u003e": 2,
+                      "normal": 3
+                    }
+                    """,
                 "{\"pizza\":1,\"hello\\u003c\\u003e\":2,\"normal\":3}");
         }
 
@@ -668,9 +685,11 @@ null,
                 indented,
                 "ectoplasm",
                 "42",
-                @"{
-  ""ectoplasm"": 42
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "ectoplasm": 42
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"ectoplasm\":42}");
         }
 
@@ -703,9 +722,11 @@ null,
                 indented,
                 "m\u00EAl\u00E9e",
                 "1e6",
-                @"{
-  ""m\u00EAl\u00E9e"": 1e6
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "m\u00EAl\u00E9e": 1e6
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"m\\u00EAl\\u00E9e\":1e6}");
         }
 
@@ -737,9 +758,11 @@ null,
                 indented,
                 "test property",
                 "3.141592653589793238462643383279",
-                @"{
-  ""test property"": 3.141592653589793238462643383279
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "test property": 3.141592653589793238462643383279
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"test property\":3.141592653589793238462643383279}");
         }
 
@@ -753,9 +776,11 @@ null,
                 // Arabic "kabir" => "big"
                 "\u0643\u0628\u064A\u0631",
                 "1e400",
-                @"{
-  ""\u0643\u0628\u064A\u0631"": 1e400
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "\u0643\u0628\u064A\u0631": 1e400
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"\\u0643\\u0628\\u064A\\u0631\":1e400}");
         }
 
@@ -768,9 +793,11 @@ null,
                 indented,
                 "dinner",
                 "\"pizza\"",
-                @"{
-  ""dinner"": ""pizza""
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "dinner": "pizza"
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"dinner\":\"pizza\"}");
         }
 
@@ -783,9 +810,11 @@ null,
                 indented,
                 "dinner",
                 "\"p\\u0069zza\"",
-                @"{
-  ""dinner"": ""pizza""
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "dinner": "pizza"
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"dinner\":\"pizza\"}");
         }
 
@@ -798,9 +827,11 @@ null,
                 indented,
                 "lunch",
                 "\"p\u00CDzza\"",
-                @"{
-  ""lunch"": ""p\u00CDzza""
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "lunch": "p\u00CDzza"
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"lunch\":\"p\\u00CDzza\"}");
         }
 
@@ -813,9 +844,11 @@ null,
                 indented,
                 "lunch",
                 "\"p\u00CDz\\u007Aa\"",
-                @"{
-  ""lunch"": ""p\u00CDzza""
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "lunch": "p\u00CDzza"
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"lunch\":\"p\\u00CDzza\"}");
         }
 
@@ -828,9 +861,11 @@ null,
                 indented,
                 " boolean ",
                 "true",
-                @"{
-  "" boolean "": true
-}".NormalizeLineEndings(),
+                """
+                    {
+                      " boolean ": true
+                    }
+                    """.NormalizeLineEndings(),
                 "{\" boolean \":true}");
         }
 
@@ -843,9 +878,11 @@ null,
                 indented,
                 " boolean ",
                 "false",
-                @"{
-  "" boolean "": false
-}".NormalizeLineEndings(),
+                """
+                    {
+                      " boolean ": false
+                    }
+                    """.NormalizeLineEndings(),
                 "{\" boolean \":false}");
         }
 
@@ -858,9 +895,11 @@ null,
                 indented,
                 "someProp",
                 "null",
-                @"{
-  ""someProp"": null
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "someProp": null
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"someProp\":null}");
         }
 
@@ -873,9 +912,11 @@ null,
                 indented,
                 "arr",
                 "[        ]",
-                @"{
-  ""arr"": []
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "arr": []
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"arr\":[]}");
         }
 
@@ -888,9 +929,11 @@ null,
                 indented,
                 "obj",
                 "{       }",
-                @"{
-  ""obj"": {}
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "obj": {}
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"obj\":{}}");
         }
 
@@ -903,9 +946,11 @@ null,
                 indented,
                 "arr",
                 "[   /* 5 */     ]",
-                @"{
-  ""arr"": []
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "arr": []
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"arr\":[]}");
         }
 
@@ -918,9 +963,11 @@ null,
                 indented,
                 "obj",
                 "{ /* Technically empty */ }",
-                @"{
-  ""obj"": {}
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "obj": {}
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"obj\":{}}");
         }
 
@@ -933,15 +980,17 @@ null,
                 indented,
                 "valjean",
                 "[ 2, 4, 6, 0, 1 /* Did you know that there's an asteroid: 24601 Valjean? */ ]",
-                @"{
-  ""valjean"": [
-    2,
-    4,
-    6,
-    0,
-    1
-  ]
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "valjean": [
+                        2,
+                        4,
+                        6,
+                        0,
+                        1
+                      ]
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"valjean\":[2,4,6,0,1]}");
         }
 
@@ -953,17 +1002,21 @@ null,
             WritePropertyValueBothForms(
                 indented,
                 "bestMinorCharacter",
-                @"{ ""r""   : 2,
-// Comments make everything more interesting.
-            ""d"":
-2
-}".NormalizeLineEndings(),
-                @"{
-  ""bestMinorCharacter"": {
-    ""r"": 2,
-    ""d"": 2
-  }
-}".NormalizeLineEndings(),
+                """
+                        { "r"   : 2,
+                        // Comments make everything more interesting.
+                                    "d":
+                        2
+                        }
+                    """.NormalizeLineEndings(),
+                """
+                    {
+                      "bestMinorCharacter": {
+                        "r": 2,
+                        "d": 2
+                      }
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"bestMinorCharacter\":{\"r\":2,\"d\":2}}");
         }
 
@@ -1003,47 +1056,49 @@ null,
 ], ""more deep"": false },
 12 ], ""second property"": null }]
 ",
-                @"{
-  ""data"": [
-    ""Once upon a midnight dreary"",
-    42,
-    1e400,
-    3.141592653589793238462643383279,
-    false,
-    true,
-    null,
-    ""Escaping is not required"",
-    ""Some things get lost in the m\u00EAl\u00E9e"",
-    [
-      2,
-      3,
-      5,
-      7,
-      11
-    ],
-    {
-      ""obj"": [
-        21,
-        {
-          ""deep obj"": [
-            ""Once upon a midnight dreary"",
-            42,
-            1e400,
-            3.141592653589793238462643383279,
-            false,
-            true,
-            null,
-            ""Escaping is not required"",
-            ""Some things get lost in the m\u00EAl\u00E9e""
-          ],
-          ""more deep"": false
-        },
-        12
-      ],
-      ""second property"": null
-    }
-  ]
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "data": [
+                        "Once upon a midnight dreary",
+                        42,
+                        1e400,
+                        3.141592653589793238462643383279,
+                        false,
+                        true,
+                        null,
+                        "Escaping is not required",
+                        "Some things get lost in the m\u00EAl\u00E9e",
+                        [
+                          2,
+                          3,
+                          5,
+                          7,
+                          11
+                        ],
+                        {
+                          "obj": [
+                            21,
+                            {
+                              "deep obj": [
+                                "Once upon a midnight dreary",
+                                42,
+                                1e400,
+                                3.141592653589793238462643383279,
+                                false,
+                                true,
+                                null,
+                                "Escaping is not required",
+                                "Some things get lost in the m\u00EAl\u00E9e"
+                              ],
+                              "more deep": false
+                            },
+                            12
+                          ],
+                          "second property": null
+                        }
+                      ]
+                    }
+                    """.NormalizeLineEndings(),
 
                 "{\"data\":[\"Once upon a midnight dreary\",42,1e400,3.141592653589793238462643383279," +
                     "false,true,null,\"Escaping is not required\"," +
@@ -1075,35 +1130,37 @@ null,
                     "\"obj\": {" +
                         "\"arr\": [ 1, 3, 5, 7, /*9,*/ 11] " +
                     "}}",
-                @"{
-  ""data"": {
-    ""int"": 42,
-    ""quadratic googol"": 1e400,
-    ""precisePi"": 3.141592653589793238462643383279,
-    ""lit0"": null,
-    ""lit1"": false,
-    ""lit2"": true,
-    ""ascii"": ""pizza"",
-    ""escaped"": ""pizza"",
-    ""utf8"": ""p\u00CDzza"",
-    ""utf8ExtraEscape"": ""p\u00CDzza"",
-    ""arr"": [
-      ""hello"",
-      ""sailor"",
-      21,
-      ""blackjack!""
-    ],
-    ""obj"": {
-      ""arr"": [
-        1,
-        3,
-        5,
-        7,
-        11
-      ]
-    }
-  }
-}".NormalizeLineEndings(),
+                """
+                    {
+                      "data": {
+                        "int": 42,
+                        "quadratic googol": 1e400,
+                        "precisePi": 3.141592653589793238462643383279,
+                        "lit0": null,
+                        "lit1": false,
+                        "lit2": true,
+                        "ascii": "pizza",
+                        "escaped": "pizza",
+                        "utf8": "p\u00CDzza",
+                        "utf8ExtraEscape": "p\u00CDzza",
+                        "arr": [
+                          "hello",
+                          "sailor",
+                          21,
+                          "blackjack!"
+                        ],
+                        "obj": {
+                          "arr": [
+                            1,
+                            3,
+                            5,
+                            7,
+                            11
+                          ]
+                        }
+                      }
+                    }
+                    """.NormalizeLineEndings(),
                 "{\"data\":" +
                     "{\"int\":42,\"quadratic googol\":1e400,\"precisePi\":3.141592653589793238462643383279," +
                     "\"lit0\":null,\"lit1\":false,\"lit2\":true,\"ascii\":\"pizza\",\"escaped\":\"pizza\"," +

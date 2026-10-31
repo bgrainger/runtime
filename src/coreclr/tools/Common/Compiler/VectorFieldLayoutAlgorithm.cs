@@ -1,6 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System;
+
 using Internal.TypeSystem;
 
 using Debug = System.Diagnostics.Debug;
@@ -13,11 +15,9 @@ namespace ILCompiler
     public class VectorFieldLayoutAlgorithm : FieldLayoutAlgorithm
     {
         private readonly FieldLayoutAlgorithm _fallbackAlgorithm;
-        private readonly bool _vectorAbiIsStable;
 
-        public VectorFieldLayoutAlgorithm(FieldLayoutAlgorithm fallbackAlgorithm, bool vectorAbiIsStable = true)
+        public VectorFieldLayoutAlgorithm(FieldLayoutAlgorithm fallbackAlgorithm)
         {
-            _vectorAbiIsStable = vectorAbiIsStable;
             _fallbackAlgorithm = fallbackAlgorithm;
         }
 
@@ -27,16 +27,15 @@ namespace ILCompiler
 
             LayoutInt alignment;
 
-            string name = defType.Name;
-            if (name == "Vector64`1")
+            if (defType.Name == "Vector64`1"u8)
             {
                 alignment = new LayoutInt(8);
             }
-            else if (name == "Vector128`1")
+            else if (defType.Name == "Vector128`1"u8)
             {
                 if (defType.Context.Target.Architecture == TargetArchitecture.ARM)
                 {
-                    // The Procedure Call Standard for ARM defaults to 8-byte alignment for __m128 
+                    // The Procedure Call Standard for ARM defaults to 8-byte alignment for __m128
                     alignment = new LayoutInt(8);
                 }
                 else
@@ -44,25 +43,68 @@ namespace ILCompiler
                     alignment = new LayoutInt(16);
                 }
             }
-            else
+            else if (defType.Name == "Vector256`1"u8)
             {
-                Debug.Assert(name == "Vector256`1");
-
                 if (defType.Context.Target.Architecture == TargetArchitecture.ARM)
                 {
-                    // No such type exists for the Procedure Call Standard for ARM. We will default 
+                    // No such type exists for the Procedure Call Standard for ARM. We will default
                     // to the same alignment as __m128, which is supported by the ABI.
                     alignment = new LayoutInt(8);
                 }
                 else if (defType.Context.Target.Architecture == TargetArchitecture.ARM64)
                 {
-                    // The Procedure Call Standard for ARM 64-bit (with SVE support) defaults to 
+                    // The Procedure Call Standard for ARM 64-bit (with SVE support) defaults to
                     // 16-byte alignment for __m256.
+                    alignment = new LayoutInt(16);
+                }
+                else if (defType.Context.Target.Architecture == TargetArchitecture.LoongArch64)
+                {
+                    // TODO-LoongArch64: Update alignment to proper value when implement LoongArch64 intrinsic.
+                    alignment = new LayoutInt(16);
+                }
+                else if (defType.Context.Target.Architecture == TargetArchitecture.RiscV64)
+                {
+                    // TODO-RISCV64: Update alignment to proper value when we implement RISC-V intrinsic.
+                    // RISC-V Vector Extenstion Intrinsic Document
+                    // https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/vector_type_infos.adoc
                     alignment = new LayoutInt(16);
                 }
                 else
                 {
                     alignment = new LayoutInt(32);
+                }
+            }
+            else
+            {
+                Debug.Assert(defType.Name == "Vector512`1"u8);
+
+                if (defType.Context.Target.Architecture == TargetArchitecture.ARM)
+                {
+                    // No such type exists for the Procedure Call Standard for ARM. We will default
+                    // to the same alignment as __m128, which is supported by the ABI.
+                    alignment = new LayoutInt(8);
+                }
+                else if (defType.Context.Target.Architecture == TargetArchitecture.ARM64)
+                {
+                    // The Procedure Call Standard for ARM 64-bit (with SVE support) defaults to
+                    // 16-byte alignment for __m256.
+                    alignment = new LayoutInt(16);
+                }
+                else if (defType.Context.Target.Architecture == TargetArchitecture.LoongArch64)
+                {
+                    // TODO-LoongArch64: Update alignment to proper value when implement LoongArch64 intrinsic.
+                    alignment = new LayoutInt(16);
+                }
+                else if (defType.Context.Target.Architecture == TargetArchitecture.RiscV64)
+                {
+                    // TODO-RISCV64: Update alignment to proper value when we implement RISC-V intrinsic.
+                    // RISC-V Vector Extenstion Intrinsic Document
+                    // https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/vector_type_infos.adoc
+                    alignment = new LayoutInt(16);
+                }
+                else
+                {
+                    alignment = new LayoutInt(64);
                 }
             }
 
@@ -75,7 +117,7 @@ namespace ILCompiler
                 FieldAlignment = alignment,
                 FieldSize = layoutFromMetadata.FieldSize,
                 Offsets = layoutFromMetadata.Offsets,
-                LayoutAbiStable = _vectorAbiIsStable
+                LayoutAbiStable = true
             };
         }
 
@@ -90,6 +132,12 @@ namespace ILCompiler
             return false;
         }
 
+        public override bool ComputeContainsByRefs(DefType type)
+        {
+            Debug.Assert(!_fallbackAlgorithm.ComputeContainsByRefs(type));
+            return false;
+        }
+
         public override bool ComputeIsUnsafeValueType(DefType type)
         {
             Debug.Assert(!_fallbackAlgorithm.ComputeIsUnsafeValueType(type));
@@ -99,12 +147,14 @@ namespace ILCompiler
         public override ValueTypeShapeCharacteristics ComputeValueTypeShapeCharacteristics(DefType type)
         {
             if (type.Context.Target.Architecture == TargetArchitecture.ARM64 &&
-                type.Instantiation[0].IsPrimitiveNumeric)
+                IsSupportedVectorBaseType(type.Instantiation[0]))
             {
                 return type.InstanceFieldSize.AsInt switch
                 {
                     8 => ValueTypeShapeCharacteristics.Vector64Aggregate,
                     16 => ValueTypeShapeCharacteristics.Vector128Aggregate,
+                    32 => ValueTypeShapeCharacteristics.Vector128Aggregate,
+                    64 => ValueTypeShapeCharacteristics.Vector128Aggregate,
                     _ => ValueTypeShapeCharacteristics.None
                 };
             }
@@ -114,10 +164,20 @@ namespace ILCompiler
         public static bool IsVectorType(DefType type)
         {
             return type.IsIntrinsic &&
-                type.Namespace == "System.Runtime.Intrinsics" &&
-                (type.Name == "Vector64`1" ||
-                type.Name == "Vector128`1" ||
-                type.Name == "Vector256`1");
+                type.Namespace == "System.Runtime.Intrinsics"u8 &&
+                (type.Name == "Vector64`1"u8 ||
+                 type.Name == "Vector128`1"u8 ||
+                 type.Name == "Vector256`1"u8 ||
+                 type.Name == "Vector512`1"u8);
+        }
+
+        /// <summary>
+        /// Determines whether <paramref name="elementType"/> is supported as the base (element)
+        /// type of an intrinsic vector, mirroring the set the JIT recognizes as a SIMD base type.
+        /// </summary>
+        public static bool IsSupportedVectorBaseType(TypeDesc elementType)
+        {
+            return elementType.IsPrimitiveNumeric;
         }
     }
 }

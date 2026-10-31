@@ -10,7 +10,10 @@
 #include <unicode/putil.h>
 #include <unicode/uversion.h>
 #include <unicode/localpointer.h>
+
+#if !defined(APPLE_HYBRID_GLOBALIZATION)
 #include <unicode/utrace.h>
+#endif
 
 #if defined(TARGET_UNIX)
 #include <strings.h>
@@ -18,9 +21,14 @@
 #define strcasecmp _stricmp
 #define strncasecmp _strnicmp
 #endif
-
+#if !defined(TARGET_MACCATALYST) && !defined(TARGET_IOS) && !defined(TARGET_TVOS)
 static int32_t isLoaded = 0;
 static int32_t isDataSet = 0;
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wjump-misses-init"
+#endif
 
 static void log_shim_error(const char* format, ...)
 {
@@ -28,42 +36,36 @@ static void log_shim_error(const char* format, ...)
 
     va_start(args, format);
     vfprintf(stderr, format, args);
+    fputc('\n', stderr);
     va_end(args);
 }
 
 static void log_icu_error(const char* name, UErrorCode status)
 {
     const char * statusText = u_errorName(status);
-    log_shim_error("ICU call %s failed with error #%d '%s'.\n", name, status, statusText);
+    log_shim_error("ICU call %s failed with error #%d '%s'.", name, status, statusText);
 }
 
+#if defined(ICU_TRACING)
 static void U_CALLCONV icu_trace_data(const void* context, int32_t fnNumber, int32_t level, const char* fmt, va_list args)
 {
     char buf[1000];
     utrace_vformat(buf, sizeof(buf), 0, fmt, args);
     printf("[ICUDT] %s: %s\n", utrace_functionName(fnNumber), buf);
 }
+#endif
+
+static int32_t load_icu_data(const void* pData);
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 
-static int32_t load_icu_data(void* pData);
+EMSCRIPTEN_KEEPALIVE int32_t wasm_load_icu_data(const void* pData);
 
-EMSCRIPTEN_KEEPALIVE const char* mono_wasm_get_icudt_name(const char* culture);
-
-EMSCRIPTEN_KEEPALIVE const char* mono_wasm_get_icudt_name(const char* culture)
-{
-    return GlobalizationNative_GetICUDTName(culture);
-}
-
-EMSCRIPTEN_KEEPALIVE int32_t mono_wasm_load_icu_data(void* pData);
-
-EMSCRIPTEN_KEEPALIVE int32_t mono_wasm_load_icu_data(void* pData)
+EMSCRIPTEN_KEEPALIVE int32_t wasm_load_icu_data(const void* pData)
 {
     return load_icu_data(pData);
 }
-
-
 /*
  * driver.c calls this to make sure this file is linked, otherwise
  * its not, meaning the EMSCRIPTEN_KEEPALIVE functions above
@@ -74,19 +76,28 @@ void mono_wasm_link_icu_shim(void);
 void mono_wasm_link_icu_shim(void)
 {
 }
-
 #endif
 
-static int32_t load_icu_data(void* pData)
+int32_t mono_wasi_load_icu_data(const void* pData);
+
+int32_t mono_wasi_load_icu_data(const void* pData)
+{
+    return load_icu_data(pData);
+}
+
+static int32_t load_icu_data(const void* pData)
 {
 
-    UErrorCode status = 0;
+    UErrorCode status = U_ZERO_ERROR;
     udata_setCommonData(pData, &status);
 
-    if (U_FAILURE(status)) {
+    if (U_FAILURE(status))
+    {
         log_icu_error("udata_setCommonData", status);
         return 0;
-    } else {
+    }
+    else
+    {
 
 #if defined(ICU_TRACING)
         // see https://github.com/unicode-org/icu/blob/master/docs/userguide/icu_data/tracing.md
@@ -98,109 +109,138 @@ static int32_t load_icu_data(void* pData)
     }
 }
 
-int32_t GlobalizationNative_LoadICUData(const char* path)
+static const char *
+cstdlib_load_icu_data(const char *path)
 {
-    int32_t ret = -1;
-    char* icu_data;
-
+    char *file_buf = NULL;
+    long file_buf_size = 0;
     FILE *fp = fopen(path, "rb");
-    if (fp == NULL) {
+
+    if (fp == NULL)
+    {
         log_shim_error("Unable to load ICU dat file '%s'.", path);
-        return ret;
+        goto error;
     }
 
-    if (fseek(fp, 0L, SEEK_END) != 0) {
-        fclose(fp);
+    if (fseek(fp, 0L, SEEK_END) != 0)
+    {
         log_shim_error("Unable to determine size of the dat file");
-        return ret;
+        goto error;
     }
 
-    long bufsize = ftell(fp);
+    file_buf_size = ftell(fp);
 
-    if (bufsize == -1) {
-        fclose(fp);
+    if (file_buf_size == -1)
+    {
         log_shim_error("Unable to determine size of the ICU dat file.");
-        return ret;
+        goto error;
     }
 
-    icu_data = malloc(sizeof(char) * (bufsize + 1));
+    file_buf = (char *)malloc(sizeof(char) * (unsigned long)(file_buf_size + 1));
 
-    if (icu_data == NULL) {
-        fclose(fp);
+    if (file_buf == NULL)
+    {
         log_shim_error("Unable to allocate enough to read the ICU dat file");
-        return ret;
+        goto error;
     }
 
-    if (fseek(fp, 0L, SEEK_SET) != 0) {
-        fclose(fp);
+    if (fseek(fp, 0L, SEEK_SET) != 0)
+    {
         log_shim_error("Unable to seek ICU dat file.");
-        return ret;
+        goto error;
     }
 
-    fread(icu_data, sizeof(char), bufsize, fp);
-    if (ferror( fp ) != 0 ) {
-        fclose(fp);
+    fread(file_buf, sizeof(char), (unsigned long)file_buf_size, fp);
+    if (ferror( fp ) != 0)
+    {
         log_shim_error("Unable to read ICU dat file");
-        return ret;
+        goto error;
     }
 
     fclose(fp);
+    fp = NULL;
 
-    if (load_icu_data(icu_data) == 0) {
-        log_shim_error("ICU BAD EXIT %d.", ret);
-        return ret;
+    return file_buf;
+
+error:
+    if (fp != NULL)
+    {
+        fclose(fp);
+    }
+    if (file_buf != NULL)
+    {
+        free(file_buf);
+    }
+    return NULL;
+}
+
+int32_t
+GlobalizationNative_LoadICUData(const char* path)
+{
+#if defined(TARGET_MACCATALYST) || defined(TARGET_IOS) || defined(TARGET_TVOS)
+    if (path && path[0] != '/')
+    {
+        // if the path is relative, prepend the app bundle root
+        path = GlobalizationNative_GetICUDataPathRelativeToAppBundleRoot(path);
+    }
+    if (!path)
+    {
+        // fallback to icudt.dat in the app bundle resources in case the path isn't set
+        path = GlobalizationNative_GetICUDataPathFallback();
+    }
+#endif
+
+    const char *icu_data = cstdlib_load_icu_data(path);
+
+    if (icu_data == NULL)
+    {
+        log_shim_error("Failed to load ICU data.");
+        return 0;
+    }
+
+    if (load_icu_data(icu_data) == 0)
+    {
+        log_shim_error("ICU BAD EXIT.");
+        return 0;
     }
 
     return GlobalizationNative_LoadICU();
 }
 
-const char* GlobalizationNative_GetICUDTName(const char* culture)
-{
-    // Based on https://github.com/dotnet/icu/tree/maint/maint-67/icu-filters
-
-    // Use full one if culture is null or empty
-    if (!culture || strlen(culture) < 2)
-        return "icudt.dat";
-
-    // CJK: starts with "ja", "ko" or "zh"
-    if (!strncasecmp("ja", culture, 2) || 
-        !strncasecmp("ko", culture, 2) || 
-        !strncasecmp("zh", culture, 2))
-        return "icudt_CJK.dat"; // contains "en" as well.
-
-    // EFIGS
-    const char* efigsCultures[15] = {
-        "en-US", "fr-FR", "es-ES", "it-IT", "de-DE",
-        "en_US", "fr_FR", "es_ES", "it_IT", "de_DE",
-        "en",    "fr",    "es",    "it",    "de"
-    };
-
-    for (int i = 0; i < 15; i++)
-        if (!strcasecmp(culture, efigsCultures[i]))
-            return "icudt_EFIGS.dat";
-
-    // full except CJK cultures
-    return "icudt_no_CJK.dat";
-}
-
 int32_t GlobalizationNative_LoadICU(void)
 {
-    if (!isDataSet) {
-        // don't try to locate icudt.dat automatically if mono_wasm_load_icu_data wasn't called
+#if !defined(LOCAL_BUILD)
+// Static NativeAOT compilation does not have
+// GlobalizationNative_LoadICUData() as entrypoint
+    if (!isDataSet)
+    {
+        // don't try to locate icudt.dat automatically if wasm_load_icu_data wasn't called
         // and fallback to invariant mode
         return 0;
     }
-    UErrorCode status = 0;
+#endif
+
+#if defined(EMBEDDED_ICU_DATA_HEADER)
+    #include EMBEDDED_ICU_DATA_HEADER
+
+    if (!load_icu_data(icu_data))
+    {
+        return 0;
+    }
+#endif
+
+    UErrorCode status = U_ZERO_ERROR;
     UVersionInfo version;
     // Request the CLDR version to perform basic ICU initialization and find out
     // whether it worked.
     ulocdata_getCLDRVersion(version, &status);
 
-    if (U_FAILURE(status)) {
+    if (U_FAILURE(status))
+    {
         log_icu_error("ulocdata_getCLDRVersion", status);
         return 0;
     }
-    
+
     isLoaded = 1;
     return 1;
 }
@@ -223,3 +263,5 @@ int32_t GlobalizationNative_GetICUVersion(void)
 
     return (versionInfo[0] << 24) + (versionInfo[1] << 16) + (versionInfo[2] << 8) + versionInfo[3];
 }
+#endif
+

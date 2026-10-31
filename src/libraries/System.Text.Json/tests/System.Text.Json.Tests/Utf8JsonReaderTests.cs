@@ -1,9 +1,11 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Buffers;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using Microsoft.DotNet.XUnitExtensions;
 using Newtonsoft.Json;
 using Xunit;
@@ -26,18 +28,20 @@ namespace System.Text.Json.Tests
             Assert.False(json.IsFinalBlock);
             Assert.True(json.ValueSpan.SequenceEqual(default));
             Assert.True(json.ValueSequence.IsEmpty);
+            Assert.False(json.ValueIsEscaped);
 
             Assert.Equal(0, json.CurrentState.Options.MaxDepth);
             Assert.False(json.CurrentState.Options.AllowTrailingCommas);
+            Assert.False(json.CurrentState.Options.AllowMultipleValues);
             Assert.Equal(JsonCommentHandling.Disallow, json.CurrentState.Options.CommentHandling);
 
             Assert.False(json.Read());
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.ValueTextEquals(""));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.ValueTextEquals("".AsSpan()));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.ValueTextEquals(default(ReadOnlySpan<char>)));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.ValueTextEquals(default(ReadOnlySpan<byte>)));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.ValueTextEquals(""));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.ValueTextEquals("".AsSpan()));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.ValueTextEquals(default(ReadOnlySpan<char>)));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.ValueTextEquals(default(ReadOnlySpan<byte>)));
 
             TestGetMethodsOnDefault();
         }
@@ -46,71 +50,73 @@ namespace System.Text.Json.Tests
         {
             Utf8JsonReader json = default;
 
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.TryGetByte(out _));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetByte());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.TryGetByte(out _));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetByte());
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetComment());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetComment());
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.TryGetDateTime(out _));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetDateTime());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.TryGetDateTime(out _));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetDateTime());
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.TryGetDateTimeOffset(out _));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetDateTimeOffset());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.TryGetDateTimeOffset(out _));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetDateTimeOffset());
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.TryGetDecimal(out _));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetDecimal());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.TryGetDecimal(out _));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetDecimal());
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.TryGetDouble(out _));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetDouble());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.TryGetDouble(out _));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetDouble());
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.TryGetInt16(out _));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetInt16());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.TryGetInt16(out _));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetInt16());
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.TryGetInt32(out _));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetInt32());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.TryGetInt32(out _));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetInt32());
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.TryGetInt64(out _));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetInt64());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.TryGetInt64(out _));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetInt64());
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.TryGetSByte(out _));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetSByte());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.TryGetSByte(out _));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetSByte());
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.TryGetSingle(out _));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetSingle());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.TryGetSingle(out _));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetSingle());
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.TryGetUInt16(out _));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetUInt16());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.TryGetUInt16(out _));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetUInt16());
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.TryGetUInt32(out _));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetUInt32());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.TryGetUInt32(out _));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetUInt32());
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.TryGetUInt64(out _));
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetUInt64());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.TryGetUInt64(out _));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetUInt64());
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetString());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetString());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.CopyString(new byte[16]));
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.CopyString(new char[16]));
 
             json = default;
-            JsonTestHelper.AssertThrows<InvalidOperationException>(json, (jsonReader) => jsonReader.GetBoolean());
+            JsonTestHelper.AssertThrows<InvalidOperationException>(ref json, (ref Utf8JsonReader jsonReader) => jsonReader.GetBoolean());
         }
 
         [Fact]
         public static void InitialState()
         {
-            var json = new Utf8JsonReader(Encoding.UTF8.GetBytes("1"), isFinalBlock: true, state: default);
+            var json = new Utf8JsonReader("1"u8, isFinalBlock: true, state: default);
 
             Assert.Equal(0, json.BytesConsumed);
             Assert.Equal(0, json.TokenStartIndex);
@@ -118,12 +124,14 @@ namespace System.Text.Json.Tests
             Assert.Equal(JsonTokenType.None, json.TokenType);
             Assert.Equal(default, json.Position);
             Assert.False(json.HasValueSequence);
+            Assert.False(json.ValueIsEscaped);
             Assert.True(json.IsFinalBlock);
             Assert.True(json.ValueSpan.SequenceEqual(default));
             Assert.True(json.ValueSequence.IsEmpty);
 
             Assert.Equal(64, json.CurrentState.Options.MaxDepth);
             Assert.False(json.CurrentState.Options.AllowTrailingCommas);
+            Assert.False(json.CurrentState.Options.AllowMultipleValues);
             Assert.Equal(JsonCommentHandling.Disallow, json.CurrentState.Options.CommentHandling);
 
             Assert.True(json.Read());
@@ -133,7 +141,7 @@ namespace System.Text.Json.Tests
         [Fact]
         public static void InitialStateSimpleCtor()
         {
-            var json = new Utf8JsonReader(Encoding.UTF8.GetBytes("1"));
+            var json = new Utf8JsonReader("1"u8);
 
             Assert.Equal(0, json.BytesConsumed);
             Assert.Equal(0, json.TokenStartIndex);
@@ -141,12 +149,14 @@ namespace System.Text.Json.Tests
             Assert.Equal(JsonTokenType.None, json.TokenType);
             Assert.Equal(default, json.Position);
             Assert.False(json.HasValueSequence);
+            Assert.False(json.ValueIsEscaped);
             Assert.True(json.IsFinalBlock);
             Assert.True(json.ValueSpan.SequenceEqual(default));
             Assert.True(json.ValueSequence.IsEmpty);
 
             Assert.Equal(64, json.CurrentState.Options.MaxDepth);
             Assert.False(json.CurrentState.Options.AllowTrailingCommas);
+            Assert.False(json.CurrentState.Options.AllowMultipleValues);
             Assert.Equal(JsonCommentHandling.Disallow, json.CurrentState.Options.CommentHandling);
 
             Assert.True(json.Read());
@@ -156,7 +166,7 @@ namespace System.Text.Json.Tests
         [Fact]
         public static void StateRecovery()
         {
-            byte[] utf8 = Encoding.UTF8.GetBytes("[1]");
+            ReadOnlySpan<byte> utf8 = "[1]"u8;
             var json = new Utf8JsonReader(utf8, isFinalBlock: false, state: default);
 
             Assert.Equal(0, json.BytesConsumed);
@@ -165,12 +175,14 @@ namespace System.Text.Json.Tests
             Assert.Equal(JsonTokenType.None, json.TokenType);
             Assert.Equal(default, json.Position);
             Assert.False(json.HasValueSequence);
+            Assert.False(json.ValueIsEscaped);
             Assert.False(json.IsFinalBlock);
             Assert.True(json.ValueSpan.SequenceEqual(default));
             Assert.True(json.ValueSequence.IsEmpty);
 
             Assert.Equal(64, json.CurrentState.Options.MaxDepth);
             Assert.False(json.CurrentState.Options.AllowTrailingCommas);
+            Assert.False(json.CurrentState.Options.AllowMultipleValues);
             Assert.Equal(JsonCommentHandling.Disallow, json.CurrentState.Options.CommentHandling);
 
             Assert.True(json.Read());
@@ -182,16 +194,18 @@ namespace System.Text.Json.Tests
             Assert.Equal(JsonTokenType.Number, json.TokenType);
             Assert.Equal(default, json.Position);
             Assert.False(json.HasValueSequence);
+            Assert.False(json.ValueIsEscaped);
             Assert.True(json.ValueSpan.SequenceEqual(new byte[] { (byte)'1' }));
             Assert.True(json.ValueSequence.IsEmpty);
 
             Assert.Equal(64, json.CurrentState.Options.MaxDepth);
             Assert.False(json.CurrentState.Options.AllowTrailingCommas);
+            Assert.False(json.CurrentState.Options.AllowMultipleValues);
             Assert.Equal(JsonCommentHandling.Disallow, json.CurrentState.Options.CommentHandling);
 
             JsonReaderState state = json.CurrentState;
 
-            json = new Utf8JsonReader(utf8.AsSpan((int)json.BytesConsumed), isFinalBlock: true, state);
+            json = new Utf8JsonReader(utf8.Slice((int)json.BytesConsumed), isFinalBlock: true, state);
 
             Assert.Equal(0, json.BytesConsumed);    // Not retained
             Assert.Equal(0, json.TokenStartIndex);  // Not retained
@@ -199,12 +213,14 @@ namespace System.Text.Json.Tests
             Assert.Equal(JsonTokenType.Number, json.TokenType);
             Assert.Equal(default, json.Position);
             Assert.False(json.HasValueSequence);
+            Assert.False(json.ValueIsEscaped);
             Assert.True(json.IsFinalBlock);
             Assert.True(json.ValueSpan.SequenceEqual(default));
             Assert.True(json.ValueSequence.IsEmpty);
 
             Assert.Equal(64, json.CurrentState.Options.MaxDepth);
             Assert.False(json.CurrentState.Options.AllowTrailingCommas);
+            Assert.False(json.CurrentState.Options.AllowMultipleValues);
             Assert.Equal(JsonCommentHandling.Disallow, json.CurrentState.Options.CommentHandling);
 
             Assert.True(json.Read());
@@ -276,7 +292,7 @@ namespace System.Text.Json.Tests
                 return;
             }
 
-            // Remove all formatting/indendation
+            // Remove all formatting/indentation
             if (compactData)
             {
                 jsonString = JsonTestHelper.GetCompactString(jsonString);
@@ -441,13 +457,15 @@ namespace System.Text.Json.Tests
         public static void CurrentDepthArrayTest()
         {
             string jsonString =
-@"[
+"""
     [
-        1,
-        2,
-        3
+        [
+            1,
+            2,
+            3
+        ]
     ]
-]";
+    """;
 
             {
                 byte[] dataUtf8 = Encoding.UTF8.GetBytes(jsonString);
@@ -500,14 +518,16 @@ namespace System.Text.Json.Tests
         public static void CurrentDepthObjectTest()
         {
             string jsonString =
-@"{
-    ""array"": [
-        1,
-        2,
-        3,
-        {}
-    ]
-}";
+"""
+    {
+        "array": [
+            1,
+            2,
+            3,
+            {}
+        ]
+    }
+    """;
 
             byte[] dataUtf8 = Encoding.UTF8.GetBytes(jsonString);
             var json = new Utf8JsonReader(dataUtf8, isFinalBlock: true, state: default);
@@ -571,6 +591,7 @@ namespace System.Text.Json.Tests
             Assert.Equal(0, json.CurrentDepth);
             Assert.Equal(0, json.BytesConsumed);
             Assert.False(json.HasValueSequence);
+            Assert.False(json.ValueIsEscaped);
             Assert.True(json.IsFinalBlock);
             Assert.True(json.ValueSpan.SequenceEqual(default));
             Assert.True(json.ValueSequence.IsEmpty);
@@ -583,6 +604,7 @@ namespace System.Text.Json.Tests
             Assert.Equal(0, json.CurrentDepth);
             Assert.Equal(0, json.BytesConsumed);
             Assert.False(json.HasValueSequence);
+            Assert.False(json.ValueIsEscaped);
             Assert.True(json.IsFinalBlock);
             Assert.True(json.ValueSpan.SequenceEqual(default));
             Assert.True(json.ValueSequence.IsEmpty);
@@ -612,6 +634,7 @@ namespace System.Text.Json.Tests
             Assert.Equal(0, json.CurrentDepth);
             Assert.Equal(dataUtf8.Length, json.BytesConsumed);
             Assert.False(json.HasValueSequence);
+            Assert.False(json.ValueIsEscaped);
             Assert.True(json.IsFinalBlock);
             Assert.True(json.ValueSpan.SequenceEqual(default));
             Assert.True(json.ValueSequence.IsEmpty);
@@ -624,6 +647,7 @@ namespace System.Text.Json.Tests
             Assert.Equal(0, json.CurrentDepth);
             Assert.Equal(dataUtf8.Length, json.BytesConsumed);
             Assert.False(json.HasValueSequence);
+            Assert.False(json.ValueIsEscaped);
             Assert.True(json.IsFinalBlock);
             Assert.True(json.ValueSpan.SequenceEqual(default));
             Assert.True(json.ValueSequence.IsEmpty);
@@ -636,6 +660,7 @@ namespace System.Text.Json.Tests
             Assert.Equal(0, json.CurrentDepth);
             Assert.Equal(dataUtf8.Length, json.BytesConsumed);
             Assert.False(json.HasValueSequence);
+            Assert.False(json.ValueIsEscaped);
             Assert.True(json.IsFinalBlock);
             Assert.True(json.ValueSpan.SequenceEqual(default));
             Assert.True(json.ValueSequence.IsEmpty);
@@ -742,7 +767,7 @@ namespace System.Text.Json.Tests
                 try
                 {
                     reader.Skip();
-                    Assert.True(false, "Expected JsonException was not thrown for incomplete JSON payload when skipping.");
+                    Assert.Fail("Expected JsonException was not thrown for incomplete JSON payload when skipping.");
                 }
                 catch (JsonException) { }
             }
@@ -756,7 +781,7 @@ namespace System.Text.Json.Tests
                 try
                 {
                     reader.TrySkip();
-                    Assert.True(false, "Expected JsonException was not thrown for incomplete JSON payload when skipping.");
+                    Assert.Fail("Expected JsonException was not thrown for incomplete JSON payload when skipping.");
                 }
                 catch (JsonException) { }
             }
@@ -788,7 +813,7 @@ namespace System.Text.Json.Tests
                 try
                 {
                     reader.Read();
-                    Assert.True(false, "Expected JsonException was not thrown for incomplete JSON payload when reading.");
+                    Assert.Fail("Expected JsonException was not thrown for incomplete JSON payload when reading.");
                 }
                 catch (JsonException) { }
 
@@ -802,7 +827,7 @@ namespace System.Text.Json.Tests
                 try
                 {
                     reader.TrySkip();
-                    Assert.True(false, "Expected JsonException was not thrown for incomplete JSON payload when skipping.");
+                    Assert.Fail("Expected JsonException was not thrown for incomplete JSON payload when skipping.");
                 }
                 catch (JsonException) { }
 
@@ -962,6 +987,7 @@ namespace System.Text.Json.Tests
             int prevDepth = json.CurrentDepth;
             long prevConsumed = json.BytesConsumed;
             Assert.False(json.HasValueSequence);
+            Assert.False(json.ValueIsEscaped);
             Assert.True(json.ValueSequence.IsEmpty);
             ReadOnlySpan<byte> prevValue = json.ValueSpan;
 
@@ -980,6 +1006,7 @@ namespace System.Text.Json.Tests
             Assert.Equal(prevDepth, json.CurrentDepth);
             Assert.Equal(prevConsumed, json.BytesConsumed);
             Assert.False(json.HasValueSequence);
+            Assert.False(json.ValueIsEscaped);
             Assert.True(json.ValueSequence.IsEmpty);
             Assert.True(json.ValueSpan.SequenceEqual(prevValue));
         }
@@ -996,7 +1023,7 @@ namespace System.Text.Json.Tests
             {
                 Assert.False(json.IsFinalBlock);
                 json.Skip();
-                Assert.True(false, "Expected InvalidOperationException was not thrown when calling Skip with isFinalBlock = false, even if whole payload is available.");
+                Assert.Fail("Expected InvalidOperationException was not thrown when calling Skip with isFinalBlock = false, even if whole payload is available.");
             }
             catch (InvalidOperationException) { }
 
@@ -1010,7 +1037,7 @@ namespace System.Text.Json.Tests
                 {
                     Assert.False(json.IsFinalBlock);
                     json.Skip();
-                    Assert.True(false, "Expected InvalidOperationException was not thrown when calling Skip with isFinalBlock = false");
+                    Assert.Fail("Expected InvalidOperationException was not thrown when calling Skip with isFinalBlock = false");
                 }
                 catch (InvalidOperationException) { }
 
@@ -1101,7 +1128,7 @@ namespace System.Text.Json.Tests
                 {
                     Assert.True(json.IsFinalBlock);
                     json.Skip();
-                    Assert.True(false, "Expected JsonException was not thrown for invalid JSON payload when skipping.");
+                    Assert.Fail("Expected JsonException was not thrown for invalid JSON payload when skipping.");
                 }
                 catch (JsonException) { }
             }
@@ -1114,7 +1141,7 @@ namespace System.Text.Json.Tests
                 {
                     Assert.True(json.IsFinalBlock);
                     json.TrySkip();
-                    Assert.True(false, "Expected JsonException was not thrown for invalid JSON payload when skipping.");
+                    Assert.Fail("Expected JsonException was not thrown for invalid JSON payload when skipping.");
                 }
                 catch (JsonException) { }
             }
@@ -1127,7 +1154,7 @@ namespace System.Text.Json.Tests
                 {
                     Assert.False(json.IsFinalBlock);
                     json.TrySkip();
-                    Assert.True(false, "Expected JsonException was not thrown for invalid JSON payload when skipping.");
+                    Assert.Fail("Expected JsonException was not thrown for invalid JSON payload when skipping.");
                 }
                 catch (JsonException) { }
             }
@@ -1155,7 +1182,7 @@ namespace System.Text.Json.Tests
                 {
                     Assert.True(json.IsFinalBlock);
                     json.Skip();
-                    Assert.True(false, "Expected JsonException was not thrown for incomplete/invalid JSON payload when skipping.");
+                    Assert.Fail("Expected JsonException was not thrown for incomplete/invalid JSON payload when skipping.");
                 }
                 catch (JsonException) { }
             }
@@ -1172,7 +1199,7 @@ namespace System.Text.Json.Tests
                 {
                     Assert.True(json.IsFinalBlock);
                     json.TrySkip();
-                    Assert.True(false, "Expected JsonException was not thrown for incomplete/invalid JSON payload when skipping.");
+                    Assert.Fail("Expected JsonException was not thrown for incomplete/invalid JSON payload when skipping.");
                 }
                 catch (JsonException) { }
             }
@@ -1232,7 +1259,7 @@ namespace System.Text.Json.Tests
         [Fact]
         public static void SkipTest()
         {
-            string jsonString = @"{""propertyName"": {""foo"": ""bar""},""nestedArray"": {""numbers"": [1,2,3]}}";
+            string jsonString = """{"propertyName": {"foo": "bar"},"nestedArray": {"numbers": [1,2,3]}}""";
 
             byte[] dataUtf8 = Encoding.UTF8.GetBytes(jsonString);
 
@@ -1377,7 +1404,7 @@ namespace System.Text.Json.Tests
         [Fact]
         public static void SkipTestEmpty()
         {
-            string jsonString = @"{""nestedArray"": {""empty"": [],""empty"": [{}]}}";
+            string jsonString = """{"nestedArray": {"empty": [],"empty": [{}]}}""";
 
             byte[] dataUtf8 = Encoding.UTF8.GetBytes(jsonString);
 
@@ -1569,6 +1596,7 @@ namespace System.Text.Json.Tests
         [Theory]
         [OuterLoop]
         [MemberData(nameof(SpecialNumTestCases))]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/129973", typeof(PlatformDetection), nameof(PlatformDetection.IsWasm), nameof(PlatformDetection.IsCoreCLR))]
         public static void TestPartialJsonReaderSlicesSpecialNumbers(TestCaseType type, string jsonString)
         {
             _ = type;
@@ -1626,7 +1654,7 @@ namespace System.Text.Json.Tests
         [InlineData(512)]
         public static void TestDepth(int depth)
         {
-            if (PlatformDetection.IsMonoInterpreter && depth >= 256)
+            if (PlatformDetection.IsInterpreter && depth >= 256)
             {
                 throw new SkipTestException("Takes very long to run on interpreter.");
             }
@@ -1841,7 +1869,7 @@ namespace System.Text.Json.Tests
                     if (maxDepth < json.CurrentDepth)
                         maxDepth = json.CurrentDepth;
                 }
-                Assert.True(false, $"Expected JsonException was not thrown. Max depth allowed = {json.CurrentState.Options.MaxDepth} | Max depth reached = {maxDepth}");
+                Assert.Fail($"Expected JsonException was not thrown. Max depth allowed = {json.CurrentState.Options.MaxDepth} | Max depth reached = {maxDepth}");
             }
             catch (JsonException)
             { }
@@ -1860,7 +1888,7 @@ namespace System.Text.Json.Tests
                     if (maxDepth < json.CurrentDepth)
                         maxDepth = json.CurrentDepth;
                 }
-                Assert.True(false, $"Expected JsonException was not thrown. Max depth allowed = {json.CurrentState.Options.MaxDepth} | Max depth reached = {maxDepth}");
+                Assert.Fail($"Expected JsonException was not thrown. Max depth allowed = {json.CurrentState.Options.MaxDepth} | Max depth reached = {maxDepth}");
             }
             catch (JsonException)
             { }
@@ -1988,7 +2016,7 @@ namespace System.Text.Json.Tests
                 {
                     while (json.Read())
                         ;
-                    Assert.True(false, "Expected JsonException was not thrown.");
+                    Assert.Fail("Expected JsonException was not thrown.");
                 }
                 catch (JsonException) { }
             }
@@ -2019,7 +2047,7 @@ namespace System.Text.Json.Tests
                 {
                     while (json.Read())
                         ;
-                    Assert.True(false, "Expected JsonException was not thrown.");
+                    Assert.Fail("Expected JsonException was not thrown.");
                 }
                 catch (JsonException ex)
                 {
@@ -2072,7 +2100,7 @@ namespace System.Text.Json.Tests
                 {
                     while (json.Read())
                         ;
-                    Assert.True(false, "Expected JsonException was not thrown.");
+                    Assert.Fail("Expected JsonException was not thrown.");
                 }
                 catch (JsonException ex)
                 {
@@ -2089,7 +2117,7 @@ namespace System.Text.Json.Tests
                 {
                     while (json.Read())
                         ;
-                    Assert.True(false, "Expected JsonException was not thrown.");
+                    Assert.Fail("Expected JsonException was not thrown.");
                 }
                 catch (JsonException ex)
                 {
@@ -2115,11 +2143,89 @@ namespace System.Text.Json.Tests
                 {
                     while (json.Read())
                         ;
-                    Assert.True(false, "Expected JsonException was not thrown.");
+                    Assert.Fail("Expected JsonException was not thrown.");
                 }
                 catch (JsonException ex)
                 {
                     Assert.Equal(expectedlineNumber, ex.LineNumber);
+                    Assert.Equal(expectedBytePosition, ex.BytePositionInLine);
+                }
+            }
+        }
+
+        [Fact]
+        public static void ReadLongWhitespaceAndDigitRuns()
+        {
+            // Long whitespace runs exercise the vectorized whitespace-skipping path in
+            // Utf8JsonReader, alongside long integer/fraction digit runs, to lock in correct
+            // tokenization and number parsing for large runs.
+            string jsonString =
+                "[" + new string(' ', 60) + "1234567890123456789," +
+                "\n\n" + new string(' ', 40) + "-1.25e3," +
+                new string('\t', 33) + "42," +
+                new string(' ', 48) + "12345678901234567890123456789012345678" +
+                "\n]";
+            byte[] dataUtf8 = Encoding.UTF8.GetBytes(jsonString);
+
+            var json = new Utf8JsonReader(dataUtf8, isFinalBlock: true, state: default);
+
+            Assert.True(json.Read());
+            Assert.Equal(JsonTokenType.StartArray, json.TokenType);
+
+            Assert.True(json.Read());
+            Assert.Equal(JsonTokenType.Number, json.TokenType);
+            Assert.Equal(1234567890123456789L, json.GetInt64());
+
+            Assert.True(json.Read());
+            Assert.Equal(JsonTokenType.Number, json.TokenType);
+            Assert.Equal(-1250.0, json.GetDouble());
+
+            Assert.True(json.Read());
+            Assert.Equal(JsonTokenType.Number, json.TokenType);
+            Assert.Equal(42, json.GetInt32());
+
+            Assert.True(json.Read());
+            Assert.Equal(JsonTokenType.Number, json.TokenType);
+            Assert.Equal(38, json.ValueSpan.Length);
+
+            Assert.True(json.Read());
+            Assert.Equal(JsonTokenType.EndArray, json.TokenType);
+
+            Assert.False(json.Read());
+            Assert.Equal(dataUtf8.Length, json.BytesConsumed);
+        }
+
+        public static IEnumerable<object[]> WhitespaceBeforeInvalidTokenData()
+        {
+            yield return new object[] { "\n\n\n   ", 3, 3 };
+            yield return new object[] { "\r\n\t\t", 1, 2 };
+            yield return new object[] { new string(' ', 100), 0, 101 };
+            yield return new object[] { new string('\n', 50) + new string(' ', 30), 50, 30 };
+            yield return new object[] { " \t \t \r\n", 1, 0 };
+        }
+
+        [Theory]
+        [MemberData(nameof(WhitespaceBeforeInvalidTokenData))]
+        public static void WhitespaceRunBeforeInvalidToken_ReportsLineAndBytePosition(string whitespace, int expectedLineNumber, int expectedBytePosition)
+        {
+            byte[] dataUtf8 = Encoding.UTF8.GetBytes("[" + whitespace + "@]");
+
+            foreach (JsonCommentHandling commentHandling in Enum.GetValues(typeof(JsonCommentHandling)))
+            {
+                var state = new JsonReaderState(new JsonReaderOptions { CommentHandling = commentHandling });
+                var json = new Utf8JsonReader(dataUtf8, isFinalBlock: true, state);
+
+                Assert.True(json.Read());
+                Assert.Equal(JsonTokenType.StartArray, json.TokenType);
+
+                try
+                {
+                    json.Read();
+                    Assert.Fail("Expected JsonException was not thrown.");
+                }
+                catch (JsonException ex)
+                {
+                    Assert.Equal(expectedLineNumber, ex.LineNumber);
                     Assert.Equal(expectedBytePosition, ex.BytePositionInLine);
                 }
             }
@@ -2140,7 +2246,7 @@ namespace System.Text.Json.Tests
                 {
                     while (json.Read())
                         ;
-                    Assert.True(false, "Expected JsonException was not thrown with single-segment data.");
+                    Assert.Fail("Expected JsonException was not thrown with single-segment data.");
                 }
                 catch (JsonException ex)
                 {
@@ -2158,7 +2264,7 @@ namespace System.Text.Json.Tests
                 {
                     while (json.Read())
                         ;
-                    Assert.True(false, "Expected JsonException was not thrown with single-segment data.");
+                    Assert.Fail("Expected JsonException was not thrown with single-segment data.");
                 }
                 catch (JsonException ex)
                 {
@@ -2184,7 +2290,7 @@ namespace System.Text.Json.Tests
                 {
                     while (json.Read())
                         ;
-                    Assert.True(false, "Expected JsonException was not thrown with single-segment data.");
+                    Assert.Fail("Expected JsonException was not thrown with single-segment data.");
                 }
                 catch (JsonException ex)
                 {
@@ -2211,7 +2317,7 @@ namespace System.Text.Json.Tests
                         while (jsonSlice.Read())
                             ;
 
-                        Assert.True(false, "Expected JsonException was not thrown with multi-segment data.");
+                        Assert.Fail("Expected JsonException was not thrown with multi-segment data.");
                     }
                     catch (JsonException ex)
                     {
@@ -2457,7 +2563,7 @@ namespace System.Text.Json.Tests
                 switch (tokenType)
                 {
                     case JsonTokenType.Comment:
-                        Assert.True(false, "TokenType should never be 'Comment' when we are skipping them.");
+                        Assert.Fail("TokenType should never be 'Comment' when we are skipping them.");
                         break;
                 }
                 Assert.NotEqual(tokenType, prevTokenType);
@@ -2513,7 +2619,7 @@ namespace System.Text.Json.Tests
                 switch (tokenType)
                 {
                     case JsonTokenType.Comment:
-                        Assert.True(false, "TokenType should never be 'Comment' when we are skipping them.");
+                        Assert.Fail("TokenType should never be 'Comment' when we are skipping them.");
                         break;
                 }
             }
@@ -2530,7 +2636,7 @@ namespace System.Text.Json.Tests
                     switch (tokenType)
                     {
                         case JsonTokenType.Comment:
-                            Assert.True(false, "TokenType should never be 'Comment' when we are skipping them.");
+                            Assert.Fail("TokenType should never be 'Comment' when we are skipping them.");
                             break;
                     }
                 }
@@ -2544,7 +2650,7 @@ namespace System.Text.Json.Tests
                     switch (tokenType)
                     {
                         case JsonTokenType.Comment:
-                            Assert.True(false, "TokenType should never be 'Comment' when we are skipping them.");
+                            Assert.Fail("TokenType should never be 'Comment' when we are skipping them.");
                             break;
                     }
                 }
@@ -2600,11 +2706,11 @@ namespace System.Text.Json.Tests
                     switch (tokenType)
                     {
                         case JsonTokenType.Comment:
-                            Assert.True(false, "TokenType should never be 'Comment' when we are skipping them.");
+                            Assert.Fail("TokenType should never be 'Comment' when we are skipping them.");
                             break;
                     }
                 }
-                Assert.True(false, "Expected JsonException was not thrown with single-segment data.");
+                Assert.Fail("Expected JsonException was not thrown with single-segment data.");
             }
             catch (JsonException ex)
             {
@@ -2660,11 +2766,11 @@ namespace System.Text.Json.Tests
                     switch (tokenType)
                     {
                         case JsonTokenType.Comment:
-                            Assert.True(false, "TokenType should never be 'Comment' when we are skipping them.");
+                            Assert.Fail("TokenType should never be 'Comment' when we are skipping them.");
                             break;
                     }
                 }
-                Assert.True(false, "Expected JsonException was not thrown with single-segment data.");
+                Assert.Fail("Expected JsonException was not thrown with single-segment data.");
             }
             catch (JsonException ex)
             {
@@ -2683,7 +2789,7 @@ namespace System.Text.Json.Tests
                         switch (tokenType)
                         {
                             case JsonTokenType.Comment:
-                                Assert.True(false, "TokenType should never be 'Comment' when we are skipping them.");
+                                Assert.Fail("TokenType should never be 'Comment' when we are skipping them.");
                                 break;
                         }
                     }
@@ -2695,12 +2801,12 @@ namespace System.Text.Json.Tests
                         switch (tokenType)
                         {
                             case JsonTokenType.Comment:
-                                Assert.True(false, "TokenType should never be 'Comment' when we are skipping them.");
+                                Assert.Fail("TokenType should never be 'Comment' when we are skipping them.");
                                 break;
                         }
                     }
 
-                    Assert.True(false, "Expected JsonException was not thrown with multi-segment data.");
+                    Assert.Fail("Expected JsonException was not thrown with multi-segment data.");
                 }
                 catch (JsonException ex)
                 {
@@ -2777,7 +2883,7 @@ namespace System.Text.Json.Tests
             {
                 while (json.Read())
                     ;
-                Assert.True(false, "Expected JsonException was not thrown with single-segment data.");
+                Assert.Fail("Expected JsonException was not thrown with single-segment data.");
             }
             catch (JsonException ex)
             {
@@ -2792,7 +2898,7 @@ namespace System.Text.Json.Tests
             {
                 while (json.Read())
                     ;
-                Assert.True(false, "Expected JsonException was not thrown with single-segment data.");
+                Assert.Fail("Expected JsonException was not thrown with single-segment data.");
             }
             catch (JsonException ex)
             {
@@ -2863,7 +2969,7 @@ namespace System.Text.Json.Tests
             {
                 while (json.Read())
                     ;
-                Assert.True(false, "Expected JsonException was not thrown with single-segment data.");
+                Assert.Fail("Expected JsonException was not thrown with single-segment data.");
             }
             catch (JsonException ex)
             {
@@ -2919,7 +3025,7 @@ namespace System.Text.Json.Tests
                 try
                 {
                     json.Read();
-                    Assert.True(false, $"Expected JsonException was not thrown. CommentHandling = {commentHandling}");
+                    Assert.Fail($"Expected JsonException was not thrown. CommentHandling = {commentHandling}");
                 }
                 catch (JsonException) { }
             }
@@ -2964,7 +3070,7 @@ namespace System.Text.Json.Tests
             {
                 while (json.Read())
                     ;
-                Assert.True(false, "Expected JsonException was not thrown with single-segment data.");
+                Assert.Fail("Expected JsonException was not thrown with single-segment data.");
             }
             catch (JsonException ex)
             {
@@ -2983,7 +3089,7 @@ namespace System.Text.Json.Tests
             {
                 while (json.Read())
                     ;
-                Assert.True(false, "Expected JsonException was not thrown with single-segment data.");
+                Assert.Fail("Expected JsonException was not thrown with single-segment data.");
             }
             catch (JsonException ex)
             {
@@ -3009,7 +3115,7 @@ namespace System.Text.Json.Tests
             {
                 while (json.Read())
                     ;
-                Assert.True(false, "Expected JsonException was not thrown with single-segment data.");
+                Assert.Fail("Expected JsonException was not thrown with single-segment data.");
             }
             catch (JsonException ex)
             {
@@ -3022,7 +3128,7 @@ namespace System.Text.Json.Tests
         [MemberData(nameof(LotsOfCommentsTests))]
         public static void SkipLotsOfComments(string valueString, bool insideArray, string expectedString)
         {
-            var builder = new StringBuilder();
+            var builder = new StringBuilder(2_000_000);
             if (insideArray)
             {
                 builder.Append("[");
@@ -3100,7 +3206,7 @@ namespace System.Text.Json.Tests
         [MemberData(nameof(LotsOfCommentsTests))]
         public static void ConsumeLotsOfComments(string valueString, bool insideArray, string expectedString)
         {
-            var builder = new StringBuilder();
+            var builder = new StringBuilder(2_000_000);
             if (insideArray)
             {
                 builder.Append("[");
@@ -3199,11 +3305,11 @@ namespace System.Text.Json.Tests
                         }
                         else
                         {
-                            Assert.True(false);
+                            Assert.Fail();
                         }
                         break;
                     default:
-                        Assert.True(false);
+                        Assert.Fail();
                         break;
                 }
             }
@@ -3317,7 +3423,7 @@ namespace System.Text.Json.Tests
                 Assert.Contains(reader.TokenType, new[] { JsonTokenType.EndArray, JsonTokenType.EndObject });
             }
 
-            JsonTestHelper.AssertThrows<JsonException>(reader, (jsonReader) =>
+            JsonTestHelper.AssertThrows<JsonException>(ref reader, (ref Utf8JsonReader jsonReader) =>
             {
                 jsonReader.Read();
                 if (commentHandling == JsonCommentHandling.Allow && jsonReader.TokenType == JsonTokenType.Comment)
@@ -3424,7 +3530,7 @@ namespace System.Text.Json.Tests
 
             if (expectThrow)
             {
-                JsonTestHelper.AssertThrows<JsonException>(reader, (jsonReader) =>
+                JsonTestHelper.AssertThrows<JsonException>(ref reader, (ref Utf8JsonReader jsonReader) =>
                 {
                     while (jsonReader.Read())
                         ;
@@ -3763,6 +3869,293 @@ namespace System.Text.Json.Tests
                 var json = new Utf8JsonReader(utf8BomAndValue, isFinalBlock: isFinalBlock, state: default);
                 json.Read();
             });
+        }
+
+        [Theory]
+        [InlineData("null")]
+        [InlineData("false")]
+        [InlineData("true")]
+        [InlineData("42")]
+        [InlineData("\"stringWithoutEscaping\"")]
+        [InlineData("{}")]
+        [InlineData("[]")]
+        [InlineData("/* comment */ null", JsonCommentHandling.Allow)]
+        public static void ValueIsEscaped_IsFalseOnTokensWithoutEscaping(string json, JsonCommentHandling commentHandling = default)
+        {
+            var options = new JsonReaderOptions { CommentHandling = commentHandling };
+            JsonTestHelper.AssertWithSingleAndMultiSegmentReader(json, Test, options);
+
+            static void Test(ref Utf8JsonReader reader)
+            {
+                while (reader.Read())
+                {
+                    Assert.False(reader.ValueIsEscaped);
+                }
+            }
+        }
+
+        [Theory]
+        [InlineData("""
+            \"
+            """)]
+        [InlineData(@"\n")]
+        [InlineData(@"\r")]
+        [InlineData(@"\\")]
+        [InlineData(@"\/")]
+        [InlineData(@"\t")]
+        [InlineData(@"\b")]
+        [InlineData(@"\f")]
+        [InlineData(@"\u6F22\u5B57")]
+        public static void ValueIsEscaped_IsTrueOnEscapedStrings(string jsonString)
+        {
+            string json = $@"""{jsonString}""";
+            JsonTestHelper.AssertWithSingleAndMultiSegmentReader(json, Test);
+
+            static void Test(ref Utf8JsonReader reader)
+            {
+                Assert.True(reader.Read());
+                Assert.Equal(JsonTokenType.String, reader.TokenType);
+                Assert.True(reader.ValueIsEscaped);
+                Assert.Contains((byte)'\\', reader.HasValueSequence ? reader.ValueSequence.ToArray() : reader.ValueSpan.ToArray());
+            }
+        }
+
+        [Theory]
+        [InlineData("""
+            \"
+            """)]
+        [InlineData(@"\n")]
+        [InlineData(@"\r")]
+        [InlineData(@"\\")]
+        [InlineData(@"\/")]
+        [InlineData(@"\t")]
+        [InlineData(@"\b")]
+        [InlineData(@"\f")]
+        [InlineData(@"\u6F22\u5B57")]
+        public static void ValueIsEscaped_IsTrueOnEscapedPropertyNames(string jsonString)
+        {
+            string json = $@"{{ ""{jsonString}"" : false }}";
+            JsonTestHelper.AssertWithSingleAndMultiSegmentReader(json, Test);
+
+            static void Test(ref Utf8JsonReader reader)
+            {
+                Assert.True(reader.Read());
+                Assert.True(reader.Read());
+                Assert.Equal(JsonTokenType.PropertyName, reader.TokenType);
+                Assert.True(reader.ValueIsEscaped);
+                Assert.Contains((byte)'\\', reader.HasValueSequence ? reader.ValueSequence.ToArray() : reader.ValueSpan.ToArray());
+            }
+        }
+
+        [Theory]
+        [InlineData("null")]
+        [InlineData("false")]
+        [InlineData("true")]
+        [InlineData("42")]
+        [InlineData("\"stringWithoutEscaping\"")]
+        [InlineData("{}")]
+        [InlineData("[]")]
+        [InlineData("/* comment */ null", JsonCommentHandling.Allow)]
+        public static void ValueIsEscaped_AfterEscapedStrings_IsFalseOnNonEscapedTokens(string jsonValue, JsonCommentHandling commentHandling = default)
+        {
+            string json = $@"[""hello\n"", {jsonValue}]";
+            var options = new JsonReaderOptions { CommentHandling = commentHandling };
+            JsonTestHelper.AssertWithSingleAndMultiSegmentReader(json, Test, options);
+
+            static void Test(ref Utf8JsonReader reader)
+            {
+                Assert.True(reader.Read());
+                Assert.True(reader.Read());
+                Assert.Equal(JsonTokenType.String, reader.TokenType);
+                Assert.True(reader.ValueIsEscaped);
+
+                while (reader.Read())
+                {
+                    Assert.False(reader.ValueIsEscaped);
+                }
+            }
+        }
+
+        [Theory]
+        [InlineData("null")]
+        [InlineData("false")]
+        [InlineData("true")]
+        [InlineData("42")]
+        [InlineData("\"stringWithoutEscaping\"")]
+        [InlineData("{}")]
+        [InlineData("[]")]
+        [InlineData("/* comment */ null", JsonCommentHandling.Allow)]
+        public static void ValueIsEscaped_AfterEscapedPropertyNames_IsFalseOnNonEscapedTokens(string jsonValue, JsonCommentHandling commentHandling = default)
+        {
+            string json = $@"{{ ""hello\n"" : {jsonValue} }}";
+            var options = new JsonReaderOptions { CommentHandling = commentHandling };
+            JsonTestHelper.AssertWithSingleAndMultiSegmentReader(json, Test, options);
+
+            static void Test(ref Utf8JsonReader reader)
+            {
+                Assert.True(reader.Read());
+                Assert.True(reader.Read());
+                Assert.Equal(JsonTokenType.PropertyName, reader.TokenType);
+                Assert.True(reader.ValueIsEscaped);
+
+                while (reader.Read())
+                {
+                    Assert.False(reader.ValueIsEscaped);
+                }
+            }
+        }
+
+        [Theory]
+        [InlineData("{ } 1", new[] { JsonTokenType.StartObject, JsonTokenType.EndObject, JsonTokenType.Number })]
+        [InlineData("{ }1", new[] { JsonTokenType.StartObject, JsonTokenType.EndObject, JsonTokenType.Number })]
+        [InlineData("{ }\t\r\n           1", new[] { JsonTokenType.StartObject, JsonTokenType.EndObject, JsonTokenType.Number })]
+        [InlineData("1 3.14 false null", new[] { JsonTokenType.Number, JsonTokenType.Number, JsonTokenType.False, JsonTokenType.Null })]
+        [InlineData("42", new[] { JsonTokenType.Number })]
+        [InlineData("\"str\"\"str\"null", new[] { JsonTokenType.String, JsonTokenType.String, JsonTokenType.Null })]
+        [InlineData("[]{}[]", new[] { JsonTokenType.StartArray, JsonTokenType.EndArray, JsonTokenType.StartObject, JsonTokenType.EndObject, JsonTokenType.StartArray, JsonTokenType.EndArray })]
+        public static void AllowMultipleValues(string json, JsonTokenType[] expectedSequence)
+        {
+            JsonReaderOptions options = new() { AllowMultipleValues = true };
+            Utf8JsonReader reader = new(Encoding.UTF8.GetBytes(json), options);
+
+            Assert.Equal(JsonTokenType.None, reader.TokenType);
+
+            foreach (JsonTokenType expected in expectedSequence)
+            {
+                Assert.True(reader.Read());
+                Assert.Equal(expected, reader.TokenType);
+            }
+
+            Assert.False(reader.Read());
+        }
+
+        [Fact]
+        public static void AllowMultipleValues_NonJsonTrailingData_ThrowsJsonException()
+        {
+            JsonReaderOptions options = new() { AllowMultipleValues = true };
+            Utf8JsonReader reader = new("{ }      not JSON"u8, options);
+            Assert.Equal(JsonTokenType.None, reader.TokenType);
+            Assert.True(reader.Read());
+            Assert.Equal(JsonTokenType.StartObject, reader.TokenType);
+            Assert.True(reader.Read());
+            Assert.Equal(JsonTokenType.EndObject, reader.TokenType);
+
+            JsonTestHelper.AssertThrows<JsonException>(ref reader, (ref Utf8JsonReader reader) => reader.Read());
+        }
+
+        [Theory]
+        [InlineData(JsonCommentHandling.Allow)]
+        [InlineData(JsonCommentHandling.Skip)]
+        public static void AllowMultipleValues_CommentSeparated(JsonCommentHandling commentHandling)
+        {
+            JsonReaderOptions options = new() { AllowMultipleValues = true, CommentHandling = commentHandling };
+            Utf8JsonReader reader = new("{ }    /* I'm a comment */       1"u8, options);
+            Assert.Equal(JsonTokenType.None, reader.TokenType);
+            Assert.True(reader.Read());
+            Assert.Equal(JsonTokenType.StartObject, reader.TokenType);
+            Assert.True(reader.Read());
+            Assert.Equal(JsonTokenType.EndObject, reader.TokenType);
+
+            Assert.True(reader.Read());
+
+            if (commentHandling is JsonCommentHandling.Allow)
+            {
+                Assert.Equal(JsonTokenType.Comment, reader.TokenType);
+                Assert.True(reader.Read());
+            }
+
+            Assert.Equal(JsonTokenType.Number, reader.TokenType);
+            Assert.False(reader.Read());
+        }
+
+        [Theory]
+        [InlineData("null", JsonTokenType.Null)]
+        [InlineData("false", JsonTokenType.False)]
+        [InlineData("true", JsonTokenType.True)]
+        [InlineData("42", JsonTokenType.Number)]
+        [InlineData("\"string\"", JsonTokenType.String)]
+        [InlineData("""{ "key" : "value" }""", JsonTokenType.StartObject)]
+        [InlineData("""[{},1,"string",false, true]""", JsonTokenType.StartArray)]
+        public static void AllowMultipleValues_SkipMultipleRepeatingValues(string jsonValue, JsonTokenType firstTokenType)
+        {
+            JsonReaderOptions options = new() { AllowMultipleValues = true };
+            string payload = string.Join("\r\n", Enumerable.Repeat(jsonValue, 10));
+            var reader = new Utf8JsonReader(Encoding.UTF8.GetBytes(payload), options);
+
+            for (int i = 0; i < 10; i++)
+            {
+                Assert.True(reader.Read());
+                Assert.Equal(firstTokenType, reader.TokenType);
+                reader.Skip();
+            }
+        }
+
+        [Theory]
+        [InlineData("null", JsonTokenType.Null)]
+        [InlineData("false", JsonTokenType.False)]
+        [InlineData("true", JsonTokenType.True)]
+        [InlineData("42", JsonTokenType.Number)]
+        [InlineData("\"string\"", JsonTokenType.String)]
+        [InlineData("""{ "key" : "value" }""", JsonTokenType.StartObject)]
+        [InlineData("""[{},1,"string",false, true]""", JsonTokenType.StartArray)]
+        public static void AllowMultipleValues_PartialData(string jsonValue, JsonTokenType firstTokenType)
+        {
+            JsonReaderOptions options = new() { AllowMultipleValues = true };
+            JsonReaderState state = new(options);
+            Utf8JsonReader reader = new(Encoding.UTF8.GetBytes(jsonValue + " "), isFinalBlock: false, state);
+
+            Assert.True(reader.Read());
+            Assert.Equal(firstTokenType, reader.TokenType);
+            Assert.True(reader.TrySkip());
+            Assert.False(reader.Read());
+
+            reader = new Utf8JsonReader(Encoding.UTF8.GetBytes(jsonValue), isFinalBlock: true, reader.CurrentState);
+
+            Assert.True(reader.Read());
+            Assert.Equal(firstTokenType, reader.TokenType);
+            reader.Skip();
+            Assert.False(reader.Read());
+        }
+
+        [Theory]
+        [InlineData("null", JsonTokenType.Null)]
+        [InlineData("false", JsonTokenType.False)]
+        [InlineData("true", JsonTokenType.True)]
+        [InlineData("42", JsonTokenType.Number)]
+        [InlineData("\"string\"", JsonTokenType.String)]
+        [InlineData("""{ "key" : "value" }""", JsonTokenType.StartObject)]
+        [InlineData("""[{},1,"string",false, true]""", JsonTokenType.StartArray)]
+        public static void AllowMultipleValues_Comments_PartialData(string jsonValue, JsonTokenType firstTokenType)
+        {
+            JsonReaderOptions options = new() { AllowMultipleValues = true, CommentHandling = JsonCommentHandling.Skip };
+            JsonReaderState state = new(options);
+            Utf8JsonReader reader = new(Encoding.UTF8.GetBytes(jsonValue + "/* comment */"), isFinalBlock: false, state);
+
+            Assert.True(reader.Read());
+            Assert.Equal(firstTokenType, reader.TokenType);
+            Assert.True(reader.TrySkip());
+            Assert.False(reader.Read());
+
+            reader = new Utf8JsonReader(Encoding.UTF8.GetBytes(jsonValue), isFinalBlock: true, reader.CurrentState);
+
+            Assert.True(reader.Read());
+            Assert.Equal(firstTokenType, reader.TokenType);
+            reader.Skip();
+            Assert.False(reader.Read());
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("\t\r\n")]
+        [InlineData("    \t\t                        ")]
+        public static void AllowMultipleValues_NoJsonContent_ReturnsFalse(string json)
+        {
+            JsonReaderOptions options = new() { AllowMultipleValues = true };
+            Utf8JsonReader reader = new(Encoding.UTF8.GetBytes(json), options);
+
+            Assert.True(reader.IsFinalBlock);
+            Assert.False(reader.Read());
+            Assert.Equal(JsonTokenType.None, reader.TokenType);
         }
 
         public static IEnumerable<object[]> TestCases
@@ -4533,6 +4926,40 @@ namespace System.Text.Json.Tests
 
                 return dataList;
             }
+        }
+
+        [Fact]
+        public static void SkipComment_SingleLineComment()
+        {
+            byte[] data = "// This is a comment\n{}"u8.ToArray();
+            var reader = new Utf8JsonReader(data, new JsonReaderOptions { CommentHandling = JsonCommentHandling.Skip });
+            
+            Assert.True(reader.Read());
+            Assert.Equal(JsonTokenType.StartObject, reader.TokenType);
+        }
+
+        [Fact]
+        public static void SkipComment_MultiLineComment()
+        {
+            byte[] data = "/* This is a\nmultiline comment */\n{}"u8.ToArray();
+            var reader = new Utf8JsonReader(data, new JsonReaderOptions { CommentHandling = JsonCommentHandling.Skip });
+            
+            Assert.True(reader.Read());
+            Assert.Equal(JsonTokenType.StartObject, reader.TokenType);
+        }
+
+        [Fact]
+        public static void AllowComment_ReadsCommentToken()
+        {
+            byte[] data = "// comment\n{}"u8.ToArray();
+            var reader = new Utf8JsonReader(data, new JsonReaderOptions { CommentHandling = JsonCommentHandling.Allow });
+            
+            Assert.True(reader.Read());
+            Assert.Equal(JsonTokenType.Comment, reader.TokenType);
+            Assert.Equal(" comment", reader.GetComment());
+            
+            Assert.True(reader.Read());
+            Assert.Equal(JsonTokenType.StartObject, reader.TokenType);
         }
     }
 }

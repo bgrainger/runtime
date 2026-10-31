@@ -2,27 +2,22 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 /*++
-
 Module Name:
-
     misc/dbgmsg.cpp
 
 Abstract:
     Implementation of Debug Message utilies. Relay channel information,
     output functions, etc.
-
 --*/
 
 /* PAL headers */
 
 #include "pal/thread.hpp"
-#include "pal/malloc.hpp"
 #include "pal/file.hpp"
 
 #include "config.h"
 #include "pal/dbgmsg.h"
 #include "pal/cruntime.h"
-#include "pal/critsect.h"
 #include "pal/file.h"
 #include "pal/environ.h"
 
@@ -36,14 +31,15 @@ Abstract:
 #include <dirent.h>
 #include <dlfcn.h>
 
+#if defined(TARGET_WASI)
+#include "pal/wasi/pal_wasi_missing.h"
+#endif
+
 /* <stdarg.h> needs to be included after "palinternal.h" to avoid name
    collision for va_start and va_end */
 #include <stdarg.h>
 
 using namespace CorUnix;
-
-/* append mode file I/O is safer */
-#define _PAL_APPEND_DBG_OUTPUT_
 
 static const char FOPEN_FLAGS[] = "at";
 
@@ -98,7 +94,7 @@ static const char *dbg_channel_names[]=
 };
 
 // Verify the number of elements in dbg_channel_names
-static_assert_no_msg(ARRAY_SIZE(dbg_channel_names) == DCI_LAST);
+static_assert(ARRAY_SIZE(dbg_channel_names) == DCI_LAST);
 
 static const char *dbg_level_names[]=
 {
@@ -127,7 +123,7 @@ static const char INDENT_CHAR = '.';
 static BOOL DBG_get_indent(DBG_LEVEL_ID level, const char *format,
                            char *indent_string);
 
-static CRITICAL_SECTION fprintf_crit_section;
+static minipal_mutex fprintf_crit_section;
 
 /* Function definitions */
 
@@ -362,48 +358,10 @@ BOOL DBG_init_channels(void)
         }
     }
 
-    InternalInitializeCriticalSection(&fprintf_crit_section);
+    minipal_mutex_init(&fprintf_crit_section);
 
     return TRUE;
 }
-
-/*++
-Function :
-    DBG_close_channels
-
-    Stop outputting debug messages by closing the associated file.
-
-    (no parameters, no return value)
---*/
-void DBG_close_channels()
-{
-    if(output_file && output_file != stderr && output_file != stdout)
-    {
-        if (fclose(output_file) != 0)
-        {
-            fprintf(stderr, "ERROR : fclose() failed errno:%d (%s)\n",
-                   errno, strerror(errno));
-        }
-    }
-
-    output_file = NULL;
-
-    DeleteCriticalSection(&fprintf_crit_section);
-
-    /* if necessary, release TLS key for entry nesting level */
-    if(0 != max_entry_level)
-    {
-        int retval;
-
-        retval = pthread_key_delete(entry_level_key);
-        if(0 != retval)
-        {
-            fprintf(stderr, "ERROR : pthread_key_delete() returned %d! (%s)\n",
-                    retval, strerror(retval));
-        }
-    }
-}
-
 
 static const void *DBG_get_module_id()
 {
@@ -540,9 +498,9 @@ int DBG_printf(DBG_CHANNEL_ID channel, DBG_LEVEL_ID level, BOOL bHeader,
        avoid holding a libc lock while another thread is calling
        SuspendThread on this one. */
 
-    InternalEnterCriticalSection(NULL, &fprintf_crit_section);
+    minipal_mutex_enter(&fprintf_crit_section);
     fprintf( output_file, "%s%s", indent, buffer );
-    InternalLeaveCriticalSection(NULL, &fprintf_crit_section);
+    minipal_mutex_leave(&fprintf_crit_section);
 
     /* flush the output to file */
     if ( fflush(output_file) != 0 )
@@ -670,10 +628,10 @@ int DBG_change_entrylevel(int new_level)
     {
         return 0;
     }
-    old_level = PtrToInt(pthread_getspecific(entry_level_key));
+    old_level = (int)(intptr_t)pthread_getspecific(entry_level_key);
     if(-1 != new_level)
     {
-        if ((ret = pthread_setspecific(entry_level_key,(LPVOID)(IntToPtr(new_level)))) != 0)
+        if ((ret = pthread_setspecific(entry_level_key,(LPVOID)(intptr_t)new_level)) != 0)
         {
             fprintf(stderr, "ERROR : pthread_setspecific() failed "
                     "error:%d (%s)\n", ret, strerror(ret));
@@ -734,7 +692,7 @@ bool DBG_ShouldCheckStackAlignment()
 }
 #endif // _DEBUG && __APPLE__
 
-#ifdef __APPLE__
+#if defined(TARGET_OSX)
 #include "CoreFoundation/CFUserNotification.h"
 #include "CoreFoundation/CFString.h"
 #include "Security/AuthSession.h"
@@ -854,4 +812,4 @@ void PAL_DisplayDialogFormatted(const char *szTitle, const char *szTextFormat, .
 
     va_end(args);
 }
-#endif // __APPLE__
+#endif // TARGET_OSX

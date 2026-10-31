@@ -29,9 +29,8 @@ namespace System.Reflection.TypeLoading
 
         public sealed override Type ReflectedType => _reflectedType;
 
-        public sealed override string Name => _lazyName ?? (_lazyName = ComputeName());
+        public sealed override string Name => field ??= ComputeName();
         protected abstract string ComputeName();
-        private volatile string? _lazyName;
 
         public sealed override Module Module => GetRoModule();
         internal abstract RoModule GetRoModule();
@@ -90,13 +89,8 @@ namespace System.Reflection.TypeLoading
         public sealed override ParameterInfo ReturnParameter => MethodSig.Return;
         internal RoParameter[] GetParametersNoCopy() => MethodSig.Parameters;
 
-        private MethodSig<RoParameter> MethodSig => _lazyMethodSig ?? (_lazyMethodSig = ComputeMethodSig());
+        private MethodSig<RoParameter> MethodSig => field ??= ComputeMethodSig();
         protected abstract MethodSig<RoParameter> ComputeMethodSig();
-        private volatile MethodSig<RoParameter>? _lazyMethodSig;
-
-        private MethodSig<RoType> CustomModifiers => _lazyCustomModifiers ?? (_lazyCustomModifiers = ComputeCustomModifiers());
-        protected abstract MethodSig<RoType> ComputeCustomModifiers();
-        private volatile MethodSig<RoType>? _lazyCustomModifiers;
 
         public sealed override ICustomAttributeProvider ReturnTypeCustomAttributes => ReturnParameter;
         public sealed override Type ReturnType => ReturnParameter.ParameterType;
@@ -104,9 +98,9 @@ namespace System.Reflection.TypeLoading
         public abstract override MethodInfo GetGenericMethodDefinition();
 
         public sealed override Type[] GetGenericArguments() => GetGenericArgumentsOrParametersNoCopy().CloneArray<Type>();
-        internal RoType[] GetGenericArgumentsOrParametersNoCopy() => _lazyGenericArgumentsOrParameters ?? (_lazyGenericArgumentsOrParameters = ComputeGenericArgumentsOrParameters());
+        internal RoType[] GetGenericArgumentsOrParametersNoCopy() => _lazyGenericArgumentsOrParameters ??= ComputeGenericArgumentsOrParameters();
         protected abstract RoType[] ComputeGenericArgumentsOrParameters();
-        private volatile RoType[]? _lazyGenericArgumentsOrParameters;
+        private RoType[]? _lazyGenericArgumentsOrParameters;
 
         internal abstract RoType[] GetGenericTypeParametersNoCopy();
         internal abstract RoType[] GetGenericTypeArgumentsNoCopy();
@@ -133,7 +127,6 @@ namespace System.Reflection.TypeLoading
         MethodBase IRoMethodBase.MethodBase => this;
         public MetadataLoadContext Loader => GetRoModule().Loader;
         public abstract TypeContext TypeContext { get; }
-        Type[] IRoMethodBase.GetCustomModifiers(int position, bool isRequired) => CustomModifiers[position].ExtractCustomModifiers(isRequired);
         string IRoMethodBase.GetMethodSigString(int position) => ComputeMethodSigStrings()[position];
     }
 }

@@ -9,6 +9,7 @@
 #include "clrtypes.h"
 #include "check.h"
 #include "iterator.h"
+#include "cdacdata.h"
 
 // SHash is a templated closed chaining hash table of pointers.  It provides
 // for multiple entries under the same key, and also for deleting elements.
@@ -21,6 +22,7 @@
 //    (@todo: this can be remedied by delaying destruction of old tables during reallocation, e.g. during GC)
 // - Remove operations may be asynchronous with Lookup/Add, unless elements are also deallocated. (In which
 //    case full synchronization is required)
+// - Replacing elements must be synchronized with other accesses to those elements.
 
 // Common "gotchas":
 // - The Add method never replaces an element. The new element will be added even if an element with the same
@@ -63,24 +65,29 @@
 //                                              (Note that the Null- and Deleted-related functions below
 //                                              are not affected by this and must always be NOTHROW.)
 //
-// static element_t Null()                      Return the Null sentinal value.  May be inherited from
+// static element_t Null()                      Return the Null sentinel value.  May be inherited from
 //                                              default traits if it can be assigned from 0.
-// static element_t Deleted()                   Return the Deleted sentinal value.  May be inherited from the
+// static element_t Deleted()                   Return the Deleted sentinel value.  May be inherited from the
 //                                              default traits if it can be assigned from -1.
-// static const bool IsNull(const ELEMENT &e)   Compare element with Null sentinal value. May be inherited from
+// static const bool IsNull(const ELEMENT &e)   Compare element with Null sentinel value. May be inherited from
 //                                              default traits if it can be assigned from 0.
-// static const bool IsDeleted(const ELEMENT &e) Compare element with Deleted sentinal value. May be inherited from the
+// static const bool IsDeleted(const ELEMENT &e) Compare element with Deleted sentinel value. May be inherited from the
 //                                              default traits if it can be assigned from -1.
+// static bool ShouldDelete(const ELEMENT &e)   Called in addition to IsDeleted() when s_supports_autoremove is true, see more
+//                                              information there.
 //
 // static void OnDestructPerEntryCleanupAction(ELEMENT& e) Called on every element when in hashtable destructor.
 //                                              s_DestructPerEntryCleanupAction must be set to true if implemented.
+// static void OnRemovePerEntryCleanupAction(ELEMENT& e) Called when an element is removed from the hashtable, including when
+//                                              the hashtable is destructed. Set s_RemovePerEntryCleanupAction to true for
+//                                              automatic cleanup. Update does not invoke this action.
 //
 // s_growth_factor_numerator
 // s_growth_factor_denominator                  Factor to grow allocation (numerator/denominator).
 //                                              Typically inherited from default traits (3/2)
 //
 // s_density_factor_numerator
-// s_density_factor_denominator                 Maxium occupied density of table before growth
+// s_density_factor_denominator                 Maximum occupied density of table before growth
 //                                              occurs (num/denom).  Typically inherited (3/4).
 //
 // s_minimum_allocation                         Minimum table allocation count (size on first growth.)  It is
@@ -92,7 +99,19 @@
 //                                              in that there may be more copies of the template instantiated through
 //                                              the system as different variants are used.
 //
+// s_supports_autoremove                        When autoremove is supported, ShouldDelete() is called in addition to
+//                                              IsDeleted() in any situation that involves walking the table's elements, to
+//                                              determine if an element should be deleted. It enables the hash table to
+//                                              self-clean elements whose underlying lifetime may be controlled externally. Note
+//                                              that since some lookup/iteration operations are const (can operate on a
+//                                              "const SHash"), when autoremove is supported, any such const operation may still
+//                                              modify the hash table. If this is set to true, s_supports_remove must also be
+//                                              true.
+//
 // s_DestructPerEntryCleanupAction              Set to true if OnDestructPerEntryCleanupAction has non-empty implementation.
+// s_RemovePerEntryCleanupAction                Set to true if OnRemovePerEntryCleanupAction has non-empty implementation.
+//                                              Only one of s_DestructPerEntryCleanupAction and s_RemovePerEntryCleanupAction
+//                                              may be set to true.
 //
 // DefaultHashTraits provides defaults for seldomly customized values in traits classes.
 
@@ -115,14 +134,19 @@ class DefaultSHashTraits
     static const COUNT_T s_minimum_allocation = 7;
 
     static const bool s_supports_remove = true;
+    static const bool s_supports_autoremove = false;
 
     static ELEMENT Null() { return (ELEMENT)(TADDR)0; }
     static ELEMENT Deleted() { return (ELEMENT)(TADDR)-1; }
     static bool IsNull(const ELEMENT &e) { return e == (ELEMENT)(TADDR)0; }
     static bool IsDeleted(const ELEMENT &e) { return e == (ELEMENT)(TADDR)-1; }
+    static bool ShouldDelete(const ELEMENT &e) { return false; }
 
     static inline void OnDestructPerEntryCleanupAction(const ELEMENT& e) { /* Do nothing */ }
     static const bool s_DestructPerEntryCleanupAction = false;
+
+    static void OnRemovePerEntryCleanupAction(const ELEMENT &e) {}
+    static const bool s_RemovePerEntryCleanupAction = false;
 
     static const bool s_NoThrow = true;
 
@@ -137,11 +161,9 @@ class DefaultSHashTraits
 // Hash table class definition
 
 template <typename TRAITS>
-class EMPTY_BASES_DECL SHash : public TRAITS
+class EMPTY_BASES SHash : public TRAITS
                              , private noncopyable
 {
-    friend class VerifyLayoutsMD;  // verifies class layout doesn't accidentally change
-
   public:
     // explicitly declare local typedefs for these traits types, otherwise
     // the compiler may get confused
@@ -173,9 +195,19 @@ class EMPTY_BASES_DECL SHash : public TRAITS
 
     element_t Lookup(key_t key) const;
 
-    // Pointer-based flavor of Lookup (allows efficient access to tables of structures)
-
+    // Read-only pointer-based lookup. Use Update to modify an existing element.
+    // The returned pointer refers to table storage and is invalidated by reallocation,
+    // removal of the element, or clearing the table.
     const element_t* LookupPtr(key_t key) const;
+
+    // Update the first matching element in place, returning false if no match exists.
+    // The callback must preserve the key and sentinel state, and must not structurally modify the table.
+    // It must not retain a mutable pointer or reference to the element.
+    // Callers must synchronize updates with other access to the affected element.
+    // No removal cleanup is performed; the callback manages ownership of any replaced value.
+    // Callback exceptions propagate; changes already made are not rolled back.
+    template <typename Functor>
+    bool Update(key_t key, Functor &&functor);
 
     // Add an element to the hash table.  This will never replace an element; multiple
     // elements may be stored with the same key.
@@ -206,14 +238,18 @@ class EMPTY_BASES_DECL SHash : public TRAITS
 
     void RemovePtr(element_t * element);
 
-    // Remove all elements in the hashtable
+    // Remove all elements, optionally retaining the backing array for reuse.
 
-    void RemoveAll();
+    void RemoveAll(bool retainCapacity = false);
 
     // Begin and End pointers for iteration over entire table.
 
     Iterator Begin() const;
     Iterator End() const;
+
+#ifdef DACCESS_COMPILE
+    void EnumMemoryRegions();
+#endif
 
     // Begin and End pointers for iteration over all elements with a given key.
 
@@ -298,7 +334,7 @@ class EMPTY_BASES_DECL SHash : public TRAITS
     // it is perfectly fine for the element to be a duplicate - if so it
     // is added an additional time. Returns TRUE if a new empty spot was used;
     // FALSE if an existing deleted slot.
-    static BOOL Add(element_t *table, count_t tableSize, const element_t &element);
+    BOOL Add(element_t *table, count_t tableSize, const element_t &element);
 
     // Utility function to add a new element to the hash table, if no element with the same key
     // is already there. Otherwise, it will replace the existing element. This has the effect of
@@ -308,7 +344,7 @@ class EMPTY_BASES_DECL SHash : public TRAITS
     // Utility function to find the first element with the given key in
     // the hash table.
 
-    static const element_t* Lookup(PTR_element_t table, count_t tableSize, key_t key);
+    element_t* Lookup(PTR_element_t table, count_t tableSize, key_t key) const;
 
     // Utility function to remove the first element with the given key
     // in the hash table.
@@ -323,7 +359,7 @@ class EMPTY_BASES_DECL SHash : public TRAITS
 
   public:
 
-    class EMPTY_BASES_DECL Index
+    class EMPTY_BASES Index
         : public CheckedIteratorBase< SHash<TRAITS> >
     {
         friend class SHash;
@@ -334,13 +370,17 @@ class EMPTY_BASES_DECL SHash : public TRAITS
         // Some compilers won't compile the separate implementation in shash.inl
       protected:
 
+        SHash *m_hash;
         PTR_element_t m_table;
         count_t m_tableSize;
         count_t m_index;
 
-
+        // Iteration may modify the hash table if s_supports_autoremove is true. Since it typically does not modify the hash
+        // table, it should be possible to iterate over a "const SHash". So this takes a "const SHash *" and casts away the
+        // const to support autoremove.
         Index(const SHash *hash, BOOL begin)
-        : m_table(hash->m_table),
+        : m_hash(const_cast<SHash *>(hash)),
+            m_table(hash->m_table),
             m_tableSize(hash->m_tableSize),
             m_index(begin ? 0 : m_tableSize)
         {
@@ -358,9 +398,24 @@ class EMPTY_BASES_DECL SHash : public TRAITS
         {
             LIMITED_METHOD_CONTRACT;
 
-            if (m_index < m_tableSize)
-                if (TRAITS::IsNull(m_table[m_index]) || TRAITS::IsDeleted(m_table[m_index]))
-                    Next();
+            if (m_index >= m_tableSize)
+            {
+                return;
+            }
+
+            if (!TRAITS::IsNull(m_table[m_index]) && !TRAITS::IsDeleted(m_table[m_index]))
+            {
+                if (TRAITS::s_supports_autoremove && TRAITS::ShouldDelete(m_table[m_index]))
+                {
+                    m_hash->RemoveElement(m_table, m_tableSize, &m_table[m_index]);
+                }
+                else
+                {
+                    return;
+                }
+            }
+
+            Next();
         }
 
         void Next()
@@ -376,7 +431,16 @@ class EMPTY_BASES_DECL SHash : public TRAITS
                 if (m_index >= m_tableSize)
                     break;
                 if (!TRAITS::IsNull(m_table[m_index]) && !TRAITS::IsDeleted(m_table[m_index]))
-                    break;
+                {
+                    if (TRAITS::s_supports_autoremove && TRAITS::ShouldDelete(m_table[m_index]))
+                    {
+                        m_hash->RemoveElement(m_table, m_tableSize, &m_table[m_index]);
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
             }
         }
 
@@ -393,7 +457,7 @@ class EMPTY_BASES_DECL SHash : public TRAITS
         }
     };
 
-    class EMPTY_BASES_DECL Iterator : public Index, public Enumerator<const element_t, Iterator>
+    class EMPTY_BASES Iterator : public Index, public Enumerator<const element_t, Iterator>
     {
         friend class SHash;
 
@@ -410,7 +474,7 @@ class EMPTY_BASES_DECL SHash : public TRAITS
     // is artificially bumped to m_tableSize when the end of iteration is reached.
     // This allows a canonical End iterator to be used.
 
-    class EMPTY_BASES_DECL KeyIndex : public Index
+    class EMPTY_BASES KeyIndex : public Index
     {
         friend class SHash;
         friend class KeyIterator;
@@ -442,11 +506,26 @@ class EMPTY_BASES_DECL SHash : public TRAITS
                 m_increment = (hash % (this->m_tableSize-1)) + 1;
 
                 // Find first valid element
+
                 if (TRAITS::IsNull(this->m_table[this->m_index]))
+                {
                     this->m_index = this->m_tableSize;
-                else if (TRAITS::IsDeleted(this->m_table[this->m_index])
-                        || !TRAITS::Equals(m_key, TRAITS::GetKey(this->m_table[this->m_index])))
-                    Next();
+                    return;
+                }
+
+                if (!TRAITS::IsDeleted(this->m_table[this->m_index]))
+                {
+                    if (TRAITS::s_supports_autoremove && TRAITS::ShouldDelete(this->m_table[this->m_index]))
+                    {
+                        this->m_hash->RemoveElement(this->m_table, this->m_tableSize, &this->m_table[this->m_index]);
+                    }
+                    else if (TRAITS::Equals(m_key, TRAITS::GetKey(this->m_table[this->m_index])))
+                    {
+                        return;
+                    }
+                }
+
+                Next();
             }
         }
 
@@ -466,8 +545,18 @@ class EMPTY_BASES_DECL SHash : public TRAITS
                     break;
                 }
 
-                if (!TRAITS::IsDeleted(this->m_table[this->m_index])
-                        && TRAITS::Equals(m_key, TRAITS::GetKey(this->m_table[this->m_index])))
+                if (TRAITS::IsDeleted(this->m_table[this->m_index]))
+                {
+                    continue;
+                }
+
+                if (TRAITS::s_supports_autoremove && TRAITS::ShouldDelete(this->m_table[this->m_index]))
+                {
+                    this->m_hash->RemoveElement(this->m_table, this->m_tableSize, &this->m_table[this->m_index]);
+                    continue;
+                }
+
+                if (TRAITS::Equals(m_key, TRAITS::GetKey(this->m_table[this->m_index])))
                 {
                     break;
                 }
@@ -475,7 +564,7 @@ class EMPTY_BASES_DECL SHash : public TRAITS
         }
     };
 
-    class EMPTY_BASES_DECL KeyIterator : public KeyIndex, public Enumerator<const element_t, KeyIterator>
+    class EMPTY_BASES KeyIterator : public KeyIndex, public Enumerator<const element_t, KeyIterator>
     {
         friend class SHash;
 
@@ -514,11 +603,12 @@ class EMPTY_BASES_DECL SHash : public TRAITS
     count_t       m_tableCount;           // number of elements in table
     count_t       m_tableOccupied;        // number, includes deleted slots
     count_t       m_tableMax;             // maximum occupied count before reallocating
+    friend struct ::cdac_data<SHash<TRAITS>>;
 };  // class SHash
 
 // disables support for DAC marshaling. Useful for defining right-side only SHashes
 template <typename PARENT>
-class EMPTY_BASES_DECL NonDacAwareSHashTraits : public PARENT
+class EMPTY_BASES NonDacAwareSHashTraits : public PARENT
 {
 public:
     typedef typename PARENT::element_t element_t;
@@ -528,7 +618,7 @@ public:
 // disables support for removing elements - produces slightly faster implementation
 
 template <typename PARENT>
-class EMPTY_BASES_DECL NoRemoveSHashTraits : public PARENT
+class EMPTY_BASES NoRemoveSHashTraits : public PARENT
 {
 public:
     // explicitly declare local typedefs for these traits types, otherwise
@@ -545,7 +635,7 @@ public:
 // It relies on methods GetKey and Hash defined on ELEMENT
 
 template <typename ELEMENT, typename KEY>
-class EMPTY_BASES_DECL PtrSHashTraits : public DefaultSHashTraits<ELEMENT *>
+class EMPTY_BASES PtrSHashTraits : public DefaultSHashTraits<ELEMENT *>
 {
   public:
 
@@ -575,7 +665,7 @@ class EMPTY_BASES_DECL PtrSHashTraits : public DefaultSHashTraits<ELEMENT *>
 };
 
 template <typename ELEMENT, typename KEY>
-class EMPTY_BASES_DECL PtrSHash : public SHash< PtrSHashTraits<ELEMENT, KEY> >
+class EMPTY_BASES PtrSHash : public SHash< PtrSHashTraits<ELEMENT, KEY> >
 {
 };
 
@@ -594,7 +684,7 @@ public:
 // a class that automatically deletes data referenced by the pointers (so effectively it takes ownership of the data)
 // since I was too lazy to implement Remove() APIs properly, removing entries is disallowed
 template <typename ELEMENT, typename KEY>
-class EMPTY_BASES_DECL PtrSHashWithCleanup : public SHash< NoRemoveSHashTraits< PtrSHashWithCleanupTraits<ELEMENT, KEY> > >
+class EMPTY_BASES PtrSHashWithCleanup : public SHash< NoRemoveSHashTraits< PtrSHashWithCleanupTraits<ELEMENT, KEY> > >
 {
 };
 
@@ -613,7 +703,7 @@ private:
 
     static size_t _strcmp(WCHAR const *left, WCHAR const *right)
     {
-        return ::wcscmp(left, right);
+        return ::u16_strcmp(left, right);
     }
 
     static size_t _hash(CHAR const *str)
@@ -648,56 +738,11 @@ public:
     }
 };
 
-// Provides case-insensitive comparison and hashing functionality through static
-// and functor object methods. Can be instantiated with CHAR or WCHAR.
-template <typename CharT>
-struct CaseInsensitiveStringCompareHash
-{
-private:
-    typedef CharT const * str_t;
-
-    static size_t _strcmp(str_t left, str_t right)
-    {
-        return ::SString::_tstricmp(left, right);
-    }
-
-    static size_t _hash(CHAR const *str)
-    {
-        return HashiStringA(str);
-    }
-
-    static size_t _hash(WCHAR const *str)
-    {
-        return HashiString(str);
-    }
-
-public:
-    static size_t compare(str_t left, str_t right)
-    {
-        return _strcmp(left, right);
-    }
-
-    size_t operator()(str_t left, str_t right)
-    {
-        return compare(left, right);
-    }
-
-    static size_t hash(str_t str)
-    {
-        return _hash(str);
-    }
-
-    size_t operator()(str_t str)
-    {
-        return hash(str);
-    }
-};
-
 // StringSHashTraits is a traits class useful for string-keyed
 // pointer hash tables.
 
 template <typename ElementT, typename CharT, typename ComparerT = CaseSensitiveStringCompareHash<CharT> >
-class EMPTY_BASES_DECL StringSHashTraits : public PtrSHashTraits<ElementT, CharT const *>
+class EMPTY_BASES StringSHashTraits : public PtrSHashTraits<ElementT, CharT const *>
 {
 public:
     // explicitly declare local typedefs for these traits types, otherwise
@@ -741,7 +786,7 @@ struct StringHashElement
 };
 
 template <typename COMINTERFACE, typename CharT, typename ComparerT = CaseSensitiveStringCompareHash<CharT> >
-class EMPTY_BASES_DECL StringHashWithCleanupTraits : public StringSHashTraits<StringHashElement<COMINTERFACE, CharT>, CharT, ComparerT>
+class EMPTY_BASES StringHashWithCleanupTraits : public StringSHashTraits<StringHashElement<COMINTERFACE, CharT>, CharT, ComparerT>
 {
 public:
     void OnDestructPerEntryCleanupAction(StringHashElement<COMINTERFACE, CharT> * e)
@@ -760,22 +805,22 @@ public:
 };
 
 template <typename COMINTERFACE, typename CharT, typename ComparerT = CaseSensitiveStringCompareHash<CharT> >
-class EMPTY_BASES_DECL StringSHashWithCleanup : public SHash< StringHashWithCleanupTraits<COMINTERFACE, CharT, ComparerT> >
+class EMPTY_BASES StringSHashWithCleanup : public SHash< StringHashWithCleanupTraits<COMINTERFACE, CharT, ComparerT> >
 {
 };
 
 template <typename ELEMENT>
-class EMPTY_BASES_DECL StringSHash : public SHash< StringSHashTraits<ELEMENT, CHAR> >
+class EMPTY_BASES StringSHash : public SHash< StringSHashTraits<ELEMENT, CHAR> >
 {
 };
 
 template <typename ELEMENT>
-class EMPTY_BASES_DECL WStringSHash : public SHash< StringSHashTraits<ELEMENT, WCHAR> >
+class EMPTY_BASES WStringSHash : public SHash< StringSHashTraits<ELEMENT, WCHAR> >
 {
 };
 
 template <typename ELEMENT>
-class EMPTY_BASES_DECL SStringSHashTraits : public PtrSHashTraits<ELEMENT, SString>
+class EMPTY_BASES SStringSHashTraits : public PtrSHashTraits<ELEMENT, SString>
 {
   public:
     typedef PtrSHashTraits<ELEMENT, SString> PARENT;
@@ -798,12 +843,12 @@ class EMPTY_BASES_DECL SStringSHashTraits : public PtrSHashTraits<ELEMENT, SStri
 };
 
 template <typename ELEMENT>
-class EMPTY_BASES_DECL SStringSHash : public SHash< SStringSHashTraits<ELEMENT> >
+class EMPTY_BASES SStringSHash : public SHash< SStringSHashTraits<ELEMENT> >
 {
 };
 
 template <typename ELEMENT>
-class EMPTY_BASES_DECL SetSHashTraits : public DefaultSHashTraits<ELEMENT>
+class EMPTY_BASES SetSHashTraits : public DefaultSHashTraits<ELEMENT>
 {
 public:
     // explicitly declare local typedefs for these traits types, otherwise
@@ -831,7 +876,7 @@ public:
 };
 
 template <typename ELEMENT, typename TRAITS = NoRemoveSHashTraits< SetSHashTraits <ELEMENT> > >
-class EMPTY_BASES_DECL SetSHash : public SHash< TRAITS >
+class EMPTY_BASES SetSHash : public SHash< TRAITS >
 {
     typedef SHash<TRAITS> PARENT;
 
@@ -843,7 +888,7 @@ public:
 };
 
 template <typename ELEMENT>
-class EMPTY_BASES_DECL PtrSetSHashTraits : public SetSHashTraits<ELEMENT>
+class EMPTY_BASES PtrSetSHashTraits : public SetSHashTraits<ELEMENT>
 {
   public:
 
@@ -862,7 +907,7 @@ class EMPTY_BASES_DECL PtrSetSHashTraits : public SetSHashTraits<ELEMENT>
 };
 
 template <typename PARENT_TRAITS>
-class EMPTY_BASES_DECL DeleteElementsOnDestructSHashTraits : public PARENT_TRAITS
+class EMPTY_BASES DeleteElementsOnDestructSHashTraits : public PARENT_TRAITS
 {
 public:
     static inline void OnDestructPerEntryCleanupAction(typename PARENT_TRAITS::element_t e)
@@ -903,7 +948,7 @@ public:
 };
 
 template <typename KEY, typename VALUE>
-class EMPTY_BASES_DECL MapSHashTraits : public DefaultSHashTraits< KeyValuePair<KEY,VALUE> >
+class EMPTY_BASES MapSHashTraits : public DefaultSHashTraits< KeyValuePair<KEY,VALUE> >
 {
 public:
     // explicitly declare local typedefs for these traits types, otherwise
@@ -936,7 +981,7 @@ public:
 };
 
 template <typename KEY, typename VALUE, typename TRAITS = NoRemoveSHashTraits< MapSHashTraits <KEY, VALUE> > >
-class EMPTY_BASES_DECL MapSHash : public SHash< TRAITS >
+class EMPTY_BASES MapSHash : public SHash< TRAITS >
 {
     typedef SHash< TRAITS > PARENT;
 
@@ -958,7 +1003,7 @@ public:
 };
 
 template <typename KEY, typename VALUE>
-class EMPTY_BASES_DECL MapSHashWithRemove : public SHash< MapSHashTraits <KEY, VALUE> >
+class EMPTY_BASES MapSHashWithRemove : public SHash< MapSHashTraits <KEY, VALUE> >
 {
     typedef SHash< MapSHashTraits <KEY, VALUE> > PARENT;
 

@@ -4,6 +4,8 @@
 #include "createdump.h"
 #include "specialthreadinfo.h"
 
+extern int g_readProcessMemoryResult;
+
 //
 // Write the core dump file
 //
@@ -14,10 +16,15 @@ DumpWriter::WriteDump()
 
     BuildThreadLoadCommands();
 
+    BuildProcessMetadataNote();
+
     uint64_t fileOffset = 0;
     if (!WriteHeader(&fileOffset)) {
         return false;
     }
+
+    m_processMetadataNote.offset = fileOffset;
+    fileOffset += m_processMetadataNote.size;
 
     TRACE("Writing %zd thread commands to core file\n", m_threadLoadCommands.size());
 
@@ -52,11 +59,19 @@ DumpWriter::WriteDump()
         }
     }
 
+    // Write the process metadata note as the final load command
+    if (!WriteData(&m_processMetadataNote, m_processMetadataNote.cmdsize)) {
+        return false;
+    }
+    if (!WriteData(m_processMetadata.data(), m_processMetadata.size())) {
+        return false;
+    }
+
     // Write any segment alignment required to the core file
     if (alignment > 0)
     {
         if (alignment > sizeof(m_tempBuffer)) {
-            fprintf(stderr, "Segment alignment %llu > sizeof(m_tempBuffer)\n", alignment);
+            printf_error("Internal error: segment alignment %" PRIu64 " > sizeof(m_tempBuffer)\n", alignment);
             return false;
         }
         memset(m_tempBuffer, 0, alignment);
@@ -86,30 +101,54 @@ ConvertFlags(uint32_t flags)
 }
 
 void
+DumpWriter::BuildProcessMetadataNote()
+{
+    // LLDB specifies the "process metadata" LC_NOTE as compact JSON whose
+    // thread entries correspond by position to the LC_THREAD commands.
+    m_processMetadata = "{\"threads\":[";
+    bool first = true;
+    for (const ThreadInfo* thread : m_crashInfo.Threads())
+    {
+        if (!first)
+        {
+            m_processMetadata.push_back(',');
+        }
+        first = false;
+        m_processMetadata.append("{\"thread_id\":");
+        m_processMetadata.append(std::to_string(thread->Tid()));
+        m_processMetadata.push_back('}');
+    }
+    m_processMetadata.append("]}");
+
+    m_processMetadataNote.cmd = LC_NOTE;
+    m_processMetadataNote.cmdsize = sizeof(note_command);
+    static_assert(sizeof(m_processMetadataNote.data_owner) == sizeof("process metadata") - 1);
+    memcpy(m_processMetadataNote.data_owner, "process metadata", sizeof(m_processMetadataNote.data_owner));
+    m_processMetadataNote.size = m_processMetadata.size();
+}
+
+void
 DumpWriter::BuildSegmentLoadCommands()
 {
     for (const MemoryRegion& memoryRegion : m_crashInfo.MemoryRegions())
     {
-        if (memoryRegion.IsBackedByMemory())
-        {
-            uint64_t size = memoryRegion.Size();
-            uint32_t prot = ConvertFlags(memoryRegion.Permissions());
+        uint64_t size = memoryRegion.Size();
+        int32_t prot = ConvertFlags(memoryRegion.Permissions());
 
-            segment_command_64 segment = {
-                LC_SEGMENT_64,                  // uint32_t cmd;
-                sizeof(segment_command_64),     // uint32_t cmdsize;
-                {0},                            // char segname[16];
-                memoryRegion.StartAddress(),    // uint64_t vmaddr;   
-                size,                           // uint64_t vmsize;
-                0,                              // uint64_t fileoff;
-                size,                           // uint64_t filesize;
-                prot,                           // uint32_t maxprot;
-                prot,                           // uint32_t initprot;
-                0,                              // uint32_t nsects;
-                0                               // uint32_t flags;
-            };
-            m_segmentLoadCommands.push_back(segment);
-        }
+        segment_command_64 segment = {
+            LC_SEGMENT_64,                  // uint32_t cmd;
+            sizeof(segment_command_64),     // uint32_t cmdsize;
+            {0},                            // char segname[16];
+            memoryRegion.StartAddress(),    // uint64_t vmaddr;   
+            size,                           // uint64_t vmsize;
+            0,                              // uint64_t fileoff;
+            size,                           // uint64_t filesize;
+            prot,                           // uint32_t maxprot;
+            prot,                           // uint32_t initprot;
+            0,                              // uint32_t nsects;
+            0                               // uint32_t flags;
+        };
+        m_segmentLoadCommands.push_back(segment);
     }
 
     // Add special memory region containing the process and thread info
@@ -191,6 +230,9 @@ DumpWriter::WriteHeader(uint64_t* pFileOffset)
         header.sizeofcmds += segment.cmdsize;
     }
 
+    header.ncmds++;
+    header.sizeofcmds += m_processMetadataNote.cmdsize;
+
     *pFileOffset = sizeof(mach_header_64) + header.sizeofcmds;
     
     TRACE("Macho header: magic %08x cputype %08x cpusubtype %08x filetype %08x ncmds %08x sizeofcmds %08x flags %08x reserved %08x\n",
@@ -210,7 +252,7 @@ DumpWriter::WriteHeader(uint64_t* pFileOffset)
 bool
 DumpWriter::WriteSegments()
 {
-    TRACE("Writing %" PRIu64 " memory regions to core file\n", m_segmentLoadCommands.size());
+    TRACE("Writing %zu memory regions to core file\n", m_segmentLoadCommands.size());
 
     // Read from target process and write memory regions to core
     uint64_t total = 0;
@@ -230,13 +272,19 @@ DumpWriter::WriteSegments()
             (segment.initprot & VM_PROT_EXECUTE) ? 'x' : '-',
             segment.initprot);
 
-        if (address == SpecialThreadInfoAddress)
+        if (address == SpecialDiagInfoAddress)
+        {
+            if (!WriteDiagInfo(size)) {
+                return false;
+            }
+        }
+        else if (address == SpecialThreadInfoAddress)
         {
             // Write the header
             SpecialThreadInfoHeader header = {
                 {SPECIAL_THREADINFO_SIGNATURE},
-                m_crashInfo.Pid(),
-                m_crashInfo.Threads().size()
+                static_cast<uint32_t>(m_crashInfo.Pid()),
+                static_cast<uint32_t>(m_crashInfo.Threads().size())
             };
 
             if (!WriteData(&header, sizeof(header))) {
@@ -247,7 +295,7 @@ DumpWriter::WriteSegments()
             for (const ThreadInfo* thread : m_crashInfo.Threads())
             {
                 SpecialThreadInfoEntry entry = {
-                    thread->Tid(),
+                    static_cast<uint32_t>(thread->Tid()),
                     thread->GetStackPointer()
                 };
 
@@ -263,14 +311,14 @@ DumpWriter::WriteSegments()
                 size_t bytesToRead = std::min(size, sizeof(m_tempBuffer));
                 size_t read = 0;
 
-                if (!m_crashInfo.ReadProcessMemory((void*)address, m_tempBuffer, bytesToRead, &read)) {
-                    fprintf(stderr, "ReadProcessMemory(%" PRIA PRIx64 ", %08zx) FAILED\n", address, bytesToRead);
+                if (!m_crashInfo.ReadProcessMemory(address, m_tempBuffer, bytesToRead, &read)) {
+                    printf_error("Error reading memory at %" PRIA PRIx64 " size %08zx FAILED %s (%x)\n", address, bytesToRead, mach_error_string(g_readProcessMemoryResult), g_readProcessMemoryResult);
                     return false;
                 }
 
                 // This can happen if the target process dies before createdump is finished
                 if (read == 0) {
-                    fprintf(stderr, "ReadProcessMemory(%" PRIA PRIx64 ", %08zx) returned 0 bytes read\n", address, bytesToRead);
+                    printf_error("Error reading memory at %" PRIA PRIx64 " size %08zx returned 0 bytes read: %s (%x)\n", address, bytesToRead, mach_error_string(g_readProcessMemoryResult), g_readProcessMemoryResult);
                     return false;
                 }
 
@@ -284,6 +332,6 @@ DumpWriter::WriteSegments()
         }
     }
 
-    printf("Written %" PRId64 " bytes (%" PRId64 " pages) to core file\n", total, total / PAGE_SIZE);
+    printf_status("Written %" PRId64 " bytes (%" PRId64 " pages) to core file\n", total, total / PAGE_SIZE);
     return true;
 }

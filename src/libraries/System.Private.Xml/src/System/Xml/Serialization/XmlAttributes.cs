@@ -1,8 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Reflection;
 using System.ComponentModel;
+using System.Reflection;
 
 namespace System.Xml.Serialization
 {
@@ -76,16 +76,34 @@ namespace System.Xml.Serialization
         /// </devdoc>
         public XmlAttributes(ICustomAttributeProvider provider)
         {
+            ArgumentNullException.ThrowIfNull(provider);
             object[] attrs = provider.GetCustomAttributes(false);
 
             // most generic <any/> matches everything
             XmlAnyElementAttribute? wildcard = null;
             for (int i = 0; i < attrs.Length; i++)
             {
-                if (attrs[i] is XmlIgnoreAttribute || attrs[i] is ObsoleteAttribute)
+                if (attrs[i] is XmlIgnoreAttribute)
                 {
                     _xmlIgnore = true;
                     break;
+                }
+                else if (attrs[i] is ObsoleteAttribute obsoleteAttr)
+                {
+                    if (!System.Xml.LocalAppContextSwitches.IgnoreObsoleteMembers)
+                    {
+                        if (obsoleteAttr.IsError)
+                        {
+                            throw new InvalidOperationException(SR.Format(SR.XmlObsoleteIsError, obsoleteAttr.Message));
+                        }
+                        // If IsError is false, continue processing normally (don't ignore)
+                    }
+                    else
+                    {
+                        // Old behavior: ignore obsolete members when switch is enabled
+                        _xmlIgnore = true;
+                        break;
+                    }
                 }
                 else if (attrs[i] is XmlElementAttribute)
                 {
@@ -95,10 +113,9 @@ namespace System.Xml.Serialization
                 {
                     _xmlArrayItems.Add((XmlArrayItemAttribute)attrs[i]);
                 }
-                else if (attrs[i] is XmlAnyElementAttribute)
+                else if (attrs[i] is XmlAnyElementAttribute any)
                 {
-                    XmlAnyElementAttribute any = (XmlAnyElementAttribute)attrs[i];
-                    if ((any.Name == null || any.Name.Length == 0) && any.GetNamespaceSpecified() && any.Namespace == null)
+                    if (string.IsNullOrEmpty(any.Name) && any.GetNamespaceSpecified() && any.Namespace == null)
                     {
                         // ignore duplicate wildcards
                         wildcard = any;

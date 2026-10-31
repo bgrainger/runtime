@@ -2,26 +2,50 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 #include "pal_config.h"
+#include "pal_errno.h"
 #include "pal_time.h"
 #include "pal_utilities.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <utime.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/time.h>
 #include <sys/resource.h>
-#if HAVE_CLOCK_GETTIME_NSEC_NP
-#include <time.h>
-#endif
+#include <minipal/time.h>
 
 enum
 {
-    SecondsToMicroSeconds = 1000000,   // 10^6
-    SecondsToNanoSeconds = 1000000000, // 10^9
-    MicroSecondsToNanoSeconds = 1000   // 10^3
+    MicroSecondsToNanoSeconds = 1000,   // 10^3
+    MillisecondsPerSecond = 1000,
+    MillisecondsToNanoSeconds = 1000000,
+    SecondsToNanoSeconds = 1000000000,  // 10^9
+    SecondsToTicks = 10000000,          // 10^7
+    TicksToNanoSeconds = 100,           // 10^2
 };
+
+int32_t SystemNative_ThreadSleep(int32_t timeoutMilliseconds)
+{
+    assert(timeoutMilliseconds >= 0);
+
+    struct timespec requested;
+    requested.tv_sec = timeoutMilliseconds / MillisecondsPerSecond;
+    requested.tv_nsec = (timeoutMilliseconds % MillisecondsPerSecond) * MillisecondsToNanoSeconds;
+
+    struct timespec remaining = {0};
+    while (nanosleep(&requested, &remaining) != 0)
+    {
+        if (errno != EINTR)
+        {
+            return ConvertErrorPlatformToPal(errno);
+        }
+        requested = remaining;
+    }
+
+    return Error_SUCCESS;
+}
 
 int32_t SystemNative_UTimensat(const char* path, TimeSpec* times)
 {
@@ -33,7 +57,7 @@ int32_t SystemNative_UTimensat(const char* path, TimeSpec* times)
 
     updatedTimes[1].tv_sec = (time_t)times[1].tv_sec;
     updatedTimes[1].tv_nsec = (long)times[1].tv_nsec;
-    while (CheckInterrupted(result = utimensat(AT_FDCWD, path, updatedTimes, AT_SYMLINK_NOFOLLOW)));
+    while (CheckInterrupted(result = utimensat((int)AT_FDCWD, path, updatedTimes, AT_SYMLINK_NOFOLLOW)));
 #else
     struct timeval updatedTimes[2];
     updatedTimes[0].tv_sec = (long)times[0].tv_sec;
@@ -53,23 +77,69 @@ int32_t SystemNative_UTimensat(const char* path, TimeSpec* times)
     return result;
 }
 
-uint64_t SystemNative_GetTimestamp()
+int32_t SystemNative_FUTimens(intptr_t fd, TimeSpec* times)
 {
-#if HAVE_CLOCK_GETTIME_NSEC_NP
-    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    int32_t result;
+
+#if HAVE_FUTIMENS
+    struct timespec updatedTimes[2];
+    updatedTimes[0].tv_sec = (time_t)times[0].tv_sec;
+    updatedTimes[0].tv_nsec = (long)times[0].tv_nsec;
+    updatedTimes[1].tv_sec = (time_t)times[1].tv_sec;
+    updatedTimes[1].tv_nsec = (long)times[1].tv_nsec;
+
+    while (CheckInterrupted(result = futimens(ToFileDescriptor(fd), updatedTimes)));
 #else
+    // Fallback on unsupported platforms (e.g. iOS, tvOS, watchOS)
+    // to futimes (lower precision)
+    struct timeval updatedTimes[2];
+    updatedTimes[0].tv_sec = (long)times[0].tv_sec;
+    updatedTimes[0].tv_usec = (int)times[0].tv_nsec / 1000;
+    updatedTimes[1].tv_sec = (long)times[1].tv_sec;
+    updatedTimes[1].tv_usec = (int)times[1].tv_nsec / 1000;
+
+    while (CheckInterrupted(result = futimes(ToFileDescriptor(fd), updatedTimes)));
+#endif
+
+    return result;
+}
+
+int64_t SystemNative_GetTimestamp(void)
+{
+    return minipal_hires_ticks();
+}
+
+int64_t SystemNative_GetLowResolutionTimestamp(void)
+{
+    return minipal_lowres_ticks();
+}
+
+int64_t SystemNative_GetBootTimeTicks(void)
+{
+#if defined(TARGET_LINUX)
     struct timespec ts;
 
-    int result = clock_gettime(CLOCK_MONOTONIC, &ts);
-    assert(result == 0); // only possible errors are if MONOTONIC isn't supported or &ts is an invalid address
+    int result = clock_gettime(CLOCK_BOOTTIME, &ts);
+    assert(result == 0); // only possible errors are if the given clockId isn't supported or &ts is an invalid address
     (void)result; // suppress unused parameter warning in release builds
 
-    return ((uint64_t)(ts.tv_sec) * SecondsToNanoSeconds) + (uint64_t)(ts.tv_nsec);
+    int64_t sinceBootTicks = ((int64_t)ts.tv_sec * SecondsToTicks) + (ts.tv_nsec / TicksToNanoSeconds);
+
+    result = clock_gettime(CLOCK_REALTIME_COARSE, &ts);
+    assert(result == 0);
+
+    int64_t sinceEpochTicks = ((int64_t)ts.tv_sec * SecondsToTicks) + (ts.tv_nsec / TicksToNanoSeconds);
+    const int64_t UnixEpochTicks = 621355968000000000;
+
+    return UnixEpochTicks + sinceEpochTicks - sinceBootTicks;
+#else
+    return -1;
 #endif
 }
 
-int32_t SystemNative_GetCpuUtilization(ProcessCpuInformation* previousCpuInfo)
+double SystemNative_GetCpuUtilization(ProcessCpuInformation* previousCpuInfo)
 {
+#ifndef HOST_WASI
     uint64_t kernelTime = 0;
     uint64_t userTime = 0;
 
@@ -82,14 +152,14 @@ int32_t SystemNative_GetCpuUtilization(ProcessCpuInformation* previousCpuInfo)
     else
     {
         kernelTime =
-            ((uint64_t)(resUsage.ru_stime.tv_sec) * SecondsToNanoSeconds) + 
+            ((uint64_t)(resUsage.ru_stime.tv_sec) * SecondsToNanoSeconds) +
             ((uint64_t)(resUsage.ru_stime.tv_usec) * MicroSecondsToNanoSeconds);
         userTime =
             ((uint64_t)(resUsage.ru_utime.tv_sec) * SecondsToNanoSeconds) +
             ((uint64_t)(resUsage.ru_utime.tv_usec) * MicroSecondsToNanoSeconds);
     }
 
-    uint64_t currentTime = SystemNative_GetTimestamp();
+    uint64_t currentTime = (uint64_t)minipal_hires_ticks();
 
     uint64_t lastRecordedCurrentTime = previousCpuInfo->lastRecordedCurrentTime;
     uint64_t lastRecordedKernelTime = previousCpuInfo->lastRecordedKernelTime;
@@ -107,10 +177,10 @@ int32_t SystemNative_GetCpuUtilization(ProcessCpuInformation* previousCpuInfo)
         cpuBusyTime = (userTime - lastRecordedUserTime) + (kernelTime - lastRecordedKernelTime);
     }
 
-    int32_t cpuUtilization = 0;
+    double cpuUtilization = 0.0;
     if (cpuTotalTime > 0 && cpuBusyTime > 0)
     {
-        cpuUtilization = (int32_t)(cpuBusyTime * 100 / cpuTotalTime);
+        cpuUtilization = ((double)cpuBusyTime * 100.0 / (double)cpuTotalTime);
     }
 
     previousCpuInfo->lastRecordedCurrentTime = currentTime;
@@ -118,4 +188,9 @@ int32_t SystemNative_GetCpuUtilization(ProcessCpuInformation* previousCpuInfo)
     previousCpuInfo->lastRecordedKernelTime = kernelTime;
 
     return cpuUtilization;
+#else
+    (void)previousCpuInfo; // unused
+    assert(false);
+    return 0;
+#endif
 }

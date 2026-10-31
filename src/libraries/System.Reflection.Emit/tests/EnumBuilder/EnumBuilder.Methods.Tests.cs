@@ -71,7 +71,7 @@ namespace System.Reflection.Emit.Tests
             Assert.Equal(enumBuilder.AsType(), literal.FieldType);
 
             Type createdEnum = useCreateTypeInfo ?
-                enumBuilder.CreateTypeInfo().AsType() :
+                enumBuilder.CreateType() :
                 enumBuilder.CreateType();
 
             FieldInfo createdLiteral = createdEnum.GetField("FieldOne");
@@ -234,7 +234,7 @@ namespace System.Reflection.Emit.Tests
         public void SetCustomAttribute_ConstructorInfo_ByteArray()
         {
             EnumBuilder enumBuilder = Helpers.DynamicEnum(TypeAttributes.Public, typeof(int));
-            enumBuilder.CreateTypeInfo().AsType();
+            enumBuilder.CreateType();
 
             ConstructorInfo attributeConstructor = typeof(BoolAttribute).GetConstructor(new Type[] { typeof(bool) });
             enumBuilder.SetCustomAttribute(attributeConstructor, new byte[] { 01, 00, 01 });
@@ -248,7 +248,7 @@ namespace System.Reflection.Emit.Tests
         public void SetCustomAttribute_CustomAttributeBuilder()
         {
             EnumBuilder enumBuilder = Helpers.DynamicEnum(TypeAttributes.Public, typeof(int));
-            enumBuilder.CreateTypeInfo().AsType();
+            enumBuilder.CreateType();
 
             ConstructorInfo attributeConstructor = typeof(BoolAttribute).GetConstructor(new Type[] { typeof(bool) });
             CustomAttributeBuilder attributeBuilder = new CustomAttributeBuilder(attributeConstructor, new object[] { true });
@@ -256,6 +256,26 @@ namespace System.Reflection.Emit.Tests
 
             object[] objVals = enumBuilder.GetCustomAttributes(true).ToArray();
             Assert.Equal(new BoolAttribute(true), objVals[0]);
+        }
+
+        [Fact]
+        public void EnumNotCreated_UsedByCreatedType_ThrowsWithHelpfulMessage()
+        {
+            EnumBuilder enumBuilder = Helpers.DynamicEnum(TypeAttributes.Public, typeof(int));
+            TypeBuilder type = ((ModuleBuilder)enumBuilder.Module).DefineType("TestType", TypeAttributes.Public);
+
+            MethodBuilder method = type.DefineMethod("Method", MethodAttributes.Public | MethodAttributes.Static, typeof(object), Type.EmptyTypes);
+            ILGenerator ilGenerator = method.GetILGenerator();
+            ilGenerator.Emit(OpCodes.Ldc_I4_0);
+            ilGenerator.Emit(OpCodes.Box, enumBuilder);
+            ilGenerator.Emit(OpCodes.Ret);
+
+            Type createdType = type.CreateType();
+
+            TargetInvocationException ex = Assert.Throws<TargetInvocationException>(() => createdType.GetMethod("Method").Invoke(null, null));
+            TypeLoadException typeLoadException = Assert.IsType<TypeLoadException>(ex.InnerException);
+            if (!PlatformDetection.IsMonoRuntime)
+                Assert.Contains("CreateType", typeLoadException.Message);
         }
 
         public class BoolAttribute : Attribute

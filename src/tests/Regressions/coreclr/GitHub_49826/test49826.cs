@@ -5,10 +5,14 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Xunit;
+using TestLibrary;
 
-class Program
+public class Program
 {
-    static int Main()
+    [ActiveIssue("needs triage", typeof(PlatformDetection), nameof(PlatformDetection.IsSimulator))]
+    [Fact]
+    public static int TestEntryPoint()
     {
         JsonSerializerOptions options = new JsonSerializerOptions();
         JsonConverter converter = options.GetConverter(typeof(DateTime));

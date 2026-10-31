@@ -21,9 +21,12 @@ SHash<TRAITS>::SHash()
     LIMITED_METHOD_CONTRACT;
 
 #ifndef __GNUC__ // these crash GCC
-    static_assert_no_msg(SHash<TRAITS>::s_growth_factor_numerator > SHash<TRAITS>::s_growth_factor_denominator);
-    static_assert_no_msg(SHash<TRAITS>::s_density_factor_numerator < SHash<TRAITS>::s_density_factor_denominator);
+    static_assert(SHash<TRAITS>::s_growth_factor_numerator > SHash<TRAITS>::s_growth_factor_denominator);
+    static_assert(SHash<TRAITS>::s_density_factor_numerator < SHash<TRAITS>::s_density_factor_denominator);
 #endif
+
+    static_assert(TRAITS::s_supports_remove || !TRAITS::s_supports_autoremove);
+    static_assert(!TRAITS::s_DestructPerEntryCleanupAction || !TRAITS::s_RemovePerEntryCleanupAction);
 }
 
 template <typename TRAITS>
@@ -38,9 +41,26 @@ SHash<TRAITS>::~SHash()
             TRAITS::OnDestructPerEntryCleanupAction(*i);
         }
     }
+    else if (TRAITS::s_RemovePerEntryCleanupAction)
+    {
+        for (Iterator i = Begin(); i != End(); i++)
+        {
+            TRAITS::OnRemovePerEntryCleanupAction(*i);
+        }
+    }
 
     delete [] m_table;
 }
+
+#ifdef DACCESS_COMPILE
+template <typename TRAITS>
+void SHash<TRAITS>::EnumMemoryRegions()
+{
+    SUPPORTS_DAC;
+    if (m_table != nullptr)
+        DacEnumMemoryRegion(dac_cast<TADDR>(m_table), m_tableSize * sizeof(element_t));
+}
+#endif
 
 template <typename TRAITS>
 typename SHash<TRAITS>::count_t SHash<TRAITS>::GetCount() const
@@ -61,65 +81,83 @@ typename SHash<TRAITS>::count_t SHash<TRAITS>::GetCapacity() const
 template <typename TRAITS>
 typename SHash<TRAITS>::element_t SHash<TRAITS>::Lookup(key_t key) const
 {
-    CONTRACT(element_t)
+    CONTRACTL
     {
         NOTHROW_UNLESS_TRAITS_THROWS;
         GC_NOTRIGGER;
         INSTANCE_CHECK;
-        POSTCONDITION(TRAITS::IsNull(RETVAL) || TRAITS::Equals(key, TRAITS::GetKey(RETVAL)));
         SUPPORTS_DAC_WRAPPER;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     const element_t *pRet = Lookup(m_table, m_tableSize, key);
-    RETURN ((pRet != NULL) ? (*pRet) : TRAITS::Null());
+    return (pRet != NULL) ? (*pRet) : TRAITS::Null();
 }
 
 template <typename TRAITS>
 const typename SHash<TRAITS>::element_t * SHash<TRAITS>::LookupPtr(key_t key) const
 {
-    CONTRACT(const element_t *)
+    CONTRACTL
     {
         NOTHROW_UNLESS_TRAITS_THROWS;
         GC_NOTRIGGER;
         INSTANCE_CHECK;
-        POSTCONDITION(RETVAL == NULL || TRAITS::Equals(key, TRAITS::GetKey(*RETVAL)));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
-    RETURN Lookup(m_table, m_tableSize, key);
+    return Lookup(m_table, m_tableSize, key);
+}
+
+template <typename TRAITS>
+template <typename Functor>
+bool SHash<TRAITS>::Update(key_t key, Functor &&functor)
+{
+    WRAPPER_NO_CONTRACT;
+
+    element_t *element = Lookup(m_table, m_tableSize, key);
+    if (element == nullptr)
+        return false;
+
+#ifdef _DEBUG
+    PTR_element_t table = m_table;
+    count_t tableSize = m_tableSize;
+    count_t count = m_tableCount;
+#endif // _DEBUG
+
+    functor(*element);
+
+    _ASSERTE(m_table == table && m_tableSize == tableSize && m_tableCount == count);
+    _ASSERTE(!TRAITS::IsNull(*element) && !TRAITS::IsDeleted(*element));
+    _ASSERTE(TRAITS::Equals(TRAITS::GetKey(*element), key));
+    return true;
 }
 
 template <typename TRAITS>
 void SHash<TRAITS>::Add(const element_t & element)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         THROWS;
         GC_NOTRIGGER;
         INSTANCE_CHECK;
-        POSTCONDITION(TRAITS::Equals(TRAITS::GetKey(element), TRAITS::GetKey(*LookupPtr(TRAITS::GetKey(element)))));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     CheckGrowth();
 
     Add_GrowthChecked(element);
-
-    RETURN;
 }
 
 template <typename TRAITS>
 BOOL SHash<TRAITS>::AddNoThrow(const element_t & element)
 {
-    CONTRACT(BOOL)
+    CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
         INSTANCE_CHECK;
-        POSTCONDITION(TRAITS::Equals(TRAITS::GetKey(element), TRAITS::GetKey(*LookupPtr(TRAITS::GetKey(element)))));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     static_assert(TRAITS::s_NoThrow, "This SHash does not support NOTHROW.");
 
@@ -127,60 +165,53 @@ BOOL SHash<TRAITS>::AddNoThrow(const element_t & element)
     if (haveSpace)
         Add_GrowthChecked(element);
 
-    RETURN haveSpace;
+    return haveSpace;
 }
 
 template <typename TRAITS>
 void SHash<TRAITS>::Add_GrowthChecked(const element_t & element)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         NOTHROW_UNLESS_TRAITS_THROWS;
         GC_NOTRIGGER;
         INSTANCE_CHECK;
-        POSTCONDITION(TRAITS::Equals(TRAITS::GetKey(element), TRAITS::GetKey(*LookupPtr(TRAITS::GetKey(element)))));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     if (Add(m_table, m_tableSize, element))
         m_tableOccupied++;
     m_tableCount++;
-
-    RETURN;
 }
 
 template <typename TRAITS>
 void SHash<TRAITS>::AddOrReplace(const element_t &element)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         THROWS;
         GC_NOTRIGGER;
         INSTANCE_CHECK;
         static_assert(!TRAITS::s_supports_remove, "SHash::AddOrReplace is not implemented for SHash with support for remove operations.");
-        POSTCONDITION(TRAITS::Equals(TRAITS::GetKey(element), TRAITS::GetKey(*LookupPtr(TRAITS::GetKey(element)))));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     CheckGrowth();
 
     AddOrReplace(m_table, m_tableSize, element);
-
-    RETURN;
 }
 
 template <typename TRAITS>
 BOOL SHash<TRAITS>::AddOrReplaceNoThrow(const element_t &element)
 {
-     CONTRACT(BOOL)
+     CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
         INSTANCE_CHECK;
         static_assert(!TRAITS::s_supports_remove, "SHash::AddOrReplaceNoThrow is not implemented for SHash with support for remove operations.");
-        POSTCONDITION(TRAITS::Equals(TRAITS::GetKey(element), TRAITS::GetKey(*LookupPtr(TRAITS::GetKey(element)))));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     static_assert(TRAITS::s_NoThrow, "This SHash does not support NOTHROW.");
 
@@ -188,13 +219,13 @@ BOOL SHash<TRAITS>::AddOrReplaceNoThrow(const element_t &element)
     if (haveSpace)
         AddOrReplace(m_table, m_tableSize, element);
 
-    RETURN haveSpace;
+    return haveSpace;
 }
 
 template <typename TRAITS>
 void SHash<TRAITS>::Remove(key_t key)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         NOTHROW_UNLESS_TRAITS_THROWS;
         GC_NOTRIGGER;
@@ -202,17 +233,15 @@ void SHash<TRAITS>::Remove(key_t key)
         static_assert(TRAITS::s_supports_remove, "This SHash does not support remove operations.");
         PRECONDITION(!(TRAITS::IsNull(Lookup(key))));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     Remove(m_table, m_tableSize, key);
-
-    RETURN;
 }
 
 template <typename TRAITS>
 void SHash<TRAITS>::Remove(Iterator& i)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
@@ -221,17 +250,15 @@ void SHash<TRAITS>::Remove(Iterator& i)
         PRECONDITION(!(TRAITS::IsNull(*i)));
         PRECONDITION(!(TRAITS::IsDeleted(*i)));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     RemoveElement(m_table, m_tableSize, (element_t*)&(*i));
-
-    RETURN;
 }
 
 template <typename TRAITS>
 void SHash<TRAITS>::Remove(KeyIterator& i)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
@@ -240,17 +267,15 @@ void SHash<TRAITS>::Remove(KeyIterator& i)
         PRECONDITION(!(TRAITS::IsNull(*i)));
         PRECONDITION(!(TRAITS::IsDeleted(*i)));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     RemoveElement(m_table, m_tableSize, (element_t*)&(*i));
-
-    RETURN;
 }
 
 template <typename TRAITS>
 void SHash<TRAITS>::RemovePtr(element_t * p)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
@@ -259,41 +284,44 @@ void SHash<TRAITS>::RemovePtr(element_t * p)
         PRECONDITION(!(TRAITS::IsNull(*p)));
         PRECONDITION(!(TRAITS::IsDeleted(*p)));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     RemoveElement(m_table, m_tableSize, p);
-
-    RETURN;
 }
 
 template <typename TRAITS>
-void SHash<TRAITS>::RemoveAll()
+void SHash<TRAITS>::RemoveAll(bool retainCapacity)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
         INSTANCE_CHECK;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
-    if (TRAITS::s_DestructPerEntryCleanupAction)
+    if (TRAITS::s_RemovePerEntryCleanupAction)
     {
         for (Iterator i = Begin(); i != End(); i++)
         {
-            TRAITS::OnDestructPerEntryCleanupAction(*i);
+            TRAITS::OnRemovePerEntryCleanupAction(*i);
         }
     }
 
-    delete [] m_table;
-
-    m_table = NULL;
-    m_tableSize = 0;
+    if (retainCapacity)
+    {
+        for (count_t i = 0; i < m_tableSize; i++)
+            m_table[i] = TRAITS::Null();
+    }
+    else
+    {
+        delete [] m_table;
+        m_table = NULL;
+        m_tableSize = 0;
+        m_tableMax = 0;
+    }
     m_tableCount = 0;
     m_tableOccupied = 0;
-    m_tableMax = 0;
-
-    RETURN;
 }
 
 template <typename TRAITS>
@@ -335,33 +363,33 @@ typename SHash<TRAITS>::KeyIterator SHash<TRAITS>::End(key_t key) const
 template <typename TRAITS>
 BOOL SHash<TRAITS>::CheckGrowth()
 {
-    CONTRACT(BOOL)
+    CONTRACTL
     {
         THROWS;
         GC_NOTRIGGER;
         INSTANCE_CHECK;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     if (m_tableOccupied == m_tableMax)
     {
         Grow();
-        RETURN TRUE;
+        return TRUE;
     }
 
-    RETURN FALSE;
+    return FALSE;
 }
 
 template <typename TRAITS>
 BOOL SHash<TRAITS>::CheckGrowthNoThrow()
 {
-    CONTRACT(BOOL)
+    CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
         INSTANCE_CHECK;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     static_assert(TRAITS::s_NoThrow, "This SHash does not support NOTHROW.");
 
@@ -371,39 +399,37 @@ BOOL SHash<TRAITS>::CheckGrowthNoThrow()
         result = GrowNoThrow();
     }
 
-    RETURN result;
+    return result;
 }
 
 template <typename TRAITS>
 void SHash<TRAITS>::Grow()
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         THROWS;
         GC_NOTRIGGER;
         INSTANCE_CHECK;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     count_t     newSize;
     element_t * newTable = Grow_OnlyAllocateNewTable(&newSize);
     element_t * oldTable = ReplaceTable(newTable, newSize);
     DeleteOldTable(oldTable);
-
-    RETURN;
 }
 
 template <typename TRAITS>
 BOOL SHash<TRAITS>::GrowNoThrow()
 {
-    CONTRACT(BOOL)
+    CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
         INSTANCE_CHECK;
         PRECONDITION(TRAITS::s_NoThrow);
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     count_t     newSize;
     element_t * newTable = Grow_OnlyAllocateNewTableNoThrow(&newSize);
@@ -413,20 +439,20 @@ BOOL SHash<TRAITS>::GrowNoThrow()
         DeleteOldTable(oldTable);
     }
 
-    RETURN (newTable != NULL);
+    return newTable != NULL;
 }
 
 template <typename TRAITS>
 typename SHash<TRAITS>::element_t *
 SHash<TRAITS>::Grow_OnlyAllocateNewTable(count_t * pcNewSize)
 {
-    CONTRACT(element_t *)
+    CONTRACTL
     {
         THROWS;
         GC_NOTRIGGER;
         INSTANCE_CHECK;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     count_t newSize = (count_t) (m_tableCount
                                  * TRAITS::s_growth_factor_numerator / TRAITS::s_growth_factor_denominator
@@ -438,21 +464,21 @@ SHash<TRAITS>::Grow_OnlyAllocateNewTable(count_t * pcNewSize)
     if (newSize < m_tableCount)
         ThrowOutOfMemory();
 
-    RETURN AllocateNewTable(newSize, pcNewSize);
+    return AllocateNewTable(newSize, pcNewSize);
 }
 
 template <typename TRAITS>
 typename SHash<TRAITS>::element_t *
 SHash<TRAITS>::Grow_OnlyAllocateNewTableNoThrow(count_t * pcNewSize)
 {
-    CONTRACT(element_t *)
+    CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
         INSTANCE_CHECK;
         PRECONDITION(TRAITS::s_NoThrow);
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     count_t newSize = (count_t) (m_tableCount
                                  * TRAITS::s_growth_factor_numerator / TRAITS::s_growth_factor_denominator
@@ -464,26 +490,24 @@ SHash<TRAITS>::Grow_OnlyAllocateNewTableNoThrow(count_t * pcNewSize)
     if (newSize < m_tableCount)
         return NULL;
 
-    RETURN AllocateNewTableNoThrow(newSize, pcNewSize);
+    return AllocateNewTableNoThrow(newSize, pcNewSize);
 }
 
 template <typename TRAITS>
 void SHash<TRAITS>::Reallocate(count_t requestedSize)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         THROWS;
         GC_NOTRIGGER;
         INSTANCE_CHECK;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     count_t newTableSize;
     element_t * newTable = AllocateNewTable(requestedSize, &newTableSize);
     element_t * oldTable = ReplaceTable(newTable, newTableSize);
     DeleteOldTable(oldTable);
-
-    RETURN;
 }
 
 template <typename TRAITS>
@@ -495,10 +519,18 @@ void SHash<TRAITS>::ForEach(Functor &functor)
     for (count_t i = 0; i < m_tableSize; i++)
     {
         element_t element = m_table[i];
-        if (!TRAITS::IsNull(element) && !TRAITS::IsDeleted(element))
+        if (TRAITS::IsNull(element) || TRAITS::IsDeleted(element))
         {
-            functor(element);
+            continue;
         }
+
+        if (TRAITS::s_supports_autoremove && TRAITS::ShouldDelete(element))
+        {
+            RemoveElement(m_table, m_tableSize, &m_table[i]);
+            continue;
+        }
+
+        functor(element);
     }
 }
 
@@ -506,7 +538,7 @@ template <typename TRAITS>
 typename SHash<TRAITS>::element_t *
 SHash<TRAITS>::AllocateNewTable(count_t requestedSize, count_t * pcNewTableSize)
 {
-    CONTRACT(element_t *)
+    CONTRACTL
     {
         THROWS;
         GC_NOTRIGGER;
@@ -514,7 +546,7 @@ SHash<TRAITS>::AllocateNewTable(count_t requestedSize, count_t * pcNewTableSize)
         PRECONDITION(requestedSize >=
                      (count_t) (GetCount() * TRAITS::s_density_factor_denominator / TRAITS::s_density_factor_numerator));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     // Allocation size must be a prime number.  This is necessary so that hashes uniformly
     // distribute to all indices, and so that chaining will visit all indices in the hash table.
@@ -530,14 +562,14 @@ SHash<TRAITS>::AllocateNewTable(count_t requestedSize, count_t * pcNewTableSize)
         p++;
     }
 
-    RETURN newTable;
+    return newTable;
 }
 
 template <typename TRAITS>
 typename SHash<TRAITS>::element_t *
 SHash<TRAITS>::AllocateNewTableNoThrow(count_t requestedSize, count_t * pcNewTableSize)
 {
-    CONTRACT(element_t *)
+    CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
@@ -546,7 +578,7 @@ SHash<TRAITS>::AllocateNewTableNoThrow(count_t requestedSize, count_t * pcNewTab
                      (count_t) (GetCount() * TRAITS::s_density_factor_denominator / TRAITS::s_density_factor_numerator));
         PRECONDITION(TRAITS::s_NoThrow);
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     // Allocation size must be a prime number.  This is necessary so that hashes uniformly
     // distribute to all indices, and so that chaining will visit all indices in the hash table.
@@ -564,14 +596,14 @@ SHash<TRAITS>::AllocateNewTableNoThrow(count_t requestedSize, count_t * pcNewTab
         }
     }
 
-    RETURN newTable;
+    return newTable;
 }
 
 template <typename TRAITS>
 typename SHash<TRAITS>::element_t *
 SHash<TRAITS>::ReplaceTable(element_t * newTable, count_t newTableSize)
 {
-    CONTRACT(element_t *)
+    CONTRACTL
     {
         NOTHROW_UNLESS_TRAITS_THROWS;
         GC_NOTRIGGER;
@@ -579,7 +611,7 @@ SHash<TRAITS>::ReplaceTable(element_t * newTable, count_t newTableSize)
         PRECONDITION(newTableSize >=
                      (count_t) (GetCount() * TRAITS::s_density_factor_denominator / TRAITS::s_density_factor_numerator));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     element_t * oldTable = m_table;
 
@@ -587,8 +619,9 @@ SHash<TRAITS>::ReplaceTable(element_t * newTable, count_t newTableSize)
     for (Iterator i = Begin(), end = End(); i != end; i++)
     {
         const element_t & cur = (*i);
-        if (!TRAITS::IsNull(cur) && !TRAITS::IsDeleted(cur))
-            Add(newTable, newTableSize, cur);
+        _ASSERTE(!TRAITS::IsNull(cur));
+        _ASSERTE(!TRAITS::IsDeleted(cur));
+        Add(newTable, newTableSize, cur);
     }
 
     m_table = PTR_element_t(newTable);
@@ -596,42 +629,39 @@ SHash<TRAITS>::ReplaceTable(element_t * newTable, count_t newTableSize)
     m_tableMax = (count_t) (newTableSize * TRAITS::s_density_factor_numerator / TRAITS::s_density_factor_denominator);
     m_tableOccupied = m_tableCount;
 
-    RETURN oldTable;
+    return oldTable;
 }
 
 template <typename TRAITS>
 void
 SHash<TRAITS>::DeleteOldTable(element_t * oldTable)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     // @todo:
     // We might want to try to delay this cleanup to allow asynchronous readers
     if (oldTable != NULL)
         delete [] oldTable;
-
-    RETURN;
 }
 
 template <typename TRAITS>
-const typename SHash<TRAITS>::element_t * SHash<TRAITS>::Lookup(PTR_element_t table, count_t tableSize, key_t key)
+typename SHash<TRAITS>::element_t * SHash<TRAITS>::Lookup(PTR_element_t table, count_t tableSize, key_t key) const
 {
-    CONTRACT(const element_t *)
+    CONTRACTL
     {
         NOTHROW_UNLESS_TRAITS_THROWS;
         GC_NOTRIGGER;
-        POSTCONDITION(RETVAL == NULL || TRAITS::Equals(key, TRAITS::GetKey(*RETVAL)));
         SUPPORTS_DAC_WRAPPER;   // supports DAC only if the traits class does
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     if (tableSize == 0)
-        RETURN NULL;
+        return NULL;
 
     count_t hash = TRAITS::Hash(key);
     count_t index = hash % tableSize;
@@ -642,12 +672,18 @@ const typename SHash<TRAITS>::element_t * SHash<TRAITS>::Lookup(PTR_element_t ta
         element_t& current = table[index];
 
         if (TRAITS::IsNull(current))
-            RETURN NULL;
+            return NULL;
 
-        if (!TRAITS::IsDeleted(current)
-            && TRAITS::Equals(key, TRAITS::GetKey(current)))
+        if (!TRAITS::IsDeleted(current))
         {
-            RETURN &current;
+            if (TRAITS::s_supports_autoremove && TRAITS::ShouldDelete(current))
+            {
+                const_cast<SHash<TRAITS> *>(this)->RemoveElement(table, tableSize, &current);
+            }
+            else if (TRAITS::Equals(key, TRAITS::GetKey(current)))
+            {
+                return &current;
+            }
         }
 
         if (increment == 0)
@@ -662,13 +698,12 @@ const typename SHash<TRAITS>::element_t * SHash<TRAITS>::Lookup(PTR_element_t ta
 template <typename TRAITS>
 BOOL SHash<TRAITS>::Add(element_t * table, count_t tableSize, const element_t & element)
 {
-    CONTRACT(BOOL)
+    CONTRACTL
     {
         NOTHROW_UNLESS_TRAITS_THROWS;
         GC_NOTRIGGER;
-        POSTCONDITION(TRAITS::Equals(TRAITS::GetKey(element), TRAITS::GetKey(*Lookup(table, tableSize, TRAITS::GetKey(element)))));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     key_t key = TRAITS::GetKey(element);
 
@@ -683,13 +718,20 @@ BOOL SHash<TRAITS>::Add(element_t * table, count_t tableSize, const element_t & 
         if (TRAITS::IsNull(current))
         {
             table[index] = element;
-            RETURN TRUE;
+            return TRUE;
         }
 
         if (TRAITS::IsDeleted(current))
         {
             table[index] = element;
-            RETURN FALSE;
+            return FALSE;
+        }
+
+        if (TRAITS::s_supports_autoremove && TRAITS::ShouldDelete(current))
+        {
+            RemoveElement(table, tableSize, &current);
+            table[index] = element;
+            return FALSE;
         }
 
         if (increment == 0)
@@ -704,14 +746,13 @@ BOOL SHash<TRAITS>::Add(element_t * table, count_t tableSize, const element_t & 
 template <typename TRAITS>
 void SHash<TRAITS>::AddOrReplace(element_t *table, count_t tableSize, const element_t &element)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         NOTHROW_UNLESS_TRAITS_THROWS;
         GC_NOTRIGGER;
         static_assert(!TRAITS::s_supports_remove, "SHash::AddOrReplace is not implemented for SHash with support for remove operations.");
-        POSTCONDITION(TRAITS::Equals(TRAITS::GetKey(element), TRAITS::GetKey(*Lookup(table, tableSize, TRAITS::GetKey(element)))));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     key_t key = TRAITS::GetKey(element);
 
@@ -729,12 +770,17 @@ void SHash<TRAITS>::AddOrReplace(element_t *table, count_t tableSize, const elem
             table[index] = element;
             m_tableCount++;
             m_tableOccupied++;
-            RETURN;
+            return;
         }
         else if (TRAITS::Equals(key, TRAITS::GetKey(current)))
         {
+            if (TRAITS::s_RemovePerEntryCleanupAction)
+            {
+                TRAITS::OnRemovePerEntryCleanupAction(current);
+            }
+
             table[index] = element;
-            RETURN;
+            return;
         }
 
         if (increment == 0)
@@ -749,14 +795,14 @@ void SHash<TRAITS>::AddOrReplace(element_t *table, count_t tableSize, const elem
 template <typename TRAITS>
 void SHash<TRAITS>::Remove(element_t *table, count_t tableSize, key_t key)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         NOTHROW_UNLESS_TRAITS_THROWS;
         GC_NOTRIGGER;
         static_assert(TRAITS::s_supports_remove, "This SHash does not support remove operations.");
         PRECONDITION(Lookup(table, tableSize, key) != NULL);
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     count_t hash = TRAITS::Hash(key);
     count_t index = hash % tableSize;
@@ -767,14 +813,15 @@ void SHash<TRAITS>::Remove(element_t *table, count_t tableSize, key_t key)
         element_t& current = table[index];
 
         if (TRAITS::IsNull(current))
-            RETURN;
+            return;
 
-        if (!TRAITS::IsDeleted(current)
-            && TRAITS::Equals(key, TRAITS::GetKey(current)))
+        if (!TRAITS::IsDeleted(current))
         {
-            table[index] = TRAITS::Deleted();
-            m_tableCount--;
-            RETURN;
+            if ((TRAITS::s_supports_autoremove && TRAITS::ShouldDelete(current)) ||
+                TRAITS::Equals(key, TRAITS::GetKey(current)))
+            {
+                RemoveElement(table, tableSize, &current);
+            }
         }
 
         if (increment == 0)
@@ -789,47 +836,51 @@ void SHash<TRAITS>::Remove(element_t *table, count_t tableSize, key_t key)
 template <typename TRAITS>
 void SHash<TRAITS>::RemoveElement(element_t *table, count_t tableSize, element_t *element)
 {
-    CONTRACT_VOID
+    CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
-        static_assert(TRAITS::s_supports_remove, "This SHash does not support remove operations.");
+        PRECONDITION(TRAITS::s_supports_remove);
         PRECONDITION(table <= element && element < table + tableSize);
         PRECONDITION(!TRAITS::IsNull(*element) && !TRAITS::IsDeleted(*element));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
+
+    if (TRAITS::s_RemovePerEntryCleanupAction)
+    {
+        TRAITS::OnRemovePerEntryCleanupAction(*element);
+    }
 
     *element = TRAITS::Deleted();
     m_tableCount--;
-    RETURN;
 }
 
 template <typename TRAITS>
 BOOL SHash<TRAITS>::IsPrime(COUNT_T number)
 {
-    CONTRACT(BOOL)
+    CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     // This is a very low-tech check for primality, which doesn't scale very well.
     // There are more efficient tests if this proves to be burdensome for larger
     // tables.
 
     if ((number & 1) == 0)
-        RETURN FALSE;
+        return FALSE;
 
     COUNT_T factor = 3;
     while (factor * factor <= number)
     {
         if ((number % factor) == 0)
-            RETURN FALSE;
+            return FALSE;
         factor += 2;
     }
 
-    RETURN TRUE;
+    return TRUE;
 }
 
 // allow coexistence with simplerhash.inl
@@ -852,17 +903,19 @@ namespace
 template <typename TRAITS>
 COUNT_T SHash<TRAITS>::NextPrime(COUNT_T number)
 {
-    CONTRACT(COUNT_T)
+    CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
-        POSTCONDITION(IsPrime(RETVAL));
     }
-    CONTRACT_END;
+    CONTRACTL_END;
 
     for (int i = 0; i < (int) (sizeof(g_shash_primes) / sizeof(g_shash_primes[0])); i++) {
         if (g_shash_primes[i] >= number)
-            RETURN g_shash_primes[i];
+            {
+            _ASSERTE(IsPrime(g_shash_primes[i]));
+                return g_shash_primes[i];
+            }
     }
 
     if ((number&1) == 0)
@@ -870,7 +923,10 @@ COUNT_T SHash<TRAITS>::NextPrime(COUNT_T number)
 
     while (number != 1) {
         if (IsPrime(number))
-            RETURN number;
+            {
+            _ASSERTE(IsPrime(number));
+                return number;
+            }
         number +=2;
     }
 

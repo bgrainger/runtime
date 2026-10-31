@@ -1,9 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
+
 //*****************************************************************************
 // StgIO.h
-//
-
 //
 // This module handles disk/memory i/o for a generic set of storage solutions,
 // including:
@@ -33,6 +32,7 @@
 //      only the portion of the file with the .clb in it.
 //</TODO>
 //*****************************************************************************
+
 #ifndef __STGIO_H_
 #define __STGIO_H_
 
@@ -153,12 +153,6 @@ public:
         LPSECURITY_ATTRIBUTES pAttributes=0); // Security token.
 
 //*****************************************************************************
-// Free the mapping object for shared memory but keep the rest of the internal
-// state intact.
-//*****************************************************************************
-    HRESULT ReleaseMappingObject();         // Return code.
-
-//*****************************************************************************
 // Resets the logical base address and size to the value given.  This is for
 // cases like finding a section embedded in another format, like the .clb inside
 // of an image.  GetPtrForMem, Read, and Seek will then behave as though only
@@ -197,9 +191,6 @@ public:
 // working set and remember this state.
 //*****************************************************************************
     HRESULT ResetBackingStore();            // Return code.
-
-    FILETYPE GetFileType()
-    { return m_FileType; }
 
     int IsReadOnly()
     { return ((m_fFlags & STGIO_WRITE) == 0); }
@@ -248,13 +239,11 @@ private:
     void CtorInit();
     HRESULT WriteToDisk(const void *pbBuff, ULONG cbWrite, ULONG *pcbWritten);
     HRESULT ReadFromDisk(void *pbBuff, ULONG cbBuff, ULONG *pcbRead);
-    HRESULT CopyFileInternal(LPCWSTR szTo, int bFailIfThere, int bWriteThrough);
     void FreePageMap();
 
 private:
 
     // Flags and state data.
-    FILETYPE    m_FileType;             // Cached type of the file (based on extension).
     LONG        m_cRef;                 // Ref count on this object.
     bool        m_bWriteThrough : 1;    // true for write through mode.
     bool        m_bRewrite : 1;         // State check for rewrite mode.

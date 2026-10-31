@@ -6,6 +6,10 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 
+// We need to target netstandard2.0, so keep using ref for MemoryMarshal.Write
+// CS9191: The 'ref' modifier for argument 2 corresponding to 'in' parameter is equivalent to 'in'. Consider using 'in' instead.
+#pragma warning disable CS9191
+
 namespace System.Text.Json
 {
     public sealed partial class JsonDocument
@@ -64,7 +68,7 @@ namespace System.Text.Json
         //   * 31 bits for token offset
         // * Second int
         //   * Top bit is unassigned / always clear
-        //   * 31 bits for the token length (always 1, effectively unassigned)
+        //   * 31 bits for the number of properties in this object
         // * Third int
         //   * 4 bits JsonTokenType
         //   * 28 bits for the number of rows until the next value (never 0)
@@ -126,7 +130,7 @@ namespace System.Text.Json
                 // were more frequent anyways.
                 const int OneMegabyte = 1024 * 1024;
 
-                if (initialSize > OneMegabyte && initialSize <= 4 * OneMegabyte)
+                if (initialSize is > OneMegabyte and <= 4 * OneMegabyte)
                 {
                     initialSize = OneMegabyte;
                 }
@@ -147,7 +151,7 @@ namespace System.Text.Json
             public void Dispose()
             {
                 byte[]? data = Interlocked.Exchange(ref _data, null!);
-                if (data == null)
+                if (data is null)
                 {
                     return;
                 }
@@ -171,7 +175,7 @@ namespace System.Text.Json
                 {
                     if (_convertToAlloc)
                     {
-                        Debug.Assert(_data != null);
+                        Debug.Assert(_data is not null);
                         byte[] returnBuf = _data;
                         _data = _data.AsSpan(0, Length).ToArray();
                         _isLocked = true;
@@ -213,7 +217,7 @@ namespace System.Text.Json
             {
                 // StartArray or StartObject should have length -1, otherwise the length should not be -1.
                 Debug.Assert(
-                    (tokenType == JsonTokenType.StartArray || tokenType == JsonTokenType.StartObject) ==
+                    (tokenType is JsonTokenType.StartArray or JsonTokenType.StartObject) ==
                     (length == DbRow.UnknownSize));
 
                 if (Length >= _data.Length - DbRow.Size)
@@ -231,7 +235,19 @@ namespace System.Text.Json
                 Debug.Assert(!_isLocked, "Appending to a locked database");
 
                 byte[] toReturn = _data;
-                _data = ArrayPool<byte>.Shared.Rent(toReturn.Length * 2);
+
+                // Allow the data to grow up to maximum possible capacity (~2G bytes) before encountering overflow.
+                int newCapacity = toReturn.Length * 2;
+
+                // Note that this check works even when newCapacity overflowed thanks to the (uint) cast
+                if ((uint)newCapacity > Array.MaxLength) newCapacity = Array.MaxLength;
+
+                // If the maximum capacity has already been reached,
+                // then set the new capacity to be larger than what is possible
+                // so that ArrayPool.Rent throws an OutOfMemoryException for us.
+                if (newCapacity == toReturn.Length) newCapacity = int.MaxValue;
+
+                _data = ArrayPool<byte>.Shared.Rent(newCapacity);
                 Buffer.BlockCopy(toReturn, 0, _data, 0, toReturn.Length);
 
                 // The data in this rented buffer only conveys the positions and
@@ -259,7 +275,7 @@ namespace System.Text.Json
             internal void SetNumberOfRows(int index, int numberOfRows)
             {
                 AssertValidIndex(index);
-                Debug.Assert(numberOfRows >= 1 && numberOfRows <= 0x0FFFFFFF);
+                Debug.Assert(numberOfRows is >= 1 and <= 0x0FFFFFFF);
 
                 Span<byte> dataPos = _data.AsSpan(index + NumberOfRowsOffset);
                 int current = MemoryMarshal.Read<int>(dataPos);
@@ -283,7 +299,7 @@ namespace System.Text.Json
 
             internal int FindIndexOfFirstUnsetSizeOrLength(JsonTokenType lookupType)
             {
-                Debug.Assert(lookupType == JsonTokenType.StartObject || lookupType == JsonTokenType.StartArray);
+                Debug.Assert(lookupType is JsonTokenType.StartObject or JsonTokenType.StartArray);
                 return FindOpenElement(lookupType);
             }
 
@@ -358,7 +374,7 @@ namespace System.Text.Json
                 byte[] newDatabase = new byte[length];
                 _data.AsSpan(startIndex, length).CopyTo(newDatabase);
 
-                Span<int> newDbInts = MemoryMarshal.Cast<byte, int>(newDatabase);
+                Span<int> newDbInts = MemoryMarshal.Cast<byte, int>(newDatabase.AsSpan());
                 int locationOffset = newDbInts[0];
 
                 // Need to nudge one forward to account for the hidden quote on the string.

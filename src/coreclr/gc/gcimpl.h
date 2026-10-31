@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-
 #ifndef GCIMPL_H_
 #define GCIMPL_H_
 
@@ -60,16 +59,12 @@ protected:
     friend void GCProfileWalkHeap(bool etwOnly);
 
 public:
-    //In order to keep gc.cpp cleaner, ugly EE specific code is relegated to methods.
+    // In order to keep gc.cpp cleaner, ugly EE specific code is relegated to methods.
     static void UpdatePreGCCounters();
     static void UpdatePostGCCounters();
 
 public:
     GCHeap(){};
-    ~GCHeap(){};
-
-    /* BaseGCHeap Methods*/
-    PER_HEAP_ISOLATED   HRESULT StaticShutdown ();
 
     size_t  GetTotalBytesInUse ();
     // Gets the amount of bytes objects currently occupy on the GC heap.
@@ -127,12 +122,13 @@ public:
     // Check if an argument is promoted (ONLY CALL DURING
     // THE PROMOTIONSGRANTED CALLBACK.)
     bool IsPromoted (Object *object);
+    bool IsPromoted2 (Object *object, bool bVerifyNextHeader);
 
     size_t GetPromotedBytes (int heap_index);
 
     int CollectionCount (int generation, int get_bgc_fgc_count = 0);
 
-    // promote an object
+    // Promote an object
     PER_HEAP_ISOLATED void    Promote (Object** object,
                                           ScanContext* sc,
                                           uint32_t flags=0);
@@ -145,22 +141,22 @@ public:
 
     HRESULT Init (size_t heapSize);
 
-    //Register an object for finalization
+    // Register an object for finalization
     bool    RegisterForFinalization (int gen, Object* obj);
 
-    //Unregister an object for finalization
+    // Unregister an object for finalization
     void    SetFinalizationRun (Object* obj);
 
-    //returns the generation number of an object (not valid during relocation)
+    // Returns the generation number of an object (not valid during relocation) or
+    // INT32_MAX if the object belongs to a non-GC heap.
     unsigned WhichGeneration (Object* object);
-    // returns TRUE is the object is ephemeral
+    // Returns TRUE if the object is ephemeral
     bool IsEphemeral (Object* object);
     bool IsHeapPointer (void* object, bool small_heap_only = false);
 
     void    ValidateObjectMember (Object *obj);
 
     PER_HEAP    size_t  ApproxTotalBytesInUse(BOOL small_heap_only = FALSE);
-    PER_HEAP    size_t  ApproxFreeBytes();
 
     unsigned GetCondemnedGeneration();
 
@@ -180,7 +176,11 @@ public:
                        bool* isConcurrent,
                        uint64_t* genInfoRaw,
                        uint64_t* pauseInfoRaw,
-                       int kind);;
+                       int kind);
+
+    int64_t GetTotalPauseDuration();
+
+    void EnumerateConfigurationValues(void* context, ConfigurationValueFunc configurationValueFunc);
 
     uint32_t GetMemoryLoad();
 
@@ -198,13 +198,15 @@ public:
 
     int StartNoGCRegion(uint64_t totalSize, bool lohSizeKnown, uint64_t lohSize, bool disallowFullBlockingGC);
     int EndNoGCRegion();
+    enable_no_gc_region_callback_status EnableNoGCRegionCallback(NoGCRegionCallbackFinalizerWorkItem* callback, uint64_t callback_threshold);
+    FinalizerWorkItem* GetExtraWorkForFinalization();
+    uint64_t GetGenerationBudget(int generation);
+    size_t GetLOHThreshold();
 
     unsigned GetGcCount();
 
     Object* GetNextFinalizable() { return GetNextFinalizableObject(); };
     size_t GetNumberOfFinalizable() { return GetNumberFinalizableObjects(); }
-
-    PER_HEAP_ISOLATED HRESULT GetGcCounters(int gen, gc_counters* counters);
 
     size_t GetValidSegmentSize(bool large_seg = false);
 
@@ -225,10 +227,10 @@ public:	// FIX
 
     PER_HEAP_ISOLATED   BOOL    GcCollectClasses;
     PER_HEAP_ISOLATED
-        VOLATILE(BOOL)          GcInProgress;       // used for syncing w/GC
+        VOLATILE(BOOL)          GcInProgress;       // Used for syncing w/GC
     PER_HEAP_ISOLATED   VOLATILE(unsigned) GcCount;
     PER_HEAP_ISOLATED   unsigned GcCondemnedGeneration;
-    // calculated at the end of a GC.
+    // Calculated at the end of a GC.
     PER_HEAP_ISOLATED   size_t  totalSurvivedSize;
 
     // Use only for GC tracing.
@@ -238,10 +240,11 @@ public:	// FIX
     // Interface with gc_heap
     size_t  GarbageCollectTry (int generation, BOOL low_memory_p=FALSE, int mode=collection_blocking);
 
-    // frozen segment management functions
+    // Frozen segment management functions
     virtual segment_handle RegisterFrozenSegment(segment_info *pseginfo);
     virtual void UnregisterFrozenSegment(segment_handle seg);
     virtual bool IsInFrozenSegment(Object *object);
+    virtual void UpdateFrozenSegment(segment_handle seg, uint8_t* allocated, uint8_t* committed);
 
     // Event control functions
     void ControlEvents(GCEventKeyword keyword, GCEventLevel level);
@@ -258,7 +261,7 @@ public:	// FIX
     void TemporaryDisableConcurrentGC();
     bool IsConcurrentGCEnabled();
 
-    PER_HEAP_ISOLATED   GCEvent *WaitForGCEvent;     // used for syncing w/GC
+    PER_HEAP_ISOLATED   GCEvent *WaitForGCEvent;     // Used for syncing w/GC
 
     PER_HEAP_ISOLATED    CFinalize* m_Finalize;
 
@@ -274,24 +277,25 @@ private:
         return g_fSuspensionPending == 0;
     }
 public:
-    //return TRUE if GC actually happens, otherwise FALSE
+
+    // Returns TRUE if GC actually happens, otherwise FALSE
     bool StressHeap(gc_alloc_context * acontext);
 
-#ifndef FEATURE_REDHAWK // Redhawk forces relocation a different way
+#ifndef FEATURE_NATIVEAOT // NativeAOT forces relocation a different way
 #ifdef STRESS_HEAP
 protected:
 
-    // only used in BACKGROUND_GC, but the symbol is not defined yet...
+    // Only used in BACKGROUND_GC, but the symbol is not defined yet...
     PER_HEAP_ISOLATED int gc_stress_fgcs_in_bgc;
 
 #if !defined(MULTIPLE_HEAPS)
-    // handles to hold the string objects that will force GC movement
+    // Handles to hold the string objects that will force GC movement
     enum { NUM_HEAP_STRESS_OBJS = 8 };
     PER_HEAP OBJECTHANDLE m_StressObjs[NUM_HEAP_STRESS_OBJS];
     PER_HEAP int m_CurStressObj;
 #endif  // !defined(MULTIPLE_HEAPS)
 #endif  // STRESS_HEAP
-#endif // FEATURE_REDHAWK
+#endif // FEATURE_NATIVEAOT
 
     virtual void DiagDescrGenerations (gen_walk_fn fn, void *context);
 
@@ -310,6 +314,8 @@ protected:
     virtual void DiagGetGCSettings(EtwGCSettingsInfo* etw_settings);
 
     virtual unsigned int GetGenerationWithRange(Object* object, uint8_t** ppStart, uint8_t** ppAllocated, uint8_t** ppReserved);
+
+    virtual void DiagWalkHeapWithACHandling(walk_fn fn, void* context, int gen_number, bool walk_large_object_heap_p);
 public:
     Object * NextObj (Object * object);
 
@@ -320,6 +326,12 @@ public:
     virtual void Shutdown();
 
     static void ReportGenerationBounds();
+
+    virtual int RefreshMemoryLimit();
+
+    virtual void NullBridgeObjectsWeakRefs(size_t length, void* unreachableObjectHandles);
+
+    virtual uintptr_t* GetPendingBridgeHandles(size_t* count);
 };
 
 #endif  // GCIMPL_H_

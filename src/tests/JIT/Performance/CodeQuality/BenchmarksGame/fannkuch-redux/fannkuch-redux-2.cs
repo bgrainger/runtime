@@ -7,12 +7,15 @@
 // Best-scoring single-threaded C# .NET Core version as of 2017-09-01
 
 /* The Computer Language Benchmarks Game
+using TestLibrary;
    http://benchmarksgame.alioth.debian.org/
 
    contributed by Isaac Gouy, transliterated from Mike Pall's Lua program 
 */
 
 using System;
+using System.Runtime.CompilerServices;
+using Xunit;
 
 namespace BenchmarksGame
 {
@@ -71,9 +74,17 @@ namespace BenchmarksGame
             } while (true);
         }
 
-        static int Main(string[] args)
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+        [Fact]
+        public static int TestEntryPoint()
         {
-            int n = (args.Length > 0) ? Int32.Parse(args[0]) : 7;
+            return Test(null);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static int Test(int? arg)
+        {
+            int n = arg ?? 7;
             var fr2 = new FannkuchRedux_2();
             var pf = fr2.fannkuch(n);
             Console.Write("{0}\nPfannkuchen({1}) = {2}\n", pf[0], n, pf[1]);

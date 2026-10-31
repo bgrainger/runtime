@@ -11,10 +11,7 @@ namespace System.Net.Http.Headers
     {
         public override void Validate(T item)
         {
-            if (item is null)
-            {
-                throw new ArgumentNullException(nameof(item));
-            }
+            ArgumentNullException.ThrowIfNull(item);
         }
     }
 
@@ -93,7 +90,7 @@ namespace System.Net.Http.Headers
         public bool Contains(T item) =>
             _size <= 0 ? false :
             _items is T o ? o.Equals(item) :
-            _items is T[] items && Array.IndexOf(items, item, 0, _size) != -1;
+            _items is T[] items && Array.IndexOf(items, item, 0, _size) >= 0;
 
         public void CopyTo(T[] array, int arrayIndex)
         {
@@ -130,7 +127,7 @@ namespace System.Net.Http.Headers
             else if (_items is T[] items)
             {
                 int index = Array.IndexOf(items, item, 0, _size);
-                if (index != -1)
+                if (index >= 0)
                 {
                     _size--;
                     if (index < _size)
@@ -196,7 +193,11 @@ namespace System.Net.Http.Headers
         {
             private readonly ObjectCollection<T> _collection;
 
-            public DebugView(ObjectCollection<T> collection) => _collection = collection ?? throw new ArgumentNullException(nameof(collection));
+            public DebugView(ObjectCollection<T> collection)
+            {
+                ArgumentNullException.ThrowIfNull(collection);
+                _collection = collection;
+            }
 
             [DebuggerBrowsable(DebuggerBrowsableState.RootHidden)]
             public T[] Items

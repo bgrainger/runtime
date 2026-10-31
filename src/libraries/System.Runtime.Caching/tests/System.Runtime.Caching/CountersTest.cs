@@ -27,9 +27,8 @@ namespace MonoTests.System.Runtime.Caching
     public class CountersTest
     {
         [Fact]
-        [SkipOnPlatform(TestPlatforms.Browser, "Wasm is single-threaded, which makes TestEventListener ineffective.")]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/52652", TestPlatforms.Android)]
-        public async void Basic_Counters()
+        [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.Wasi, "Wasm is single-threaded, which makes TestEventListener ineffective.")]
+        public async Task Basic_Counters()
         {
             string cacheName = "Basic_Counters_Test";
             var cip = new CacheItemPolicy() { /* _absExpiry = ObjectCache.InfiniteAbsoluteExpiration */ };
@@ -74,7 +73,7 @@ namespace MonoTests.System.Runtime.Caching
         {
             MemoryCacheCounterValues counters = new MemoryCacheCounterValues();
 
-#if NETCOREAPP
+#if NET
             var events = new ConcurrentQueue<EventWrittenEventArgs>();
             using (var listener = new TestEventListener("System.Runtime.Caching." + cacheName, EventLevel.Verbose, eventCounterInterval: 0.1d))
             {
@@ -135,7 +134,7 @@ namespace MonoTests.System.Runtime.Caching
             return counters;
         }
 
-#if NETCOREAPP
+#if NET
         private static async Task WaitForEventCountersAsync(ConcurrentQueue<EventWrittenEventArgs> events)
         {
             DateTime startTime = DateTime.UtcNow;

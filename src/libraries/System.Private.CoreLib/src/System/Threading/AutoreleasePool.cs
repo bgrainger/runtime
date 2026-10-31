@@ -2,7 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics;
-using System.Runtime.InteropServices;
+using System.Diagnostics.CodeAnalysis;
 
 namespace System.Threading
 {
@@ -11,17 +11,23 @@ namespace System.Threading
         private static bool CheckEnableAutoreleasePool()
         {
             const string feature = "System.Threading.Thread.EnableAutoreleasePool";
-#if !CORECLR
-            return AppContextConfigHelper.GetBooleanConfig(feature, false);
-#else
-            bool isEnabled = CLRConfig.GetBoolValue(feature, out bool isSet);
-            if (!isSet)
-                return false;
+#if CORECLR
+            // In coreclr_initialize, we call ICLRRuntimeHost4->Start() which, among other things,
+            // starts a finalizer thread for Objective-C's NSAutoreleasePool interop on macOS.
+            // Although AppContext.Setup() is done during CreateAppDomainWithManager() call which
+            // is made in coreclr_initialize right after the host has started, there is a chance of
+            // race between the call to CreateAppDomainWithManager in coreclr_initialize and the
+            // finalizer thread starting, that will call into the changed managed code.
+            //
+            // Therefore, we are using CLR configuration via QCall here, instead of AppContext.
 
-            return isEnabled;
+            return CLRConfig.GetBoolValue(feature, out bool isSet) && isSet;
+#else
+            return AppContextConfigHelper.GetBooleanConfig(feature, false);
 #endif
         }
 
+        [FeatureSwitchDefinition("System.Threading.Thread.EnableAutoreleasePool")]
         public static bool EnableAutoreleasePool { get; } = CheckEnableAutoreleasePool();
 
         [ThreadStatic]
@@ -45,5 +51,33 @@ namespace System.Threading
                 s_AutoreleasePoolInstance = IntPtr.Zero;
             }
         }
+
+#if CORECLR
+        [System.Runtime.InteropServices.UnmanagedCallersOnly]
+        private static unsafe void CreateAutoreleasePool(Exception* pException)
+        {
+            try
+            {
+                CreateAutoreleasePool();
+            }
+            catch (Exception ex)
+            {
+                *pException = ex;
+            }
+        }
+
+        [System.Runtime.InteropServices.UnmanagedCallersOnly]
+        private static unsafe void DrainAutoreleasePool(Exception* pException)
+        {
+            try
+            {
+                DrainAutoreleasePool();
+            }
+            catch (Exception ex)
+            {
+                *pException = ex;
+            }
+        }
+#endif
     }
 }

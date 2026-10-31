@@ -12,11 +12,11 @@ namespace System.Formats.Cbor
         /// <summary>Writes the start of a definite or indefinite-length array (major type 4).</summary>
         /// <param name="definiteLength">The length of the definite-length array, or <see langword="null" /> for an indefinite-length array.</param>
         /// <exception cref="ArgumentOutOfRangeException">The <paramref name="definiteLength" /> parameter cannot be negative.</exception>
-        /// <exception cref="InvalidOperationException">Writing a new value exceeds the definite length of the parent data item.
-        /// -or-
-        /// The major type of the encoded value is not permitted in the parent data item.
-        /// -or-
-        /// The written data is not accepted under the current conformance mode.</exception>
+        /// <exception cref="InvalidOperationException"><para>Writing a new value exceeds the definite length of the parent data item.</para>
+        /// <para>-or-</para>
+        /// <para>The major type of the encoded value is not permitted in the parent data item.</para>
+        /// <para>-or-</para>
+        /// <para>The written data is not accepted under the current conformance mode.</para></exception>
         /// <remarks>
         /// In canonical conformance modes, the writer will reject indefinite-length writes unless
         /// the <see cref="ConvertIndefiniteLengthEncodings" /> flag is enabled.
@@ -34,9 +34,9 @@ namespace System.Formats.Cbor
         }
 
         /// <summary>Writes the end of an array (major type 4).</summary>
-        /// <exception cref="InvalidOperationException">The written data is not accepted under the current conformance mode.
-        /// -or-
-        /// The definite-length array anticipates more data items.</exception>
+        /// <exception cref="InvalidOperationException"><para>The written data is not accepted under the current conformance mode.</para>
+        /// <para>-or-</para>
+        /// <para>The definite-length array anticipates more data items.</para></exception>
         public void WriteEndArray()
         {
             PopDataItem(CborMajorType.Array);
@@ -50,6 +50,7 @@ namespace System.Formats.Cbor
                 throw new ArgumentOutOfRangeException(nameof(definiteLength));
             }
 
+            EnsureMaxDepthNotExceeded();
             WriteUnsignedInteger(CborMajorType.Array, (ulong)definiteLength);
             PushDataItem(CborMajorType.Array, definiteLength);
         }
@@ -61,6 +62,7 @@ namespace System.Formats.Cbor
                 throw new InvalidOperationException(SR.Format(SR.Cbor_ConformanceMode_IndefiniteLengthItemsNotSupported, ConformanceMode));
             }
 
+            EnsureMaxDepthNotExceeded();
             EnsureWriteCapacity(1);
             WriteInitialByte(new CborInitialByte(CborMajorType.Array, CborAdditionalInfo.IndefiniteLength));
             PushDataItem(CborMajorType.Array, definiteLength: null);

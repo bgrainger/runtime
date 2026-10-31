@@ -4,6 +4,7 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
@@ -15,19 +16,19 @@ internal static partial class Interop
         /// Returns the interior pointer of the cfString if it has the specified encoding.
         /// If it has the wrong encoding, or if the interior pointer isn't being shared for some reason, returns NULL
         /// </summary>
-        [GeneratedDllImport(Libraries.CoreFoundationLibrary)]
-        private static partial IntPtr CFStringGetCStringPtr(
+        [LibraryImport(Libraries.CoreFoundationLibrary)]
+        private static unsafe partial byte* CFStringGetCStringPtr(
             SafeCFStringHandle cfString,
             CFStringBuiltInEncodings encoding);
 
-        [GeneratedDllImport(Libraries.CoreFoundationLibrary)]
+        [LibraryImport(Libraries.CoreFoundationLibrary)]
         private static partial SafeCFDataHandle CFStringCreateExternalRepresentation(
             IntPtr alloc,
             SafeCFStringHandle theString,
             CFStringBuiltInEncodings encoding,
             byte lossByte);
 
-        internal static string CFStringToString(SafeCFStringHandle cfString)
+        internal static unsafe string CFStringToString(SafeCFStringHandle cfString)
         {
             Debug.Assert(cfString != null);
             Debug.Assert(!cfString.IsInvalid);
@@ -36,13 +37,13 @@ internal static partial class Interop
             // If the string is already stored internally as UTF-8 we can (usually)
             // get the raw pointer to the data blob, then we can Marshal in the string
             // via pointer semantics, avoiding a copy.
-            IntPtr interiorPointer = CFStringGetCStringPtr(
+            byte* interiorPointer = CFStringGetCStringPtr(
                 cfString,
                 CFStringBuiltInEncodings.kCFStringEncodingUTF8);
 
-            if (interiorPointer != IntPtr.Zero)
+            if (interiorPointer != null)
             {
-                return Marshal.PtrToStringUTF8(interiorPointer)!;
+                return Utf8StringMarshaller.ConvertToManaged(interiorPointer)!;
             }
 
             SafeCFDataHandle cfData = CFStringCreateExternalRepresentation(

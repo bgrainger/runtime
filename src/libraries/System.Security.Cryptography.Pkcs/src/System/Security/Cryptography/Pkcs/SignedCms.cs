@@ -3,6 +3,7 @@
 
 using System.Buffers;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Formats.Asn1;
 using System.Linq;
@@ -18,6 +19,7 @@ namespace System.Security.Cryptography.Pkcs
     {
         private SignedDataAsn _signedData;
         private bool _hasData;
+        private readonly CertificateList _certificates;
         private readonly SubjectIdentifierType _signerIdentifierType;
 
         // A defensive copy of the relevant portions of the data to Decode
@@ -42,8 +44,8 @@ namespace System.Security.Cryptography.Pkcs
 
         public SignedCms(SubjectIdentifierType signerIdentifierType, ContentInfo contentInfo, bool detached)
         {
-            if (contentInfo == null)
-                throw new ArgumentNullException(nameof(contentInfo));
+            ArgumentNullException.ThrowIfNull(contentInfo);
+
             if (contentInfo.Content == null)
                 throw new ArgumentException(SR.Format(SR.Arg_EmptyOrNullString_Named, "contentInfo.Content"), nameof(contentInfo));
 
@@ -67,6 +69,17 @@ namespace System.Security.Cryptography.Pkcs
             ContentInfo = contentInfo;
             Detached = detached;
             Version = 0;
+            _certificates = new CertificateList(this);
+        }
+
+        internal X509Certificate2? FindCertificate(SubjectIdentifier signerIdentifier)
+        {
+            return _certificates.FindCertificate(signerIdentifier);
+        }
+
+        internal X509Certificate2Collection GetCertificatesNoClone()
+        {
+            return _certificates.GetCollection();
         }
 
         public X509Certificate2Collection Certificates
@@ -80,17 +93,16 @@ namespace System.Security.Cryptography.Pkcs
                     return coll;
                 }
 
-                CertificateChoiceAsn[]? certChoices = _signedData.CertificateSet;
-
-                if (certChoices == null)
+                foreach (X509Certificate2 cert in GetCertificatesNoClone())
                 {
-                    return coll;
-                }
-
-                foreach (CertificateChoiceAsn choice in certChoices)
-                {
-                    Debug.Assert(choice.Certificate.HasValue);
-                    coll.Add(new X509Certificate2(choice.Certificate.Value.ToArray()));
+                    coll.Add(
+                        X509CertificateLoader.LoadCertificate(
+#if NET
+                            cert.RawDataMemory.Span
+#else
+                            cert.RawData
+#endif
+                        ));
                 }
 
                 return coll;
@@ -152,13 +164,17 @@ namespace System.Security.Cryptography.Pkcs
 
         public void Decode(byte[] encodedMessage)
         {
-            if (encodedMessage == null)
-                throw new ArgumentNullException(nameof(encodedMessage));
+            ArgumentNullException.ThrowIfNull(encodedMessage);
 
             Decode(new ReadOnlySpan<byte>(encodedMessage));
         }
 
-        public void Decode(ReadOnlySpan<byte> encodedMessage)
+#if NET || NETSTANDARD2_1
+        public
+#else
+        internal
+#endif
+        void Decode(ReadOnlySpan<byte> encodedMessage)
         {
             // Hold a copy of the SignedData memory so we are protected against memory reuse by the caller.
             _heldData = CopyContent(encodedMessage);
@@ -203,30 +219,18 @@ namespace System.Security.Cryptography.Pkcs
 
             static byte[] CopyContent(ReadOnlySpan<byte> encodedMessage)
             {
-                unsafe
+                ValueAsnReader reader = new ValueAsnReader(encodedMessage, AsnEncodingRules.BER);
+
+                // Windows (and thus NetFx) reads the leading data and ignores extra.
+                // So use the Decode overload which doesn't throw on extra data.
+                ValueContentInfoAsn.Decode(ref reader, out ValueContentInfoAsn contentInfo);
+
+                if (contentInfo.ContentType != Oids.Pkcs7Signed)
                 {
-                    fixed (byte* pin = encodedMessage)
-                    {
-                        using (var manager = new PointerMemoryManager<byte>(pin, encodedMessage.Length))
-                        {
-                            AsnValueReader reader = new AsnValueReader(encodedMessage, AsnEncodingRules.BER);
-
-                            // Windows (and thus NetFx) reads the leading data and ignores extra.
-                            // So use the Decode overload which doesn't throw on extra data.
-                            ContentInfoAsn.Decode(
-                                ref reader,
-                                manager.Memory,
-                                out ContentInfoAsn contentInfo);
-
-                            if (contentInfo.ContentType != Oids.Pkcs7Signed)
-                            {
-                                throw new CryptographicException(SR.Cryptography_Cms_InvalidMessageType);
-                            }
-
-                            return contentInfo.Content.ToArray();
-                        }
-                    }
+                    throw new CryptographicException(SR.Cryptography_Cms_InvalidMessageType);
                 }
+
+                return contentInfo.Content.ToArray();
             }
         }
 
@@ -286,16 +290,14 @@ namespace System.Security.Cryptography.Pkcs
             return wrappedContent;
         }
 
+        [EditorBrowsable(EditorBrowsableState.Never)]
         public void ComputeSignature() => ComputeSignature(new CmsSigner(_signerIdentifierType), true);
 
         public void ComputeSignature(CmsSigner signer) => ComputeSignature(signer, true);
 
         public void ComputeSignature(CmsSigner signer, bool silent)
         {
-            if (signer == null)
-            {
-                throw new ArgumentNullException(nameof(signer));
-            }
+            ArgumentNullException.ThrowIfNull(signer);
 
             // While it shouldn't be possible to change the length of ContentInfo.Content
             // after it's built, use the property at this stage, then use the saved value
@@ -389,7 +391,7 @@ namespace System.Security.Cryptography.Pkcs
 
             if (index < 0 || index >= _signedData.SignerInfos.Length)
             {
-                throw new ArgumentOutOfRangeException(nameof(index), SR.ArgumentOutOfRange_Index);
+                throw new ArgumentOutOfRangeException(nameof(index), SR.ArgumentOutOfRange_IndexMustBeLess);
             }
 
             AlgorithmIdentifierAsn signerAlgorithm = _signedData.SignerInfos[index].DigestAlgorithm;
@@ -401,8 +403,7 @@ namespace System.Security.Cryptography.Pkcs
 
         public void RemoveSignature(SignerInfo signerInfo)
         {
-            if (signerInfo == null)
-                throw new ArgumentNullException(nameof(signerInfo));
+            ArgumentNullException.ThrowIfNull(signerInfo);
 
             int idx = SignerInfos.FindIndexForSigner(signerInfo);
 
@@ -414,15 +415,14 @@ namespace System.Security.Cryptography.Pkcs
             RemoveSignature(idx);
         }
 
-        internal ReadOnlySpan<byte> GetHashableContentSpan()
+        internal ReadOnlyMemory<byte> GetHashableContentMemory()
         {
             Debug.Assert(_heldContent.HasValue);
             ReadOnlyMemory<byte> content = _heldContent.Value;
-            ReadOnlySpan<byte> contentSpan = content.Span;
 
             if (!_hasPkcs7Content)
             {
-                return contentSpan;
+                return content;
             }
 
             // In PKCS#7 compat, only return the contents within the outermost tag.
@@ -430,13 +430,13 @@ namespace System.Security.Cryptography.Pkcs
             try
             {
                 AsnDecoder.ReadEncodedValue(
-                    contentSpan,
+                    content.Span,
                     AsnEncodingRules.BER,
                     out int contentOffset,
                     out int contentLength,
                     out _);
 
-                return contentSpan.Slice(contentOffset, contentLength);
+                return content.Slice(contentOffset, contentLength);
             }
             catch (AsnContentException e)
             {
@@ -557,7 +557,7 @@ namespace System.Security.Cryptography.Pkcs
 
             if (existingLength > 0 || newCerts.Count > 1)
             {
-                var certs = new HashSet<X509Certificate2>(Certificates.OfType<X509Certificate2>());
+                var certs = new HashSet<X509Certificate2>(GetCertificatesNoClone().OfType<X509Certificate2>());
 
                 for (int i = 0; i < newCerts.Count; i++)
                 {
@@ -659,7 +659,12 @@ namespace System.Security.Cryptography.Pkcs
             return ref _signedData;
         }
 
-        public void AddCertificate(X509Certificate2 certificate)
+#if NET || NETSTANDARD2_1
+        public
+#else
+        internal
+#endif
+        void AddCertificate(X509Certificate2 certificate)
         {
             int existingLength = _signedData.CertificateSet?.Length ?? 0;
 
@@ -669,7 +674,7 @@ namespace System.Security.Cryptography.Pkcs
             {
                 foreach (CertificateChoiceAsn cert in _signedData.CertificateSet!)
                 {
-                    if (cert.Certificate!.Value.Span.SequenceEqual(rawData))
+                    if (cert.Certificate is not null && cert.Certificate.Value.Span.SequenceEqual(rawData))
                     {
                         throw new CryptographicException(SR.Cryptography_Cms_CertificateAlreadyInCollection);
                     }
@@ -693,7 +698,12 @@ namespace System.Security.Cryptography.Pkcs
             Reencode();
         }
 
-        public void RemoveCertificate(X509Certificate2 certificate)
+#if NET || NETSTANDARD2_1
+        public
+#else
+        internal
+#endif
+        void RemoveCertificate(X509Certificate2 certificate)
         {
             int existingLength = _signedData.CertificateSet?.Length ?? 0;
 
@@ -704,7 +714,7 @@ namespace System.Security.Cryptography.Pkcs
 
                 foreach (CertificateChoiceAsn cert in _signedData.CertificateSet!)
                 {
-                    if (cert.Certificate!.Value.Span.SequenceEqual(rawData))
+                    if (cert.Certificate is not null && cert.Certificate.Value.Span.SequenceEqual(rawData))
                     {
                         PkcsHelpers.RemoveAt(ref _signedData.CertificateSet, idx);
                         Reencode();
@@ -716,6 +726,157 @@ namespace System.Security.Cryptography.Pkcs
             }
 
             throw new CryptographicException(SR.Cryptography_Cms_NoCertificateFound);
+        }
+
+        private sealed class CertificateList
+        {
+            private readonly SignedCms _parent;
+            private X509Certificate2Collection? _coll;
+            private CertificateChoiceAsn[]? _arr;
+            private Dictionary<string, X509Certificate2>? _skiLookup;
+            private Dictionary<string, X509Certificate2>? _issuerSerialLookup;
+
+            internal CertificateList(SignedCms parent)
+            {
+                _parent = parent;
+            }
+
+            internal X509Certificate2Collection GetCollection()
+            {
+                CertificateChoiceAsn[]? certSet = _parent._signedData.CertificateSet;
+
+                if (!ReferenceEquals(_arr, certSet))
+                {
+                    _coll = null;
+                    _skiLookup = null;
+                    _issuerSerialLookup = null;
+                }
+
+                if (_coll == null)
+                {
+                    X509Certificate2Collection newColl = new();
+
+                    if (certSet != null)
+                    {
+                        foreach (CertificateChoiceAsn cert in certSet)
+                        {
+                            if (cert.Certificate is not null)
+                            {
+                                newColl.Add(X509CertificateLoader.LoadCertificate(cert.Certificate.Value.Span));
+                            }
+                        }
+                    }
+
+                    _coll = newColl;
+                    _arr = certSet;
+                }
+
+                return _coll;
+            }
+
+            internal X509Certificate2? FindCertificate(SubjectIdentifier signerIdentifier)
+            {
+                const int LinearSearchThreshold = 10;
+
+                X509Certificate2Collection coll = GetCollection();
+
+                if (coll.Count > LinearSearchThreshold)
+                {
+                    if (signerIdentifier.Type == SubjectIdentifierType.SubjectKeyIdentifier)
+                    {
+                        if (_skiLookup is null)
+                        {
+                            _skiLookup = new Dictionary<string, X509Certificate2>(coll.Count, StringComparer.Ordinal);
+
+                            foreach (X509Certificate2 item in coll)
+                            {
+                                string ski = PkcsPal.Instance.GetSubjectKeyIdentifier(item).ToSkiString();
+
+                                // The first certificate in the collection with the same SKI wins,
+                                // since the linear method returns the first match.
+#if NET
+                                _ = _skiLookup.TryAdd(ski, item);
+#else
+                                try
+                                {
+                                    _skiLookup.Add(ski, item);
+                                }
+                                catch (ArgumentException)
+                                {
+                                }
+#endif
+                            }
+                        }
+
+                        string key = (string)signerIdentifier.Value!;
+                        key = key.ToUpperInvariant();
+
+                        Debug.Assert(signerIdentifier.Value is not null);
+                        _ = _skiLookup.TryGetValue(key, out X509Certificate2? cert);
+                        return CloneCert(cert);
+                    }
+                    else if (signerIdentifier.Type == SubjectIdentifierType.IssuerAndSerialNumber)
+                    {
+                        if (_issuerSerialLookup is null)
+                        {
+                            _issuerSerialLookup = new Dictionary<string, X509Certificate2>(coll.Count, StringComparer.Ordinal);
+
+                            foreach (X509Certificate2 item in coll)
+                            {
+                                // Serial number is a hexadecimal string, so it cannot contain a pipe character.
+                                // Therefore, the separator cannot be caller-influenced.
+                                string itemKey = $"{item.SerialNumber}||{item.IssuerName.Name}";
+
+                                // The first certificate in the collection with the same issuer/serial wins.
+#if NET
+                                _ = _issuerSerialLookup.TryAdd(itemKey, item);
+#else
+                                try
+                                {
+                                    _issuerSerialLookup.Add(itemKey, item);
+                                }
+                                catch (ArgumentException)
+                                {
+                                }
+#endif
+                            }
+                        }
+
+                        var issuerSerial = (Xml.X509IssuerSerial)signerIdentifier.Value!;
+                        string key = $"{issuerSerial.SerialNumber.ToUpperInvariant()}||{issuerSerial.IssuerName}";
+
+                        _ = _issuerSerialLookup.TryGetValue(key, out X509Certificate2? cert);
+                        return CloneCert(cert);
+                    }
+                    else if (signerIdentifier.Type == SubjectIdentifierType.NoSignature)
+                    {
+                        return null;
+                    }
+                    else
+                    {
+                        // Fail in debug, but at runtime fall back to the other function.
+                        Debug.Fail($"Missing handler for SubjectIdentifierType {signerIdentifier.Type}");
+                    }
+                }
+
+                return SignerInfo.FindSignerCertificate(signerIdentifier, coll);
+
+                static X509Certificate2? CloneCert(X509Certificate2? cert)
+                {
+                    if (cert is null)
+                    {
+                        return null;
+                    }
+
+                    return X509CertificateLoader.LoadCertificate(
+#if NET
+                        cert.RawDataMemory.Span
+#else
+                        cert.RawData
+#endif
+                    );
+                }
+            }
         }
     }
 }

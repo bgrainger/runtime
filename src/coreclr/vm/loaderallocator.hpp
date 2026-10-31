@@ -2,24 +2,20 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 /*============================================================
-**
 ** Header:  LoaderAllocator.hpp
 **
-
-**
 ** Purpose: Implements collection of loader heaps
-**
-**
 ===========================================================*/
 
 #ifndef __LoaderAllocator_h__
 #define __LoaderAllocator_h__
 
 class FuncPtrStubs;
+class ClosedStaticRetBufPortableEntryPoint;
 #include "qcall.h"
 #include "ilstubcache.h"
 
-#include "callcounting.h"
+#include "asynccontinuations.h"
 #include "methoddescbackpatchinfo.h"
 #include "crossloaderallocatorhash.h"
 #include "onstackreplacement.h"
@@ -35,30 +31,182 @@ enum LoaderAllocatorType
     LAT_Assembly
 };
 
+class CallCountingManager;
+typedef DPTR(CallCountingManager) PTR_CallCountingManager;
+
 typedef SHash<PtrSetSHashTraits<LoaderAllocator *>> LoaderAllocatorSet;
 
 class CustomAssemblyBinder;
+class Assembly;
 
-// Iterator over a DomainAssembly in the same ALC
-class DomainAssemblyIterator
+
+// This implements the Add/Remove rangelist api on top of the CodeRangeMap in the code manager
+class CodeRangeMapRangeList : public RangeList
 {
-    DomainAssembly* pCurrentAssembly;
-    DomainAssembly* pNextAssembly;
+public:
+    VPTR_VTABLE_CLASS(CodeRangeMapRangeList, RangeList)
+
+#if defined(DACCESS_COMPILE) || !defined(TARGET_WINDOWS)
+    CodeRangeMapRangeList() :
+        _RangeListRWLock(COOPERATIVE_OR_PREEMPTIVE, LOCK_TYPE_DEFAULT),
+        _rangeListType(STUB_CODE_BLOCK_UNKNOWN),
+        _id(NULL),
+        _collectible(true)
+    {}
+#endif
+
+    CodeRangeMapRangeList(StubCodeBlockKind rangeListType, bool collectible) :
+        _RangeListRWLock(COOPERATIVE_OR_PREEMPTIVE, LOCK_TYPE_DEFAULT),
+        _rangeListType(rangeListType),
+        _id(NULL),
+        _collectible(collectible)
+    {
+        LIMITED_METHOD_CONTRACT;
+    }
+
+    ~CodeRangeMapRangeList()
+    {
+        LIMITED_METHOD_CONTRACT;
+        RemoveRangesWorker(_id);
+    }
+
+    StubCodeBlockKind GetCodeBlockKind()
+    {
+        LIMITED_METHOD_CONTRACT;
+        return _rangeListType;
+    }
+
+private:
+#ifndef DACCESS_COMPILE
+    void AddRangeWorkerHelper(TADDR start, TADDR end, void* id)
+    {
+        ReportStubBlock((void*)start, (size_t)(end - start), _rangeListType);
+        SimpleWriteLockHolder lh(&_RangeListRWLock);
+
+        _ASSERTE(id == _id || _id == NULL);
+        _id = id;
+        // Grow the array first, so that a failure cannot break the
+
+        RangeSection::RangeSectionFlags flags = RangeSection::RANGE_SECTION_RANGELIST;
+        if (_collectible)
+        {
+            _starts.Preallocate(_starts.GetCount() + 1);
+            flags = (RangeSection::RangeSectionFlags)(flags | RangeSection::RANGE_SECTION_COLLECTIBLE);
+        }
+
+        ExecutionManager::AddCodeRange(start, end, ExecutionManager::GetEEJitManager(), flags, this);
+
+        if (_collectible)
+        {
+            // This cannot fail as the array was Preallocated above.
+            _starts.Append(start);
+        }
+    }
+#endif
+
+protected:
+    virtual BOOL AddRangeWorker(const BYTE *start, const BYTE *end, void *id)
+    {
+        CONTRACTL
+        {
+            NOTHROW;
+            GC_NOTRIGGER;
+        }
+        CONTRACTL_END;
+
+#ifndef DACCESS_COMPILE
+        BOOL result = FALSE;
+
+        EX_TRY
+        {
+            AddRangeWorkerHelper((TADDR)start, (TADDR)end, id);
+            result = TRUE;
+        }
+        EX_CATCH
+        {
+        }
+        EX_END_CATCH
+
+        return result;
+#else
+        return FALSE;
+#endif // DACCESS_COMPILE
+    }
+
+    virtual void RemoveRangesWorker(void *id)
+    {
+        CONTRACTL
+        {
+            NOTHROW;
+            GC_NOTRIGGER;
+        }
+        CONTRACTL_END;
+
+#ifndef DACCESS_COMPILE
+        SimpleWriteLockHolder lh(&_RangeListRWLock);
+        _ASSERTE(id == _id || (_id == NULL && _starts.IsEmpty()));
+
+        // Iterate backwards to improve efficiency of removals
+        // as any linked lists in the RangeSectionMap code are in reverse order of insertion.
+        for (auto i = _starts.GetCount(); i > 0;)
+        {
+            --i;
+            if (_starts[i] != 0)
+            {
+                ExecutionManager::DeleteRange(_starts[i]);
+                _starts[i] = 0;
+            }
+        }
+#endif // DACCESS_COMPILE
+    }
+
+    virtual BOOL IsInRangeWorker(TADDR address)
+    {
+        WRAPPER_NO_CONTRACT;
+        RangeSection *pRS = ExecutionManager::FindCodeRange(address, ExecutionManager::ScanReaderLock);
+        if (pRS == NULL)
+            return FALSE;
+        if ((pRS->_flags & RangeSection::RANGE_SECTION_RANGELIST) == 0)
+            return FALSE;
+
+        return (pRS->_pRangeList == this);
+    }
+
+private:
+    SimpleRWLock _RangeListRWLock;
+    StubCodeBlockKind _rangeListType;
+    SArray<TADDR> _starts;
+    void* _id;
+    bool _collectible;
+    friend struct ::cdac_data<CodeRangeMapRangeList>;
+};
+
+template<>
+struct cdac_data<CodeRangeMapRangeList>
+{
+    static constexpr size_t RangeListType = offsetof(CodeRangeMapRangeList, _rangeListType);
+};
+
+// Iterator over Assemblies in the same ALC
+class AssemblyIterator
+{
+    Assembly* pCurrentAssembly;
+    Assembly* pNextAssembly;
 
 public:
-    DomainAssemblyIterator(DomainAssembly* pFirstAssembly);
+    AssemblyIterator(Assembly* pFirstAssembly);
 
     bool end() const
     {
         return pCurrentAssembly == NULL;
     }
 
-    operator DomainAssembly*() const
+    operator Assembly*() const
     {
         return pCurrentAssembly;
     }
 
-    DomainAssembly* operator ->() const
+    Assembly* operator ->() const
     {
         return pCurrentAssembly;
     }
@@ -78,7 +226,7 @@ protected:
     LoaderAllocatorType m_type;
     union
     {
-        DomainAssembly* m_pDomainAssembly;
+        Assembly* m_pAssembly;
         void* m_pValue;
     };
 
@@ -91,9 +239,17 @@ public:
         m_pValue = value;
     };
     VOID Init();
+    bool HasAttachedDynamicAssemblies()
+    {
+        if (m_type == LAT_Assembly && m_pAssembly != NULL)
+        {
+            return true;
+        }
+        return false;
+    }
     LoaderAllocatorType GetType();
-    VOID AddDomainAssembly(DomainAssembly* pDomainAssembly);
-    DomainAssemblyIterator GetDomainAssemblyIterator();
+    VOID AddAssembly(Assembly* pAssembly);
+    AssemblyIterator GetAssemblyIterator();
     BOOL Equals(LoaderAllocatorID* pId);
     COUNT_T Hash();
 };
@@ -119,6 +275,8 @@ class SegmentedHandleIndexStack
     int       m_TOSIndex = Segment::Size;
 
 public:
+
+    ~SegmentedHandleIndexStack();
 
     // Push the value to the stack. If the push cannot be done due to OOM, return false;
     inline bool Push(DWORD value);
@@ -156,24 +314,50 @@ protected:
 
     DAC_ALIGNAS(UINT64) // Align the first member to alignof(m_nLoaderAllocator). Windows does this by default, force Linux to match.
     BYTE *              m_InitialReservedMemForLoaderHeaps;
+    size_t              m_InitialReservedMemForLoaderHeapsSize;
     BYTE                m_LowFreqHeapInstance[sizeof(LoaderHeap)];
     BYTE                m_HighFreqHeapInstance[sizeof(LoaderHeap)];
-    BYTE                m_StubHeapInstance[sizeof(LoaderHeap)];
-    BYTE                m_PrecodeHeapInstance[sizeof(CodeFragmentHeap)];
+#ifdef HAS_FIXUP_PRECODE
+    BYTE                m_FixupPrecodeHeapInstance[sizeof(InterleavedLoaderHeap)];
+#endif // HAS_FIXUP_PRECODE
+#ifndef FEATURE_PORTABLE_ENTRYPOINTS
+    BYTE                m_NewStubPrecodeHeapInstance[sizeof(InterleavedLoaderHeap)];
+#endif // !FEATURE_PORTABLE_ENTRYPOINTS
+    BYTE                m_StaticsHeapInstance[sizeof(LoaderHeap)];
+#ifdef FEATURE_READYTORUN
+#ifdef FEATURE_STUBPRECODE_DYNAMIC_HELPERS
+    BYTE                m_DynamicHelpersHeapInstance[sizeof(InterleavedLoaderHeap)];
+#endif // !FEATURE_STUBPRECODE_DYNAMIC_HELPERS
+#endif // FEATURE_READYTORUN
     PTR_LoaderHeap      m_pLowFrequencyHeap;
     PTR_LoaderHeap      m_pHighFrequencyHeap;
-    PTR_LoaderHeap      m_pStubHeap; // stubs for PInvoke, remoting, etc
-    PTR_CodeFragmentHeap m_pPrecodeHeap;
+    PTR_LoaderHeap      m_pStaticsHeap;
     PTR_LoaderHeap      m_pExecutableHeap;
 #ifdef FEATURE_READYTORUN
+#ifdef FEATURE_STUBPRECODE_DYNAMIC_HELPERS
+    PTR_InterleavedLoaderHeap      m_pDynamicHelpersStubHeap; // R2R Stubs for dynamic helpers. Separate from m_pNewStubPrecodeHeap to avoid allowing these stubs to take up cache space once the process is fully hot.
+#else
     PTR_CodeFragmentHeap m_pDynamicHelpersHeap;
-#endif
+#endif // !FEATURE_STUBPRECODE_DYNAMIC_HELPERS
+#endif // FEATURE_READYTORUN
+
+#ifdef HAS_FIXUP_PRECODE
+    PTR_InterleavedLoaderHeap      m_pFixupPrecodeHeap;
+#endif // HAS_FIXUP_PRECODE
+
+#ifndef FEATURE_PORTABLE_ENTRYPOINTS
+    PTR_InterleavedLoaderHeap      m_pNewStubPrecodeHeap;
+#endif // !FEATURE_PORTABLE_ENTRYPOINTS
+
     //****************************************************************************************
     OBJECTHANDLE        m_hLoaderAllocatorObjectHandle;
     FuncPtrStubs *      m_pFuncPtrStubs; // for GetMultiCallableAddrOfCode()
     // The LoaderAllocator specific string literal map.
     StringLiteralMap   *m_pStringLiteralMap;
     CrstExplicitInit    m_crstLoaderAllocator;
+
+    // Protect the handle table data structures, seperated from m_crstLoaderAllocator to allow thread cleanup to use the lock
+    CrstExplicitInit    m_crstLoaderAllocatorHandleTable;
     bool                m_fGCPressure;
     bool                m_fUnloaded;
     bool                m_fTerminated;
@@ -186,27 +370,42 @@ protected:
     BYTE *              m_pVSDHeapInitialAlloc;
     BYTE *              m_pCodeHeapInitialAlloc;
 
+#ifndef FEATURE_PORTABLE_ENTRYPOINTS
     // U->M thunks that are not associated with a delegate.
     // The cache is keyed by MethodDesc pointers.
     UMEntryThunkCache * m_pUMEntryThunkCache;
+#endif // !FEATURE_PORTABLE_ENTRYPOINTS
 
     // IL stub cache with fabricated MethodTable parented by a random module in this LoaderAllocator.
     ILStubCache         m_ILStubCache;
+
+#if defined(FEATURE_READYTORUN) && defined(FEATURE_STUBPRECODE_DYNAMIC_HELPERS)
+    CodeRangeMapRangeList m_dynamicHelpersRangeList;
+#endif // defined(FEATURE_READYTORUN) && defined(FEATURE_STUBPRECODE_DYNAMIC_HELPERS)
+    CodeRangeMapRangeList m_stubPrecodeRangeList;
+    CodeRangeMapRangeList m_fixupPrecodeRangeList;
 
 #ifdef FEATURE_PGO
     // PgoManager to hold pgo data associated with this LoaderAllocator
     Volatile<PgoManager *> m_pgoManager;
 #endif // FEATURE_PGO
 
+#ifdef FEATURE_MULTITHREADING
+    SArray<TLSIndex> m_tlsIndices;
+#endif // FEATURE_MULTITHREADING
+
 public:
     BYTE *GetVSDHeapInitialBlock(DWORD *pSize);
     BYTE *GetCodeHeapInitialBlock(const BYTE * loAddr, const BYTE * hiAddr, DWORD minimumSize, DWORD *pSize);
 
-    BaseDomain *m_pDomain;
-
     // ExecutionManager caches
     void * m_pLastUsedCodeHeap;
     void * m_pLastUsedDynamicCodeHeap;
+    void * m_pLastUsedOptimizedCodeHeap;
+#ifdef FEATURE_INTERPRETER
+    void * m_pLastUsedInterpreterCodeHeap;
+    void * m_pLastUsedInterpreterDynamicCodeHeap;
+#endif // FEATURE_INTERPRETER
     void * m_pJumpStubCache;
 
     // LoaderAllocator GC Structures
@@ -236,14 +435,22 @@ protected:
     FatTokenSet *m_pFatTokenSet;
 #endif
 
-    VirtualCallStubManager *m_pVirtualCallStubManager;
+    PTR_VirtualCallStubManager m_pVirtualCallStubManager;
+
+#ifdef FEATURE_MULTITHREADING
+public:
+    SArray<TLSIndex>& GetTLSIndexList()
+    {
+        return m_tlsIndices;
+    }
+#endif // FEATURE_MULTITHREADING
 
 private:
     LoaderAllocatorSet m_LoaderAllocatorReferences;
     Volatile<UINT32>   m_cReferences;
     // This will be set by code:LoaderAllocator::Destroy (from managed scout finalizer) and signalizes that
     // the assembly was collected
-    DomainAssembly * m_pFirstDomainAssemblyFromSameALCToDelete;
+    Assembly * m_pFirstAssemblyFromSameALCToDelete;
 
     BOOL CheckAddReference_Unlocked(LoaderAllocator *pOtherLA);
 
@@ -252,16 +459,18 @@ private:
 
     struct FailedTypeInitCleanupListItem
     {
-        SLink m_Link;
+        // Next pointer for SList linkage.
+        DPTR(FailedTypeInitCleanupListItem) m_pNext;
         ListLockEntry *m_pListLockEntry;
         explicit FailedTypeInitCleanupListItem(ListLockEntry *pListLockEntry)
                 :
+            m_pNext(PTR_NULL),
             m_pListLockEntry(pListLockEntry)
         {
         }
     };
 
-    SList<FailedTypeInitCleanupListItem> m_failedTypeInitCleanupList;
+    SListTail<FailedTypeInitCleanupListItem> m_failedTypeInitCleanupList;
 
     SegmentedHandleIndexStack m_freeHandleIndexesStack;
 #ifdef FEATURE_COMINTEROP
@@ -289,6 +498,21 @@ private:
 #ifdef FEATURE_ON_STACK_REPLACEMENT
     PTR_OnStackReplacementManager m_onStackReplacementManager;
 #endif
+
+    PTR_AsyncContinuationsManager m_asyncContinuationsManager;
+
+#ifdef FEATURE_PORTABLE_ENTRYPOINTS
+    // Entries whose resolution couldn't complete immediately (e.g. a PortableEntryPoint
+    // initialized without an R2R-to-interpreter thunk because the thunk wasn't yet loaded,
+    // or a closed-static-retbuf adapter whose target wasn't yet resolved). When a new R2R
+    // module injects string thunks, these are re-checked and resolved if now available.
+    // Untyped so both pending lists can share the generic resolve-and-compact helper in
+    // pregeneratedstringthunks.cpp; elements are MethodDesc* / ClosedStaticRetBufPortableEntryPoint*
+    // respectively. Protected by s_pendingThunkResolutionLock (not m_crstLoaderAllocator).
+    SArray<void*> m_pendingPortableEntryPointThunks;
+    SArray<void*> m_pendingClosedStaticRetBufThunks;
+    bool m_registeredForPendingThunkResolution;
+#endif // FEATURE_PORTABLE_ENTRYPOINTS
 
 #ifndef DACCESS_COMPILE
 
@@ -331,7 +555,7 @@ public:
     //    Detection:
     //        code:IsAlive ... TRUE
     //        code:IsManagedScoutAlive ... TRUE
-    //        code:DomainAssembly::GetExposedAssemblyObject ... non-NULL (may need to allocate GC object)
+    //        code:Assembly::GetExposedAssemblyObject ... non-NULL (may need to allocate GC object)
     //
     //        code:AddReferenceIfAlive ... TRUE (+ adds reference)
     //
@@ -342,23 +566,23 @@ public:
     //    Detection:
     //        code:IsAlive ... TRUE
     //        code:IsManagedScoutAlive ... TRUE
-    //        code:DomainAssembly::GetExposedAssemblyObject ... NULL (change from phase #1)
+    //        code:Assembly::GetExposedAssemblyObject ... NULL (change from phase #1)
     //
     //        code:AddReferenceIfAlive ... TRUE (+ adds reference)
     //
     // 3. Native LoaderAllocator is alive, managed scout is collected.
     //    - The native LoaderAllocator can be kept alive via native reference with code:AddRef call, e.g.:
     //        * Reference from LCG method,
-    //        * Reference recieved from assembly iterator code:AppDomain::AssemblyIterator::Next and/or
+    //        * Reference received from assembly iterator code:AppDomain::AssemblyIterator::Next and/or
     //          held by code:CollectibleAssemblyHolder.
     //    - Other LoaderAllocator can have this LoaderAllocator in its reference list
     //      (code:m_LoaderAllocatorReferences), but without call to code:AddRef.
     //    - LoaderAllocator cannot ever go back to phase #1 or #2, but it can skip this phase if there are
-    //      not any LCG method references keeping it alive at the time of manged scout finalization.
+    //      no LCG method references keeping it alive at the time of managed scout finalization.
     //    Detection:
     //        code:IsAlive ... TRUE
     //        code:IsManagedScoutAlive ... FALSE (change from phase #2)
-    //        code:DomainAssembly::GetExposedAssemblyObject ... NULL
+    //        code:Assembly::GetExposedAssemblyObject ... NULL
     //
     //        code:AddReferenceIfAlive ... TRUE (+ adds reference)
     //
@@ -378,13 +602,13 @@ public:
     // Adds reference if the native object is alive  - code:#AssemblyPhases.
     // Returns TRUE if the reference was added.
     BOOL AddReferenceIfAlive();
-    BOOL Release();
+    BOOL Release() noexcept;
     // Checks if the native object is alive - see code:#AssemblyPhases.
     BOOL IsAlive() { LIMITED_METHOD_DAC_CONTRACT; return (m_cReferences != (UINT32)0); }
     // Checks if managed scout is alive - see code:#AssemblyPhases.
     BOOL IsManagedScoutAlive()
     {
-        return (m_pFirstDomainAssemblyFromSameALCToDelete == NULL);
+        return (m_pFirstAssemblyFromSameALCToDelete == NULL);
     }
 
     // Collect unreferenced assemblies, delete all their remaining resources.
@@ -410,7 +634,7 @@ public:
 
     // This function may only be called while the runtime is suspended
     // As it does not lock around access to a RangeList
-    static PTR_LoaderAllocator GetAssociatedLoaderAllocator_Unsafe(TADDR ptr);
+    static void GcReportAssociatedLoaderAllocators_Unsafe(TADDR ptr, promote_func* fn, ScanContext* sc);
 
     static void AssociateMemoryWithLoaderAllocator(BYTE *start, const BYTE *end, LoaderAllocator* pLoaderAllocator);
     static void RemoveMemoryToLoaderAllocatorAssociation(LoaderAllocator* pLoaderAllocator);
@@ -431,17 +655,27 @@ public:
         return m_pHighFrequencyHeap;
     }
 
-    PTR_LoaderHeap GetStubHeap()
+    PTR_LoaderHeap GetStaticsHeap()
     {
         LIMITED_METHOD_CONTRACT;
-        return m_pStubHeap;
+        return m_pStaticsHeap;
     }
 
-    PTR_CodeFragmentHeap GetPrecodeHeap()
+#ifndef FEATURE_PORTABLE_ENTRYPOINTS
+    PTR_InterleavedLoaderHeap GetNewStubPrecodeHeap()
     {
         LIMITED_METHOD_CONTRACT;
-        return m_pPrecodeHeap;
+        return m_pNewStubPrecodeHeap;
     }
+#endif // !FEATURE_PORTABLE_ENTRYPOINTS
+
+#if defined(FEATURE_READYTORUN) && defined(FEATURE_STUBPRECODE_DYNAMIC_HELPERS)
+    PTR_InterleavedLoaderHeap GetDynamicHelpersStubHeap()
+    {
+        LIMITED_METHOD_CONTRACT;
+        return m_pDynamicHelpersStubHeap;
+    }
+#endif // defined(FEATURE_READYTORUN) && defined(FEATURE_STUBPRECODE_DYNAMIC_HELPERS)
 
     // The executable heap is intended to only be used by the global loader allocator.
     // It refers to executable memory that is not associated with a rangelist.
@@ -450,6 +684,14 @@ public:
         LIMITED_METHOD_CONTRACT;
         return m_pExecutableHeap;
     }
+
+#ifdef HAS_FIXUP_PRECODE
+    PTR_InterleavedLoaderHeap GetFixupPrecodeHeap()
+    {
+        LIMITED_METHOD_CONTRACT;
+        return m_pFixupPrecodeHeap;
+    }
+#endif // HAS_FIXUP_PRECODE
 
     PTR_CodeFragmentHeap GetDynamicHelpersHeap();
 
@@ -468,8 +710,19 @@ public:
     }
 
     LOADERALLOCATORREF GetExposedObject();
+    bool IsExposedObjectLive();
+
+#ifdef _DEBUG
+    bool HasHandleTableLock()
+    {
+        WRAPPER_NO_CONTRACT;
+        if (this == NULL) return true; // During initialization of the LoaderAllocator object, callers may call this with a null this pointer.
+        return m_crstLoaderAllocatorHandleTable.OwnedByCurrentThread();
+    }
+#endif
 
 #ifndef DACCESS_COMPILE
+    bool InsertObjectIntoFieldWithLifetimeOfCollectibleLoaderAllocator(OBJECTREF value, Object** pField);
     LOADERHANDLE AllocateHandle(OBJECTREF value);
 
     void SetHandleValue(LOADERHANDLE handle, OBJECTREF value);
@@ -478,6 +731,7 @@ public:
 
     // The default implementation is a no-op. Only collectible loader allocators implement this method.
     virtual void RegisterHandleForCleanup(OBJECTHANDLE /* objHandle */) { }
+    virtual void RegisterHandleForCleanupLocked(OBJECTHANDLE /* objHandle */) { }
     virtual void UnregisterHandleFromCleanup(OBJECTHANDLE /* objHandle */) { }
     virtual void CleanupHandles() { }
 
@@ -514,11 +768,6 @@ public:
 #endif // FEATURE_PGO
 #endif // !defined(DACCESS_COMPILE)
 
-
-    // This function is only safe to call if the handle is known to be a handle in a collectible
-    // LoaderAllocator, and the handle is allocated, and the LoaderAllocator is also not collected.
-    FORCEINLINE OBJECTREF GetHandleValueFastCannotFailType2(LOADERHANDLE handle);
-
     // These functions are designed to be used for maximum performance to access handle values
     // The GetHandleValueFast will handle the scenario where a loader allocator pointer does not
     // need to be acquired to do the handle lookup, and the GetHandleValueFastPhase2 handles
@@ -539,13 +788,12 @@ public:
 
     OBJECTREF GetHandleValue(LOADERHANDLE handle);
 
-    LoaderAllocator();
+    LoaderAllocator(bool collectible);
     virtual ~LoaderAllocator();
-    BaseDomain *GetDomain() { LIMITED_METHOD_CONTRACT; return m_pDomain; }
     virtual BOOL CanUnload() = 0;
-    void Init(BaseDomain *pDomain, BYTE *pExecutableHeapMemory = NULL);
+    void Init(BYTE *pExecutableHeapMemory);
     void Terminate();
-    virtual void ReleaseManagedAssemblyLoadContext() {}
+    virtual void ReleaseAssemblyLoadContext() {}
 
     SIZE_T EstimateSize();
 
@@ -567,23 +815,25 @@ public:
         LIMITED_METHOD_CONTRACT;
         return m_nGCCount;
     }
+    void AllocateBytesForStaticVariables(DynamicStaticsInfo* pStaticsInfo, uint32_t cbMem, bool isClassInitedByUpdatingStaticPointer);
+    void AllocateGCHandlesBytesForStaticVariables(DynamicStaticsInfo* pStaticsInfo, uint32_t cSlots, MethodTable* pMTWithStaticBoxes, bool isClassInitedByUpdatingStaticPointer);
 
     static BOOL Destroy(QCall::LoaderAllocatorHandle pLoaderAllocator);
 
     //****************************************************************************************
-    // Methods to retrieve a pointer to the COM+ string STRINGREF for a string constant.
+    // Methods to retrieve a pointer to the CLR string STRINGREF for a string constant.
     // If the string is not currently in the hash table it will be added and if the
     // copy string flag is set then the string will be copied before it is inserted.
-    STRINGREF *GetStringObjRefPtrFromUnicodeString(EEStringData *pStringData);
+    STRINGREF *GetStringObjRefPtrFromUnicodeString(EEStringData *pStringData, void** ppPinnedString = nullptr);
     void LazyInitStringLiteralMap();
     STRINGREF *IsStringInterned(STRINGREF *pString);
     STRINGREF *GetOrInternString(STRINGREF *pString);
     void CleanupStringLiteralMap();
 
-    void InitVirtualCallStubManager(BaseDomain *pDomain);
+    void InitVirtualCallStubManager();
     void UninitVirtualCallStubManager();
 
-    inline VirtualCallStubManager *GetVirtualCallStubManager()
+    inline PTR_VirtualCallStubManager GetVirtualCallStubManager()
     {
         LIMITED_METHOD_CONTRACT;
         return m_pVirtualCallStubManager;
@@ -607,6 +857,12 @@ public:
     // This method returns marshaling data that the EE uses that is stored on a per LoaderAllocator
     // basis.
     EEMarshalingData *GetMarshalingData();
+
+    EEMarshalingData* GetMarshalingDataIfAvailable()
+    {
+        LIMITED_METHOD_CONTRACT;
+        return m_pMarshalingData;
+    }
 
 private:
     // Deletes marshaling data at shutdown (which contains cached factories that needs to be released)
@@ -657,11 +913,59 @@ public:
     PTR_OnStackReplacementManager GetOnStackReplacementManager();
 #endif // FEATURE_ON_STACK_REPLACEMENT
 
+    PTR_AsyncContinuationsManager GetAsyncContinuationsManager();
+
+#ifdef FEATURE_PORTABLE_ENTRYPOINTS
+    // Add a MethodDesc to the pending list of methods waiting for an R2R-to-interpreter thunk.
+    // Takes s_pendingThunkResolutionLock internally.
+    void AddPendingPortableEntryPointThunk(MethodDesc* pMD);
+
+    void AddPendingClosedStaticRetBufThunk(ClosedStaticRetBufPortableEntryPoint* pEntryPoint);
+
+#endif // FEATURE_PORTABLE_ENTRYPOINTS
+
+#ifndef DACCESS_COMPILE
+public:
+    virtual void RegisterDependentHandleToNativeObjectForCleanup(LADependentHandleToNativeObject *dependentHandle) {};
+    virtual void UnregisterDependentHandleToNativeObjectFromCleanup(LADependentHandleToNativeObject *dependentHandle) {};
+    virtual void CleanupDependentHandlesToNativeObjects() {};
+#endif
+
+    friend struct ::cdac_data<LoaderAllocator>;
+#ifdef FEATURE_PORTABLE_ENTRYPOINTS
+    friend void AddPendingPortableEntryPointThunkUnderLock(LoaderAllocator*, MethodDesc*);
+    friend void AddPendingClosedStaticRetBufThunkUnderLock(LoaderAllocator*, ClosedStaticRetBufPortableEntryPoint*);
+    friend void UnregisterLoaderAllocatorForPendingThunkResolution(LoaderAllocator*);
+    friend void ResolvePendingPortableEntryPointThunksGlobal();
+#endif // FEATURE_PORTABLE_ENTRYPOINTS
 };  // class LoaderAllocator
+
+template<>
+struct cdac_data<LoaderAllocator>
+{
+    static constexpr size_t ReferenceCount = offsetof(LoaderAllocator, m_cReferences);
+    static constexpr size_t HighFrequencyHeap = offsetof(LoaderAllocator, m_pHighFrequencyHeap);
+    static constexpr size_t LowFrequencyHeap = offsetof(LoaderAllocator, m_pLowFrequencyHeap);
+    static constexpr size_t StaticsHeap = offsetof(LoaderAllocator, m_pStaticsHeap);
+    static constexpr size_t ExecutableHeap = offsetof(LoaderAllocator, m_pExecutableHeap);
+#ifdef HAS_FIXUP_PRECODE
+    static constexpr size_t FixupPrecodeHeap = offsetof(LoaderAllocator, m_pFixupPrecodeHeap);
+#endif // HAS_FIXUP_PRECODE
+#ifndef FEATURE_PORTABLE_ENTRYPOINTS
+    static constexpr size_t NewStubPrecodeHeap = offsetof(LoaderAllocator, m_pNewStubPrecodeHeap);
+#endif // !FEATURE_PORTABLE_ENTRYPOINTS
+#if defined(FEATURE_READYTORUN) && defined(FEATURE_STUBPRECODE_DYNAMIC_HELPERS)
+    static constexpr size_t DynamicHelpersStubHeap = offsetof(LoaderAllocator, m_pDynamicHelpersStubHeap);
+#endif // defined(FEATURE_READYTORUN) && defined(FEATURE_STUBPRECODE_DYNAMIC_HELPERS)
+    static constexpr size_t VirtualCallStubManager = offsetof(LoaderAllocator, m_pVirtualCallStubManager);
+    static constexpr size_t ObjectHandle = offsetof(LoaderAllocator, m_hLoaderAllocatorObjectHandle);
+    static constexpr size_t IsCollectible = offsetof(LoaderAllocator, m_IsCollectible);
+    static constexpr size_t CreationNumber = offsetof(LoaderAllocator, m_nLoaderAllocator);
+};
 
 typedef VPTR(LoaderAllocator) PTR_LoaderAllocator;
 
-extern "C" BOOL QCALLTYPE LoaderAllocator_Destroy(QCall::LoaderAllocatorHandle pLoaderAllocator);
+extern "C" BOOL QCALLTYPE LoaderAllocator_Destroy(QCall::LoaderAllocatorHandle pLoaderAllocator, QCallExceptionStatus* qcallError);
 
 class GlobalLoaderAllocator : public LoaderAllocator
 {
@@ -679,8 +983,8 @@ protected:
     LoaderAllocatorID m_Id;
 
 public:
-    void Init(BaseDomain *pDomain);
-    GlobalLoaderAllocator() : m_Id(LAT_Global, (void*)1) { LIMITED_METHOD_CONTRACT;};
+    void Init();
+    GlobalLoaderAllocator() : LoaderAllocator(false), m_Id(LAT_Global, (void*)1) { LIMITED_METHOD_CONTRACT;};
     virtual LoaderAllocatorID* Id();
     virtual BOOL CanUnload();
 };
@@ -700,20 +1004,18 @@ protected:
     ShuffleThunkCache* m_pShuffleThunkCache;
 public:
     virtual LoaderAllocatorID* Id();
-    AssemblyLoaderAllocator() : m_Id(LAT_Assembly), m_pShuffleThunkCache(NULL)
+    AssemblyLoaderAllocator() : LoaderAllocator(true), m_Id(LAT_Assembly), m_pShuffleThunkCache(NULL)
 #if !defined(DACCESS_COMPILE)
         , m_binderToRelease(NULL)
 #endif
     { LIMITED_METHOD_CONTRACT; }
-    void Init(AppDomain *pAppDomain);
+    void Init();
     virtual BOOL CanUnload();
 
-    void SetCollectible();
-
-    void AddDomainAssembly(DomainAssembly *pDomainAssembly)
+    void AddAssembly(Assembly *pAssembly)
     {
         WRAPPER_NO_CONTRACT;
-        m_Id.AddDomainAssembly(pDomainAssembly);
+        m_Id.AddAssembly(pAssembly);
     }
 
     ShuffleThunkCache* GetShuffleThunkCache()
@@ -723,6 +1025,7 @@ public:
 
 #if !defined(DACCESS_COMPILE)
     virtual void RegisterHandleForCleanup(OBJECTHANDLE objHandle);
+    virtual void RegisterHandleForCleanupLocked(OBJECTHANDLE objHandle);
     virtual void UnregisterHandleFromCleanup(OBJECTHANDLE objHandle);
     virtual void CleanupHandles();
     CustomAssemblyBinder* GetBinder()
@@ -731,30 +1034,80 @@ public:
     }
     virtual ~AssemblyLoaderAllocator();
     void RegisterBinder(CustomAssemblyBinder* binderToRelease);
-    virtual void ReleaseManagedAssemblyLoadContext();
+    virtual void ReleaseAssemblyLoadContext();
 #endif // !defined(DACCESS_COMPILE)
 
 private:
     struct HandleCleanupListItem
     {
-        SLink m_Link;
+        // Next pointer for SList linkage.
+        DPTR(HandleCleanupListItem) m_pNext;
         OBJECTHANDLE m_handle;
         explicit HandleCleanupListItem(OBJECTHANDLE handle)
                 :
+            m_pNext(PTR_NULL),
             m_handle(handle)
         {
         }
     };
 
-    SList<HandleCleanupListItem> m_handleCleanupList;
+    SListTail<HandleCleanupListItem> m_handleCleanupList;
 #if !defined(DACCESS_COMPILE)
     CustomAssemblyBinder* m_binderToRelease;
+#endif
+
+private:
+    class DependentHandleToNativeObjectHashTraits : public PtrSetSHashTraits<LADependentHandleToNativeObject *> {};
+    typedef SHash<DependentHandleToNativeObjectHashTraits> DependentHandleToNativeObjectSet;
+
+    CrstExplicitInit m_dependentHandleToNativeObjectSetCrst;
+    DependentHandleToNativeObjectSet m_dependentHandleToNativeObjectSet;
+
+#ifndef DACCESS_COMPILE
+public:
+    virtual void RegisterDependentHandleToNativeObjectForCleanup(LADependentHandleToNativeObject *dependentHandle);
+    virtual void UnregisterDependentHandleToNativeObjectFromCleanup(LADependentHandleToNativeObject *dependentHandle);
+    virtual void CleanupDependentHandlesToNativeObjects();
 #endif
 };
 
 typedef VPTR(AssemblyLoaderAllocator) PTR_AssemblyLoaderAllocator;
 
+#ifndef DACCESS_COMPILE
+class LOADERHANDLEHolder
+{
+    LOADERHANDLE _handle;
+    LoaderAllocator* _pLoaderAllocator;
+
+public:
+
+    LOADERHANDLEHolder(LOADERHANDLE handle, LoaderAllocator* pLoaderAllocator)
+    {
+        _handle = handle;
+        _pLoaderAllocator = pLoaderAllocator;
+        _ASSERTE(_pLoaderAllocator != NULL);
+    }
+
+    LOADERHANDLEHolder(const LOADERHANDLEHolder&) = delete;
+
+    LOADERHANDLE GetValue() const
+    {
+        return _handle;
+    }
+
+    void SuppressRelease()
+    {
+        _pLoaderAllocator = NULL;
+    }
+
+    ~LOADERHANDLEHolder()
+    {
+        if (_pLoaderAllocator != NULL)
+            _pLoaderAllocator->FreeHandle(_handle);
+    }
+};
+#endif
+
 #include "loaderallocator.inl"
 
 #endif //  __LoaderAllocator_h__
-

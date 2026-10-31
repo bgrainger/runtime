@@ -92,8 +92,6 @@
 #define MONO_ARCH_CALLEE_SAVED_FREGS 0x00000000
 #endif
 
-#define MONO_ARCH_USE_FPSTACK FALSE
-
 #define MONO_ARCH_INST_SREG2_MASK(ins) (0)
 
 #define MONO_ARCH_INST_FIXED_REG(desc) \
@@ -119,7 +117,7 @@
 #define MONO_ARCH_FRAME_ALIGNMENT 8
 #endif
 
-/* fixme: align to 16byte instead of 32byte (we align to 32byte to get 
+/* fixme: align to 16byte instead of 32byte (we align to 32byte to get
  * reproduceable results for benchmarks */
 #define MONO_ARCH_CODE_ALIGNMENT 32
 
@@ -273,7 +271,7 @@ typedef enum {
 
 /* keep the size of the structure a multiple of 8 */
 struct MonoLMF {
-	/* 
+	/*
 	 * If the second lowest bit is set to 1, then this is a MonoLMFExt structure, and
 	 * the other fields are not valid.
 	 */
@@ -373,7 +371,7 @@ typedef struct MonoCompileArch {
 #define MONO_ARCH_HAVE_INTERP_PINVOKE_TRAMP 1
 #define MONO_ARCH_HAVE_INTERP_NATIVE_TO_MANAGED 1
 
-#if defined(TARGET_WATCHOS) || (defined(__linux__) && !defined(TARGET_ANDROID))
+#if defined(TARGET_WATCHOS) || (defined(__linux__) && !defined(TARGET_ANDROID) && !defined(TARGET_LINUX_MUSL))
 #define MONO_ARCH_DISABLE_HW_TRAPS 1
 #define MONO_ARCH_HAVE_UNWIND_BACKTRACE 1
 #endif

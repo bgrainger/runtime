@@ -61,7 +61,6 @@ PTR_MethodDesc MethodImpl::FindMethodDesc(DWORD slot, PTR_MethodDesc defaultRetu
     {
         if (FORBIDGC_LOADER_USE_ENABLED()) NOTHROW; else THROWS;
         if (FORBIDGC_LOADER_USE_ENABLED()) GC_NOTRIGGER; else GC_TRIGGERS;
-        if (FORBIDGC_LOADER_USE_ENABLED()) FORBID_FAULT; else { INJECT_FAULT(COMPlusThrowOM()); }
         MODE_ANY;
     }
     CONTRACTL_END
@@ -80,7 +79,6 @@ PTR_MethodDesc MethodImpl::GetMethodDesc(DWORD slotIndex, PTR_MethodDesc default
     {
         if (FORBIDGC_LOADER_USE_ENABLED()) NOTHROW; else THROWS;
         if (FORBIDGC_LOADER_USE_ENABLED()) GC_NOTRIGGER; else GC_TRIGGERS;
-        if (FORBIDGC_LOADER_USE_ENABLED()) FORBID_FAULT; else { INJECT_FAULT(COMPlusThrowOM()); }
         MODE_ANY;
     }
     CONTRACTL_END
@@ -90,61 +88,11 @@ PTR_MethodDesc MethodImpl::GetMethodDesc(DWORD slotIndex, PTR_MethodDesc default
     TADDR base = dac_cast<TADDR>(pRelPtrForSlot) + slotIndex * sizeof(MethodDesc *);
     PTR_MethodDesc result = *dac_cast<DPTR(PTR_MethodDesc)>(base);
 
-    // Prejitted images may leave NULL in this table if
-    // the methoddesc is declared in another module.
-    // In this case we need to manually compute & restore it
-    // from the slot number.
-
-    if (result == NULL)
-#ifndef DACCESS_COMPILE
-        result = RestoreSlot(slotIndex, defaultReturn->GetMethodTable());
-#else // DACCESS_COMPILE
-        DacNotImpl();
-#endif // DACCESS_COMPILE
-
-    return result;
-}
-
-#ifndef DACCESS_COMPILE
-
-MethodDesc *MethodImpl::RestoreSlot(DWORD index, MethodTable *pMT)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        FORBID_FAULT;
-        PRECONDITION(pdwSlots != NULL);
-    }
-    CONTRACTL_END
-
-    MethodDesc *result;
-
-    PREFIX_ASSUME(pdwSlots != NULL);
-    DWORD slot = GetSlots()[index];
-
-    // Since the overridden method is in a different module, we
-    // are guaranteed that it is from a different class.  It is
-    // either an override of a parent virtual method or parent-implemented
-    // interface, or of an interface that this class has introduced.
-
-    // In the former 2 cases, the slot number will be in the parent's
-    // vtable section, and we can retrieve the implemented MethodDesc from
-    // there.  In the latter case, we can search through our interface
-    // map to determine which interface it is from.
-
-    MethodTable *pParentMT = pMT->GetParentMethodTable();
-    CONSISTENCY_CHECK(pParentMT != NULL && slot < pParentMT->GetNumVirtuals());
-    {
-        result = pParentMT->GetMethodDescForSlot(slot);
-    }
-
     _ASSERTE(result != NULL);
-
-    pImplementedMD[index] = result;
-
     return result;
 }
+
+#ifndef DACCESS_COMPILE
 
 ///////////////////////////////////////////////////////////////////////////////////////
 void MethodImpl::SetSize(LoaderHeap *pHeap, AllocMemTracker *pamTracker, DWORD size)
@@ -154,7 +102,6 @@ void MethodImpl::SetSize(LoaderHeap *pHeap, AllocMemTracker *pamTracker, DWORD s
         GC_NOTRIGGER;
         PRECONDITION(CheckPointer(this));
         PRECONDITION(pdwSlots==NULL && pImplementedMD==NULL);
-        INJECT_FAULT(ThrowOutOfMemory());
     } CONTRACTL_END;
 
     if(size > 0) {

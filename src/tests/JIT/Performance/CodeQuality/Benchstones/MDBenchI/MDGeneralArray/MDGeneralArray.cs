@@ -2,6 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Runtime.CompilerServices;
+using TestLibrary;
+using Xunit;
 
 namespace Benchstone.MDBenchI
 {
@@ -71,7 +73,10 @@ public static class MDGeneralArray
         return Bench(Iterations, s, d);
     }
 
-    public static int Main() {
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/86772", TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst)]
+    [Fact]
+    [ActiveIssue("https://github.com/dotnet/runtimelab/issues/155: Arrays with non-zero lower bounds", typeof(PlatformDetection), nameof(PlatformDetection.IsNonZeroLowerBoundArrayNotSupported))]
+    public static int TestEntryPoint() {
         bool result = Test() && Test2();
         return (result ? 100 : -1);
     }

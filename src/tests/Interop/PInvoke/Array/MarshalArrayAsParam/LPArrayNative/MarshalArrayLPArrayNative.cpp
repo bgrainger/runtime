@@ -4,6 +4,11 @@
 #include <xplatform.h>
 #include "MarshalArray.h"
 
+// MSVC versions before 19.38 generate incorrect code for this file when compiling with /O2
+#if defined(_MSC_VER) && (_MSC_VER < 1938)
+#pragma optimize("", off)
+#endif
+
 #if defined(_MSC_VER)
 #define FUNCTIONNAME __FUNCSIG__
 #else
@@ -32,6 +37,114 @@ bool Equals(T *pActual, int cActual, T *pExpected, int cExpected)
     }
 
     return true;
+}
+
+using PointerArrayAddressCallback = uintptr_t* (__cdecl *)(uintptr_t*, intptr_t);
+using PointerArrayCallback = int32_t (__cdecl *)(uintptr_t*, int32_t, const uintptr_t*);
+
+extern "C" DLL_EXPORT uintptr_t* __cdecl GetPointerArrayAddress(uintptr_t* values, PointerArrayAddressCallback callback, intptr_t context)
+{
+    if (callback != nullptr && callback(values, context) != values)
+    {
+        return nullptr;
+    }
+
+    return values;
+}
+
+extern "C" DLL_EXPORT BOOL __cdecl ReversePointerArray(uintptr_t* values, int32_t count, const uintptr_t* expected, uintptr_t* original, BOOL pinned)
+{
+    if (values == nullptr || expected == nullptr)
+    {
+        return values == nullptr && expected == nullptr;
+    }
+
+    if ((values == original) != (pinned != FALSE))
+    {
+        return FALSE;
+    }
+
+    for (int32_t i = 0; i < count; i++)
+    {
+        if (values[i] != expected[i])
+        {
+            return FALSE;
+        }
+    }
+
+    for (int32_t i = 0; i < count; i++)
+    {
+        values[i] = expected[count - i - 1];
+    }
+
+    return TRUE;
+}
+
+extern "C" DLL_EXPORT BOOL __cdecl ReversePointerArrayByRef(uintptr_t** values, int32_t count, const uintptr_t* expected, uintptr_t* original)
+{
+    return ReversePointerArray(*values, count, expected, original, FALSE);
+}
+
+extern "C" DLL_EXPORT BOOL __cdecl CreatePointerArray(uintptr_t** values, int32_t count, const uintptr_t* expected)
+{
+    *values = nullptr;
+    if (expected == nullptr)
+    {
+        return TRUE;
+    }
+
+    *values = static_cast<uintptr_t*>(CoreClrAlloc(sizeof(uintptr_t) * (count == 0 ? 1 : count)));
+    if (*values == nullptr)
+    {
+        return FALSE;
+    }
+
+    for (int32_t i = 0; i < count; i++)
+    {
+        (*values)[i] = expected[i];
+    }
+
+    return TRUE;
+}
+
+extern "C" DLL_EXPORT BOOL __cdecl CallPointerArrayCallback(PointerArrayCallback callback, uintptr_t* values, int32_t count, const uintptr_t* expected)
+{
+    if (callback(values, count, expected) == 0)
+    {
+        return FALSE;
+    }
+
+    for (int32_t i = 0; i < count; i++)
+    {
+        if (values[i] != expected[count - i - 1])
+        {
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
+extern "C" DLL_EXPORT uint8_t* __cdecl ReverseArrayElements(uint8_t* values, int32_t count, int32_t elementSize)
+{
+    for (int32_t i = 0; i < count / 2; i++)
+    {
+        for (int32_t j = 0; j < elementSize; j++)
+        {
+            uint8_t temporary = values[i * elementSize + j];
+            values[i * elementSize + j] = values[(count - i - 1) * elementSize + j];
+            values[(count - i - 1) * elementSize + j] = temporary;
+        }
+    }
+
+    return values;
+}
+
+using ArrayElementReverser = uint8_t* (__cdecl *)(uint8_t*, int32_t, int32_t);
+
+extern "C" DLL_EXPORT ArrayElementReverser __cdecl GetArrayElementReverser()
+{
+    return &ReverseArrayElements;
 }
 
 #define EQUALS(__actual, __cActual, __expected) Equals((__actual), (__cActual), (__expected), (int)sizeof(__expected) / sizeof(__expected[0]))
@@ -85,47 +198,47 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Object(VARIANT *pActual, int cActual)
 }
 #endif
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Uint(UINT *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Uint(uint32_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
-    INIT_EXPECTED(UINT, ARRAY_LENGTH);
+    INIT_EXPECTED(uint32_t, ARRAY_LENGTH);
 
     return EQUALS(pActual, cActual, expected);
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Short(SHORT *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Short(int16_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
-    INIT_EXPECTED(SHORT, ARRAY_LENGTH);
+    INIT_EXPECTED(int16_t, ARRAY_LENGTH);
 
     return EQUALS(pActual, cActual, expected);
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Word(WORD *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Word(uint16_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
-    INIT_EXPECTED(WORD, ARRAY_LENGTH);
+    INIT_EXPECTED(uint16_t, ARRAY_LENGTH);
 
     return EQUALS(pActual, cActual, expected);
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Long64(LONG64 *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Long64(int64_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
-    INIT_EXPECTED(LONG64, ARRAY_LENGTH);
+    INIT_EXPECTED(int64_t, ARRAY_LENGTH);
 
     return EQUALS(pActual, cActual, expected);
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_ULong64(ULONG64 *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_ULong64(uint64_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
-    INIT_EXPECTED(ULONG64, ARRAY_LENGTH);
+    INIT_EXPECTED(uint64_t, ARRAY_LENGTH);
 
     return EQUALS(pActual, cActual, expected);
 }
@@ -148,11 +261,11 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Float(FLOAT *pActual, int cActual)
     return EQUALS(pActual, cActual, expected);
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Byte(BYTE *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Byte(uint8_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
-    INIT_EXPECTED(BYTE, ARRAY_LENGTH);
+    INIT_EXPECTED(uint8_t, ARRAY_LENGTH);
 
     return EQUALS(pActual, cActual, expected);
 }
@@ -211,7 +324,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Struct(TestStruct *pActual, int cActual)
     {
         expected[i].x = (int)i;
         expected[i].d = (int)i;
-        expected[i].l = (LONG64)i;
+        expected[i].l = (int64_t)i;
         expected[i].str = ToString((int)i);
     }
 
@@ -337,7 +450,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Object_InOut(VARIANT *pActual, int cActu
 }
 #endif
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Uint_InOut(UINT *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Uint_InOut(uint32_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
@@ -347,7 +460,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Uint_InOut(UINT *pActual, int cActual)
     return retval;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Short_InOut(SHORT *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Short_InOut(int16_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
@@ -357,7 +470,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Short_InOut(SHORT *pActual, int cActual)
     return retval;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Word_InOut(WORD *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Word_InOut(uint16_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
@@ -367,7 +480,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Word_InOut(WORD *pActual, int cActual)
     return retval;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Long64_InOut(LONG64 *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Long64_InOut(int64_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
@@ -377,7 +490,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Long64_InOut(LONG64 *pActual, int cActua
     return retval;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_ULong64_InOut(ULONG64 *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_ULong64_InOut(uint64_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
@@ -407,7 +520,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Float_InOut(FLOAT *pActual, int cActual)
     return retval;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Byte_InOut(BYTE *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Byte_InOut(uint8_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
@@ -496,7 +609,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Object_Out(VARIANT *pActual, int cActual
 }
 #endif
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Uint_Out(UINT *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Uint_Out(uint32_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
@@ -505,7 +618,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Uint_Out(UINT *pActual, int cActual)
     return true;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Short_Out(SHORT *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Short_Out(int16_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
@@ -514,7 +627,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Short_Out(SHORT *pActual, int cActual)
     return true;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Word_Out(WORD *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Word_Out(uint16_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
@@ -523,7 +636,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Word_Out(WORD *pActual, int cActual)
     return true;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Long64_Out(LONG64 *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Long64_Out(int64_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
@@ -532,7 +645,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Long64_Out(LONG64 *pActual, int cActual)
     return true;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_ULong64_Out(ULONG64 *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_ULong64_Out(uint64_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
@@ -559,7 +672,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Float_Out(FLOAT *pActual, int cActual)
     return true;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Byte_Out(BYTE *pActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Byte_Out(uint8_t *pActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(pActual);
 
@@ -632,7 +745,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Object_In_Ref(VARIANT **ppActual, int cA
 }
 #endif
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Uint_In_Ref(UINT **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Uint_In_Ref(uint32_t **ppActual, int cActual)
 {
     if (!CStyle_Array_Uint(*ppActual, cActual))
         return false;
@@ -641,7 +754,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Uint_In_Ref(UINT **ppActual, int cActual
     return true;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Short_In_Ref(SHORT **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Short_In_Ref(int16_t **ppActual, int cActual)
 {
     if (!CStyle_Array_Short(*ppActual, cActual))
         return false;
@@ -650,7 +763,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Short_In_Ref(SHORT **ppActual, int cActu
     return true;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Word_In_Ref(WORD **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Word_In_Ref(uint16_t **ppActual, int cActual)
 {
     if (!CStyle_Array_Word(*ppActual, cActual))
         return false;
@@ -659,7 +772,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Word_In_Ref(WORD **ppActual, int cActual
     return true;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Long64_In_Ref(LONG64 **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Long64_In_Ref(int64_t **ppActual, int cActual)
 {
     if (!CStyle_Array_Long64(*ppActual, cActual))
         return false;
@@ -668,7 +781,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Long64_In_Ref(LONG64 **ppActual, int cAc
     return true;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_ULong64_In_Ref(ULONG64 **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_ULong64_In_Ref(uint64_t **ppActual, int cActual)
 {
     if (!CStyle_Array_ULong64(*ppActual, cActual))
         return false;
@@ -695,7 +808,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Float_In_Ref(FLOAT **ppActual, int cActu
     return true;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Byte_In_Ref(BYTE **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Byte_In_Ref(uint8_t **ppActual, int cActual)
 {
     if (!CStyle_Array_Byte(*ppActual, cActual))
         return false;
@@ -779,7 +892,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Object_Out_Ref(VARIANT **ppActual, int c
 }
 #endif
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Uint_Out_Ref(UINT **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Uint_Out_Ref(uint32_t **ppActual, int cActual)
 {
     CHECK_PARAM_EMPTY(*ppActual);
 
@@ -788,7 +901,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Uint_Out_Ref(UINT **ppActual, int cActua
     return true;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Short_Out_Ref(SHORT **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Short_Out_Ref(int16_t **ppActual, int cActual)
 {
     CHECK_PARAM_EMPTY(*ppActual);
 
@@ -797,7 +910,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Short_Out_Ref(SHORT **ppActual, int cAct
     return true;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Word_Out_Ref(WORD **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Word_Out_Ref(uint16_t **ppActual, int cActual)
 {
     CHECK_PARAM_EMPTY(*ppActual);
 
@@ -806,7 +919,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Word_Out_Ref(WORD **ppActual, int cActua
     return true;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Long64_Out_Ref(LONG64 **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Long64_Out_Ref(int64_t **ppActual, int cActual)
 {
     CHECK_PARAM_EMPTY(*ppActual);
 
@@ -815,7 +928,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Long64_Out_Ref(LONG64 **ppActual, int cA
     return true;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_ULong64_Out_Ref(ULONG64 **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_ULong64_Out_Ref(uint64_t **ppActual, int cActual)
 {
     CHECK_PARAM_EMPTY(*ppActual);
 
@@ -842,7 +955,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Float_Out_Ref(FLOAT **ppActual, int cAct
     return true;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Byte_Out_Ref(BYTE **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Byte_Out_Ref(uint8_t **ppActual, int cActual)
 {
     CHECK_PARAM_EMPTY(*ppActual);
 
@@ -926,7 +1039,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Object_InOut_Ref(VARIANT **ppActual, int
 }
 #endif
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Uint_InOut_Ref(UINT **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Uint_InOut_Ref(uint32_t **ppActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(*ppActual);
 
@@ -936,7 +1049,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Uint_InOut_Ref(UINT **ppActual, int cAct
     return retval;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Short_InOut_Ref(SHORT **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Short_InOut_Ref(int16_t **ppActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(*ppActual);
 
@@ -946,7 +1059,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Short_InOut_Ref(SHORT **ppActual, int cA
     return retval;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Word_InOut_Ref(WORD **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Word_InOut_Ref(uint16_t **ppActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(*ppActual);
 
@@ -956,7 +1069,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Word_InOut_Ref(WORD **ppActual, int cAct
     return retval;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Long64_InOut_Ref(LONG64 **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Long64_InOut_Ref(int64_t **ppActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(*ppActual);
 
@@ -966,7 +1079,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Long64_InOut_Ref(LONG64 **ppActual, int 
     return retval;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_ULong64_InOut_Ref(ULONG64 **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_ULong64_InOut_Ref(uint64_t **ppActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(*ppActual);
 
@@ -996,7 +1109,7 @@ extern "C" DLL_EXPORT BOOL CStyle_Array_Float_InOut_Ref(FLOAT **ppActual, int cA
     return retval;
 }
 
-extern "C" DLL_EXPORT BOOL CStyle_Array_Byte_InOut_Ref(BYTE **ppActual, int cActual)
+extern "C" DLL_EXPORT BOOL CStyle_Array_Byte_InOut_Ref(uint8_t **ppActual, int cActual)
 {
     CHECK_PARAM_NOT_EMPTY(*ppActual);
 

@@ -76,27 +76,34 @@ static Keywords keywords[] = {
 /********************************************************************************/
 /* File encoding-dependent functions */
 /*--------------------------------------------------------------------------*/
-char* nextcharU(__in __nullterminated char* pos)
+char* nextcharU(_In_ __nullterminated char* pos)
 {
     return ++pos;
 }
 
-char* nextcharW(__in __nullterminated char* pos)
+char* nextcharW(_In_ __nullterminated char* pos)
 {
     return (pos+2);
 }
 /*--------------------------------------------------------------------------*/
-unsigned SymAU(__in __nullterminated char* curPos)
+static bool PtrIsWCHARAligned(char* ptr)
+{
+    return ((uintptr_t)ptr & (sizeof(WCHAR) - 1)) == 0;
+}
+/*--------------------------------------------------------------------------*/
+unsigned SymAU(_In_ __nullterminated char* curPos)
 {
     return (unsigned)*curPos;
 }
 
-unsigned SymW(__in __nullterminated char* curPos)
+unsigned SymW(_In_ __nullterminated char* curPos)
 {
-    return (unsigned)*((WCHAR*)curPos);
+    WCHAR wc;
+    memcpy(&wc, curPos, sizeof(WCHAR));
+    return (unsigned)wc;
 }
 /*--------------------------------------------------------------------------*/
-char* NewStrFromTokenAU(__in_ecount(tokLen) char* curTok, size_t tokLen)
+char* NewStrFromTokenAU(_In_reads_(tokLen) void* curTok, size_t tokLen)
 {
     char *nb = new char[tokLen+1];
     if(nb != NULL)
@@ -106,38 +113,45 @@ char* NewStrFromTokenAU(__in_ecount(tokLen) char* curTok, size_t tokLen)
     }
     return nb;
 }
-char* NewStrFromTokenW(__in_ecount(tokLen) char* curTok, size_t tokLen)
+char* NewStrFromTokenW(_In_reads_(tokLen) void* curTok, size_t tokLen)
 {
+    _ASSERTE(PtrIsWCHARAligned((char*) curTok) && "NewStrFromTokenW: misaligned curTok");
     WCHAR* wcurTok = (WCHAR*)curTok;
     char *nb = new char[(tokLen<<1) + 2];
     if(nb != NULL)
     {
-        tokLen = WszWideCharToMultiByte(CP_UTF8,0,(LPCWSTR)wcurTok,(int)(tokLen >> 1),nb,(int)(tokLen<<1) + 2,NULL,NULL);
+        tokLen = WideCharToMultiByte(CP_UTF8,0,(LPCWSTR)wcurTok,(int)(tokLen >> 1),nb,(int)(tokLen<<1) + 2,NULL,NULL);
         nb[tokLen] = 0;
     }
     return nb;
 }
 /*--------------------------------------------------------------------------*/
-char* NewStaticStrFromTokenAU(__in_ecount(tokLen) char* curTok, size_t tokLen, __out_ecount(bufSize) char* staticBuf, size_t bufSize)
+char* NewStaticStrFromTokenAU(_In_reads_(tokLen) char* curTok, size_t tokLen, _Out_writes_(bufSize) char* staticBuf, size_t bufSize)
 {
     if(tokLen >= bufSize) return NULL;
     memcpy(staticBuf, curTok, tokLen);
     staticBuf[tokLen] = 0;
     return staticBuf;
 }
-char* NewStaticStrFromTokenW(__in_ecount(tokLen) char* curTok, size_t tokLen, __out_ecount(bufSize) char* staticBuf, size_t bufSize)
+char* NewStaticStrFromTokenW(_In_reads_(tokLen) char* curTok, size_t tokLen, _Out_writes_(bufSize) char* staticBuf, size_t bufSize)
 {
+    if (!PtrIsWCHARAligned(curTok))
+    {
+        _ASSERTE(!"NewStaticStrFromTokenW: misaligned curTok");
+        return NULL;
+    }
+    // CodeQL [SM02986] Cast to WCHAR is safe because we bail if curTok is not properly aligned
     WCHAR* wcurTok = (WCHAR*)curTok;
     if(tokLen >= bufSize/2) return NULL;
-    tokLen = WszWideCharToMultiByte(CP_UTF8,0,(LPCWSTR)wcurTok,(int)(tokLen >> 1),staticBuf,(int)bufSize,NULL,NULL);
+    tokLen = WideCharToMultiByte(CP_UTF8,0,(LPCWSTR)wcurTok,(int)(tokLen >> 1),staticBuf,(int)bufSize,NULL,NULL);
     staticBuf[tokLen] = 0;
     return staticBuf;
 }
 /*--------------------------------------------------------------------------*/
-unsigned GetDoubleAU(__in __nullterminated char* begNum, unsigned L, double** ppRes)
+unsigned GetDoubleAU(_In_ __nullterminated char* begNum, unsigned L, double** ppRes)
 {
     static char dbuff[128];
-    char* pdummy;
+    char* pdummy = NULL;
     if(L > 127) L = 127;
     memcpy(dbuff,begNum,L);
     dbuff[L] = 0;
@@ -145,21 +159,20 @@ unsigned GetDoubleAU(__in __nullterminated char* begNum, unsigned L, double** pp
     return ((unsigned)(pdummy - dbuff));
 }
 
-unsigned GetDoubleW(__in __nullterminated char* begNum, unsigned L, double** ppRes)
+unsigned GetDoubleW(_In_ __nullterminated char* begNum, unsigned L, double** ppRes)
 {
-    static char dbuff[256];
-    char* pdummy;
+    WCHAR dbuff[128] = {0};
+    char* pdummy = NULL;
     if(L > 254) L = 254;
-    memcpy(dbuff,begNum,L);
-    dbuff[L] = 0;
-    dbuff[L+1] = 0;
-    *ppRes = new double(wcstod((const WCHAR*)dbuff, (WCHAR**)&pdummy));
-    return ((unsigned)(pdummy - dbuff));
+    L &= ~1u; // round down to WCHAR boundary
+    memcpy(dbuff, begNum, L);
+    *ppRes = new double(u16_strtod(dbuff, (WCHAR**)&pdummy));
+    return ((unsigned)(pdummy - (char*)dbuff));
 }
 /*--------------------------------------------------------------------------*/
 char* yygetline(int Line)
 {
-    static char buff[0x4000];
+    alignas(WCHAR) static char buff[0x4000];
     char *pLine=NULL, *pNextLine=NULL;
     char *pBegin=NULL, *pEnd = NULL;
     unsigned uCount = parser->getAll(&pBegin);
@@ -179,9 +192,11 @@ char* yygetline(int Line)
         }
         if(Sym == SymW) // Unicode file
         {
+            // CodeQL [SM02986] pNextLine (via parser->getAll) points into properly WCHAR aligned data (MapViewOfFile) and is safely incremented by nextchar
             if(*((WCHAR*)pNextLine - 1) == '\r') pNextLine -= 2;
             uCount = (unsigned)(pNextLine - pLine);
             uCount &= 0x1FFF; // limit: 8K wchars
+            // CodeQL [SM02986] this cast is safe because buff is WCHAR aligned and we null terminate below
             WCHAR* wzBuff = (WCHAR*)buff;
             memcpy(buff,pLine,uCount);
             wzBuff[uCount >> 1] = 0;
@@ -198,34 +213,50 @@ char* yygetline(int Line)
     return buff;
 }
 
-void yyerror(__in __nullterminated const char* str) {
-    char tokBuff[64];
-    WCHAR *wzfile = (WCHAR*)(PENV->in->namew());
+void yyerror(_In_ __nullterminated const char* str) {
+    alignas(WCHAR) char tokBuff[64];
+    const char* szfile = PENV->in->name();
     int iline = PENV->curLine;
 
     size_t len = PENV->curPos - PENV->curTok;
     if (len > 62) len = 62;
+    if (Sym == SymW)
+    {
+        // len must be even in the Unicode case, so the null
+        // termination isn't split across two WCHARs
+        len &= ~(size_t)1;
+    }
     memcpy(tokBuff, PENV->curTok, len);
     tokBuff[len] = 0;
     tokBuff[len+1] = 0;
     if(PENV->bExternSource)
     {
-        wzfile = PASM->m_wzSourceFileName;
+        szfile = PASM->m_szSourceFileName;
         iline = PENV->nExtLine;
     }
+
+    const char* fmt = "%s(%d) : error : %s at token '%s' in: %s\n";
     if(Sym == SymW) // Unicode file
-        fprintf(stderr, "%S(%d) : error : %s at token '%S' in: %S\n",
-                wzfile, iline, str, (WCHAR*)tokBuff, (WCHAR*)yygetline(PENV->curLine));
+    {
+        // CodeQL [SM02986] Casting tokBuff to WCHAR* is safe because tokBuff is WCHAR-aligned and properly null terminated
+        MAKE_UTF8PTR_FROMWIDE(tokBuffUtf8, (WCHAR*)tokBuff);
+        // CodeQL [SM02986] Casting yygetline result to WCHAR* is safe because buff is guaranteed to be WCHAR-aligned
+        MAKE_UTF8PTR_FROMWIDE(curLineUtf8, (WCHAR*)yygetline(PENV->curLine));
+        fprintf(stderr, fmt,
+                szfile, iline, str, tokBuffUtf8, curLineUtf8);
+    }
     else
-        fprintf(stderr, "%S(%d) : error : %s at token '%s' in: %s\n",
-                wzfile, iline, str, tokBuff, yygetline(PENV->curLine));
+    {
+        fprintf(stderr, fmt,
+                szfile, iline, str, tokBuff, yygetline(PENV->curLine));
+    }
     parser->success = false;
 }
 
 /********************************************************************************/
 /* looks up the typedef 'name' of length 'nameLen' (name does not need to be
    null terminated)   Returns 0 on failure */
-TypeDefDescr* findTypedef(__in_ecount(NameLen) char* name, size_t NameLen)
+TypeDefDescr* findTypedef(_In_reads_(NameLen) char* name, size_t NameLen)
 {
     TypeDefDescr* pRet = NULL;
     static char Name[4096];
@@ -331,9 +362,9 @@ void Init_str2uint64()
     for(i='A'; i <= 'Z'; i++) digits[i] = i + 10 - 'A';
     for(i='a'; i <= 'z'; i++) digits[i] = i + 10 - 'a';
 }
-static unsigned __int64 str2uint64(const char* str, const char** endStr, unsigned radix)
+static uint64_t str2uint64(const char* str, const char** endStr, unsigned radix)
 {
-    unsigned __int64 ret = 0;
+    uint64_t ret = 0;
     unsigned digit,ix;
     _ASSERTE(radix <= 36);
     for(;;str = nextchar((char*)str))
@@ -354,7 +385,7 @@ static unsigned __int64 str2uint64(const char* str, const char** endStr, unsigne
 }
 /********************************************************************************/
 /* Append an UTF-8 string preceded by compressed length, no zero terminator, to a BinStr */
-static void AppendStringWithLength(BinStr* pbs, __in __nullterminated char* sz)
+static void AppendStringWithLength(BinStr* pbs, _In_ __nullterminated char* sz)
 {
     if((pbs != NULL) && (sz != NULL))
     {
@@ -466,7 +497,7 @@ static int ByteSwapCustomBlob(BYTE *ptr, int length, int type, bool isSZArray)
 }
 #endif
 
-static void AppendFieldToCustomBlob(BinStr* pBlob, __in BinStr* pField)
+static void AppendFieldToCustomBlob(BinStr* pBlob, _In_ BinStr* pField)
 {
     pBlob->appendFrom(pField, (*(pField->ptr()) == ELEMENT_TYPE_SZARRAY) ? 2 : 1);
 
@@ -550,7 +581,7 @@ BOOL IsValidStartingSymbol(unsigned x) { return (x < 128)&&_ValidSS[x]; }
 BOOL IsValidContinuingSymbol(unsigned x) { return (x < 128)&&_ValidCS[x]; }
 
 
-char* nextBlank(__in __nullterminated char* curPos)
+char* nextBlank(_In_ __nullterminated char* curPos)
 {
     for(;;)
     {
@@ -578,7 +609,7 @@ char* nextBlank(__in __nullterminated char* curPos)
     }
 }
 
-char* skipBlanks(__in __nullterminated char* curPos, unsigned* pstate)
+char* skipBlanks(_In_ __nullterminated char* curPos, unsigned* pstate)
 {
     const unsigned eolComment = 1;
     const unsigned multiComment = 2;
@@ -658,14 +689,13 @@ PAST_WHITESPACE:
     return curPos;
 }
 
-char* FullFileName(__in __nullterminated WCHAR* wzFileName, unsigned uCodePage);
+char* FullFileName(_In_ __nullterminated WCHAR* wzFileName, unsigned uCodePage);
 
 int ProcessEOF()
 {
     PARSING_ENVIRONMENT* prev_penv = parser->PEStack.POP();
     if(prev_penv != NULL)
     {
-        //delete [] (WCHAR*)(PENV->in->namew());
         delete PENV->in;
         delete PENV;
         parser->penv = prev_penv;
@@ -832,10 +862,6 @@ int parse_literal(unsigned curSym, __inout __nullterminated char* &curPos, BOOL 
     }
 }
 
-#ifdef _PREFAST_
-#pragma warning(push)
-#pragma warning(disable:21000) // Suppress PREFast warning about overly large function
-#endif
 int yylex()
 {
     char* curPos = PENV->curPos;
@@ -964,16 +990,16 @@ Its_An_Id:
                             {
                                 if((wzFile = new WCHAR[tokLen+1]) != NULL)
                                 {
-                                    tokLen = WszMultiByteToWideChar(g_uCodePage,0,curTok,(int)tokLen,wzFile,(int)tokLen+1);
+                                    tokLen = MultiByteToWideChar(g_uCodePage,0,curTok,(int)tokLen,wzFile,(int)tokLen+1);
                                     wzFile[tokLen] = 0;
                                 }
                             }
                             if(wzFile != NULL)
                             {
                                 if((parser->wzIncludePath != NULL)
-                                 &&(wcschr(wzFile,DIRECTORY_SEPARATOR_CHAR_A)==NULL)
+                                 &&(u16_strchr(wzFile,DIRECTORY_SEPARATOR_CHAR_A)==NULL)
 #ifdef TARGET_WINDOWS
-                                 &&(wcschr(wzFile,':')==NULL)
+                                 &&(u16_strchr(wzFile,':')==NULL)
 #endif
                                 )
                                 {
@@ -991,12 +1017,16 @@ Its_An_Id:
 
                                 }
                                 if(PASM->m_fReportProgress)
-                                    parser->msg("\nIncluding '%S'\n",wzFile);
+                                {
+                                    MAKE_UTF8PTR_FROMWIDE(fileUtf8, wzFile);
+                                    parser->msg("\nIncluding '%s'\n",fileUtf8);
+                                }
                                 MappedFileStream *pIn = new MappedFileStream(wzFile);
                                 if((pIn != NULL)&&pIn->IsValid())
                                 {
                                     parser->PEStack.PUSH(PENV);
                                     PASM->SetSourceFileName(FullFileName(wzFile,CP_UTF8)); // deletes the argument!
+                                    delete [] wzFile;
                                     parser->CreateEnvironment(pIn);
                                     NEXT_TOKEN;
                                 }
@@ -1192,19 +1222,19 @@ Its_An_Id:
         }
         begNum = curPos;
         {
-            unsigned __int64 i64 = str2uint64(begNum, const_cast<const char**>(&curPos), radix);
-            unsigned __int64 mask64 = neg ? UI64(0xFFFFFFFF80000000) : UI64(0xFFFFFFFF00000000);
-            unsigned __int64 largestNegVal32 = UI64(0x0000000080000000);
+            uint64_t i64 = str2uint64(begNum, const_cast<const char**>(&curPos), radix);
+            uint64_t mask64 = neg ? 0xFFFFFFFF80000000ULL : 0xFFFFFFFF00000000ULL;
+            uint64_t largestNegVal32 = 0x0000000080000000ULL;
             if ((i64 & mask64) && (i64 != largestNegVal32))
             {
-                yylval.int64 = new __int64(i64);
-                tok = INT64;
+                yylval.int64 = new int64_t(i64);
+                tok = INT64_V;
                 if (neg) *yylval.int64 = -*yylval.int64;
             }
             else
             {
-                yylval.int32 = (__int32)i64;
-                tok = INT32;
+                yylval.int32 = (int32_t)i64;
+                tok = INT32_V;
                 if(neg) yylval.int32 = -yylval.int32;
             }
         }
@@ -1232,7 +1262,7 @@ Its_An_Id:
             if (Sym(nextchar(curPos))=='.' && Sym(nextchar(nextchar(curPos)))=='.')
             {
                 curPos = nextchar(nextchar(nextchar(curPos)));
-                tok = ELIPSIS;
+                tok = ELLIPSIS;
             }
             else
             {
@@ -1269,18 +1299,15 @@ Just_A_Character:
     }
     dbprintf(("    Line %d token %d (%c) val = %s\n", PENV->curLine, tok,
             (tok < 128 && isprint(tok)) ? tok : ' ',
-            (tok > 255 && tok != INT32 && tok != INT64 && tok!= FLOAT64) ? yylval.string : ""));
+            (tok > 255 && tok != INT32_V && tok != INT64_V && tok!= FLOAT64) ? yylval.string : ""));
 
     PENV->curPos = curPos;
     PENV->curTok = curTok;
     return(tok);
 }
-#ifdef _PREFAST_
-#pragma warning(pop)
-#endif
 
 /**************************************************************************/
-static char* newString(__in __nullterminated const char* str1)
+static char* newString(_In_ __nullterminated const char* str1)
 {
     char* ret = new char[strlen(str1)+1];
     if(ret) strcpy_s(ret, strlen(str1)+1, str1);
@@ -1290,7 +1317,7 @@ static char* newString(__in __nullterminated const char* str1)
 /**************************************************************************/
 /* concatenate strings and release them */
 
-static char* newStringWDel(__in __nullterminated char* str1, char delimiter, __in __nullterminated char* str3)
+static char* newStringWDel(_In_ __nullterminated char* str1, char delimiter, _In_ __nullterminated char* str3)
 {
     size_t len1 = strlen(str1);
     size_t len = len1+2;
@@ -1322,7 +1349,7 @@ static void corEmitInt(BinStr* buff, unsigned data)
 /**************************************************************************/
 /* move 'ptr past the exactly one type description */
 
-unsigned __int8* skipType(unsigned __int8* ptr, BOOL fFixupType)
+uint8_t* skipType(uint8_t* ptr, BOOL fFixupType)
 {
     mdToken  tk;
 AGAIN:
@@ -1401,7 +1428,7 @@ AGAIN:
                 if(fFixupType)
                 {
                     BYTE* pb = ptr-1; // ptr incremented in switch
-                    unsigned __int8* ptr_save = ptr;
+                    uint8_t* ptr_save = ptr;
                     int n = CorSigUncompressData((PCCOR_SIGNATURE&) ptr);  // fixup #
                     int compressed_size_n = (int)(ptr - ptr_save);  // ptr was updated by CorSigUncompressData()
                     int m = -1;
@@ -1414,7 +1441,7 @@ AGAIN:
                             TyParFixupList.PEEK(n));
                         m = 0;
                     }
-                    *pb = (*pb == ELEMENT_TYPE_MVARFIXUP)? ELEMENT_TYPE_MVAR : ELEMENT_TYPE_VAR;
+                    *pb = (BYTE)((*pb == ELEMENT_TYPE_MVARFIXUP) ? ELEMENT_TYPE_MVAR : ELEMENT_TYPE_VAR);
                     int compressed_size_m = (int)CorSigCompressData(m,pb+1);
 
                     // Note that CorSigCompressData() (and hence, CorSigUncompressData()) store a number
@@ -1461,7 +1488,7 @@ AGAIN:
                         if ((compressed_size_m == 1) &&
                             (compressed_size_n == 2))
                         {
-                            unsigned __int8 m1 = *(pb + 1);
+                            uint8_t m1 = *(pb + 1);
                             _ASSERTE(m1 < 0x80);
                             *(pb + 1) = 0x80;
                             *(pb + 2) = m1;
@@ -1470,7 +1497,7 @@ AGAIN:
                         if ((compressed_size_m == 1) &&
                             (compressed_size_n == 4))
                         {
-                            unsigned __int8 m1 = *(pb + 1);
+                            uint8_t m1 = *(pb + 1);
                             _ASSERTE(m1 < 0x80);
                             *(pb + 1) = 0xC0;
                             *(pb + 2) = 0x00;
@@ -1481,8 +1508,8 @@ AGAIN:
                         if ((compressed_size_m == 2) &&
                             (compressed_size_n == 4))
                         {
-                            unsigned __int8 m1 = *(pb + 1);
-                            unsigned __int8 m2 = *(pb + 2);
+                            uint8_t m1 = *(pb + 1);
+                            uint8_t m2 = *(pb + 2);
                             _ASSERTE(m1 >= 0x80);
                             m1 &= 0x7f; // strip the bit indicating it's a 2-byte thing
                             *(pb + 1) = 0xC0;
@@ -1548,8 +1575,8 @@ void FixupTyPars(BinStr* pbstype)
 /**************************************************************************/
 static unsigned corCountArgs(BinStr* args)
 {
-    unsigned __int8* ptr = args->ptr();
-    unsigned __int8* end = &args->ptr()[args->length()];
+    uint8_t* ptr = args->ptr();
+    uint8_t* end = &args->ptr()[args->length()];
     unsigned ret = 0;
     while(ptr < end)
     {
@@ -1630,7 +1657,7 @@ void AsmParse::ParseFile(ReadStream* stream)
 };
 
 /**************************************************************************/
-char* AsmParse::fillBuff(__in_opt __nullterminated char* pos)
+char* AsmParse::fillBuff(_In_opt_z_ char* pos)
 {
     int iPutToBuffer;
     g_uCodePage = CP_UTF8;
@@ -1764,30 +1791,31 @@ BinStr* AsmParse::MakeTypeClass(CorElementType kind, mdToken tk)
     return(ret);
 }
 /**************************************************************************/
-void PrintANSILine(FILE* pF, __in __nullterminated char* sz)
+void PrintANSILine(FILE* pF, _In_ __nullterminated char* sz)
 {
         WCHAR *wz = &wzUniBuf[0];
         if(g_uCodePage != CP_ACP)
         {
                 memset(wz,0,dwUniBuf); // dwUniBuf/2 WCHARs = dwUniBuf bytes
-                WszMultiByteToWideChar(g_uCodePage,0,sz,-1,wz,(dwUniBuf >> 1)-1);
+                MultiByteToWideChar(g_uCodePage,0,sz,-1,wz,(dwUniBuf >> 1)-1);
 
                 memset(sz,0,dwUniBuf);
-                WszWideCharToMultiByte(g_uConsoleCP,0,wz,-1,sz,dwUniBuf-1,NULL,NULL);
+                WideCharToMultiByte(g_uConsoleCP,0,wz,-1,sz,dwUniBuf-1,NULL,NULL);
         }
         fprintf(pF,"%s",sz);
 }
 /**************************************************************************/
 void AsmParse::error(const char* fmt, ...)
 {
+    if(assem->OnErrGo) return;
     char *sz = (char*)(&wzUniBuf[(dwUniBuf >> 1)]);
     char *psz=&sz[0];
-    FILE* pF = ((!assem->m_fReportProgress)&&(assem->OnErrGo)) ? stdout : stderr;
+    FILE* pF = stderr;
     success = false;
     va_list args;
     va_start(args, fmt);
 
-    if((penv) && (penv->in)) psz+=sprintf_s(psz, (dwUniBuf >> 1), "%S(%d) : ", penv->in->namew(), penv->curLine);
+    if((penv) && (penv->in)) psz+=sprintf_s(psz, (dwUniBuf >> 1), "%s(%d) : ", penv->in->name(), penv->curLine);
     psz+=sprintf_s(psz, (dwUniBuf >> 1), "error : ");
     _vsnprintf_s(psz, (dwUniBuf >> 1),(dwUniBuf >> 1)-strlen(sz)-1, fmt, args);
     PrintANSILine(pF,sz);
@@ -1796,13 +1824,14 @@ void AsmParse::error(const char* fmt, ...)
 /**************************************************************************/
 void AsmParse::warn(const char* fmt, ...)
 {
+    if(assem->OnErrGo) return;
     char *sz = (char*)(&wzUniBuf[(dwUniBuf >> 1)]);
     char *psz=&sz[0];
-    FILE* pF = ((!assem->m_fReportProgress)&&(assem->OnErrGo)) ? stdout : stderr;
+    FILE* pF = stderr;
     va_list args;
     va_start(args, fmt);
 
-    if((penv) && (penv->in)) psz+=sprintf_s(psz, (dwUniBuf >> 1), "%S(%d) : ", penv->in->namew(), penv->curLine);
+    if((penv) && (penv->in)) psz+=sprintf_s(psz, (dwUniBuf >> 1), "%s(%d) : ", penv->in->name(), penv->curLine);
     psz+=sprintf_s(psz, (dwUniBuf >> 1), "warning : ");
     _vsnprintf_s(psz, (dwUniBuf >> 1),(dwUniBuf >> 1)-strlen(sz)-1, fmt, args);
     PrintANSILine(pF,sz);

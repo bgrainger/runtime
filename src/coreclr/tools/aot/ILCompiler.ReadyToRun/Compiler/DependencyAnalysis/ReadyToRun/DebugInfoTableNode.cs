@@ -15,60 +15,58 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 {
     /// <summary>
     /// DebugInfoTableNode emits the data structures required to support managed code debugging
-    /// for ready to run code. See https://github.com/dotnet/coreclr/blob/master/src/inc/cordebuginfo.h
-    /// for the types this information is based on. We store two tables of information in an 
+    /// for ready to run code. See https://github.com/dotnet/runtime/blob/main/src/coreclr/inc/cordebuginfo.h
+    /// for the types this information is based on. We store two tables of information in an
     /// image:
-    /// 
+    ///
     /// Location Information
     ///
-    ///     In order to provide source line debugging, generated ready-to-run code is mapped 
+    ///     In order to provide source line debugging, generated ready-to-run code is mapped
     ///     back to the original IL instruction. This maps to OffsetMapping in cordebuginfo.h.
-    ///     
+    ///
     ///     A row in the table looks like this:
-    ///     
+    ///
     ///     Native offset | IL Offset | Flags
-    ///     
-    ///     Native offset starts at 0 for the beginning of a method. The rows are stored in 
+    ///
+    ///     Native offset starts at 0 for the beginning of a method. The rows are stored in
     ///     ascending order of offset and use a delta encoding. That is, each successive row
     ///     stores the difference between the previous native offset and the new one to save
     ///     encoding space.
-    ///     
-    ///     Flags stores values useful to the debugger. For example, if the offset is a 
-    ///     call site, or the stack is empty at that point. These are used for edit and 
+    ///
+    ///     Flags stores values useful to the debugger. For example, if the offset is a
+    ///     call site, or the stack is empty at that point. These are used for edit and
     ///     continue. It maps to SourceTypes in cordebuginfo.h.
-    ///     
+    ///
     /// Variable Information
-    /// 
-    ///     The debugger needs to know, for a given native code range, where the memory 
+    ///
+    ///     The debugger needs to know, for a given native code range, where the memory
     ///     backing each variable is stored. That can be in a register, on the stack, or maybe
-    ///     even split between a combination of registers and the stack. This maps to 
+    ///     even split between a combination of registers and the stack. This maps to
     ///     NativeVarInfo in cordebuginfo.h.
-    ///     
+    ///
     ///     A row in the table looks like this:
-    ///     
+    ///
     ///     Start Offset | End Offset | Variable Number | Location
-    ///     
+    ///
     ///     Start Offset and End Offset are offsets within the generated native code and are
     ///     used to capture the range of instructions during which the variable is stored
     ///     in the same location.
-    ///     
+    ///
     ///     Variable Number is the index of each variable in the original IL code.
-    ///     
+    ///
     ///     Location is a variant data structure specifying what memory is backing the variable
     ///     for a given native code range. This is a specific register, or a stack offset. This
     ///     maps to VarLoc in cordebuginfo.h.
-    ///     
+    ///
     /// </summary>
     public class DebugInfoTableNode : HeaderTableNode
     {
-        public DebugInfoTableNode(TargetDetails target) : base(target) { }
-
         public override int ClassCode => 1000735112;
 
         public override void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
         {
             sb.Append(nameMangler.CompilationUnitPrefix);
-            sb.Append("__ReadyToRunDebugInfoTable");
+            sb.Append("__ReadyToRunDebugInfoTable"u8);
         }
 
         public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)
@@ -83,17 +81,33 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             section.Place(vertexArray);
 
             Dictionary<byte[], BlobVertex> blobCache = new Dictionary<byte[], BlobVertex>(ByteArrayComparer.Instance);
-            
+
             foreach (MethodWithGCInfo method in factory.EnumerateCompiledMethods())
             {
                 MemoryStream methodDebugBlob = new MemoryStream();
-                
+
                 byte[] bounds = method.DebugLocInfos;
                 byte[] vars = method.DebugVarInfos;
 
                 NibbleWriter nibbleWriter = new NibbleWriter();
-                nibbleWriter.WriteUInt((uint)(bounds?.Length ?? 0));
-                nibbleWriter.WriteUInt((uint)(vars?.Length ?? 0));
+                uint boundsLength = (uint)(bounds?.Length ?? 0);
+                bool isFatHeader = boundsLength == DebugInfoFat;
+
+                if (isFatHeader)
+                {
+                    nibbleWriter.WriteUInt(DebugInfoFat);
+                    nibbleWriter.WriteUInt(boundsLength);
+                    nibbleWriter.WriteUInt((uint)(vars?.Length ?? 0));
+                    nibbleWriter.WriteUInt(0); // cbUninstrumentedBounds
+                    nibbleWriter.WriteUInt(0); // cbPatchpointInfo
+                    nibbleWriter.WriteUInt(0); // cbRichDebugInfo
+                    nibbleWriter.WriteUInt(0); // cbAsyncInfo
+                }
+                else
+                {
+                    nibbleWriter.WriteUInt(boundsLength);
+                    nibbleWriter.WriteUInt((uint)(vars?.Length ?? 0));
+                }
 
                 byte[] header = nibbleWriter.ToArray();
                 methodDebugBlob.Write(header, 0, header.Length);
@@ -134,20 +148,98 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             if (offsetMapping == null || offsetMapping.Length == 0)
                 return null;
 
-            NibbleWriter writer = new NibbleWriter();
-            writer.WriteUInt((uint)offsetMapping.Length);
-
             uint previousNativeOffset = 0;
+            uint maxNativeDelta = 0;
+            uint maxILValue = 0;
             foreach (var locInfo in offsetMapping)
             {
-                writer.WriteUInt(locInfo.nativeOffset - previousNativeOffset);
-                writer.WriteUInt(locInfo.ilOffset + 3); // Count of items in Internal.JitInterface.MappingTypes to adjust the IL offset by
-                writer.WriteUInt((uint)locInfo.source);
-
+                maxNativeDelta = Math.Max(maxNativeDelta, locInfo.nativeOffset - previousNativeOffset);
+                maxILValue = Math.Max(maxILValue, locInfo.ilOffset + 3);
                 previousNativeOffset = locInfo.nativeOffset;
             }
 
-            return writer.ToArray();
+            int bitWidthForNativeDelta = Math.Max(1, 32 - System.Numerics.BitOperations.LeadingZeroCount(maxNativeDelta));
+            int bitWidthForILOffset = Math.Max(1, 32 - System.Numerics.BitOperations.LeadingZeroCount(maxILValue));
+
+            int bitWidthReportForNativeDelta = bitWidthForNativeDelta - 1;
+            int bitWidthReportForILOffset = bitWidthForILOffset - 1;
+            NibbleWriter writer2 = new NibbleWriter();
+            writer2.WriteUInt((uint)offsetMapping.Length); // We need the total count
+            writer2.WriteUInt((uint)bitWidthReportForNativeDelta); // Number of bits needed for native deltas
+            writer2.WriteUInt((uint)bitWidthReportForILOffset); // How many bits needed for IL offsets
+            const int BitsForSourceType = 3;
+            int bitWidth = bitWidthForNativeDelta +
+                          bitWidthForILOffset +
+                          BitsForSourceType;
+            int totalBits = bitWidth * offsetMapping.Length;
+            int bytesNeededForArray = (totalBits + 7) / 8;
+
+            byte bitsInProgress = 0;
+            byte bitsInProgressCount = 0;
+
+            List<byte> boundsBlob = new List<byte>(writer2.ToArray());
+
+            for (uint i = 0; i < offsetMapping.Length; i++)
+            {
+                var bound = offsetMapping[i];
+
+                uint prevNativeOffset = 0;
+                if (i > 0)
+                {
+                    prevNativeOffset = offsetMapping[i - 1].nativeOffset;
+                }
+                uint nativeOffsetDelta = bound.nativeOffset - prevNativeOffset;
+
+                uint sourceBits = 0;
+                if ((bound.source & SourceTypes.CALL_INSTRUCTION) != 0)
+                    sourceBits |= 1;
+                if ((bound.source & SourceTypes.STACK_EMPTY) != 0)
+                    sourceBits |= 2;
+                if ((bound.source & SourceTypes.ASYNC) != 0)
+                    sourceBits |= 4;
+
+                if ((bound.source & ~(SourceTypes.CALL_INSTRUCTION | SourceTypes.STACK_EMPTY | SourceTypes.ASYNC)) != 0)
+                    throw new InternalCompilerErrorException("Unknown source type " + (uint)bound.source);
+
+                if ((sourceBits & ~((1u << BitsForSourceType) - 1)) != 0)
+                    throw new InternalCompilerErrorException("Unencodable source type " + sourceBits + " (for " + (uint)bound.source + ")");
+
+                ulong mappingDataEncoded = (ulong)sourceBits |
+                    ((ulong)nativeOffsetDelta << BitsForSourceType) |
+                    ((ulong)((int)bound.ilOffset - (int)MappingTypes.EPILOG) << (BitsForSourceType + bitWidthForNativeDelta));
+
+                for (byte bitsToWrite = (byte)bitWidth; bitsToWrite > 0;)
+                {
+                    // Figure out next bits to write if we need to combine with a previous byte.
+                    if (bitsInProgressCount > 0)
+                    {
+                        byte bitsToAddFromNewEncoding = (byte)(8 - bitsInProgressCount);
+                        byte bitsToAddOnToInProgress = (byte)((mappingDataEncoded & ((((uint)1) << bitsToAddFromNewEncoding) - 1)) << bitsInProgressCount);
+                        boundsBlob.Add((byte)(bitsToAddOnToInProgress | bitsInProgress));
+                        mappingDataEncoded >>= bitsToAddFromNewEncoding;
+                        bitsToWrite -= bitsToAddFromNewEncoding;
+                        bitsInProgressCount = 0;
+                    }
+                    else if (bitsToWrite >= 8)
+                    {
+                        boundsBlob.Add((byte)mappingDataEncoded);
+                        mappingDataEncoded >>= 8;
+                        bitsToWrite -= 8;
+                    }
+                    else
+                    {
+                        bitsInProgress = (byte)mappingDataEncoded;
+                        bitsInProgressCount = bitsToWrite;
+                        bitsToWrite = 0;
+                    }
+                }
+            }
+            if (bitsInProgressCount > 0)
+            {
+                Debug.Assert(bitsInProgressCount < 8);
+                boundsBlob.Add(bitsInProgress);
+            }
+            return boundsBlob.ToArray();
         }
 
         public static byte[] CreateVarBlobForMethod(NativeVarInfo[] varInfos, TargetDetails target)
@@ -162,12 +254,20 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
             foreach (var nativeVarInfo in varInfos)
             {
-                writer.WriteUInt(nativeVarInfo.startOffset);
-                writer.WriteUInt(nativeVarInfo.endOffset - nativeVarInfo.startOffset);
                 writer.WriteUInt((uint)(nativeVarInfo.varNumber - (int)ILNum.MAX_ILNUM));
+                writer.WriteUInt(nativeVarInfo.startOffset);
+
+                if (nativeVarInfo.varNumber == unchecked((uint)ILNum.CALL_RETURN_ILNUM))
+                {
+                    writer.WriteUInt(nativeVarInfo.callReturnValueILOffset);
+                }
+                else
+                {
+                    writer.WriteUInt(nativeVarInfo.endOffset - nativeVarInfo.startOffset);
+                }
 
                 VarLocType varLocType = nativeVarInfo.varLoc.LocationType;
-                
+
                 writer.WriteUInt((uint)varLocType);
 
                 switch (varLocType)
@@ -226,5 +326,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
 
             return writer.ToArray();
         }
+
+        private const int DebugInfoFat = 0;
     }
 }

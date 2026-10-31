@@ -1,27 +1,23 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
+
 //*****************************************************************************
 // File: RsMain.cpp
 //
-
-// Random RS utility stuff, plus root ICorCordbug implementation
-//
+// Random RS utility stuff, plus root ICorDebug implementation
 //*****************************************************************************
+
 #include "stdafx.h"
 #include "primitives.h"
 #include "safewrap.h"
 
 #include "check.h"
 
-#include <tlhelp32.h>
-#include "wtsapi32.h"
-
 #ifndef SM_REMOTESESSION
 #define SM_REMOTESESSION 0x1000
 #endif
 
 #include "corpriv.h"
-#include "../../dlls/mscorrc/resource.h"
 #include <limits.h>
 
 
@@ -42,42 +38,11 @@ RSDebuggingInfo * g_pRSDebuggingInfo = &g_RSDebuggingInfo_OutOfProc;
 // The following instances are used for invoking overloaded new/delete
 forDbiWorker forDbi;
 
-#ifdef _DEBUG
-// For logs, we can print the string name for the debug codes.
-const char * GetDebugCodeName(DWORD dwCode)
-{
-    if (dwCode < 1 || dwCode > 9)
-    {
-        return "!Invalid Debug Event Code!";
-    }
-
-    static const char * const szNames[] = {
-        "(1) EXCEPTION_DEBUG_EVENT",
-        "(2) CREATE_THREAD_DEBUG_EVENT",
-        "(3) CREATE_PROCESS_DEBUG_EVENT",
-        "(4) EXIT_THREAD_DEBUG_EVENT",
-        "(5) EXIT_PROCESS_DEBUG_EVENT",
-        "(6) LOAD_DLL_DEBUG_EVENT",
-        "(7) UNLOAD_DLL_DEBUG_EVENT",
-        "(8) OUTPUT_DEBUG_STRING_EVENT",
-        "(9) RIP_EVENT",// <-- only on Win9X
-    };
-
-    return szNames[dwCode - 1];
-}
-
-#endif
-
-
 //-----------------------------------------------------------------------------
 // Per-thread state for Debug builds...
 //-----------------------------------------------------------------------------
 #ifdef RSCONTRACTS
-#ifndef __GNUC__
-__declspec(thread) DbgRSThread* DbgRSThread::t_pCurrent;
-#else // !__GNUC__
-__thread DbgRSThread* DbgRSThread::t_pCurrent;
-#endif // !__GNUC__
+thread_local DbgRSThread* DbgRSThread::t_pCurrent;
 
 LONG DbgRSThread::s_Total = 0;
 
@@ -458,7 +423,7 @@ void LeftSideResourceCleanupList::SweepNeuterLeftSideResources(CordbProcess * pP
  * ------------------------------------------------------------------------- */
 extern void* GetClrModuleBase();
 
-// Do any initialization necessary for both CorPublish and CorDebug
+// Do any initialization necessary for CorDebug
 // This includes enabling logging and adding the SEDebug priv.
 void CordbCommonBase::InitializeCommon()
 {
@@ -515,7 +480,7 @@ void CordbCommonBase::InitializeCommon()
 // setting this since V1.0 and removing it may be a breaking change.
 void CordbCommonBase::AddDebugPrivilege()
 {
-#ifndef TARGET_UNIX
+#ifndef HOST_UNIX
     HANDLE hToken;
     TOKEN_PRIVILEGES Privileges;
     BOOL fSucc;
@@ -595,7 +560,7 @@ namespace
 
         COM_METHOD CreateConnection(ICorDebugProcess *pProcess,
                                     CONNID dwConnectionId,
-                                    __in_z WCHAR* pConnectionName);
+                                    _In_z_ WCHAR* pConnectionName);
         COM_METHOD ChangeConnection(ICorDebugProcess *pProcess, CONNID dwConnectionId);
         COM_METHOD DestroyConnection(ICorDebugProcess *pProcess, CONNID dwConnectionId);
 
@@ -725,7 +690,7 @@ namespace
     HRESULT
     DefaultManagedCallback2::CreateConnection(ICorDebugProcess *pProcess,
                                               CONNID dwConnectionId,
-                                              __in_z WCHAR* pConnectionName)
+                                              _In_z_ WCHAR* pConnectionName)
     {
         _ASSERTE(!"DefaultManagedCallback2::CreateConnection not implemented");
         return E_NOTIMPL;
@@ -956,20 +921,18 @@ namespace
  * Cordb class
  * ------------------------------------------------------------------------- */
 Cordb::Cordb(CorDebugInterfaceVersion iDebuggerVersion)
-  : Cordb(iDebuggerVersion, ProcessDescriptor::CreateUninitialized())
+  : Cordb(iDebuggerVersion, ProcessDescriptor::CreateUninitialized(), NULL)
 {
 }
 
-Cordb::Cordb(CorDebugInterfaceVersion iDebuggerVersion, const ProcessDescriptor& pd)
+Cordb::Cordb(CorDebugInterfaceVersion iDebuggerVersion, const ProcessDescriptor& pd, LPCWSTR dacModulePath)
   : CordbBase(NULL, 0, enumCordb),
-    m_processes(11),
+    m_processes(),
     m_initialized(false),
     m_debuggerSpecifiedVersion(iDebuggerVersion),
-    m_pd(pd)
-#ifdef FEATURE_CORESYSTEM
-    ,
+    m_pd(pd),
+    m_dacModulePath(dacModulePath),
     m_targetCLR(0)
-#endif
 {
     g_pRSDebuggingInfo->m_Cordb = this;
 
@@ -1093,13 +1056,9 @@ HRESULT Cordb::Terminate()
     {
         RSLockHolder ch(&m_processListMutex);
 
-        HASHFIND hfDT;
-        CordbProcess * pProcess;
-
-        for (pProcess=  (CordbProcess*) m_processes.FindFirst(&hfDT);
-             pProcess != NULL;
-             pProcess = (CordbProcess*) m_processes.FindNext(&hfDT))
+        for (CordbHashTable::Iterator iterator = m_processes.Begin(), end = m_processes.End(); iterator != end; iterator++)
         {
+            CordbProcess *pProcess = static_cast<CordbProcess *>(*iterator);
             _ASSERTE(pProcess->IsSafeToSendEvents() || pProcess->m_unrecoverableError);
             if (pProcess->IsSafeToSendEvents() && !pProcess->m_unrecoverableError)
             {
@@ -1122,13 +1081,10 @@ HRESULT Cordb::Terminate()
     //
     // Stop the event handling threads.
     //
-    if (m_rcEventThread != NULL)
-    {
-        // Stop may do significant work b/c if it drains the worker queue.
-        m_rcEventThread->Stop();
-        delete m_rcEventThread;
-        m_rcEventThread = NULL;
-    }
+    // Stop may do significant work b/c if it drains the worker queue.
+    m_rcEventThread->Stop();
+    delete m_rcEventThread;
+    m_rcEventThread = NULL;
 
 
 #ifdef _DEBUG
@@ -1145,8 +1101,7 @@ HRESULT Cordb::Terminate()
 
 #ifdef _DEBUG
     {
-        HASHFIND find;
-        _ASSERTE(m_processes.FindFirst(&find) == NULL); // should be emptied by neuter
+        _ASSERTE(m_processes.GetCount() == 0); // should be emptied by neuter
     }
 #endif //_DEBUG
 
@@ -1314,7 +1269,7 @@ void Cordb::AddProcess(CordbProcess* process)
 {
     // At this point, we should have already checked that we
     // can have another debuggee.
-    STRESS_LOG1(LF_CORDB, LL_INFO10, "Cordb::AddProcess %08x...\n", process);
+    STRESS_LOG1(LF_CORDB, LL_INFO10, "Cordb::AddProcess %p...\n", process);
 
     if ((m_managedCallback == NULL) || (m_managedCallback2 == NULL) || (m_managedCallback3 == NULL) || (m_managedCallback4 == NULL))
     {
@@ -1339,7 +1294,7 @@ void Cordb::AddProcess(CordbProcess* process)
 //
 void Cordb::RemoveProcess(CordbProcess* process)
 {
-    STRESS_LOG1(LF_CORDB, LL_INFO10, "Cordb::RemoveProcess %08x...\n", process);
+    STRESS_LOG1(LF_CORDB, LL_INFO10, "Cordb::RemoveProcess %p...\n", process);
 
     LockProcessList();
     GetProcessList()->RemoveBase((ULONG_PTR)process->m_id);
@@ -1420,10 +1375,7 @@ HRESULT Cordb::SetTargetCLR(HMODULE hmodTargetCLR)
     if (m_initialized)
         return E_FAIL;
 
-#ifdef FEATURE_CORESYSTEM
     m_targetCLR = hmodTargetCLR;
-#endif
-
     return S_OK;
 }
 
@@ -1511,33 +1463,12 @@ HRESULT Cordb::SetUnmanagedHandler(ICorDebugUnmanagedCallback *pCallback)
     return S_OK;
 }
 
-// CreateProcess() isn't supported on Windows CoreCLR.
-// It is currently supported on Mac CoreCLR, but that may change.
-bool Cordb::IsCreateProcessSupported()
-{
-#if !defined(FEATURE_DBGIPC_TRANSPORT_DI)
-    return false;
-#else
-    return true;
-#endif
-}
-
 // Given everything we know about our configuration, can we support interop-debugging
 bool Cordb::IsInteropDebuggingSupported()
 {
     // We explicitly refrain from checking the unmanaged callback. See comment in
     // ICorDebug::SetUnmanagedHandler for details.
 #ifdef FEATURE_INTEROP_DEBUGGING
-
-#if !defined(FEATURE_CORESYSTEM)
-    // Interop debugging is only supported internally on CoreCLR.
-    // Check if the special reg key is set.  If not, then we don't allow interop debugging.
-    if (CLRConfig::GetConfigValue(CLRConfig::INTERNAL_DbgEnableMixedModeDebugging) == 0)
-    {
-        return false;
-    }
-#endif // FEATURE_CORESYSTEM
-
     return true;
 #else
     return false;
@@ -1572,7 +1503,7 @@ bool Cordb::IsInteropDebuggingSupported()
 //
 //---------------------------------------------------------------------------------------
 HRESULT Cordb::CreateProcess(LPCWSTR lpApplicationName,
-                             __in_z LPWSTR lpCommandLine,
+                             _In_z_ LPWSTR lpCommandLine,
                              LPSECURITY_ATTRIBUTES lpProcessAttributes,
                              LPSECURITY_ATTRIBUTES lpThreadAttributes,
                              BOOL bInheritHandles,
@@ -1584,158 +1515,28 @@ HRESULT Cordb::CreateProcess(LPCWSTR lpApplicationName,
                              CorDebugCreateProcessFlags debuggingFlags,
                              ICorDebugProcess **ppProcess)
 {
-    return CreateProcessCommon(NULL,
-                               lpApplicationName,
-                               lpCommandLine,
-                               lpProcessAttributes,
-                               lpThreadAttributes,
-                               bInheritHandles,
-                               dwCreationFlags,
-                               lpEnvironment,
-                               lpCurrentDirectory,
-                               lpStartupInfo,
-                               lpProcessInformation,
-                               debuggingFlags,
-                               ppProcess);
-}
-
-HRESULT Cordb::CreateProcessCommon(ICorDebugRemoteTarget * pRemoteTarget,
-                                   LPCWSTR lpApplicationName,
-                                   __in_z LPWSTR lpCommandLine,
-                                   LPSECURITY_ATTRIBUTES lpProcessAttributes,
-                                   LPSECURITY_ATTRIBUTES lpThreadAttributes,
-                                   BOOL bInheritHandles,
-                                   DWORD dwCreationFlags,
-                                   PVOID lpEnvironment,
-                                   LPCWSTR lpCurrentDirectory,
-                                   LPSTARTUPINFOW lpStartupInfo,
-                                   LPPROCESS_INFORMATION lpProcessInformation,
-                                   CorDebugCreateProcessFlags debuggingFlags,
-                                   ICorDebugProcess ** ppProcess)
-{
-    // If you hit this assert, it means that you are attempting to create a process without specifying the version
-    // number.
-    _ASSERTE(CorDebugInvalidVersion != m_debuggerSpecifiedVersion);
-
     PUBLIC_API_ENTRY(this);
     FAIL_IF_NEUTERED(this);
-    VALIDATE_POINTER_TO_OBJECT(ppProcess, ICorDebugProcess**);
+    (void)lpApplicationName;
+    (void)lpCommandLine;
+    (void)lpProcessAttributes;
+    (void)lpThreadAttributes;
+    (void)bInheritHandles;
+    (void)dwCreationFlags;
+    (void)lpEnvironment;
+    (void)lpCurrentDirectory;
+    (void)lpStartupInfo;
+    (void)lpProcessInformation;
+    (void)debuggingFlags;
+    (void)ppProcess;
 
-    HRESULT hr = S_OK;
-
-    EX_TRY
-    {
-        if (!m_initialized)
-        {
-            ThrowHR(E_FAIL);
-        }
-
-        // Check that we support the debugger version
-        CheckCompatibility();
-
-    #ifdef FEATURE_INTEROP_DEBUGGING
-        // DEBUG_PROCESS (=0x1) means debug this process & all future children.
-        // DEBUG_ONLY_THIS_PROCESS =(0x2) means just debug the immediate process.
-        // If we want to support DEBUG_PROCESS, then we need to have the RS sniff for new CREATE_PROCESS
-        // events and spawn new CordbProcess for them.
-        switch(dwCreationFlags & (DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS))
-        {
-            // 1) managed-only debugging
-            case 0:
-                break;
-
-            // 2) failure - returns E_NOTIMPL. (as this would involve debugging all of our children processes).
-            case DEBUG_PROCESS:
-                ThrowHR(E_NOTIMPL);
-
-            // 3) Interop-debugging.
-            // Note that MSDN (at least as of Jan 2003) is wrong about this flag. MSDN claims
-            // DEBUG_ONLY_THIS_PROCESS w/o DEBUG_PROCESS should be ignored.
-            // But it really should do launch as a debuggee (but not auto-attach to child processes).
-            case DEBUG_ONLY_THIS_PROCESS:
-                // Emprically, this is the common case for native / interop-debugging.
-                break;
-
-            // 4) Interop.
-            // The spec for ICorDebug::CreateProcess says this is the one to use for interop-debugging.
-            case DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS:
-                // Win2k does not honor these flags properly. So we just use
-                // It treats (DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS) as if it were DEBUG_PROCESS.
-                // We'll just always touch up the flags, even though WinXP and above is fine here.
-                // Per win2k issue, strip off DEBUG_PROCESS, so that we're just left w/ DEBUG_ONLY_THIS_PROCESS.
-                dwCreationFlags &= ~(DEBUG_PROCESS);
-                break;
-
-            default:
-                __assume(0);
-        }
-
-    #endif // FEATURE_INTEROP_DEBUGGING
-
-        // Must have a managed-callback by now.
-        if ((m_managedCallback == NULL) || (m_managedCallback2 == NULL) || (m_managedCallback3 == NULL) || (m_managedCallback4 == NULL))
-        {
-            ThrowHR(E_FAIL);
-        }
-
-        if (!IsCreateProcessSupported())
-        {
-            ThrowHR(E_NOTIMPL);
-        }
-
-        if (!IsInteropDebuggingSupported() &&
-            ((dwCreationFlags & (DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS)) != 0))
-        {
-            ThrowHR(CORDBG_E_INTEROP_NOT_SUPPORTED);
-        }
-
-        // Check that we can even accept another debuggee before trying anything.
-        EnsureAllowAnotherProcess();
-
-    } EX_CATCH_HRESULT(hr);
-    if (FAILED(hr))
-    {
-        return hr;
-    }
-
-    hr = ShimProcess::CreateProcess(this,
-                                    pRemoteTarget,
-                                    lpApplicationName,
-                                    lpCommandLine,
-                                    lpProcessAttributes,
-                                    lpThreadAttributes,
-                                    bInheritHandles,
-                                    dwCreationFlags,
-                                    lpEnvironment,
-                                    lpCurrentDirectory,
-                                    lpStartupInfo,
-                                    lpProcessInformation,
-                                    debuggingFlags
-                                   );
-
-    LOG((LF_CORDB, LL_EVERYTHING, "Handle in Cordb::CreateProcess is: %.I64x\n", lpProcessInformation->hProcess));
-
-    if (SUCCEEDED(hr))
-    {
-        LockProcessList();
-
-        CordbProcess * pProcess = GetProcessList()->GetBase(lpProcessInformation->dwProcessId);
-
-        UnlockProcessList();
-
-        PREFIX_ASSUME(pProcess != NULL);
-
-        pProcess->ExternalAddRef();
-        *ppProcess = (ICorDebugProcess *)pProcess;
-    }
-
-    return hr;
+    return E_NOTIMPL;
 }
 
 
 HRESULT Cordb::CreateProcessEx(ICorDebugRemoteTarget * pRemoteTarget,
                                LPCWSTR lpApplicationName,
-                               __in_z LPWSTR lpCommandLine,
+                               _In_z_ LPWSTR lpCommandLine,
                                LPSECURITY_ATTRIBUTES lpProcessAttributes,
                                LPSECURITY_ATTRIBUTES lpThreadAttributes,
                                BOOL bInheritHandles,
@@ -1752,19 +1553,22 @@ HRESULT Cordb::CreateProcessEx(ICorDebugRemoteTarget * pRemoteTarget,
         return E_INVALIDARG;
     }
 
-    return CreateProcessCommon(pRemoteTarget,
-                               lpApplicationName,
-                               lpCommandLine,
-                               lpProcessAttributes,
-                               lpThreadAttributes,
-                               bInheritHandles,
-                               dwCreationFlags,
-                               lpEnvironment,
-                               lpCurrentDirectory,
-                               lpStartupInfo,
-                               lpProcessInformation,
-                               debuggingFlags,
-                               ppProcess);
+    PUBLIC_API_ENTRY(this);
+    FAIL_IF_NEUTERED(this);
+    (void)lpApplicationName;
+    (void)lpCommandLine;
+    (void)lpProcessAttributes;
+    (void)lpThreadAttributes;
+    (void)bInheritHandles;
+    (void)dwCreationFlags;
+    (void)lpEnvironment;
+    (void)lpCurrentDirectory;
+    (void)lpStartupInfo;
+    (void)lpProcessInformation;
+    (void)debuggingFlags;
+    (void)ppProcess;
+
+    return E_NOTIMPL;
 }
 
 
@@ -1991,20 +1795,6 @@ HRESULT Cordb::EnumerateProcesses(ICorDebugProcessEnum **ppProcesses)
     return hr;
 }
 
-
-//
-// Note: the following defs and structs are copied from various NT headers. I wasn't able to include those headers (like
-// ntexapi.h) due to loads of redef problems and other conflicts with headers that we already pull in.
-//
-typedef LONG NTSTATUS;
-
-#ifndef TARGET_UNIX
-typedef BOOL (*NTQUERYSYSTEMINFORMATION)(SYSTEM_INFORMATION_CLASS SystemInformationClass,
-                                         PVOID SystemInformation,
-                                         ULONG SystemInformationLength,
-                                         PULONG ReturnLength);
-#endif
-
 // Implementation of ICorDebug::CanLaunchOrAttach
 // @dbgtodo-  this all goes away in V3.
 // @dbgtodo-  this should go away in Dev11.
@@ -2063,23 +1853,18 @@ void Cordb::EnsureCanLaunchOrAttach(BOOL fWin32DebuggingEnabled)
     // Made it this far, we succeeded.
 }
 
-HRESULT Cordb::CreateObjectV1(REFIID id, void **object)
-{
-    return CreateObject(CorDebugVersion_1_0, ProcessDescriptor::UNINITIALIZED_PID, NULL, id, object);
-}
-
 #if defined(FEATURE_DBGIPC_TRANSPORT_DI)
 // CoreCLR activates debugger objects via direct COM rather than the shim (just like V1). For now we share the
 // same debug engine version as V2, though this may change in the future.
 HRESULT Cordb::CreateObjectTelesto(REFIID id, void ** pObject)
 {
-    return CreateObject(CorDebugVersion_2_0, ProcessDescriptor::UNINITIALIZED_PID, NULL, id, pObject);
+    return CreateObject(CorDebugVersion_2_0, ProcessDescriptor::UNINITIALIZED_PID, NULL, NULL, id, pObject);
 }
 #endif // FEATURE_DBGIPC_TRANSPORT_DI
 
 // Static
 // Used to create an instance for a ClassFactory (thus an external ref).
-HRESULT Cordb::CreateObject(CorDebugInterfaceVersion iDebuggerVersion, DWORD pid, LPCWSTR lpApplicationGroupId, REFIID id, void **object)
+HRESULT Cordb::CreateObject(CorDebugInterfaceVersion iDebuggerVersion, DWORD pid, LPCWSTR lpApplicationGroupId, LPCWSTR dacModulePath, REFIID id, void **object)
 {
     if (id != IID_IUnknown && id != IID_ICorDebug)
         return (E_NOINTERFACE);
@@ -2111,7 +1896,7 @@ HRESULT Cordb::CreateObject(CorDebugInterfaceVersion iDebuggerVersion, DWORD pid
 
     ProcessDescriptor pd = ProcessDescriptor::Create(pid, applicationGroupId);
 
-    Cordb *db = new (nothrow) Cordb(iDebuggerVersion, pd);
+    Cordb *db = new (nothrow) Cordb(iDebuggerVersion, pd, dacModulePath);
 
     if (db == NULL)
     {
@@ -2527,7 +2312,7 @@ HRESULT CordbEnumFilter::Init (ICorDebugModuleEnum * pModEnum, CordbAssembly *pA
             }
             else
             {
-                PREFIX_ASSUME(pPrevious != NULL);
+                _ASSERTE(pPrevious != NULL);
                 pPrevious->SetNext (pElement);
             }
             pPrevious = pElement;
@@ -2631,7 +2416,7 @@ HRESULT CordbEnumFilter::Init (ICorDebugThreadEnum *pThreadEnum, CordbAppDomain 
             }
             else
             {
-                PREFIX_ASSUME(pPrevious != NULL);
+                _ASSERTE(pPrevious != NULL);
                 pPrevious->SetNext (pElement);
             }
 
@@ -2678,3 +2463,51 @@ Error:
     return hr;
 }
 
+//-----------------------------------------------------------------------------
+// Helper to marshal a string object out through the ICorDebug interfaces
+// Parameters:
+//   pInputString - (in) the string to copy out
+//   cchName - (in) size of the output buffer in characters
+//   pcchName - (out) On success, number of characters in the output string (including null)
+//   szName - (out) caller allocated buffer to copy the string to. If NULL, only query length.
+// Returns:
+//   S_OK on success.
+// Notes:
+//   Copies as much as it can fit into the buffer and ensures null-termination.
+//   This is the common pattern for string-marshalling functions in ICorDebug.
+//-----------------------------------------------------------------------------
+HRESULT CopyOutString(LPCWSTR pInputString, ULONG32 cchName, ULONG32 * pcchName, _Out_writes_to_opt_(cchName, *pcchName) WCHAR szName[])
+{
+    _ASSERTE(pInputString != NULL);
+    ULONG32 len = (ULONG32) u16_strlen(pInputString) + 1;
+
+    if (cchName == 0)
+    {
+        // Query length
+        if ((szName != NULL) || (pcchName == NULL))
+        {
+            return E_INVALIDARG;
+        }
+        *pcchName = len;
+        return S_OK;
+    }
+    else
+    {
+        // Get data
+        if (szName == NULL)
+        {
+            return E_INVALIDARG;
+        }
+
+        // Just copy whatever we can fit into the buffer. If we truncate, that's ok.
+        // This will also guarantee that we null terminate.
+        wcsncpy_s(szName, cchName, pInputString, _TRUNCATE);
+
+        if (pcchName != 0)
+        {
+            *pcchName = len;
+        }
+
+        return S_OK;
+    }
+}

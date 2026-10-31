@@ -56,7 +56,7 @@ void Phase::Observations::Check(PhaseStatus status)
 //
 void Phase::Run()
 {
-    Observations observations(comp);
+    Observations observations(m_compiler);
     PrePhase();
     PhaseStatus status = DoPhase();
     PostPhase(status);
@@ -68,68 +68,33 @@ void Phase::Run()
 //
 void Phase::PrePhase()
 {
-    comp->BeginPhase(m_phase);
+    m_compiler->BeginPhase(m_phase);
 
 #ifdef DEBUG
-
-    // To help in the incremental conversion of jit activity to phases
-    // without greatly increasing dump size or checked jit time, we
-    // currently allow the phases that do pre-phase checks and
-    // dumps via the phase object, and not via explicit calls from
-    // the various methods in the phase.
-    //
-    // In the long run the aim is to get rid of all pre-phase checks
-    // and dumps, relying instead on post-phase checks and dumps from
-    // the preceeding phase.
-    //
-    // Currently the list is just the set of phases that have custom
-    // derivations from the Phase class.
-    static Phases s_allowlist[] = {PHASE_BUILD_SSA, PHASE_OPTIMIZE_VALNUM_CSES, PHASE_RATIONALIZE, PHASE_LOWERING,
-                                   PHASE_STACK_LEVEL_SETTER};
-    bool doPrePhase = false;
-
-    for (size_t i = 0; i < sizeof(s_allowlist) / sizeof(Phases); i++)
-    {
-        if (m_phase == s_allowlist[i])
-        {
-            doPrePhase = true;
-            break;
-        }
-    }
-
     if (VERBOSE)
     {
-        if (doPrePhase)
-        {
-            printf("Trees before %s\n", m_name);
-            comp->fgDispBasicBlocks(true);
-        }
-
-        if (comp->compIsForInlining())
+        if (m_compiler->compIsForInlining())
         {
             printf("\n*************** Inline @[%06u] Starting PHASE %s\n",
-                   Compiler::dspTreeID(comp->impInlineInfo->iciCall), m_name);
+                   Compiler::dspTreeID(m_compiler->impInlineInfo->iciCall), m_name);
         }
         else
         {
-            printf("\n*************** Starting PHASE %s\n", m_name);
-        }
-    }
-
-    if (doPrePhase)
-    {
-        if ((comp->activePhaseChecks == PhaseChecks::CHECK_ALL) && (comp->expensiveDebugCheckLevel >= 2))
-        {
-            // If everyone used the Phase class, this would duplicate the PostPhase() from the previous phase.
-            // But, not everyone does, so go ahead and do the check here, too.
-            comp->fgDebugCheckBBlist();
-            comp->fgDebugCheckLinks();
+            if (m_compiler->opts.optRepeatActive)
+            {
+                printf("\n*************** Starting PHASE %s (OptRepeat iteration %d of %d)\n", m_name,
+                       m_compiler->opts.optRepeatIteration, m_compiler->opts.optRepeatCount);
+            }
+            else
+            {
+                printf("\n*************** Starting PHASE %s\n", m_name);
+            }
         }
     }
 #endif // DEBUG
 
 #if DUMP_FLOWGRAPHS
-    comp->fgDumpFlowGraph(m_phase, Compiler::PhasePosition::PrePhase);
+    m_compiler->fgDumpFlowGraph(m_phase, Compiler::PhasePosition::PrePhase);
 #endif // DUMP_FLOWGRAPHS
 }
 
@@ -141,99 +106,101 @@ void Phase::PrePhase()
 //
 void Phase::PostPhase(PhaseStatus status)
 {
+    m_compiler->EndPhase(m_phase);
+
 #ifdef DEBUG
 
+#if DUMP_FLOWGRAPHS
+    m_compiler->fgDumpFlowGraph(m_phase, Compiler::PhasePosition::PostPhase);
+#endif // DUMP_FLOWGRAPHS
+
     // Don't dump or check post phase unless the phase made changes.
-    const bool        madeChanges   = (status != PhaseStatus::MODIFIED_NOTHING);
+    //
+    const bool madeChanges = (status != PhaseStatus::MODIFIED_NOTHING);
+    const bool doPostPhase = madeChanges;
+    const bool doPostPhaseChecks =
+        (m_compiler->activePhaseChecks != PhaseChecks::CHECK_NONE) && (JitConfig.JitEnablePhaseChecks() != 0);
+    const bool doPostPhaseDumps = (m_compiler->activePhaseDumps == PhaseDumps::DUMP_ALL);
+
     const char* const statusMessage = madeChanges ? "" : " [no changes]";
-    bool              doPostPhase   = false;
-
-    // To help in the incremental conversion of jit activity to phases
-    // without greatly increasing dump size or checked jit time, we
-    // currently allow the phases that do post-phase checks and
-    // dumps via the phase object, and not via explicit calls from
-    // the various methods in the phase.
-    //
-    // As we remove the explicit checks and dumps from each phase, we
-    // will add to this list; once all phases are updated, we can
-    // remove the list entirely.
-    //
-    // This list includes custom derivations from the Phase class as
-    // well as the new-style phases that have been updated to return
-    // PhaseStatus from their DoPhase methods.
-    //
-    static Phases s_allowlist[] = {PHASE_IMPORTATION,      PHASE_IBCINSTR,
-                                   PHASE_IBCPREP,          PHASE_INCPROFILE,
-                                   PHASE_INDXCALL,         PHASE_MORPH_INLINE,
-                                   PHASE_ALLOCATE_OBJECTS, PHASE_EMPTY_TRY,
-                                   PHASE_EMPTY_FINALLY,    PHASE_MERGE_FINALLY_CHAINS,
-                                   PHASE_CLONE_FINALLY,    PHASE_MERGE_THROWS,
-                                   PHASE_MORPH_GLOBAL,     PHASE_INVERT_LOOPS,
-                                   PHASE_OPTIMIZE_LAYOUT,  PHASE_FIND_LOOPS,
-                                   PHASE_BUILD_SSA,        PHASE_RATIONALIZE,
-                                   PHASE_LOWERING,         PHASE_STACK_LEVEL_SETTER};
-
-    if (madeChanges)
-    {
-        for (size_t i = 0; i < sizeof(s_allowlist) / sizeof(Phases); i++)
-        {
-            if (m_phase == s_allowlist[i])
-            {
-                doPostPhase = true;
-                break;
-            }
-        }
-    }
 
     if (VERBOSE)
     {
-        if (comp->compIsForInlining())
+        if (m_compiler->compIsForInlining())
         {
             printf("\n*************** Inline @[%06u] Finishing PHASE %s%s\n",
-                   Compiler::dspTreeID(comp->impInlineInfo->iciCall), m_name, statusMessage);
+                   Compiler::dspTreeID(m_compiler->impInlineInfo->iciCall), m_name, statusMessage);
         }
         else
         {
-            printf("\n*************** Finishing PHASE %s%s\n", m_name, statusMessage);
+            if (m_compiler->opts.optRepeatActive)
+            {
+                printf("\n*************** Finishing PHASE %s%s (OptRepeat iteration %d of %d)\n", m_name, statusMessage,
+                       m_compiler->opts.optRepeatIteration, m_compiler->opts.optRepeatCount);
+            }
+            else
+            {
+                printf("\n*************** Finishing PHASE %s%s\n", m_name, statusMessage);
+            }
         }
 
-        if (doPostPhase)
+        if (doPostPhase && doPostPhaseDumps)
         {
             printf("Trees after %s\n", m_name);
-            comp->fgDispBasicBlocks(true);
+            m_compiler->fgDispBasicBlocks(true);
         }
     }
 
-    if (doPostPhase)
+    if (doPostPhase && doPostPhaseChecks)
     {
-        if (comp->activePhaseChecks == PhaseChecks::CHECK_ALL)
+        PhaseChecks const checks = m_compiler->activePhaseChecks;
+
+        if (hasFlag(checks, PhaseChecks::CHECK_UNIQUE))
         {
-            comp->fgDebugCheckBBlist();
-            comp->fgDebugCheckLinks();
-            comp->fgDebugCheckNodesUniqueness();
-            comp->fgVerifyHandlerTab();
+            m_compiler->fgDebugCheckNodesUniqueness();
         }
-    }
 
-    // Optionally check profile data, if we have any.
-    //
-    // There's no point checking until we've built pred lists, as
-    // we can't easily reason about consistency without them.
-    //
-    // Bypass the "doPostPhase" filter until we're sure all
-    // phases that mess with profile counts set their phase status
-    // appropriately.
-    //
-    if ((JitConfig.JitProfileChecks() > 0) && comp->fgHaveProfileData() && comp->fgComputePredsDone)
-    {
-        comp->fgDebugCheckProfileData();
-    }
+        if (hasFlag(checks, PhaseChecks::CHECK_FG))
+        {
+            m_compiler->fgDebugCheckBBlist();
+        }
 
+        if (hasFlag(checks, PhaseChecks::CHECK_FG_INIT_BLOCK))
+        {
+            m_compiler->fgDebugCheckInitBB();
+        }
+
+        assert(!hasFlag(checks, PhaseChecks::CHECK_IR_RELAXED) || hasFlag(checks, PhaseChecks::CHECK_IR));
+
+        if (hasFlag(checks, PhaseChecks::CHECK_IR))
+        {
+            int const extraFlagsBefore = m_compiler->Metrics.IRExtraFlags;
+            m_compiler->fgDebugCheckLinks();
+            int const extraFlags = m_compiler->Metrics.IRExtraFlags - extraFlagsBefore;
+            JITDUMP("IR flag check found %d extra flags after %s\n", extraFlags, m_name);
+        }
+
+        if (hasFlag(checks, PhaseChecks::CHECK_EH))
+        {
+            m_compiler->fgVerifyHandlerTab();
+        }
+
+        if (hasFlag(checks, PhaseChecks::CHECK_LOOPS))
+        {
+            m_compiler->fgDebugCheckLoops();
+        }
+
+        if (hasFlag(checks, PhaseChecks::CHECK_PROFILE) || hasFlag(checks, PhaseChecks::CHECK_LIKELIHOODS))
+        {
+            m_compiler->fgDebugCheckProfile(checks);
+        }
+
+        if (hasFlag(checks, PhaseChecks::CHECK_LINKED_LOCALS))
+        {
+            m_compiler->fgDebugCheckLinkedLocals();
+        }
+
+        m_compiler->fgDebugCheckFlowGraphAnnotations();
+    }
 #endif // DEBUG
-
-#if DUMP_FLOWGRAPHS
-    comp->fgDumpFlowGraph(m_phase, Compiler::PhasePosition::PostPhase);
-#endif // DUMP_FLOWGRAPHS
-
-    comp->EndPhase(m_phase);
 }

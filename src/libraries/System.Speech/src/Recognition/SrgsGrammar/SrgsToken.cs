@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Speech.Internal;
 using System.Speech.Internal.SrgsParser;
 using System.Text;
@@ -12,7 +13,7 @@ namespace System.Speech.Recognition.SrgsGrammar
     // Note that currently if multiple words are stored in a Token they are treated internally
     // and in the result as multiple tokens.
     [Serializable]
-    [DebuggerDisplay("{DebuggerDisplayString ()}")]
+    [DebuggerDisplay("{DebuggerDisplayString()}")]
     public class SrgsToken : SrgsElement, IToken
     {
         #region Constructors
@@ -44,7 +45,9 @@ namespace System.Speech.Recognition.SrgsGrammar
                 _text = text;
             }
         }
-        public string Pronunciation
+
+        [DisallowNull]
+        public string? Pronunciation
         {
             get
             {
@@ -56,7 +59,9 @@ namespace System.Speech.Recognition.SrgsGrammar
                 _pronunciation = value;
             }
         }
-        public string Display
+
+        [DisallowNull]
+        public string? Display
         {
             get
             {
@@ -141,13 +146,13 @@ namespace System.Speech.Recognition.SrgsGrammar
 
         internal override string DebuggerDisplayString()
         {
-            StringBuilder sb = new("Token '");
+            StringBuilder sb = new("Token = '");
             sb.Append(_text);
             sb.Append('\'');
 
             if (_pronunciation != null)
             {
-                sb.Append(" Pronunciation '");
+                sb.Append(", Pronunciation = '");
                 sb.Append(_pronunciation);
                 sb.Append('\'');
             }
@@ -160,9 +165,9 @@ namespace System.Speech.Recognition.SrgsGrammar
 
         private string _text = string.Empty;
 
-        private string _pronunciation;
+        private string? _pronunciation;
 
-        private string _display;
+        private string? _display;
 
         #endregion
     }

@@ -2,12 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using System.Globalization;
 using System.IO;
+using System.Runtime.Versioning;
 using System.Security;
 using System.Xml;
-using System.Globalization;
 using System.Xml.Xsl.Qil;
-using System.Runtime.Versioning;
 
 // This class is only for debug purposes so there is no need to have it in Retail builds
 #if DEBUG
@@ -24,7 +24,7 @@ namespace System.Xml.Xsl.IlGen
         /// Check environment variable in order to determine whether to write out trace files.  This really should be a
         /// check of the configuration file, but System.Xml does not yet have a good tracing story.
         /// </summary>
-        private static volatile string? s_dirName;
+        private static string? s_dirName;
         private static volatile bool s_alreadyCheckedEnabled;
 
         /// <summary>

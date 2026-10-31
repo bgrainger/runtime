@@ -142,7 +142,7 @@ namespace System.Net.Http.Functional.Tests
                 await server.AcceptConnectionAsync(async connection =>
                 {
                     // Shut down the listen socket so no additional connections can happen
-                    server.ListenSocket.Close();
+                    await server.ListenSocket.CloseAsync();
 
                     // Initial response
                     await connection.ReadRequestHeaderAndSendResponseAsync(content: SimpleContent);
@@ -170,7 +170,7 @@ namespace System.Net.Http.Functional.Tests
                 _sendingContent = sendingContent;
             }
 
-#if NETCOREAPP
+#if NET
             protected override void SerializeToStream(Stream stream, TransportContext context, CancellationToken cancellationToken) =>
                 SerializeToStreamAsync(stream, context).GetAwaiter().GetResult();
 #endif

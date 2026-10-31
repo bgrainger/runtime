@@ -57,9 +57,9 @@ namespace System.Net.NetworkInformation
             {
                 if (line.StartsWith("00000000000000000000000000000000", StringComparison.Ordinal))
                 {
-                   string[] token = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                   if (token.Length > 9 && token[4] != "00000000000000000000000000000000")
-                   {
+                    string[] token = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (token.Length > 9 && token[4] != "00000000000000000000000000000000")
+                    {
                         if (!string.IsNullOrEmpty(interfaceName) && interfaceName != token[9])
                         {
                             continue;
@@ -86,7 +86,7 @@ namespace System.Net.NetworkInformation
             {
                 if (File.Exists(filePath)) // avoid an exception in most cases if path doesn't already exist
                 {
-                    string fileContents = File.ReadAllText(filePath);
+                    string fileContents = ReadAllText(filePath);
                     int leaseIndex = -1;
                     int secondBrace = -1;
                     while ((leaseIndex = fileContents.IndexOf("lease", leaseIndex + 1, StringComparison.Ordinal)) != -1)
@@ -128,17 +128,33 @@ namespace System.Net.NetworkInformation
             {
                 if (File.Exists(smbConfFilePath)) // avoid an exception in most cases if path doesn't already exist
                 {
-                    string fileContents = File.ReadAllText(smbConfFilePath);
+                    string fileContents = ReadAllText(smbConfFilePath);
                     string label = "wins server = ";
                     int labelIndex = fileContents.IndexOf(label);
-                    int labelLineStart = fileContents.LastIndexOf(Environment.NewLine, labelIndex, StringComparison.Ordinal);
-                    if (labelLineStart < labelIndex)
+
+                    if (labelIndex == -1)
                     {
-                        int commentIndex = fileContents.IndexOf(';', labelLineStart, labelIndex - labelLineStart);
-                        if (commentIndex != -1)
+                        return collection;
+                    }
+
+                    int labelLineStart = fileContents.LastIndexOf(Environment.NewLine, labelIndex, StringComparison.Ordinal);
+
+                    while (labelIndex != -1)
+                    {
+                        int commentIndex = fileContents.IndexOfAny(CommentSymbols, labelLineStart, labelIndex - labelLineStart);
+                        if (commentIndex == -1)
+                        {
+                            break;
+                        }
+
+                        labelIndex = fileContents.IndexOf(label, labelIndex + 16);
+
+                        if (labelIndex == -1)
                         {
                             return collection;
                         }
+
+                        labelLineStart = fileContents.LastIndexOf(Environment.NewLine, labelIndex, StringComparison.Ordinal);
                     }
                     int endOfLine = fileContents.IndexOf(Environment.NewLine, labelIndex, StringComparison.Ordinal);
                     ReadOnlySpan<char> addressSpan = fileContents.AsSpan(labelIndex + label.Length, endOfLine - (labelIndex + label.Length));
@@ -154,5 +170,6 @@ namespace System.Net.NetworkInformation
             return collection;
         }
 
+        private static readonly char[] CommentSymbols = [';', '#'];
     }
 }

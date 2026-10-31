@@ -1,8 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
+
 // Section Manager for portable executables
 // Common to both Memory Only and Static (EXE making) code
-
 
 #ifndef PESectionMan_H
 #define PESectionMan_H
@@ -32,13 +32,8 @@ public:
         unsigned flags, // IMAGE_SCN_* flags. eg. IMAGE_SCN_CNT_INITIALIZED_DATA
         PESection **section);
 
-    // Since we allocate, we must delete (Bug in VC, see knowledge base Q122675)
-    void sectionDestroy(PESection **section);
-
     // Apply all the relocs for in memory conversion
     HRESULT applyRelocs(CeeGenTokenMapper *pTokenMapper);
-
-    HRESULT cloneInstance(PESectionMan *destination);
 
 protected:
 
@@ -101,10 +96,6 @@ class PESection : public CeeSectionImpl {
                             CeeSectionRelocType reloc = srRelocHighLow,
                             CeeSectionRelocExtra *extra=0);
 
-    // Add a base reloc for the given offset in the current section
-    HRESULT addBaseReloc(unsigned offset, CeeSectionRelocType reloc = srRelocHighLow,
-                            CeeSectionRelocExtra *extra = 0);
-
     // section name
     unsigned char *name() {
         LIMITED_METHOD_CONTRACT;
@@ -136,14 +127,11 @@ class PESection : public CeeSectionImpl {
     virtual char * computePointer(unsigned offset) const;
 
     // Checks to see if pointer is in section
-    virtual BOOL containsPointer(__in char *ptr) const;
+    virtual BOOL containsPointer(_In_ char *ptr) const;
 
     // Given a pointer pointing into this section,
     // computes an offset as if this were an array
-    virtual unsigned computeOffset(__in char *ptr) const;
-
-    // Make 'destination' a copy of the current PESection
-    HRESULT cloneInstance(PESection *destination);
+    virtual unsigned computeOffset(_In_ char *ptr) const;
 
     // Cause the section to allocate memory in smaller chunks
     void SetInitialGrowth(unsigned growth);

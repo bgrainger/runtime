@@ -53,7 +53,6 @@ void InstMethodHashEntry::SetMethodAndFlags(MethodDesc *pMethod, DWORD dwFlags)
     {
         THROWS;
         GC_NOTRIGGER;
-        INJECT_FAULT(COMPlusThrowOM(););
     }
     CONTRACTL_END
 
@@ -86,40 +85,29 @@ PTR_LoaderAllocator InstMethodHashTable::GetLoaderAllocator()
     }
 }
 
+#endif // #ifndef DACCESS_COMPILE
 
 // Calculate a hash value for a method-desc key
 static DWORD Hash(TypeHandle declaringType, mdMethodDef token, Instantiation inst)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FORBID_FAULT;
 
     DWORD dwHash = 0x87654321;
 #define INST_HASH_ADD(_value) dwHash = ((dwHash << 5) + dwHash) ^ (_value)
+#ifdef TARGET_64BIT
+#define INST_HASH_ADDPOINTER(_value) INST_HASH_ADD((uint32_t)dac_cast<TADDR>(_value)); INST_HASH_ADD((uint32_t)((dac_cast<TADDR>(_value)) >> 32))
+#else
+#define INST_HASH_ADDPOINTER(_value) INST_HASH_ADD((uint32_t)dac_cast<TADDR>(_value));
+#endif
 
-    INST_HASH_ADD(declaringType.GetCl());
+    INST_HASH_ADDPOINTER(declaringType.AsPtr());
     INST_HASH_ADD(token);
 
     for (DWORD i = 0; i < inst.GetNumArgs(); i++)
     {
         TypeHandle thArg = inst[i];
-
-        if (thArg.GetMethodTable())
-        {
-            INST_HASH_ADD(thArg.GetCl());
-
-            Instantiation sArgInst = thArg.GetInstantiation();
-            for (DWORD j = 0; j < sArgInst.GetNumArgs(); j++)
-            {
-                TypeHandle thSubArg = sArgInst[j];
-                if (thSubArg.GetMethodTable())
-                    INST_HASH_ADD(thSubArg.GetCl());
-                else
-                    INST_HASH_ADD(thSubArg.GetSignatureCorElementType());
-            }
-        }
-        else
-            INST_HASH_ADD(thArg.GetSignatureCorElementType());
+        INST_HASH_ADDPOINTER(thArg.AsPtr());
     }
 
     return dwHash;
@@ -129,23 +117,16 @@ MethodDesc* InstMethodHashTable::FindMethodDesc(TypeHandle declaringType,
                                                 mdMethodDef token,
                                                 BOOL unboxingStub,
                                                 Instantiation inst,
-                                                BOOL getSharedNotStub)
+                                                BOOL getSharedNotStub,
+                                                AsyncVariantLookup variantLookup)
 {
     CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
-        FORBID_FAULT;
         PRECONDITION(CheckPointer(declaringType));
     }
     CONTRACTL_END
-
-        // We temporarily disable IBC logging here
-        // because the pMD that we search through may not be restored
-        // and ComputePreferredZapModule will assert on finding an
-        // encode fixup pointer
-        //
-        IBCLoggingDisabler disableIbcLogging;
 
     MethodDesc *pMDResult = NULL;
 
@@ -178,6 +159,11 @@ MethodDesc* InstMethodHashTable::FindMethodDesc(TypeHandle declaringType,
             continue;  // Next iteration of the for loop
         }
 
+        if (!pMD->MatchesAsyncVariantLookup(variantLookup))
+        {
+            continue;
+        }
+
         if (!inst.IsEmpty())
         {
             Instantiation candidateInst = pMD->GetMethodInstantiation();
@@ -208,6 +194,8 @@ MethodDesc* InstMethodHashTable::FindMethodDesc(TypeHandle declaringType,
     return pMDResult;
 }
 
+#ifndef DACCESS_COMPILE
+
 BOOL InstMethodHashTable::ContainsMethodDesc(MethodDesc* pMD)
 {
     CONTRACTL
@@ -220,7 +208,7 @@ BOOL InstMethodHashTable::ContainsMethodDesc(MethodDesc* pMD)
 
     return FindMethodDesc(
         pMD->GetMethodTable(), pMD->GetMemberDef(), pMD->IsUnboxingStub(),
-        pMD->GetMethodInstantiation(), pMD->RequiresInstArg()) != NULL;
+        pMD->GetMethodInstantiation(), pMD->RequiresInstArg(), pMD->GetMatchingAsyncVariantLookup()) != NULL;
 }
 
 #endif // #ifndef DACCESS_COMPILE
@@ -306,7 +294,6 @@ void InstMethodHashTable::InsertMethodDesc(MethodDesc *pMD)
     {
         THROWS;
         GC_NOTRIGGER;
-        INJECT_FAULT(COMPlusThrowOM(););
         PRECONDITION(IsUnsealed());          // If we are sealed then we should not be adding to this hashtable
         PRECONDITION(CheckPointer(pMD));
 

@@ -10,8 +10,6 @@ namespace IlasmPortablePdbTests
 {
     public static class IlasmPortablePdbTesterCommon
     {
-        public const string CommonIlasmArguments = "-nologo -dll -debug";
-
         public static string GetIlasmFullPath(string coreRootVar, string ilasmFile)
         {
             Assert.True(!string.IsNullOrWhiteSpace(coreRootVar));
@@ -33,19 +31,14 @@ namespace IlasmPortablePdbTests
             var dllFullPath = Path.Combine(currentDirectory, testDir, dllFileName);
             var pdbFullPath = Path.Combine(currentDirectory, testDir, pdbFileName);
 
-            var ilasmArgs = $"{CommonIlasmArguments} -output={dllFullPath} {ilSrcFullPath}";
-            var ilasmPsi = new ProcessStartInfo
+            var ilasmPsi = new ProcessStartInfo(ilasmFullPath, ["-nologo", "-dll", "-debug", $"-output={dllFullPath}", ilSrcFullPath])
             {
-                UseShellExecute = false,
+                InheritedHandles = [],
                 WorkingDirectory = currentDirectory,
-                FileName = ilasmFullPath,
-                Arguments = ilasmArgs
             };
 
-            Process ilasmProcess = Process.Start(ilasmPsi);
-            ilasmProcess.WaitForExit();
-
-            Assert.Equal(0, ilasmProcess.ExitCode);
+            ProcessExitStatus status = Process.Run(ilasmPsi);
+            Assert.Equal(0, status.ExitCode);
             Assert.True(File.Exists(dllFullPath));
             Assert.True(File.Exists(pdbFullPath));
 
@@ -89,12 +82,12 @@ namespace IlasmPortablePdbTests
                         new DocumentStub("/tmp/non_existent_source2.cs"),
                     };
                 default:
-                    Assert.False(true);
+                    Assert.Fail();
                     return null;
             }
         }
 
-        public static Dictionary<string, MethodDebugInformationStub> GetExpectedForTestMethodDebugInformation(string testName)
+        public static Dictionary<string, MethodDebugInformationStub> GetExpectedForTestMethodDebugInformation(string testName, bool isUnix)
         {
             string method1;
             string method2;
@@ -103,39 +96,38 @@ namespace IlasmPortablePdbTests
 
             switch (testName)
             {
-                case "TestMethodDebugInformation_unix.il":
+                case "TestMethodDebugInformation":
                     method1 = ".ctor";
                     method2 = "Pow";
-                    document1 = new DocumentStub("/tmp/TestMethodDebugInformation/SimpleMath.cs");
-                    document2 = new DocumentStub("/tmp/TestMethodDebugInformation/SimpleMathMethods.cs");
+                    document1 = isUnix ? new DocumentStub("/tmp/TestMethodDebugInformation/SimpleMath.cs") : new DocumentStub("C:\\tmp\\TestMethodDebugInformation\\SimpleMath.cs");
+                    document2 = isUnix ? new DocumentStub("/tmp/TestMethodDebugInformation/SimpleMathMethods.cs") : new DocumentStub("C:\\tmp\\TestMethodDebugInformation\\SimpleMathMethods.cs");
                     break;
-                case "TestMethodDebugInformation_win.il":
-                    method1 = ".ctor";
-                    method2 = "Pow";
-                    document1 = new DocumentStub("C:\\tmp\\TestMethodDebugInformation\\SimpleMath.cs");
-                    document2 = new DocumentStub("C:\\tmp\\TestMethodDebugInformation\\SimpleMathMethods.cs");
+                case "TestDocuments1":
+                    method1 = "Foo";
+                    method2 = null;
+                    document1 = isUnix ? new DocumentStub("/tmp/non_existent_source1.cs") : new DocumentStub("C:\\tmp\\non_existent_source1.cs");
+                    document2 = isUnix ? new DocumentStub("/tmp/non_existent_source2.cs") : new DocumentStub("C:\\tmp\\non_existent_source2.cs");
                     break;
                 default:
-                    Assert.False(true);
+                    Assert.Fail();
                     return null;
             }
 
-            return new Dictionary<string, MethodDebugInformationStub>()
+            var result = new Dictionary<string, MethodDebugInformationStub>();
+            switch (testName)
             {
-                {
-                    method1,
-                    new MethodDebugInformationStub(method1, document1,
+                case "TestMethodDebugInformation":
+                    result.Add(method1,
+                        new MethodDebugInformationStub(method1, document1,
                         new List<SequencePointStub>()
                         {
                             new SequencePointStub(document1, false, 0x0, 6, 6, 9, 37),
                             new SequencePointStub(document1, false, 0x7, 7, 7, 9, 10),
                             new SequencePointStub(document1, false, 0x8, 8, 8, 13, 28),
                             new SequencePointStub(document1, false, 0xf, 9, 9, 9, 10),
-                        })
-                },
-                {
-                    method2,
-                    new MethodDebugInformationStub(method2, document2,
+                        }));
+                    result.Add(method2,
+                        new MethodDebugInformationStub(method2, document2,
                         new List<SequencePointStub>()
                         {
                             new SequencePointStub(document2, false, 0x0, 6, 6, 9, 10),
@@ -153,9 +145,19 @@ namespace IlasmPortablePdbTests
                             new SequencePointStub(document2, true,  0x1e),
                             new SequencePointStub(document2, false, 0x21, 15, 15, 13, 24),
                             new SequencePointStub(document2, false, 0x26, 16, 16, 9, 10),
-                        })
-                }
+                        }));
+                    break;
+                case "TestDocuments1":
+                    result.Add(method1,
+                        new MethodDebugInformationStub(method1, null,
+                        new List<SequencePointStub>()
+                        {
+                            new SequencePointStub(document1, false, 0x0, 1, 1, 9, 10),
+                            new SequencePointStub(document2, false, 0x1, 2, 2, 9, 10),
+                        }));
+                    break;
             };
+            return result;
         }
 
         public static List<LocalScopeStub> GetExpectedForTestLocalScopes(string testName)
@@ -239,7 +241,7 @@ namespace IlasmPortablePdbTests
                             })
                     };
                 default:
-                    Assert.False(true);
+                    Assert.Fail();
                     return null;
             }
         }

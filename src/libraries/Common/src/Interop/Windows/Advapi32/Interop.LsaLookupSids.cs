@@ -9,7 +9,8 @@ internal static partial class Interop
 {
     internal static partial class Advapi32
     {
-        [GeneratedDllImport(Interop.Libraries.Advapi32, EntryPoint = "LsaLookupSids", SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [LibraryImport(Interop.Libraries.Advapi32, EntryPoint = "LsaLookupSids", SetLastError = true)]
         internal static partial uint LsaLookupSids(
             SafeLsaPolicyHandle handle,
             int count,
@@ -41,10 +42,10 @@ internal static partial class SafeLsaMemoryHandleExtensions
             if (domainList.Domains != IntPtr.Zero)
             {
                 Interop.LSA_TRUST_INFORMATION* pTrustInformation = (Interop.LSA_TRUST_INFORMATION*)domainList.Domains;
-                pTrustInformation = pTrustInformation + domainList.Entries;
+                pTrustInformation += domainList.Entries;
 
                 long bufferSize = (byte*)pTrustInformation - pRdl;
-                System.Diagnostics.Debug.Assert(bufferSize > 0, "bufferSize > 0");
+                System.Diagnostics.Debug.Assert(bufferSize > 0);
                 referencedDomains.Initialize((ulong)bufferSize);
             }
         }

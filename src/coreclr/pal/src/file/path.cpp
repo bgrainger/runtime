@@ -2,28 +2,17 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 /*++
-
-
-
 Module Name:
-
     path.c
 
 Abstract:
-
     Implementation of all functions related to path support
-
-Revision History:
-
-
-
 --*/
 
 #include "pal/thread.hpp"
 #include "pal/palinternal.h"
 #include "pal/dbgmsg.h"
 #include "pal/file.h"
-#include "pal/malloc.hpp"
 #include "pal/stackstring.hpp"
 
 #include <errno.h>
@@ -73,7 +62,7 @@ GetFullPathNameA(
     }
 
     /* find out if lpFileName is a partial or full path */
-    if ('\\' == *lpFileName || '/' == *lpFileName)
+    if ('/' == *lpFileName)
     {
         fullPath = TRUE;
     }
@@ -112,8 +101,6 @@ GetFullPathNameA(
     }
 
     unixPathBuf = unixPath.OpenStringBuffer(unixPath.GetCount());
-    /* do conversion to Unix path */
-    FILEDosToUnixPathA( unixPathBuf );
 
     /* now we can canonicalize this */
     FILECanonicalizePath(unixPathBuf);
@@ -376,165 +363,6 @@ GetTempPathA(
 }
 
 /*++
-Function:
-  GetTempPathW
-
-See MSDN.
-See also the comment for GetTempPathA.
---*/
-DWORD
-PALAPI
-GetTempPathW(
-	     IN DWORD nBufferLength,
-	     OUT LPWSTR lpBuffer)
-{
-    PERF_ENTRY(GetTempPathW);
-    ENTRY("GetTempPathW(nBufferLength=%u, lpBuffer=%p)\n",
-          nBufferLength, lpBuffer);
-
-    if (!lpBuffer)
-    {
-        ERROR("lpBuffer was not a valid pointer.\n")
-        SetLastError(ERROR_INVALID_PARAMETER);
-        LOGEXIT("GetTempPathW returns DWORD 0\n");
-        PERF_EXIT(GetTempPathW);
-        return 0;
-    }
-
-    char TempBuffer[nBufferLength > 0 ? nBufferLength : 1];
-    DWORD dwRetVal = GetTempPathA( nBufferLength, TempBuffer );
-
-    if ( dwRetVal >= nBufferLength )
-    {
-        ERROR( "lpBuffer was not large enough.\n" )
-        SetLastError( ERROR_INSUFFICIENT_BUFFER );
-        *lpBuffer = '\0';
-    }
-    else if ( dwRetVal != 0 )
-    {
-        /* Convert to wide. */
-        if ( 0 == MultiByteToWideChar( CP_ACP, 0, TempBuffer, -1,
-                                       lpBuffer, dwRetVal + 1 ) )
-        {
-            ASSERT( "An error occurred while converting the string to wide.\n" );
-            SetLastError( ERROR_INTERNAL_ERROR );
-            dwRetVal = 0;
-        }
-    }
-    else
-    {
-        ERROR( "The function failed.\n" );
-        *lpBuffer = '\0';
-    }
-
-    LOGEXIT("GetTempPathW returns DWORD %u\n", dwRetVal );
-    PERF_EXIT(GetTempPathW);
-    return dwRetVal;
-}
-
-
-
-/*++
-Function:
-  FileDosToUnixPathA
-
-Abstract:
-  Change a DOS path to a Unix path.
-
-  Replaces '\' by '/'
-
-Parameter:
-  IN/OUT lpPath: path to be modified
---*/
-void
-FILEDosToUnixPathA(
-       LPSTR lpPath)
-{
-    LPSTR p;
-
-    TRACE("Original DOS path = [%s]\n", lpPath);
-
-    if (!lpPath)
-    {
-        return;
-    }
-
-    for (p = lpPath; *p; p++)
-    {
-        /* Replace \ with / */
-        if (*p == '\\')
-        {
-            *p = '/';
-        }
-    }
-
-    TRACE("Resulting Unix path = [%s]\n", lpPath);
-}
-
-void
-FILEDosToUnixPathA(
-       PathCharString&  lpPath)
-{
-
-    SIZE_T len = lpPath.GetCount();
-    LPSTR lpPathBuf = lpPath.OpenStringBuffer(len);
-    FILEDosToUnixPathA(lpPathBuf);
-    lpPath.CloseBuffer(len);
-
-}
-
-
-/*++
-Function:
-  FILEGetDirectoryFromFullPathA
-
-Parse the given path. If it contains a directory part and a file part,
-put the directory part into the supplied buffer, and return the number of
-characters written to the buffer. If the buffer is not large enough,
-return the required size of the buffer including the NULL character. If
-there is no directory part in the path, return 0.
---*/
-DWORD FILEGetDirectoryFromFullPathA( LPCSTR lpFullPath,
-                     DWORD  nBufferLength,
-                     LPSTR  lpBuffer )
-{
-    size_t full_len, dir_len, i;
-    LPCSTR lpDirEnd;
-    DWORD  dwRetLength;
-
-    full_len = strlen( lpFullPath );
-
-    /* look for the first path separator backwards */
-    lpDirEnd = lpFullPath + full_len - 1;
-    while( lpDirEnd >= lpFullPath && *lpDirEnd != '/' && *lpDirEnd != '\\')
-    --lpDirEnd;
-
-    dir_len = lpDirEnd - lpFullPath + 1; /* +1 for fencepost */
-
-    if ( dir_len <= 0 )
-    {
-        dwRetLength = 0;
-    }
-    else if (dir_len >= nBufferLength)
-    {
-        dwRetLength = dir_len + 1; /* +1 for NULL char */
-    }
-    else
-    {
-    /* put the directory into the buffer, including 1 or more
-       trailing path separators */
-    for( i = 0; i < dir_len; ++i )
-        *(lpBuffer + i) = *(lpFullPath + i);
-
-    *(lpBuffer + i) = '\0';
-
-    dwRetLength = dir_len;
-    }
-
-    return( dwRetLength );
-}
-
-/*++
 FILECanonicalizePath
     Removes all instances of '/./', '/../' and '//' from an absolute path.
 
@@ -646,7 +474,7 @@ void FILECanonicalizePath(LPSTR lpUnixPath)
         }
     }
 
-    /* step 5 : remove a traling '/.' */
+    /* step 5 : remove a trailing '/.' */
 
     slashdotptr = strstr(lpUnixPath,"/.");
     if (slashdotptr != NULL && slashdotptr[2] == '\0')
@@ -734,7 +562,7 @@ SearchPathW(
 
     /* special case : if file name contains absolute path, don't search the
        provided path */
-    if('\\' == lpFileName[0] || '/' == lpFileName[0])
+    if(L'/' == lpFileName[0])
     {
         /* Canonicalize the path to deal with back-to-back '/', etc. */
         length = MAX_LONGPATH; //Use it for first try
@@ -934,44 +762,4 @@ done:
     LOGEXIT("SearchPathW returns DWORD %u\n", nRet);
     PERF_EXIT(SearchPathW);
     return nRet;
-}
-
-/*++
-Function:
-  PathFindFileNameW
-
-See MSDN doc.
---*/
-LPWSTR
-PALAPI
-PathFindFileNameW(
-    IN LPCWSTR pPath
-    )
-{
-    PERF_ENTRY(PathFindFileNameW);
-    ENTRY("PathFindFileNameW(pPath=%p (%S))\n",
-          pPath?pPath:W16_NULLSTRING,
-          pPath?pPath:W16_NULLSTRING);
-
-    LPWSTR ret = (LPWSTR)pPath;
-    if (ret != NULL && *ret != W('\0'))
-    {
-        ret = PAL_wcschr(ret, W('\0')) - 1;
-        if (ret > pPath && *ret == W('/'))
-        {
-            ret--;
-        }
-        while (ret > pPath && *ret != W('/'))
-        {
-            ret--;
-        }
-        if (*ret == W('/') && *(ret + 1) != W('\0'))
-        {
-            ret++;
-        }
-    }
-
-    LOGEXIT("PathFindFileNameW returns %S\n", ret);
-    PERF_EXIT(PathFindFileNameW);
-    return ret;
 }

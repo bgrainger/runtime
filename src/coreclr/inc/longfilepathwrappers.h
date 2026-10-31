@@ -5,6 +5,8 @@
 #define _WIN_PATH_APIS_WRAPPER_
 class SString;
 
+#ifdef HOST_WINDOWS
+
 HMODULE
 LoadLibraryExWrapper(
     _In_ LPCWSTR lpLibFileName,
@@ -23,51 +25,9 @@ CreateFileWrapper(
     _In_opt_ HANDLE hTemplateFile
     );
 
-DWORD
-GetFileAttributesWrapper(
-    _In_ LPCWSTR lpFileName
-    );
+int u16_fopen_wrapper(FILE** stream, const WCHAR* filename, const WCHAR* mode);
 
-BOOL
-GetFileAttributesExWrapper(
-    _In_ LPCWSTR lpFileName,
-    _In_ GET_FILEEX_INFO_LEVELS fInfoLevelId,
-    _Out_writes_bytes_(sizeof(WIN32_FILE_ATTRIBUTE_DATA)) LPVOID lpFileInformation
-    );
-BOOL
-DeleteFileWrapper(
-    _In_ LPCWSTR lpFileName
-    );
-
-HANDLE
-FindFirstFileExWrapper(
-    _In_ LPCWSTR lpFileName,
-    _In_ FINDEX_INFO_LEVELS fInfoLevelId,
-    _Out_writes_bytes_(sizeof(WIN32_FIND_DATAW)) LPVOID lpFindFileData,
-    _In_ FINDEX_SEARCH_OPS fSearchOp,
-    _Reserved_ LPVOID lpSearchFilter,
-    _In_ DWORD dwAdditionalFlags
-    );
-
-#ifndef HOST_UNIX
-BOOL
-CopyFileExWrapper(
-    _In_        LPCWSTR lpExistingFileName,
-    _In_        LPCWSTR lpNewFileName,
-    _In_opt_    LPPROGRESS_ROUTINE lpProgressRoutine,
-    _In_opt_    LPVOID lpData,
-    _When_(pbCancel != NULL, _Pre_satisfies_(*pbCancel == FALSE))
-    _Inout_opt_ LPBOOL pbCancel,
-    _In_        DWORD dwCopyFlags
-    );
-#endif //HOST_UNIX
-
-BOOL
-MoveFileExWrapper(
-    _In_     LPCWSTR lpExistingFileName,
-    _In_opt_ LPCWSTR lpNewFileName,
-    _In_     DWORD    dwFlags
-    );
+#endif //HOST_WINDOWS
 
 DWORD
 SearchPathWrapper(
@@ -77,22 +37,6 @@ SearchPathWrapper(
     _In_ BOOL getPath,
     SString& lpBuffer,
     _Out_opt_ LPWSTR * lpFilePart
-    );
-
-
-UINT WINAPI GetTempFileNameWrapper(
-    _In_  LPCTSTR lpPathName,
-    _In_  LPCTSTR lpPrefixString,
-    _In_  UINT    uUnique,
-    SString&  lpTempFileName
-    );
-
-DWORD WINAPI GetTempPathWrapper(
-    SString& lpBuffer
-    );
-
-DWORD WINAPI GetCurrentDirectoryWrapper(
-    SString&  lpBuffer
     );
 
 DWORD
@@ -107,4 +51,3 @@ DWORD WINAPI GetEnvironmentVariableWrapper(
     );
 
 #endif //_WIN_PATH_APIS_WRAPPER_
-

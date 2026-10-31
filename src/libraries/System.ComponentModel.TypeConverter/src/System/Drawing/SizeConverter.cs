@@ -17,43 +17,37 @@ namespace System.Drawing
             return sourceType == typeof(string) || base.CanConvertFrom(context, sourceType);
         }
 
-        public override bool CanConvertTo(ITypeDescriptorContext? context, Type? destinationType)
+        public override bool CanConvertTo(ITypeDescriptorContext? context, [NotNullWhen(true)] Type? destinationType)
         {
             return destinationType == typeof(InstanceDescriptor) || base.CanConvertTo(context, destinationType);
         }
 
-        public override object? ConvertFrom(ITypeDescriptorContext? context, CultureInfo? culture, object value)
+        public override unsafe object? ConvertFrom(ITypeDescriptorContext? context, CultureInfo? culture, object value)
         {
             if (value is string strValue)
             {
-                string text = strValue.Trim();
+                ReadOnlySpan<char> text = strValue.AsSpan().Trim();
                 if (text.Length == 0)
                 {
                     return null;
                 }
 
                 // Parse 2 integer values.
-                if (culture == null)
+                culture ??= CultureInfo.CurrentCulture;
+
+                string sep = culture.TextInfo.ListSeparator;
+                Span<Range> ranges = stackalloc Range[3];
+                int rangesCount = text.Split(ranges, sep);
+                if (rangesCount != 2)
                 {
-                    culture = CultureInfo.CurrentCulture;
+                    throw new ArgumentException(SR.Format(SR.TextParseFailedFormat, text.ToString(), $"Width{sep} Height"));
                 }
 
-                char sep = culture.TextInfo.ListSeparator[0];
-                string[] tokens = text.Split(sep);
-                int[] values = new int[tokens.Length];
-                TypeConverter intConverter = TypeDescriptor.GetConverterTrimUnsafe(typeof(int));
-                for (int i = 0; i < values.Length; i++)
-                {
-                    // Note: ConvertFromString will raise exception if value cannot be converted.
-                    values[i] = (int)intConverter.ConvertFromString(context, culture, tokens[i])!;
-                }
+                TypeConverter converter = TypeDescriptor.GetConverterTrimUnsafe(typeof(int));
+                int width = (int)converter.ConvertFromString(context, culture, strValue[ranges[0]])!;
+                int height = (int)converter.ConvertFromString(context, culture, strValue[ranges[1]])!;
 
-                if (values.Length != 2)
-                {
-                    throw new ArgumentException(SR.Format(SR.TextParseFailedFormat, text, "Width,Height"));
-                }
-
-                return new Size(values[0], values[1]);
+                return new Size(width, height);
             }
 
             return base.ConvertFrom(context, culture, value);
@@ -61,34 +55,26 @@ namespace System.Drawing
 
         public override object? ConvertTo(ITypeDescriptorContext? context, CultureInfo? culture, object? value, Type destinationType)
         {
-            if (destinationType == null)
-            {
-                throw new ArgumentNullException(nameof(destinationType));
-            }
+            ArgumentNullException.ThrowIfNull(destinationType);
 
             if (value is Size size)
             {
                 if (destinationType == typeof(string))
                 {
-                    if (culture == null)
-                    {
-                        culture = CultureInfo.CurrentCulture;
-                    }
+                    culture ??= CultureInfo.CurrentCulture;
 
-                    string sep = culture.TextInfo.ListSeparator + " ";
+                    string sep = culture.TextInfo.ListSeparator;
                     TypeConverter intConverter = TypeDescriptor.GetConverterTrimUnsafe(typeof(int));
 
                     // Note: ConvertToString will raise exception if value cannot be converted.
-                    var args = new string?[]
-                    {
-                        intConverter.ConvertToString(context, culture, size.Width),
-                        intConverter.ConvertToString(context, culture, size.Height)
-                    };
-                    return string.Join(sep, args);
+                    string? width = intConverter.ConvertToString(context, culture, size.Width);
+                    string? height = intConverter.ConvertToString(context, culture, size.Height);
+
+                    return $"{width}{sep} {height}";
                 }
                 else if (destinationType == typeof(InstanceDescriptor))
                 {
-                    ConstructorInfo? ctor = typeof(Size).GetConstructor(new Type[] { typeof(int), typeof(int) });
+                    ConstructorInfo? ctor = typeof(Size).GetConstructor([typeof(int), typeof(int)]);
                     if (ctor != null)
                     {
                         return new InstanceDescriptor(ctor, new object[] { size.Width, size.Height });
@@ -101,10 +87,7 @@ namespace System.Drawing
 
         public override object CreateInstance(ITypeDescriptorContext? context, IDictionary propertyValues)
         {
-            if (propertyValues == null)
-            {
-                throw new ArgumentNullException(nameof(propertyValues));
-            }
+            ArgumentNullException.ThrowIfNull(propertyValues);
 
             object? width = propertyValues["Width"];
             object? height = propertyValues["Height"];
@@ -119,7 +102,7 @@ namespace System.Drawing
 
         public override bool GetCreateInstanceSupported(ITypeDescriptorContext? context) => true;
 
-        private static readonly string[] s_propertySort = { "Width", "Height" };
+        private static readonly string[] s_propertySort = ["Width", "Height"];
 
         [RequiresUnreferencedCode("The Type of value cannot be statically discovered. " + AttributeCollection.FilterRequiresUnreferencedCodeMessage)]
         public override PropertyDescriptorCollection GetProperties(ITypeDescriptorContext? context, object value, Attribute[]? attributes)

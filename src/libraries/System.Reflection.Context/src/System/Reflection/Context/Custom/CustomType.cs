@@ -11,8 +11,6 @@ namespace System.Reflection.Context.Custom
 {
     internal sealed class CustomType : ProjectingType
     {
-        private IEnumerable<PropertyInfo>? _newProperties;
-
         public CustomType(Type template, CustomReflectionContext context)
             : base(template, context.Projector)
         {
@@ -134,8 +132,7 @@ namespace System.Reflection.Context.Custom
             if (matchingProperties.Count == 0)
                 return null;
 
-            if (binder == null)
-                binder = Type.DefaultBinder;
+            binder ??= Type.DefaultBinder;
 
             return binder.SelectProperty(bindingAttr, matchingProperties.ToArray(), returnType, types, modifiers);
         }
@@ -186,6 +183,22 @@ namespace System.Reflection.Context.Custom
         {
             MethodInfo? method = base.GetMethodImpl(name, bindingAttr, binder, callConvention, types, modifiers);
 
+            return AddNewPropertyAccessors(method, name, bindingAttr, binder, types, modifiers);
+        }
+
+        protected override MethodInfo? GetMethodImpl(string name, int genericParameterCount, BindingFlags bindingAttr, Binder? binder, CallingConventions callConvention, Type[]? types, ParameterModifier[]? modifiers)
+        {
+            MethodInfo? method = base.GetMethodImpl(name, genericParameterCount, bindingAttr, binder, callConvention, types, modifiers);
+
+            // The accessors of new properties are never generic.
+            if (genericParameterCount != 0)
+                return method;
+
+            return AddNewPropertyAccessors(method, name, bindingAttr, binder, types, modifiers);
+        }
+
+        private MethodInfo? AddNewPropertyAccessors(MethodInfo? method, string name, BindingFlags bindingAttr, Binder? binder, Type[]? types, ParameterModifier[]? modifiers)
+        {
             bool getIgnoreCase = (bindingAttr & BindingFlags.IgnoreCase) == BindingFlags.IgnoreCase;
             bool getDeclaredOnly = (bindingAttr & BindingFlags.DeclaredOnly) == BindingFlags.DeclaredOnly;
             bool getInstance = (bindingAttr & BindingFlags.Instance) == BindingFlags.Instance;
@@ -258,7 +271,6 @@ namespace System.Reflection.Context.Custom
                 }
             }
 
-
             if (matchingMethods.Count == 0)
                 return null;
 
@@ -267,33 +279,23 @@ namespace System.Reflection.Context.Custom
                 Debug.Assert(types == null || types.Length == 0);
 
                 // matches any signature
+                MethodInfo match = matchingMethods[0];
                 if (matchingMethods.Count == 1)
-                    return matchingMethods[0];
-                else
-                    throw new AmbiguousMatchException();
+                    return match;
+
+                Type? declaringType = match.DeclaringType;
+                throw new AmbiguousMatchException(SR.Format(SR.Arg_AmbiguousMatchException_MemberInfo, declaringType, match));
             }
             else
             {
                 Debug.Assert(getPropertySetter && types != null && types.Length == 1);
 
-                if (binder == null)
-                    binder = Type.DefaultBinder;
+                binder ??= Type.DefaultBinder;
 
                 return (MethodInfo?)binder.SelectMethod(bindingAttr, matchingMethods.ToArray(), types, modifiers);
             }
         }
 
-        private IEnumerable<PropertyInfo> NewProperties
-        {
-            get
-            {
-                if (_newProperties == null)
-                {
-                    _newProperties = ReflectionContext.GetNewPropertiesForType(this);
-                }
-
-                return _newProperties;
-            }
-        }
+        private IEnumerable<PropertyInfo> NewProperties => field ??= ReflectionContext.GetNewPropertiesForType(this);
     }
 }

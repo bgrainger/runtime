@@ -5,6 +5,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Threading;
+using Xunit;
 
 // Runtime issue 52975.
 //
@@ -18,10 +19,10 @@ using System.Threading;
 //
 // The test below is set up to devirtualize under PGO.
 //
-// COMPlus_TieredPGO=1
-// COMPlus_TC_QuickJitForLoopsO=1
+// DOTNET_TieredPGO=1
+// DOTNET_TC_QuickJitForLoopsO=1
 //
-class X
+public class X
 {
     static int F(IDictionary i)
     {
@@ -37,7 +38,9 @@ class X
         return r;
     }
 
-    public static int Main()
+    [ActiveIssue("https://github.com/dotnet/runtime/issues/134949", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.IsWasi), nameof(TestLibrary.PlatformDetection.IsReadyToRunCompiled))]
+    [Fact]
+    public static int TestEntryPoint()
     {
         Dictionary<string, string> s = new Dictionary<string, string>();
         s["hello"] = "world";

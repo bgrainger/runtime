@@ -3,16 +3,13 @@
 
 using System;
 using System.Reflection.Metadata;
-using System.Runtime.InteropServices;
 using System.Diagnostics;
 using System.Text;
-
-using Internal.TypeSystem;
 using System.Collections.Generic;
 
 namespace Internal.TypeSystem.Ecma
 {
-    public struct EcmaSignatureParser
+    public partial struct EcmaSignatureParser
     {
         private TypeSystemContext _tsc;
         private Func<EntityHandle, NotFoundBehavior, TypeDesc> _typeResolver;
@@ -49,13 +46,16 @@ namespace Internal.TypeSystem.Ecma
             _resolutionFailure = null;
         }
 
-        void SetResolutionFailure(ResolutionFailure failure)
+        private void SetResolutionFailure(ResolutionFailure failure)
         {
-            if (_resolutionFailure == null)
-                _resolutionFailure = failure;
+            _resolutionFailure ??= failure;
         }
 
         public ResolutionFailure ResolutionFailure => _resolutionFailure;
+
+        partial void ReportInvalidTypeSpecEncoding(EntityHandle typeSpecHandle);
+
+        partial void ReportTypeSpecUsedAsCustomModifier(EntityHandle typeSpecHandle);
 
         private TypeDesc ResolveHandle(EntityHandle handle)
         {
@@ -86,7 +86,7 @@ namespace Internal.TypeSystem.Ecma
             }
         }
 
-        private TypeDesc GetWellKnownType(WellKnownType wellKnownType)
+        private DefType GetWellKnownType(WellKnownType wellKnownType)
         {
             return _tsc.GetWellKnownType(wellKnownType);
         }
@@ -100,10 +100,7 @@ namespace Internal.TypeSystem.Ecma
                 _indexStack.Push(0);
             }
             TypeDesc result = ParseTypeImpl(typeCode);
-            if (_indexStack != null)
-            {
-                _indexStack.Pop();
-            }
+            _indexStack?.Pop();
             return result;
         }
 
@@ -255,8 +252,13 @@ namespace Internal.TypeSystem.Ecma
                         return _tsc.GetFunctionPointerType(sig);
                     else
                         return null;
+                case SignatureTypeCode.Sentinel:
+                    // Varargs are not supported
+                    ThrowHelper.ThrowInvalidProgramException();
+                    return null; // unreached
                 default:
-                    throw new BadImageFormatException();
+                    ThrowHelper.ThrowBadImageFormatException();
+                    return null;
             }
         }
 
@@ -269,36 +271,40 @@ namespace Internal.TypeSystem.Ecma
                 _indexStack.Push(0);
             }
             SignatureTypeCode result = ParseTypeCodeImpl(skipPinned);
-            if (_indexStack != null)
-            {
-                _indexStack.Pop();
-            }
+            _indexStack?.Pop();
             return result;
         }
 
         private SignatureTypeCode ParseTypeCodeImpl(bool skipPinned = true)
         {
-            for (; ; )
-            {
-                SignatureTypeCode typeCode = _reader.ReadSignatureTypeCode();
+            return ParseTypeCodeImpl(_reader.ReadSignatureTypeCode(), skipPinned);
+        }
 
+        private SignatureTypeCode ParseTypeCodeImpl(SignatureTypeCode typeCode, bool skipPinned = true)
+        {
+            for (; ; typeCode = _reader.ReadSignatureTypeCode())
+            {
                 if (typeCode == SignatureTypeCode.RequiredModifier)
                 {
                     EntityHandle typeHandle = _reader.ReadTypeHandle();
-                    if (_embeddedSignatureDataList != null)
+                    if (typeHandle.Kind == HandleKind.TypeSpecification)
                     {
-                        _embeddedSignatureDataList.Add(new EmbeddedSignatureData { index = string.Join(".", _indexStack), kind = EmbeddedSignatureDataKind.RequiredCustomModifier, type = ResolveHandle(typeHandle) });
+                        ReportTypeSpecUsedAsCustomModifier(typeHandle);
                     }
+
+                    _embeddedSignatureDataList?.Add(new EmbeddedSignatureData { index = string.Join(".", _indexStack), kind = EmbeddedSignatureDataKind.RequiredCustomModifier, type = ResolveHandle(typeHandle) });
                     continue;
                 }
 
                 if (typeCode == SignatureTypeCode.OptionalModifier)
                 {
                     EntityHandle typeHandle = _reader.ReadTypeHandle();
-                    if (_embeddedSignatureDataList != null)
+                    if (typeHandle.Kind == HandleKind.TypeSpecification)
                     {
-                        _embeddedSignatureDataList.Add(new EmbeddedSignatureData { index = string.Join(".", _indexStack), kind = EmbeddedSignatureDataKind.OptionalCustomModifier, type = ResolveHandle(typeHandle) });
+                        ReportTypeSpecUsedAsCustomModifier(typeHandle);
                     }
+
+                    _embeddedSignatureDataList?.Add(new EmbeddedSignatureData { index = string.Join(".", _indexStack), kind = EmbeddedSignatureDataKind.OptionalCustomModifier, type = ResolveHandle(typeHandle) });
                     continue;
                 }
 
@@ -322,16 +328,31 @@ namespace Internal.TypeSystem.Ecma
                 _indexStack.Push(0);
             }
             TypeDesc result = ParseTypeImpl();
-            if (_indexStack != null)
-            {
-                _indexStack.Pop();
-            }
+            _indexStack?.Pop();
             return result;
         }
 
         private TypeDesc ParseTypeImpl()
         {
             return ParseType(ParseTypeCode());
+        }
+
+        public TypeDesc ParseTypeSpec(TypeSpecificationHandle typeSpecHandle)
+        {
+            SignatureTypeCode typeCode = _reader.ReadSignatureTypeCode();
+            switch (typeCode)
+            {
+                case SignatureTypeCode.Pointer:
+                case SignatureTypeCode.FunctionPointer:
+                case SignatureTypeCode.Array:
+                case SignatureTypeCode.SZArray:
+                case SignatureTypeCode.GenericTypeInstance:
+                case SignatureTypeCode.GenericTypeParameter:
+                case SignatureTypeCode.GenericMethodParameter:
+                    return ParseType(ParseTypeCodeImpl(typeCode));
+            }
+            ReportInvalidTypeSpecEncoding(typeSpecHandle);
+            return ParseType(ParseTypeCodeImpl(typeCode));
         }
 
         public bool IsFieldSignature
@@ -345,19 +366,10 @@ namespace Internal.TypeSystem.Ecma
 
         public MethodSignature ParseMethodSignature()
         {
-            try
-            {
-                _indexStack = new Stack<int>();
-                _indexStack.Push(0);
-                _embeddedSignatureDataList = new List<EmbeddedSignatureData>();
-                return ParseMethodSignatureInternal(skipEmbeddedSignatureData: false);
-            }
-            finally
-            {
-                _indexStack = null;
-                _embeddedSignatureDataList = null;
-            }
-
+            _indexStack = new Stack<int>();
+            _indexStack.Push(0);
+            _embeddedSignatureDataList = new List<EmbeddedSignatureData>();
+            return ParseMethodSignatureInternal(skipEmbeddedSignatureData: false);
         }
 
         private MethodSignature ParseMethodSignatureInternal(bool skipEmbeddedSignatureData)
@@ -369,10 +381,7 @@ namespace Internal.TypeSystem.Ecma
                 _indexStack.Push(0);
             }
             MethodSignature result = ParseMethodSignatureImpl(skipEmbeddedSignatureData);
-            if (_indexStack != null)
-            {
-                _indexStack.Pop();
-            }
+            _indexStack?.Pop();
             return result;
         }
 
@@ -392,11 +401,26 @@ namespace Internal.TypeSystem.Ecma
                 Debug.Assert((int)MethodSignatureFlags.CallingConventionVarargs == (int)SignatureCallingConvention.VarArgs);
                 Debug.Assert((int)MethodSignatureFlags.UnmanagedCallingConvention == (int)SignatureCallingConvention.Unmanaged);
 
-                flags = (MethodSignatureFlags)signatureCallConv;
+                // If skipEmbeddedSignatureData is true, we're building the signature for the purposes of building a type.
+                // We normalize unmanaged calling convention into a single value - "unmanaged".
+                if (skipEmbeddedSignatureData)
+                {
+                    flags = MethodSignatureFlags.UnmanagedCallingConvention;
+
+                    // But we still need to remember this signature is different, so add this to the EmbeddedSignatureData of the owner signature.
+                    _embeddedSignatureDataList?.Add(new EmbeddedSignatureData { index = string.Join(".", _indexStack) + "|" + ((int)signatureCallConv).ToString(), kind = EmbeddedSignatureDataKind.UnmanagedCallConv, type = null });
+                }
+                else
+                {
+                    flags = (MethodSignatureFlags)signatureCallConv;
+                }
             }
 
             if (!header.IsInstance)
                 flags |= MethodSignatureFlags.Static;
+
+            if (header.HasExplicitThis)
+                flags |= MethodSignatureFlags.ExplicitThis;
 
             int arity = header.IsGeneric ? _reader.ReadCompressedInteger() : 0;
 
@@ -430,6 +454,14 @@ namespace Internal.TypeSystem.Ecma
 
         public PropertySignature ParsePropertySignature()
         {
+            _indexStack = new Stack<int>();
+            _indexStack.Push(0);
+            _embeddedSignatureDataList = new List<EmbeddedSignatureData>();
+            return ParsePropertySignatureInternal();
+        }
+
+        private PropertySignature ParsePropertySignatureInternal()
+        {
             // As PropertySignature is a struct, we cannot return null
             if (_notFoundBehavior != NotFoundBehavior.Throw)
                 throw new ArgumentException();
@@ -459,7 +491,9 @@ namespace Internal.TypeSystem.Ecma
                 parameters = TypeDesc.EmptyTypes;
             }
 
-            return new PropertySignature(isStatic, parameters, returnType);
+            EmbeddedSignatureData[] embeddedSignatureDataArray = (_embeddedSignatureDataList == null || _embeddedSignatureDataList.Count == 0) ? null : _embeddedSignatureDataList.ToArray();
+
+            return new PropertySignature(isStatic, parameters, returnType, embeddedSignatureDataArray);
         }
 
         public TypeDesc ParseFieldSignature()
@@ -468,6 +502,17 @@ namespace Internal.TypeSystem.Ecma
                 throw new BadImageFormatException();
 
             return ParseType();
+        }
+
+        public TypeDesc ParseFieldSignature(out EmbeddedSignatureData[] embeddedSigData)
+        {
+            _indexStack = new Stack<int>();
+            _indexStack.Push(1);
+            _indexStack.Push(0);
+            _embeddedSignatureDataList = new List<EmbeddedSignatureData>();
+            TypeDesc parsedType = ParseFieldSignature();
+            embeddedSigData = _embeddedSignatureDataList.Count == 0 ? null : _embeddedSignatureDataList.ToArray();
+            return parsedType;
         }
 
         public LocalVariableDefinition[] ParseLocalsSignature()
@@ -534,6 +579,8 @@ namespace Internal.TypeSystem.Ecma
             NativeTypeKind type = (NativeTypeKind)_reader.ReadByte();
             NativeTypeKind arraySubType = NativeTypeKind.Default;
             uint? paramNum = null, numElem = null;
+            string cookie = null;
+            TypeDesc marshallerType = null;
 
             switch (type)
             {
@@ -604,11 +651,20 @@ namespace Internal.TypeSystem.Ecma
                         }
                     }
                     break;
+                case NativeTypeKind.IUnknown:
+                case NativeTypeKind.IDispatch:
+                case NativeTypeKind.Intf:
+                    {
+                        if (_reader.RemainingBytes != 0)
+                        {
+                            // There's nobody to consume COM marshalling, so let's just parse the data
+                            // to avoid asserting later.
+                            _reader.ReadCompressedInteger();
+                        }
+                    }
+                    break;
                 case NativeTypeKind.CustomMarshaler:
                     {
-                        // There's nobody to consume CustomMarshaller, so let's just parse the data
-                        // to avoid asserting later.
-
                         // Read typelib guid
                         _reader.ReadSerializedString();
 
@@ -616,10 +672,11 @@ namespace Internal.TypeSystem.Ecma
                         _reader.ReadSerializedString();
 
                         // Read managed marshaler name
-                        _reader.ReadSerializedString();
+                        var customMarshallerTypeName = _reader.ReadSerializedString();
+                        marshallerType = _ecmaModule.GetTypeByCustomAttributeTypeName(customMarshallerTypeName, true);
 
                         // Read cookie
-                        _reader.ReadSerializedString();
+                        cookie = _reader.ReadSerializedString();
                     }
                     break;
                 default:
@@ -628,7 +685,7 @@ namespace Internal.TypeSystem.Ecma
 
             Debug.Assert(_reader.RemainingBytes == 0);
 
-            return new MarshalAsDescriptor(type, arraySubType, paramNum, numElem);
+            return new MarshalAsDescriptor(type, arraySubType, paramNum, numElem, marshallerType, cookie);
         }
     }
 }
